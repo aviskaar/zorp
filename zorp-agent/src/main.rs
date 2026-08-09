@@ -129,6 +129,15 @@ enum Command {
     /// Validate whether a question is worth investigating.
     #[cfg(feature = "research")]
     Validate { question: String },
+    /// Run one staged, pre-registered investigate attempt against a track.
+    #[cfg(feature = "research")]
+    Investigate {
+        question: String,
+        #[arg(long = "metric-name")]
+        metric_name: Option<String>,
+        #[arg(long = "kill-threshold")]
+        kill_threshold: Option<f64>,
+    },
 }
 
 fn main() {
@@ -158,6 +167,10 @@ fn main() {
         Some(Command::New { name }) => scaffold(&name),
         #[cfg(feature = "research")]
         Some(Command::Validate { question }) => validate(&question, cli.yes, &overrides),
+        #[cfg(feature = "research")]
+        Some(Command::Investigate { question, metric_name, kill_threshold }) => {
+            investigate(&question, metric_name, kill_threshold, cli.yes, &overrides)
+        }
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -774,6 +787,122 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
     match zorp_agent::validate::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
         Ok(true) => println!("validate: approved, track {track_id} ready for investigate"),
         Ok(false) => println!("validate: rejected, track {track_id} killed"),
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "research")]
+const INVESTIGATE_SYSTEM_PREAMBLE: &str = "\
+You are running one staged attempt on a hypothesis that has already been \
+pre-registered: a metric name and a kill threshold were committed before \
+this attempt started and cannot be changed by you. Work the problem, then \
+report the metric's actual value honestly, even if it misses the \
+threshold.";
+
+#[cfg(feature = "research")]
+#[allow(clippy::too_many_arguments)]
+fn investigate(
+    question: &str,
+    metric_name: Option<String>,
+    kill_threshold: Option<f64>,
+    auto_approve: bool,
+    overrides: &Overrides,
+) {
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.clone().merge(project_flavor);
+    let mut system = INVESTIGATE_SYSTEM_PREAMBLE.to_string();
+    system.push_str("\n\n");
+    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let model = HttpModel {
+        url: join_url(&base_url, provider.path_suffix()),
+        api_key,
+        model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        steps,
+        cwd.clone(),
+        cancel,
+        approval,
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+
+    agent = attach_mcp_tools(agent, overrides, true);
+
+    let project = match zorp_track::Project::open(&cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+    let track_id = zorp_track::id::track_id(question);
+    if let Err(e) = get_or_create_track(&project.store, &track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    }
+    let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    let prereg_params = match (metric_name.as_deref(), kill_threshold) {
+        (Some(name), Some(threshold)) => Some(zorp_agent::investigate::PreregParams {
+            metric_name: name,
+            kill_threshold: threshold,
+        }),
+        (None, None) => None,
+        _ => {
+            eprintln!("zorp-agent: --metric-name and --kill-threshold must be given together");
+            std::process::exit(2);
+        }
+    };
+
+    match zorp_agent::investigate::run(&mut agent, &project, &track_id, question, prereg_params, &checkpoint_mode) {
+        Ok(true) => println!("investigate: approved, track {track_id} stays active"),
+        Ok(false) => println!("investigate: rejected, track {track_id} killed"),
         Err(e) => {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
