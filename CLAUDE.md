@@ -31,6 +31,10 @@ research.
   sessions. `docs/upstream-quecto/` holds quecto's historical specs, plans,
   and changelog. Read those for context, but don't edit them; they're a
   record of the past, not of zorp.
+- `docs/DECISIONS.md` is the product and architecture decision log. Add a
+  short entry whenever a real decision gets made (not every change; use
+  judgment), and check it before re-deriving a decision that's already
+  there.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done.
 
