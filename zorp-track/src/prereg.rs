@@ -1,5 +1,6 @@
 use crate::track::Store;
 use crate::TrackError;
+use duckdb::OptionalExt;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,6 +127,13 @@ pub(crate) fn insert_preregistration_row(
 /// Write a pre-registration: the `prereg.md` file, a git commit of just
 /// that file (if `track_dir` is inside a git repository), and the
 /// corresponding `preregistrations` row.
+///
+/// Not idempotent by design: a `track_id` may only be pre-registered
+/// once. A second call for the same `track_id` returns
+/// `TrackError::AlreadyRegistered` before touching disk or git, so a
+/// caller that mistakenly re-registers a track cannot overwrite the
+/// file (and permanently wedge its integrity check) out from under the
+/// first, already-committed registration.
 pub fn write_prereg(
     store: &Store,
     track_dir: &Path,
@@ -134,6 +142,21 @@ pub fn write_prereg(
     metric_name: &str,
     kill_threshold: f64,
 ) -> Result<Preregistration, TrackError> {
+    let already_registered: bool = store
+        .conn
+        .query_row(
+            "SELECT 1 FROM preregistrations WHERE track_id = ?",
+            duckdb::params![track_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_registered {
+        return Err(TrackError::AlreadyRegistered {
+            track_id: track_id.to_string(),
+        });
+    }
+
     fs::create_dir_all(track_dir)?;
     let file_path = track_dir.join("prereg.md");
     let content = render_prereg_md(track_id, hypothesis, metric_name, kill_threshold);
@@ -296,6 +319,26 @@ mod tests {
 
         let err = verify_prereg_integrity(&store, "t1").unwrap_err();
         assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
+    }
+
+    #[test]
+    fn second_write_prereg_for_the_same_track_is_rejected_and_does_not_corrupt_the_first() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let track_dir = dir.path().join("tracks").join("t1");
+
+        let first = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+
+        let err = write_prereg(&store, &track_dir, "t1", "different hypothesis", "other_metric", 0.5)
+            .unwrap_err();
+        assert!(matches!(err, TrackError::AlreadyRegistered { track_id } if track_id == "t1"));
+
+        // The first registration must be untouched: the file on disk
+        // still matches what the first call wrote and recorded.
+        let content = fs::read_to_string(&first.file_path).unwrap();
+        assert_eq!(content, render_prereg_md("t1", "hyp", "accuracy", 0.9));
+        assert!(verify_prereg_integrity(&store, "t1").is_ok());
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub enum TrackError {
     NotFound { kind: &'static str, id: String },
     IntegrityMismatch { track_id: String, detail: String },
     CheckpointBlocked { kind: String },
+    AlreadyRegistered { track_id: String },
 }
 
 impl fmt::Display for TrackError {
@@ -24,6 +25,10 @@ impl fmt::Display for TrackError {
             TrackError::CheckpointBlocked { kind } => write!(
                 f,
                 "checkpoint '{kind}' has no interactive terminal and AutoApprove is not set"
+            ),
+            TrackError::AlreadyRegistered { track_id } => write!(
+                f,
+                "track '{track_id}' is already pre-registered; write_prereg cannot be called twice for the same track"
             ),
         }
     }
