@@ -139,9 +139,7 @@ claim-check pass bolted on. The standalone-capabilities framing also
 matches how the harness will actually get used: someone validating one
 idea, or just running an experiment, without wanting the full loop.
 
-**Full writeup:** proposal artifact from this session (not yet a spec in
-`docs/superpowers/specs/`; still pending brainstorming and a real design
-pass before implementation).
+**Full writeup:** `docs/superpowers/specs/2026-08-09-zorp-architecture-design.md`.
 
 ---
 
