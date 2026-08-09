@@ -6,6 +6,7 @@ mod approval;
 mod capsule;
 mod chat;
 mod context;
+mod embed;
 mod flavor;
 mod instructions;
 mod model;
@@ -28,6 +29,7 @@ pub use capsule::{
 };
 pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
+pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
 pub use flavor::{
     content_hash, layer_paths, project_raw, resolve, resolve_configured, resolve_scoped,
     resolve_scoped_configured, ApprovalSection, ConfiguredFlavor, Flavor, Scope, ToolsSection,
