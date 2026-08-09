@@ -47,6 +47,10 @@ resulting artifact, deliver it in the right form.
   called or what they cover; both have changed at least once already.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done.
+- `cargo test --workspace` does not exercise the `research` feature
+  (validate, investigate, co-write, deliver). Run
+  `cargo test -p zorp-agent --features research` explicitly whenever
+  research-feature code changes.
 
 ## Writing style
 
