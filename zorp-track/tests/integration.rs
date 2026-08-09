@@ -87,7 +87,24 @@ fn rebuilds_from_prereg_files_if_duckdb_file_is_deleted() {
 }
 
 #[test]
-fn checkpoint_without_auto_approve_or_a_terminal_is_a_hard_error() {
+fn checkpoint_hard_error_still_applies_inside_a_real_project() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let project = Project::open(dir.path()).unwrap();
+    let track_id = "2026-08-09-checkpoint-hard-error-test";
+    project.store.create_track(track_id, "checkpoint hard error test").unwrap();
+
+    // No auto-approve, and cargo test's stdin is never an interactive
+    // terminal, so this must be a hard error even with a real project
+    // and a real track behind it, not a silent skip.
     let result = CheckpointMode::terminal(false);
     assert!(matches!(result, Err(TrackError::CheckpointBlocked { .. })));
+
+    // Auto-approve still works normally in the same project context.
+    let mode = CheckpointMode::terminal(true).unwrap();
+    let approved = project
+        .store
+        .record_checkpoint(track_id, "experiment", &mode, "proceed?")
+        .unwrap();
+    assert!(approved);
 }
