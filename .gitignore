@@ -1,0 +1,12 @@
+/target
+Cargo.lock
+.superpowers/
+evals/workspace_*/
+evals/results/
+__pycache__/
+evals/**/__pycache__/
+evals/**/*.pyc
+scratchpad/
+
+# Local-only reference material (not redistributed — see NOTICE.md)
+/reference/
