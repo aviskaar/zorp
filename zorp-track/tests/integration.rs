@@ -87,6 +87,32 @@ fn rebuilds_from_prereg_files_if_duckdb_file_is_deleted() {
 }
 
 #[test]
+fn project_open_fails_when_a_track_has_an_orphan_prereg_file_with_no_row() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let track_id = "2026-08-09-orphan-prereg-test";
+    {
+        let project = Project::open(dir.path()).unwrap();
+        // Create the track row, but write prereg.md directly to disk
+        // instead of going through `write_prereg`, so no
+        // preregistrations row is ever inserted for it.
+        project.store.create_track(track_id, "orphan prereg test").unwrap();
+        let track_dir = project.track_dir(track_id);
+        std::fs::create_dir_all(&track_dir).unwrap();
+        std::fs::write(
+            track_dir.join("prereg.md"),
+            "# Pre-registration: orphan\n\nHypothesis: orphan prereg test\nMetric: m\nKill threshold: 1\n",
+        )
+        .unwrap();
+    }
+
+    let Err(err) = Project::open(dir.path()) else {
+        panic!("expected Project::open to fail on an orphan prereg.md file");
+    };
+    assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
+}
+
+#[test]
 fn checkpoint_hard_error_still_applies_inside_a_real_project() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());

@@ -32,6 +32,7 @@ impl Project {
         if !db_existed {
             store.rebuild_from_prereg_files(&tracks_dir)?;
         }
+        store.verify_all_prereg_integrity(&tracks_dir)?;
 
         let library = Library::open(&zorp_dir.join("lancedb"))?;
 

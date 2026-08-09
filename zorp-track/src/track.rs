@@ -200,6 +200,57 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Verify prereg integrity in both directions across every track:
+    /// every `preregistrations` row must have a matching, hash-correct
+    /// `prereg.md` file on disk (the existing per-track check in
+    /// `crate::prereg::verify_prereg_integrity`), and every
+    /// `<tracks_dir>/<id>/prereg.md` on disk must have a corresponding
+    /// row (otherwise it is an orphan file that would never be
+    /// surfaced). Returns `TrackError::IntegrityMismatch` on the first
+    /// mismatch found in either direction.
+    pub fn verify_all_prereg_integrity(&self, tracks_dir: &Path) -> Result<(), TrackError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT track_id FROM preregistrations")?;
+        let track_ids: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        drop(stmt);
+
+        for track_id in &track_ids {
+            crate::prereg::verify_prereg_integrity(self, track_id)?;
+        }
+
+        let Ok(entries) = std::fs::read_dir(tracks_dir) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let track_dir = entry.path();
+            if !track_dir.is_dir() {
+                continue;
+            }
+            let prereg_path = track_dir.join("prereg.md");
+            if !prereg_path.exists() {
+                continue;
+            }
+            let Some(track_id) = track_dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !track_ids.iter().any(|t| t == track_id) {
+                return Err(TrackError::IntegrityMismatch {
+                    track_id: track_id.to_string(),
+                    detail: format!(
+                        "prereg.md exists on disk at {} but no preregistrations row was found",
+                        prereg_path.display()
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +385,42 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         let rebuilt = store.rebuild_from_prereg_files(&dir.path().join("tracks")).unwrap();
         assert_eq!(rebuilt, 0);
+    }
+
+    #[test]
+    fn verify_all_passes_for_a_clean_store() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("zorp.duckdb");
+        let tracks_dir = dir.path().join("tracks");
+        let store = Store::open(&db_path).unwrap();
+        store.create_track("t1", "does caching help").unwrap();
+        let track_dir = tracks_dir.join("t1");
+        crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "m", 1.0).unwrap();
+
+        assert!(store.verify_all_prereg_integrity(&tracks_dir).is_ok());
+    }
+
+    #[test]
+    fn verify_all_detects_an_orphan_prereg_file_with_no_row() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("zorp.duckdb");
+        let tracks_dir = dir.path().join("tracks");
+        let store = Store::open(&db_path).unwrap();
+        // A track row exists, but no preregistrations row was ever
+        // inserted for it: this mirrors a bug where prereg.md was
+        // written directly rather than through `write_prereg`, and
+        // `rebuild_from_prereg_files` will not repair it either since
+        // it skips any track that already has a row.
+        store.create_track("t1", "does caching help").unwrap();
+        let track_dir = tracks_dir.join("t1");
+        std::fs::create_dir_all(&track_dir).unwrap();
+        std::fs::write(
+            track_dir.join("prereg.md"),
+            "# Pre-registration: t1\n\nHypothesis: does caching help\nMetric: m\nKill threshold: 1\n",
+        )
+        .unwrap();
+
+        let err = store.verify_all_prereg_integrity(&tracks_dir).unwrap_err();
+        assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
     }
 }
