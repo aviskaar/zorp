@@ -136,6 +136,75 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Re-derive `tracks` and `preregistrations` rows by reading every
+    /// `<tracks_dir>/<id>/prereg.md` on disk. Used to recover after
+    /// `zorp.duckdb` is lost or deleted, since the files are the source
+    /// of truth. Skips a track directory if it has no `prereg.md`
+    /// (nothing to rebuild from) or already has a matching row.
+    pub fn rebuild_from_prereg_files(&self, tracks_dir: &Path) -> Result<usize, TrackError> {
+        let mut rebuilt = 0;
+        let Ok(entries) = std::fs::read_dir(tracks_dir) else {
+            return Ok(0);
+        };
+        for entry in entries.flatten() {
+            let track_dir = entry.path();
+            if !track_dir.is_dir() {
+                continue;
+            }
+            let Some(track_id) = track_dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let prereg_path = track_dir.join("prereg.md");
+            if !prereg_path.exists() {
+                continue;
+            }
+            if self.get_track(track_id).is_ok() {
+                continue; // already present, nothing to rebuild
+            }
+
+            let content = std::fs::read_to_string(&prereg_path)?;
+            let (hypothesis, metric_name, kill_threshold) = crate::prereg::parse_prereg_md(&content)?;
+            let file_hash = crate::prereg::sha256_hex(content.as_bytes());
+            let git_commit_hash = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&track_dir)
+                .args(["log", "-1", "--format=%H", "--", "prereg.md"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            self.create_track(track_id, &hypothesis)?;
+            let committed_at_ms = std::fs::metadata(&prereg_path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            self.conn.execute(
+                "INSERT INTO preregistrations \
+                 (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                duckdb::params![
+                    format!("{track_id}-prereg"),
+                    track_id,
+                    hypothesis,
+                    metric_name,
+                    kill_threshold,
+                    prereg_path.to_string_lossy().to_string(),
+                    file_hash,
+                    git_commit_hash,
+                    committed_at_ms
+                ],
+            )?;
+            rebuilt += 1;
+        }
+        Ok(rebuilt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +294,50 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         let err = store.set_track_status("nope", TrackStatus::Killed).unwrap_err();
         assert!(matches!(err, TrackError::NotFound { kind: "track", .. }));
+    }
+
+    #[test]
+    fn rebuild_recovers_tracks_after_duckdb_file_is_deleted() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("zorp.duckdb");
+        let tracks_dir = dir.path().join("tracks");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.create_track("t1", "does caching help").unwrap();
+            let track_dir = tracks_dir.join("t1");
+            crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0).unwrap();
+        }
+
+        std::fs::remove_file(&db_path).unwrap();
+
+        let fresh_store = Store::open(&db_path).unwrap();
+        assert!(fresh_store.get_track("t1").is_err());
+        let rebuilt = fresh_store.rebuild_from_prereg_files(&tracks_dir).unwrap();
+        assert_eq!(rebuilt, 1);
+        let recovered = fresh_store.get_track("t1").unwrap();
+        assert_eq!(recovered.hypothesis, "does caching help");
+        assert!(crate::prereg::verify_prereg_integrity(&fresh_store, "t1").is_ok());
+    }
+
+    #[test]
+    fn rebuild_skips_tracks_that_already_have_a_row() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("zorp.duckdb");
+        let tracks_dir = dir.path().join("tracks");
+        let store = Store::open(&db_path).unwrap();
+        store.create_track("t1", "already here").unwrap();
+        let track_dir = tracks_dir.join("t1");
+        crate::prereg::write_prereg(&store, &track_dir, "t1", "already here", "m", 1.0).unwrap();
+
+        let rebuilt = store.rebuild_from_prereg_files(&tracks_dir).unwrap();
+        assert_eq!(rebuilt, 0);
+    }
+
+    #[test]
+    fn rebuild_on_empty_tracks_dir_is_a_no_op() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        let rebuilt = store.rebuild_from_prereg_files(&dir.path().join("tracks")).unwrap();
+        assert_eq!(rebuilt, 0);
     }
 }
