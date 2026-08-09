@@ -9,6 +9,7 @@ pub mod checkpoint;
 pub mod error;
 pub mod experiment;
 pub mod id;
+pub mod library;
 pub mod prereg;
 mod schema;
 pub mod track;
