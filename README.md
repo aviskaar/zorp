@@ -2,15 +2,15 @@
 
 # zorp
 
-### A research agent for scientific discovery.
+### Zorp investigates hard questions and delivers evidence-backed answers.
 
-*Forming hypotheses, running experiments, evaluating results, and writing up findings, autonomously.*
+*LLMs made intelligence cheap. Zorp makes validated intelligence cheap.*
 
 <br/>
 
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-462%20passing-success?style=flat-square)](#development)
+[![Tests](https://img.shields.io/badge/tests-519%20passing-success?style=flat-square)](#development)
 [![Status](https://img.shields.io/badge/status-pre--alpha-critical?style=flat-square)](#status--roadmap)
 [![Part of Aviskaar](https://img.shields.io/badge/part%20of-Aviskaar-6f42c1?style=flat-square)](https://github.com/aviskaar)
 
@@ -20,28 +20,36 @@
 
 ---
 
-zorp is an agent harness aimed at autonomous scientific research. It forms
-hypotheses, runs experiments, evaluates results, and writes up findings,
-with the goal of eventually publishing its own output as a paper. It's
-built by [Aviskaar](https://github.com/aviskaar), an applied AI research
-lab.
+zorp turns an uncertain question into a defensible answer, using
+evidence: question, investigation, sources, evidence, conflicting
+evidence, reasoning, validation, answer or artifact. That covers a lot
+more than academic research: a technical decision (should we migrate off
+Kafka), a competitive teardown, an investment thesis, a due-diligence
+package, a market question, an engineering tradeoff, or an academic
+hypothesis are all the same shape of problem to zorp. It's built by
+[Aviskaar](https://github.com/aviskaar), an applied AI research lab.
 
-> **Status: early / pre-alpha.** The base execution harness is in place
-> and fully tested. The research-agent capabilities (experiment tree
-> search, autonomous hypothesis-to-paper loop, etc.) are still being
-> designed. See [Status & roadmap](#status--roadmap) below.
+> **Status: early / pre-alpha.** The base execution harness and the
+> shared research foundation (tracks, evidence records, checkpoints) are
+> in place and fully tested. The four capabilities built on top
+> (validate, investigate, co-write, deliver) are still being designed.
+> See [Status & roadmap](#status--roadmap) below.
 
 ## Why zorp
 
 Most "AI scientist" projects wire a large agent framework directly to
 experiment code, which makes the harness and the research logic hard to
-separate, test, or reason about independently. zorp starts from the
-opposite end: a minimal, dependency-light execution core, extended
-deliberately with the primitives autonomous research needs. Long-running
-task loops, verification gates, session persistence, and tool/MCP
-integration are already there, with experiment tracking and paper
-synthesis coming soon, each added as a clearly bounded layer on top of a
-harness that stays legible on its own.
+separate, test, or reason about independently, and most assume the
+deliverable is a finished document an AI wrote end to end. zorp starts
+from the opposite end on both counts: a minimal, dependency-light
+execution core extended deliberately with the primitives evidence-based
+investigation needs, and a human always in the loop as the author of
+record for whatever gets produced, a decision memo, a competitive
+landscape, a due-diligence package, or a paper. Long-running task loops,
+verification gates, session persistence, tool/MCP integration, and the
+research foundation (multi-track evidence records with git-backed,
+tamper-evident pre-registration) are already built and tested. The four
+capabilities on top, each a clearly bounded layer, are next.
 
 ## Architecture
 
@@ -50,6 +58,7 @@ harness that stays legible on its own.
 ├── src/                 # zorp core crate: model transport, raw primitives (binary: zorp)
 ├── zorp-agent/          # the agent: tools, reasoning, verification, sessions, MCP, telemetry
 ├── zorp-mcp/            # MCP client/server integration
+├── zorp-track/          # research foundation: tracks, evidence records, pre-registration, checkpoints
 ├── zorp-eval/           # deterministic evaluation harness
 ├── evals/               # eval suites (smoke tests, Terminal-Bench, Harbor adapter)
 ├── examples/            # usage examples (e.g. OpenTelemetry tracing)
@@ -103,10 +112,11 @@ design specs live, and repo conventions.
 ## Status & roadmap
 
 - [x] Base execution harness (forked from quecto, renamed, fully tested)
-- [ ] Idea validation (literature search, novelty and feasibility check)
-- [ ] Experiment orchestration (staged, sandboxed, every attempt recorded)
-- [ ] Collaborative paper writing (zorp drafts, a human authors and finalizes)
-- [ ] Venue matching (conference and journal fit, given a finished paper)
+- [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB + LanceDB)
+- [ ] **validate**: is this question worth investigating (novelty and feasibility check)
+- [ ] **investigate**: gather evidence through staged, sandboxed, pre-registered attempts, every attempt recorded
+- [ ] **co-write**: zorp drafts the artifact, a human is always the author of record
+- [ ] **deliver**: get the finished artifact into the right format for its audience (venue matching for a paper, stakeholder-ready memo for a decision)
 - [ ] A systems paper about zorp itself, submitted to arXiv
 
 ## Origins

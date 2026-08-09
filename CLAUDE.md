@@ -1,17 +1,20 @@
 # zorp: Claude Code Instructions
 
-zorp is a research agent for scientific discovery, part of the Aviskaar
-monorepo. See `README.md` for positioning and `NOTICE.md` for licensing
-context, and `AGENTS.md` for the tool-agnostic version of these
-instructions (keep both in sync).
+zorp investigates hard questions and delivers evidence-backed answers,
+not just academic research, any question that can be turned into a
+defensible answer using evidence. Part of the Aviskaar monorepo. See
+`README.md` for positioning and `NOTICE.md` for licensing context, and
+`AGENTS.md` for the tool-agnostic version of these instructions (keep
+both in sync).
 
 ## What this repo is
 
 A Rust workspace, forked from [quecto](https://github.com/adityak74/quecto)
 (MIT) and renamed. Crates and binaries are `zorp`, `zorp-agent`,
-`zorp-mcp`, and `zorp-eval`, not `quecto-*`. Env vars use the `ZORP_`
-prefix. It's being extended into a harness for autonomous scientific
-research.
+`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`. Env vars use
+the `ZORP_` prefix. It's being extended into a harness for evidence-based
+investigation: validate a question, investigate it, co-write the
+resulting artifact, deliver it in the right form.
 
 ## Working here
 
@@ -19,10 +22,14 @@ research.
   code. Read `docs/UPSTREAM_QUECTO_README.md` before assuming behavior;
   it documents the original design intent under the old `quecto-*` names
   (mentally substitute `zorp-*`).
-- New, zorp-specific capabilities (research loop, experiment tracking,
-  paper synthesis, etc.) should be clearly separated from inherited
-  harness code as they're added. Use new crates or clearly named modules,
-  not the inherited ones.
+- `zorp-track/` is zorp's own research foundation (multi-track evidence
+  records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
+  built, not inherited. The four capabilities (validate, investigate,
+  co-write, deliver) will be built on top of it as `zorp-agent`
+  subcommands, behind the `research` feature; none of them exist yet.
+- New, zorp-specific capabilities should be clearly separated from
+  inherited harness code as they're added. Use new crates or clearly
+  named modules, not the inherited ones.
 - `reference/` is gitignored, local-only material (e.g. AI-Scientist-v2)
   used for design inspiration. Never copy code from it into tracked files;
   its license doesn't permit redistribution under zorp's terms. Read it
@@ -35,9 +42,9 @@ research.
   short entry whenever a real decision gets made (not every change; use
   judgment), and check it before re-deriving a decision that's already
   there.
-- `docs/ARCHITECTURE.md` points at the current architecture proposal.
-  It's preliminary, not a spec; don't treat it as implementation-ready
-  without checking whether it's been through a real design pass first.
+- `docs/ARCHITECTURE.md` points at the current, approved architecture and
+  scope specs. Check there before assuming what zorp's capabilities are
+  called or what they cover; both have changed at least once already.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done.
 
@@ -50,6 +57,6 @@ word instead. Prefer short, direct sentences over stacked clauses.
 
 ## Status
 
-Early/pre-alpha. The base harness is vendored and renamed. zorp's actual
-research-agent design (how it searches, experiments, and writes up
-findings) has not been built yet.
+Early/pre-alpha. The base harness and the research foundation
+(`zorp-track`) are built and tested. The four capabilities that sit on
+top (validate, investigate, co-write, deliver) have not been built yet.

@@ -1,7 +1,16 @@
 # zorp architecture
 
 **Date:** 2026-08-09
-**Status:** approved
+**Status:** approved, capability names and scope amended same-day
+
+**Amended by** `2026-08-09-zorp-scope-and-positioning.md`: the four
+capability names below (validate, experiment, co-write, find a venue)
+are superseded by validate, investigate, co-write, deliver, and their
+scope broadens from academic research to any evidence-based question.
+The architecture itself (one binary, `zorp-track` as the shared
+foundation, the checkpoint pattern, the data-store split) is unchanged
+and this document is still the source of truth for it. Read the
+amendment for current names and scope; this document for structure.
 
 ## Purpose
 
