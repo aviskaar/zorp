@@ -31,9 +31,10 @@ hypothesis are all the same shape of problem to zorp. It's built by
 
 > **Status: early / pre-alpha.** The base execution harness and the
 > shared research foundation (tracks, evidence records, checkpoints) are
-> in place and fully tested. The four capabilities built on top
-> (validate, investigate, co-write, deliver) are still being designed.
-> See [Status & roadmap](#status--roadmap) below.
+> in place and fully tested. Of the four capabilities built on top,
+> validate and investigate are built and tested; co-write and deliver
+> are still being designed. See [Status & roadmap](#status--roadmap)
+> below.
 
 ## Why zorp
 
@@ -48,8 +49,9 @@ record for whatever gets produced, a decision memo, a competitive
 landscape, a due-diligence package, or a paper. Long-running task loops,
 verification gates, session persistence, tool/MCP integration, and the
 research foundation (multi-track evidence records with git-backed,
-tamper-evident pre-registration) are already built and tested. The four
-capabilities on top, each a clearly bounded layer, are next.
+tamper-evident pre-registration) are already built and tested. Of the
+four capabilities on top, each a clearly bounded layer, validate and
+investigate are built and tested; co-write and deliver are next.
 
 ## Architecture
 
@@ -113,8 +115,8 @@ design specs live, and repo conventions.
 
 - [x] Base execution harness (forked from quecto, renamed, fully tested)
 - [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB + LanceDB)
-- [ ] **validate**: is this question worth investigating (novelty and feasibility check)
-- [ ] **investigate**: gather evidence through staged, sandboxed, pre-registered attempts, every attempt recorded
+- [x] **validate**: is this question worth investigating (novelty and feasibility check)
+- [x] **investigate**: gather evidence through staged, sandboxed, pre-registered attempts, every attempt recorded
 - [ ] **co-write**: zorp drafts the artifact, a human is always the author of record
 - [ ] **deliver**: get the finished artifact into the right format for its audience (venue matching for a paper, stakeholder-ready memo for a decision)
 - [ ] A systems paper about zorp itself, submitted to arXiv
