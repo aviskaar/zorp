@@ -1,8 +1,8 @@
-use quecto::BoxErr;
+use zorp::BoxErr;
 use std::io::{self, BufRead, Write};
 
 fn stream_enabled() -> bool {
-    std::env::var("QUECTO_STREAM")
+    std::env::var("ZORP_STREAM")
         .map(|v| v != "0")
         .unwrap_or(true)
 }
@@ -16,29 +16,29 @@ fn answer(
     system: Option<&str>,
     stream: bool,
 ) -> Result<(), BoxErr> {
-    let url = quecto::join_url(base, "chat/completions");
-    let body = quecto::build_body(system, prompt, model);
+    let url = zorp::join_url(base, "chat/completions");
+    let body = zorp::build_body(system, prompt, model);
     let auth = key.map(|k| format!("Bearer {k}"));
     let mut headers: Vec<(&str, &str)> = Vec::new();
     if let Some(a) = &auth {
         headers.push(("Authorization", a.as_str()));
     }
     if stream {
-        quecto::quecto_stream(&url, &headers, body, |delta| {
+        zorp::zorp_stream(&url, &headers, body, |delta| {
             if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
                 print!("{t}");
                 let _ = io::stdout().flush();
             }
         })?;
     } else {
-        let resp = quecto::quecto_raw(&url, &headers, body)?;
-        print!("{}", quecto::extract_content(&resp)?);
+        let resp = zorp::zorp_raw(&url, &headers, body)?;
+        print!("{}", zorp::extract_content(&resp)?);
     }
     Ok(())
 }
 
 fn run_oneshot(prompt: &str) {
-    let (base, key, model, system) = quecto::env_config();
+    let (base, key, model, system) = zorp::env_config();
     if let Err(e) = answer(
         prompt,
         &base,
@@ -47,7 +47,7 @@ fn run_oneshot(prompt: &str) {
         system.as_deref(),
         stream_enabled(),
     ) {
-        eprintln!("quecto: {e}");
+        eprintln!("zorp: {e}");
         std::process::exit(1);
     }
     println!();
@@ -59,7 +59,7 @@ fn run_repl() {
     let mut input = stdin.lock();
     let mut line = String::new();
     loop {
-        eprint!("quecto\u{203a} "); // "quecto› "
+        eprint!("zorp\u{203a} "); // "zorp› "
         let _ = io::stderr().flush();
         line.clear();
         match input.read_line(&mut line) {
@@ -74,7 +74,7 @@ fn run_repl() {
         if prompt == "exit" || prompt == "quit" {
             break;
         }
-        let (base, key, model, system) = quecto::env_config();
+        let (base, key, model, system) = zorp::env_config();
         if let Err(e) = answer(
             prompt,
             &base,
@@ -83,7 +83,7 @@ fn run_repl() {
             system.as_deref(),
             stream_enabled(),
         ) {
-            eprintln!("quecto: {e}"); // per-turn failure never kills the loop
+            eprintln!("zorp: {e}"); // per-turn failure never kills the loop
         }
         println!();
     }
@@ -94,10 +94,10 @@ fn run_init() -> Result<(), BoxErr> {
     let mut input = stdin.lock();
     let stderr = io::stderr();
     let mut prompts = stderr.lock();
-    let pairs = quecto::init_exports(&mut input, &mut prompts)?;
+    let pairs = zorp::init_exports(&mut input, &mut prompts)?;
     for (k, v) in pairs {
         // Single-quote the value so $, backticks, and double quotes are inert
-        // under `eval "$(quecto --init)"`; escape any embedded single quote.
+        // under `eval "$(zorp --init)"`; escape any embedded single quote.
         let escaped = v.replace('\'', "'\\''");
         println!("export {k}='{escaped}'");
     }
@@ -108,7 +108,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(|s| s.as_str()) == Some("--init") {
         if let Err(e) = run_init() {
-            eprintln!("quecto: {e}");
+            eprintln!("zorp: {e}");
             std::process::exit(1);
         }
         return;

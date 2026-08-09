@@ -1,0 +1,53 @@
+[package]
+name = "zorp-agent"
+version = "0.2.1"
+edition = "2021"
+description = "Coding agent built on the zorp core."
+license = "MIT"
+
+[dependencies]
+crossterm = "0.27"
+termimad = "0.35"
+merman = { version = "0.7", features = ["ascii"] }
+zorp = { path = ".." }
+serde_json = "1"
+ignore = "0.4"
+regex = "1"
+ctrlc = "3"
+libc = "0.2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+sha2 = "0.10"
+ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+zorp-mcp = { path = "../zorp-mcp", optional = true }
+arboard = { version = "3", optional = true }
+
+# Optional OpenTelemetry and Tracing Dependencies
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"], optional = true }
+tracing-opentelemetry = { version = "0.22", optional = true }
+opentelemetry = { version = "0.21", features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.14", features = ["http-proto", "reqwest-client"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+
+[features]
+default = []
+otel = [
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tokio"
+]
+mcp = ["dep:zorp-mcp"]
+clipboard = ["dep:arboard"]
+
+[dev-dependencies]
+tempfile = "3"

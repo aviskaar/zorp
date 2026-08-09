@@ -14,22 +14,24 @@ suite, and will get a dedicated home at **zorp.dev**.
 
 ## Origins
 
-zorp's execution layer is built on top of
+zorp's execution layer started as a fork of
 [quecto](https://github.com/adityak74/quecto), a minimal, vendor-neutral
 harness for LLM agents (MIT licensed) — see `NOTICE.md` for attribution.
-We're modifying and extending it directly rather than depending on it as
-an external crate, since zorp's needs (long-running research loops,
+We modify and extend it directly rather than depending on it as an
+external crate, since zorp's needs (long-running research loops,
 experiment tracking, paper synthesis) diverge substantially from a general
-agent harness.
+agent harness. Crates and binaries have been renamed from `quecto-*` to
+`zorp-*`; `docs/UPSTREAM_QUECTO_README.md` preserves the original
+project's documentation for reference.
 
 ## Repo layout
 
 ```
 .
-├── src/                # zorp binary crate (was quecto's root crate)
-├── quecto-agent/       # coding/reasoning agent crate
-├── quecto-mcp/         # MCP integration crate
-├── quecto-eval/        # eval harness crate
+├── src/                # zorp core crate (binary: zorp)
+├── zorp-agent/         # coding/reasoning agent crate
+├── zorp-mcp/           # MCP integration crate
+├── zorp-eval/          # eval harness crate
 ├── evals/              # eval suites
 ├── examples/           # usage examples
 ├── docs/               # docs, specs, upstream references

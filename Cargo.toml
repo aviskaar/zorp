@@ -1,5 +1,5 @@
 [package]
-name = "quecto"
+name = "zorp"
 version = "0.1.0"
 edition = "2021"
 description = "The smallest harness of all time."
@@ -10,8 +10,8 @@ ureq = { version = "2", features = ["json"] }   # do NOT set default-features = 
 serde_json = "1"
 
 [workspace]
-members = [".", "quecto-agent", "quecto-mcp", "quecto-eval"]
-# Future companion members (own specs): "quecto-mcp"
+members = [".", "zorp-agent", "zorp-mcp", "zorp-eval"]
+# Future companion members (own specs): "zorp-mcp"
 
 # Optimize the release binary for size — fitting for "the smallest harness."
 [profile.release]

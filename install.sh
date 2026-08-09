@@ -4,7 +4,7 @@ set -e
 # Build the workspace binaries in release mode
 echo "Cleaning the cargo workspace..."
 cargo clean
-echo "Building the quecto workspace binaries..."
+echo "Building the zorp workspace binaries..."
 cargo build --release --workspace
 
 # Define the target installation directory
@@ -15,10 +15,10 @@ echo "Creating $INSTALL_DIR if it doesn't exist..."
 mkdir -p "$INSTALL_DIR"
 
 echo "Copying binaries to $INSTALL_DIR..."
-cp target/release/quecto "$INSTALL_DIR/"
-cp target/release/quecto-agent "$INSTALL_DIR/"
+cp target/release/zorp "$INSTALL_DIR/"
+cp target/release/zorp-agent "$INSTALL_DIR/"
 
-echo "Successfully installed 'quecto' and 'quecto-agent' to $INSTALL_DIR!"
+echo "Successfully installed 'zorp' and 'zorp-agent' to $INSTALL_DIR!"
 
 # Check if INSTALL_DIR is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

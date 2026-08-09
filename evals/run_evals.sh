@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# QuECTO Evaluation Harness
+# ZORP Evaluation Harness
 #
 # Runs the smoke test suite in evals/smoke/*. Each task directory must contain:
 #   prompt.md   — task instruction
@@ -36,7 +36,7 @@
 #   harbor run \
 #     -d terminal-bench/terminal-bench-2 \
 #     -m qwen3.6:35b \
-#     --agent evals.harbor.quecto_agent:QuectoAgent
+#     --agent evals.harbor.zorp_agent:ZorpAgent
 # =============================================================================
 set -euo pipefail
 
@@ -52,7 +52,7 @@ for arg in "$@"; do
         task=*) TASK_ARG="${arg#task=}" ;;
         --llm-judge) USE_LLM_JUDGE=true ;;
         *)
-            echo "quecto-eval: unrecognised argument '$arg'" >&2
+            echo "zorp-eval: unrecognised argument '$arg'" >&2
             exit 2
             ;;
     esac
@@ -80,18 +80,18 @@ case "$ENV_ARG" in
         AGENT_API_KEY="${AGENT_API_KEY:-${OPENAI_API_KEY:-}}"
         ;;
     *)
-        echo "quecto-eval: unknown env '$ENV_ARG' (expected LOCAL, ANTHROPIC, or OPENAI)" >&2
+        echo "zorp-eval: unknown env '$ENV_ARG' (expected LOCAL, ANTHROPIC, or OPENAI)" >&2
         exit 2
         ;;
 esac
 
 if [[ "$ENV_ARG" != "LOCAL" ]]; then
     if [[ -z "$AGENT_MODEL" ]]; then
-        echo "quecto-eval: env=$ENV_ARG requires model=<name>" >&2
+        echo "zorp-eval: env=$ENV_ARG requires model=<name>" >&2
         exit 2
     fi
     if [[ -z "$AGENT_API_KEY" ]]; then
-        echo "quecto-eval: env=$ENV_ARG requires an API key (set AGENT_API_KEY, or ANTHROPIC_API_KEY/OPENAI_API_KEY)" >&2
+        echo "zorp-eval: env=$ENV_ARG requires an API key (set AGENT_API_KEY, or ANTHROPIC_API_KEY/OPENAI_API_KEY)" >&2
         exit 2
     fi
 fi
@@ -104,10 +104,10 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]] && [[ "$JUDGE_URL" == *"openrouter"* ]]; t
 fi
 
 # Build binaries
-cargo build --release -p quecto 2>&1 | tail -3
-cargo build --release -p quecto-agent 2>&1 | tail -3
-QUECTO_BIN="$(pwd)/target/release/quecto"
-AGENT_BIN="$(pwd)/target/release/quecto-agent"
+cargo build --release -p zorp 2>&1 | tail -3
+cargo build --release -p zorp-agent 2>&1 | tail -3
+ZORP_BIN="$(pwd)/target/release/zorp"
+AGENT_BIN="$(pwd)/target/release/zorp-agent"
 
 PASS=0
 FAIL=0
@@ -131,14 +131,14 @@ run_task() {
     (cd "$workdir" && bash "$ROOT/$task_dir/setup.sh") 2>&1 | sed 's/^/  [setup] /'
 
     # ── Execute agent ──────────────────────────
-    echo "--> Running quecto-agent..."
+    echo "--> Running zorp-agent..."
     local prompt
     prompt="$(cat "$task_dir/prompt.md")"
 
     (
         cd "$workdir"
-        QUECTO_BASE_URL="$AGENT_URL" QUECTO_MODEL="$AGENT_MODEL" \
-        QUECTO_PROVIDER="$AGENT_PROVIDER" QUECTO_API_KEY="$AGENT_API_KEY" \
+        ZORP_BASE_URL="$AGENT_URL" ZORP_MODEL="$AGENT_MODEL" \
+        ZORP_PROVIDER="$AGENT_PROVIDER" ZORP_API_KEY="$AGENT_API_KEY" \
             "$AGENT_BIN" --yes --approval full "$prompt" > agent_output.log 2>&1
     ) || true   # agent exit code doesn't fail the harness
 
@@ -185,8 +185,8 @@ $criteria
 Output ONLY the single word PASS or FAIL."
 
         local judge_result
-        judge_result="$(QUECTO_BASE_URL="$JUDGE_URL" QUECTO_API_KEY="${OPENROUTER_API_KEY:-}" \
-            QUECTO_MODEL="$JUDGE_MODEL" "$QUECTO_BIN" "$judge_prompt" 2>/dev/null)"
+        judge_result="$(ZORP_BASE_URL="$JUDGE_URL" ZORP_API_KEY="${OPENROUTER_API_KEY:-}" \
+            ZORP_MODEL="$JUDGE_MODEL" "$ZORP_BIN" "$judge_prompt" 2>/dev/null)"
 
         if [[ "$judge_result" == *"PASS"* ]]; then
             result="PASS"
@@ -202,7 +202,7 @@ Output ONLY the single word PASS or FAIL."
     fi
 }
 
-echo "QuECTO Smoke Eval Suite"
+echo "ZORP Smoke Eval Suite"
 echo "Env   : $ENV_ARG"
 echo "Agent : $AGENT_MODEL @ $AGENT_URL (provider: $AGENT_PROVIDER)"
 if [[ "$USE_LLM_JUDGE" == "true" ]]; then
@@ -214,7 +214,7 @@ fi
 if [[ -n "$TASK_ARG" ]]; then
     task_dir="evals/smoke/${TASK_ARG}/"
     if [[ ! -d "$task_dir" ]]; then
-        echo "quecto-eval: unknown task '$TASK_ARG' (no such directory evals/smoke/$TASK_ARG)" >&2
+        echo "zorp-eval: unknown task '$TASK_ARG' (no such directory evals/smoke/$TASK_ARG)" >&2
         exit 2
     fi
     run_task "$task_dir"

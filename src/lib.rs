@@ -1,5 +1,5 @@
-//! quecto — the smallest harness of all time.
-//! Core: quecto_raw / quecto_stream / quecto_to / quecto, plus small pub helpers
+//! zorp — the smallest harness of all time.
+//! Core: zorp_raw / zorp_stream / zorp_to / zorp, plus small pub helpers
 //! (build_body, join_url, env_config, extract_content, init_exports) reused by the
 //! binary and future companion crates.
 
@@ -64,7 +64,7 @@ fn agent() -> ureq::Agent {
 /// Buffered primitive: POST an arbitrary JSON body to an arbitrary URL with
 /// arbitrary headers; return the full parsed response. No path/auth/shape opinions.
 /// `ureq` returns `Err` on non-2xx status, so no explicit status check is needed.
-pub fn quecto_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
+pub fn zorp_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
     let mut req = agent().post(url);
     for (k, v) in headers {
         req = req.set(k, v);
@@ -76,17 +76,17 @@ pub fn quecto_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Va
 
 /// Read the four env knobs, applying defaults for base_url and model.
 pub fn env_config() -> (String, Option<String>, String, Option<String>) {
-    let base = std::env::var("QUECTO_BASE_URL")
+    let base = std::env::var("ZORP_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let key = std::env::var("QUECTO_API_KEY").ok();
-    let model = std::env::var("QUECTO_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-    let system = std::env::var("QUECTO_SYSTEM").ok();
+    let key = std::env::var("ZORP_API_KEY").ok();
+    let model = std::env::var("ZORP_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    let system = std::env::var("ZORP_SYSTEM").ok();
     (base, key, model, system)
 }
 
 /// Convenience: build a single-user-message body, POST to <base_url>/chat/completions
 /// with optional Bearer auth, return the assistant text ("" on a tool-only turn).
-pub fn quecto_to(
+pub fn zorp_to(
     prompt: &str,
     base_url: &str,
     api_key: Option<&str>,
@@ -99,12 +99,12 @@ pub fn quecto_to(
     if let Some(a) = &auth {
         headers.push(("Authorization", a.as_str()));
     }
-    let resp = quecto_raw(&url, &headers, body)?;
+    let resp = zorp_raw(&url, &headers, body)?;
     extract_content(&resp)
 }
 
-/// Ergonomic: read env config (incl. optional QUECTO_SYSTEM), send, return text.
-pub fn quecto(prompt: &str) -> Result<String, BoxErr> {
+/// Ergonomic: read env config (incl. optional ZORP_SYSTEM), send, return text.
+pub fn zorp(prompt: &str) -> Result<String, BoxErr> {
     let (base, key, model, system) = env_config();
     let url = join_url(&base, "chat/completions");
     let body = build_body(system.as_deref(), prompt, &model);
@@ -113,7 +113,7 @@ pub fn quecto(prompt: &str) -> Result<String, BoxErr> {
     if let Some(a) = &auth {
         headers.push(("Authorization", a.as_str()));
     }
-    let resp = quecto_raw(&url, &headers, body)?;
+    let resp = zorp_raw(&url, &headers, body)?;
     extract_content(&resp)
 }
 
@@ -121,7 +121,7 @@ pub fn quecto(prompt: &str) -> Result<String, BoxErr> {
 /// `choices[0].delta` to `on_delta`; accumulate delta.content into the return String.
 /// If the server ignores streaming (no `data:` frames), fall back to buffered: parse
 /// the whole body and deliver one synthetic {"content": …} delta — never silent-empty.
-pub fn quecto_stream(
+pub fn zorp_stream(
     url: &str,
     headers: &[(&str, &str)],
     mut body: Value,
@@ -215,10 +215,10 @@ pub fn init_exports(
     prompts: &mut impl std::io::Write,
 ) -> std::io::Result<Vec<(String, String)>> {
     let fields = [
-        ("QUECTO_BASE_URL", "Base URL [http://localhost:11434/v1]: "),
-        ("QUECTO_API_KEY", "API key (blank for none): "),
-        ("QUECTO_MODEL", "Model [gpt-4o]: "),
-        ("QUECTO_SYSTEM", "System prompt (blank for none): "),
+        ("ZORP_BASE_URL", "Base URL [http://localhost:11434/v1]: "),
+        ("ZORP_API_KEY", "API key (blank for none): "),
+        ("ZORP_MODEL", "Model [gpt-4o]: "),
+        ("ZORP_SYSTEM", "System prompt (blank for none): "),
     ];
     let mut out = Vec::new();
     for (var, prompt) in fields {
@@ -323,10 +323,10 @@ mod tests {
             pairs,
             vec![
                 (
-                    "QUECTO_BASE_URL".to_string(),
+                    "ZORP_BASE_URL".to_string(),
                     "http://localhost:11434/v1".to_string()
                 ),
-                ("QUECTO_MODEL".to_string(), "qwen".to_string()),
+                ("ZORP_MODEL".to_string(), "qwen".to_string()),
             ]
         );
     }

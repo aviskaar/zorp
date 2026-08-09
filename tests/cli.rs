@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_quecto")
+    env!("CARGO_BIN_EXE_zorp")
 }
 
 #[test]
@@ -17,11 +17,11 @@ fn oneshot_buffered_joins_args() {
     let out = Command::new(bin())
         .arg("say")
         .arg("hi")
-        .env("QUECTO_BASE_URL", &base)
-        .env("QUECTO_MODEL", "m")
-        .env("QUECTO_STREAM", "0")
-        .env_remove("QUECTO_API_KEY")
-        .env_remove("QUECTO_SYSTEM")
+        .env("ZORP_BASE_URL", &base)
+        .env("ZORP_MODEL", "m")
+        .env("ZORP_STREAM", "0")
+        .env_remove("ZORP_API_KEY")
+        .env_remove("ZORP_SYSTEM")
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -34,11 +34,11 @@ fn oneshot_streaming_prints_deltas() {
     let base = mock(200, "text/event-stream", sse);
     let out = Command::new(bin())
         .arg("go")
-        .env("QUECTO_BASE_URL", &base)
-        .env("QUECTO_MODEL", "m")
-        .env("QUECTO_STREAM", "1")
-        .env_remove("QUECTO_API_KEY")
-        .env_remove("QUECTO_SYSTEM")
+        .env("ZORP_BASE_URL", &base)
+        .env("ZORP_MODEL", "m")
+        .env("ZORP_STREAM", "1")
+        .env_remove("ZORP_API_KEY")
+        .env_remove("ZORP_SYSTEM")
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -53,11 +53,11 @@ fn repl_answers_one_line_then_eof() {
         r#"{"choices":[{"message":{"content":"reply"}}]}"#,
     );
     let mut child = Command::new(bin())
-        .env("QUECTO_BASE_URL", &base)
-        .env("QUECTO_MODEL", "m")
-        .env("QUECTO_STREAM", "0")
-        .env_remove("QUECTO_API_KEY")
-        .env_remove("QUECTO_SYSTEM")
+        .env("ZORP_BASE_URL", &base)
+        .env("ZORP_MODEL", "m")
+        .env("ZORP_STREAM", "0")
+        .env_remove("ZORP_API_KEY")
+        .env_remove("ZORP_SYSTEM")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -85,9 +85,9 @@ fn init_prints_exports() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("export QUECTO_BASE_URL='http://localhost:11434/v1'"));
-    assert!(s.contains("export QUECTO_MODEL='qwen'"));
-    assert!(!s.contains("QUECTO_API_KEY"));
+    assert!(s.contains("export ZORP_BASE_URL='http://localhost:11434/v1'"));
+    assert!(s.contains("export ZORP_MODEL='qwen'"));
+    assert!(!s.contains("ZORP_API_KEY"));
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn init_escapes_special_chars() {
     let s = String::from_utf8_lossy(&out.stdout);
     // Single-quoted, with the embedded ' escaped as '\'' — inert under eval.
     assert!(
-        s.contains(r#"export QUECTO_SYSTEM='it'\''s $HOME'"#),
+        s.contains(r#"export ZORP_SYSTEM='it'\''s $HOME'"#),
         "got: {s}"
     );
 }
