@@ -771,7 +771,7 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
@@ -1063,8 +1063,9 @@ git commit -m "Add pre-registration write and integrity verification"
 - Modify: `zorp-track/src/track.rs`
 
 **Interfaces:**
-- Consumes: `Store`, `Preregistration` fields via `prereg::parse_prereg_md`
-  (Task 5).
+- Consumes: `Store`, `prereg::parse_prereg_md` and `prereg::sha256_hex`
+  (both `pub(crate)` in Task 5; reuse them here rather than
+  reimplementing hashing or parsing).
 - Produces: `Store::rebuild_from_prereg_files(&self, tracks_dir: &Path)
   -> Result<usize, TrackError>` (returns the count of tracks rebuilt).
   Task 10 (the project facade) calls this when `zorp.duckdb` is missing
@@ -1103,12 +1104,7 @@ impl Store {
 
             let content = std::fs::read_to_string(&prereg_path)?;
             let (hypothesis, metric_name, kill_threshold) = crate::prereg::parse_prereg_md(&content)?;
-            let file_hash = {
-                use sha2::{Digest, Sha256};
-                let mut hasher = Sha256::new();
-                hasher.update(content.as_bytes());
-                hasher.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
-            };
+            let file_hash = crate::prereg::sha256_hex(content.as_bytes());
             let git_commit_hash = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&track_dir)
