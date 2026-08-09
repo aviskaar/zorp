@@ -747,19 +747,9 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
         }
     };
     let track_id = zorp_track::id::track_id(question);
-    // Get-or-create: a prior failed run (e.g. no search tool configured) may
-    // already have created this track (ids are stable per question per day),
-    // so retrying the same question should reuse it rather than hitting a
-    // primary-key violation on create_track.
-    if let Err(e) = project.store.get_track(&track_id) {
-        if !matches!(e, zorp_track::TrackError::NotFound { .. }) {
-            eprintln!("zorp-agent: {e}");
-            std::process::exit(2);
-        }
-        if let Err(e) = project.store.create_track(&track_id, question) {
-            eprintln!("zorp-agent: {e}");
-            std::process::exit(2);
-        }
+    if let Err(e) = get_or_create_track(&project.store, &track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
     }
     let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
         Ok(m) => m,
@@ -775,6 +765,35 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Ensure a track exists for `track_id`/`question`, creating it if absent.
+///
+/// `track_id` is a lowercased, punctuation-stripped, 60-char-truncated
+/// slug of the question (see `zorp_track::id::track_id`), so two distinct
+/// questions can collide onto the same id within the same day. A retry of
+/// the *same* question (e.g. after a prior run failed before completing)
+/// is expected to reuse the existing row; a collision with a genuinely
+/// different question must not silently proceed using the wrong track's
+/// data, so it is reported as an error instead.
+#[cfg(feature = "research")]
+fn get_or_create_track(
+    store: &zorp_track::Store,
+    track_id: &str,
+    question: &str,
+) -> Result<(), String> {
+    match store.get_track(track_id) {
+        Ok(existing) if existing.hypothesis == question => Ok(()),
+        Ok(existing) => Err(format!(
+            "track id '{track_id}' is already registered today for a different question ({:?}); refusing to reuse it for ({:?}). Rephrase the question so it produces a distinct id.",
+            existing.hypothesis, question
+        )),
+        Err(zorp_track::TrackError::NotFound { .. }) => store
+            .create_track(track_id, question)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -2445,5 +2464,54 @@ mod main_tests {
             }
             _ => panic!("Expected image part"),
         }
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn get_or_create_track_creates_a_new_track_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = zorp_track::Project::open(dir.path()).unwrap();
+        let track_id = zorp_track::id::track_id("does caching help");
+
+        get_or_create_track(&project.store, &track_id, "does caching help").unwrap();
+
+        let track = project.store.get_track(&track_id).unwrap();
+        assert_eq!(track.hypothesis, "does caching help");
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn get_or_create_track_reuses_the_existing_track_on_retry_of_the_same_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = zorp_track::Project::open(dir.path()).unwrap();
+        let track_id = zorp_track::id::track_id("does caching help");
+        project.store.create_track(&track_id, "does caching help").unwrap();
+
+        // A retry of the same question must succeed by reusing the row,
+        // not fail with a duplicate primary-key error.
+        get_or_create_track(&project.store, &track_id, "does caching help").unwrap();
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn get_or_create_track_errors_instead_of_silently_reusing_a_colliding_track() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = zorp_track::Project::open(dir.path()).unwrap();
+        // Pre-seed a track under an id that a genuinely different question
+        // will collide onto (simulating a slug collision directly, rather
+        // than searching for two real strings that hash to the same id).
+        let track_id = "shared-id";
+        project.store.create_track(track_id, "question A").unwrap();
+
+        let err = get_or_create_track(&project.store, track_id, "question B").unwrap_err();
+        assert!(
+            err.contains("different question"),
+            "expected a collision error, got: {err}"
+        );
+
+        // The original track's hypothesis must be left untouched, not
+        // silently overwritten or reused for question B.
+        let track = project.store.get_track(track_id).unwrap();
+        assert_eq!(track.hypothesis, "question A");
     }
 }
