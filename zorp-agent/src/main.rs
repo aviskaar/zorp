@@ -737,7 +737,7 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated));
 
-    agent = attach_mcp_tools(agent, overrides, false);
+    agent = attach_mcp_tools(agent, overrides, true);
 
     let project = match zorp_track::Project::open(&cwd) {
         Ok(p) => p,
@@ -747,9 +747,19 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
         }
     };
     let track_id = zorp_track::id::track_id(question);
-    if let Err(e) = project.store.create_track(&track_id, question) {
-        eprintln!("zorp-agent: {e}");
-        std::process::exit(2);
+    // Get-or-create: a prior failed run (e.g. no search tool configured) may
+    // already have created this track (ids are stable per question per day),
+    // so retrying the same question should reuse it rather than hitting a
+    // primary-key violation on create_track.
+    if let Err(e) = project.store.get_track(&track_id) {
+        if !matches!(e, zorp_track::TrackError::NotFound { .. }) {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+        if let Err(e) = project.store.create_track(&track_id, question) {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
     }
     let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
         Ok(m) => m,

@@ -48,7 +48,7 @@ otel = [
     "dep:tokio"
 ]
 mcp      = ["dep:zorp-mcp"]
-research = ["dep:zorp-track"]
+research = ["dep:zorp-track", "mcp"]
 clipboard = ["dep:arboard"]
 
 [dev-dependencies]
