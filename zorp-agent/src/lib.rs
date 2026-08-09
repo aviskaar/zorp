@@ -68,7 +68,7 @@ pub use tools::{
 };
 pub use trust::TrustStore;
 #[cfg(feature = "research")]
-pub use validate::{parse_validation_result, ParseError, ValidationResult};
+pub use validate::{parse_validation_result, ParseError, ValidateError, ValidationResult};
 pub use verify::{Verifier, VerifyReport, VerifyResult};
 
 #[cfg(feature = "mcp")]
