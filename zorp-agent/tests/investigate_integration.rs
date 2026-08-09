@@ -11,6 +11,7 @@ use tempfile::tempdir;
 use zorp_agent::investigate::{run, InvestigateError, PreregParams};
 use zorp_agent::{cancel_token, Agent, ApprovalMode, AssistantMessage, BoxErr, Message, Model};
 use zorp_track::checkpoint::CheckpointMode;
+use zorp_track::experiment::{ExperimentStatus, MetricValue};
 use zorp_track::track::TrackStatus;
 use zorp_track::Project;
 
@@ -91,6 +92,42 @@ fn full_round_trip_prereg_attempt_metric_checkpoint_approved() {
     assert!(approved);
     let track = project.store.get_track("t1").unwrap();
     assert_eq!(track.status, TrackStatus::Active);
+
+    // The attempt's metric actually landed in the run record, under the
+    // pre-registered name, and the experiment finished Completed.
+    let experiments = project.store.experiments_for("t1").unwrap();
+    assert_eq!(experiments.len(), 1);
+    assert_eq!(experiments[0].status, ExperimentStatus::Completed);
+    let metrics = project.store.metrics_for(&experiments[0].id).unwrap();
+    assert_eq!(metrics, vec![("latency_ms".to_string(), MetricValue::Number(42.0))]);
+}
+
+#[test]
+fn an_unscorable_answer_fails_the_experiment() {
+    // The model answers without the required fenced JSON block, so
+    // parse_attempt_result fails. The experiment must not be left
+    // Running: it ends Failed, and no metric is recorded.
+    let mut agent = build_agent("I could not measure anything, sorry.");
+    let dir = tempdir().unwrap();
+    let project = Project::open(dir.path()).unwrap();
+    project.store.create_track("t1", "does caching help").unwrap();
+    let mode = CheckpointMode::terminal(true).unwrap();
+
+    let err = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+        &mode,
+    )
+    .unwrap_err();
+    assert!(matches!(err, InvestigateError::Scoring(_)), "unexpected error: {err}");
+
+    let experiments = project.store.experiments_for("t1").unwrap();
+    assert_eq!(experiments.len(), 1);
+    assert_eq!(experiments[0].status, ExperimentStatus::Failed);
+    assert!(project.store.metrics_for(&experiments[0].id).unwrap().is_empty());
 }
 
 #[test]

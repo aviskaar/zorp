@@ -36,7 +36,7 @@ whatever MCP tools are configured, score redundancy and feasibility with
 required citations, checkpoint before moving on. See
 [`superpowers/specs/2026-08-09-zorp-validate-design.md`](superpowers/specs/2026-08-09-zorp-validate-design.md).
 
-**investigate** (gather evidence through staged, sandboxed, pre-registered
+**investigate** (gather evidence through staged, pre-registered
 attempts): CLI-supplied metric name and kill threshold, one attempt per
 invocation, typed metrics stored in the run record, human checkpoint
 decides kill or keep. See

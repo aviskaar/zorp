@@ -803,7 +803,6 @@ report the metric's actual value honestly, even if it misses the \
 threshold.";
 
 #[cfg(feature = "research")]
-#[allow(clippy::too_many_arguments)]
 fn investigate(
     question: &str,
     metric_name: Option<String>,
@@ -811,6 +810,14 @@ fn investigate(
     auto_approve: bool,
     overrides: &Overrides,
 ) {
+    // A NaN or infinite threshold would be written into the prereg and
+    // then never compare equal to itself again (NaN != NaN), locking the
+    // track out of any later run that passes the flags explicitly. Refuse
+    // it here, before anything is recorded.
+    if kill_threshold.is_some_and(|t| !t.is_finite()) {
+        eprintln!("zorp-agent: --kill-threshold must be a finite number");
+        std::process::exit(2);
+    }
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());

@@ -62,6 +62,13 @@ pub fn run(
                     provided: params.metric_name.to_string(),
                 });
             }
+            if existing.hypothesis_snapshot != hypothesis {
+                return Err(InvestigateError::PreregMismatch {
+                    field: "hypothesis",
+                    recorded: existing.hypothesis_snapshot.clone(),
+                    provided: hypothesis.to_string(),
+                });
+            }
             if existing.kill_threshold != params.kill_threshold {
                 return Err(InvestigateError::PreregMismatch {
                     field: "kill-threshold",
@@ -140,8 +147,8 @@ pub fn run(
     project.store.set_experiment_status(&experiment.id, ExperimentStatus::Completed)?;
 
     let prompt = format!(
-        "investigate: {} = {} (kill threshold {}). {}\nKeep this track alive?",
-        prereg.metric_name, attempt.metric_value, prereg.kill_threshold, attempt.summary
+        "investigate: {} = {} (kill threshold {}). {}\nHypothesis: {}\nKeep this track alive?",
+        prereg.metric_name, attempt.metric_value, prereg.kill_threshold, attempt.summary, hypothesis
     );
     let approved = project.store.record_checkpoint(track_id, "investigate", checkpoint_mode, &prompt)?;
     if !approved {
@@ -275,5 +282,41 @@ mod tests {
 
         let prereg = get_preregistration(&project.store, "t1").unwrap().unwrap();
         assert_eq!(prereg.metric_name, "latency_ms");
+
+        let experiments = project.store.experiments_for("t1").unwrap();
+        assert_eq!(experiments.len(), 1);
+        assert_eq!(experiments[0].status, ExperimentStatus::Completed);
+        let metrics = project.store.metrics_for(&experiments[0].id).unwrap();
+        assert_eq!(metrics, vec![("latency_ms".to_string(), MetricValue::Number(42.0))]);
+    }
+
+    #[test]
+    fn a_hypothesis_that_differs_from_the_recorded_prereg_errors() {
+        let mut agent = build_agent(well_formed_response());
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        project.store.create_track("t1", "does caching help").unwrap();
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+            &mode,
+        )
+        .unwrap();
+
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does sharding help",
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+            &mode,
+        )
+        .unwrap_err();
+        assert!(matches!(err, InvestigateError::PreregMismatch { field: "hypothesis", .. }));
     }
 }

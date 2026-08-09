@@ -154,6 +154,33 @@ impl Store {
         Ok(out)
     }
 
+    /// Every experiment recorded for `track_id`, oldest first. Ids embed
+    /// a millisecond timestamp, so ordering by id is insertion order for
+    /// any two experiments that were not created in the same millisecond;
+    /// `started_at` is NULL until an experiment goes Running, so it can't
+    /// be the sort key.
+    pub fn experiments_for(&self, track_id: &str) -> Result<Vec<Experiment>, TrackError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, track_id, prereg_id, status, started_at, completed_at FROM experiments WHERE track_id = ? ORDER BY id",
+        )?;
+        let rows = stmt.query_map(duckdb::params![track_id], |r| {
+            let status: String = r.get(3)?;
+            Ok(Experiment {
+                id: r.get(0)?,
+                track_id: r.get(1)?,
+                prereg_id: r.get(2)?,
+                status: ExperimentStatus::from_str(&status),
+                started_at: r.get(4)?,
+                completed_at: r.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     fn assert_experiment_exists(&self, experiment_id: &str) -> Result<(), TrackError> {
         let exists: bool = self
             .conn
@@ -270,6 +297,28 @@ mod tests {
         let keys: Vec<String> = metrics.into_iter().map(|(k, _)| k).collect();
         let expected: Vec<String> = (0..20).map(|i| format!("m{i}")).collect();
         assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn experiments_for_returns_only_that_tracks_experiments_with_current_status() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        store.create_track("t2", "other").unwrap();
+        let a = store.create_experiment("t1", "t1-prereg").unwrap();
+        let b = store.create_experiment("t2", "t2-prereg").unwrap();
+        store.set_experiment_status(&a.id, ExperimentStatus::Completed).unwrap();
+
+        let found = store.experiments_for("t1").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, a.id);
+        assert_eq!(found[0].track_id, "t1");
+        assert_eq!(found[0].prereg_id, "t1-prereg");
+        assert_eq!(found[0].status, ExperimentStatus::Completed);
+        assert!(found[0].completed_at.is_some());
+        assert_ne!(found[0].id, b.id);
+
+        assert!(store.experiments_for("nope").unwrap().is_empty());
     }
 
     #[test]

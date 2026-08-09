@@ -66,20 +66,26 @@ pub fn parse_attempt_result(agent_output: &str) -> Result<AttemptResult, ParseEr
         return Err(ParseError::NoFencedBlock);
     }
     let mut last_err = None;
-    let raw: RawAttemptResult = 'found: {
-        for block in &blocks {
-            match serde_json::from_str(block) {
-                Ok(raw) => break 'found raw,
-                Err(e) => last_err = Some(e),
-            }
+    let mut saw_shaped_block = false;
+    for block in &blocks {
+        match serde_json::from_str::<RawAttemptResult>(block) {
+            // A block that deserializes but has no metric_value is a
+            // decoy, not the answer: keep scanning, in case a later block
+            // carries both fields. MissingMetricValue is only reported if
+            // no block in the whole answer had one.
+            Ok(raw) => match raw.metric_value {
+                Some(metric_value) => return Ok(AttemptResult { metric_value, summary: raw.summary }),
+                None => saw_shaped_block = true,
+            },
+            Err(e) => last_err = Some(e),
         }
-        return Err(ParseError::InvalidJson(
-            last_err.map(|e| e.to_string()).unwrap_or_default(),
-        ));
-    };
-
-    let metric_value = raw.metric_value.ok_or(ParseError::MissingMetricValue)?;
-    Ok(AttemptResult { metric_value, summary: raw.summary })
+    }
+    if saw_shaped_block {
+        return Err(ParseError::MissingMetricValue);
+    }
+    Err(ParseError::InvalidJson(
+        last_err.map(|e| e.to_string()).unwrap_or_default(),
+    ))
 }
 
 #[cfg(test)]
@@ -119,6 +125,18 @@ mod tests {
         );
         let result = parse_attempt_result(&text).unwrap();
         assert_eq!(result.metric_value, 7.0);
+    }
+
+    #[test]
+    fn skips_a_decoy_block_that_has_a_summary_but_no_metric_value() {
+        let text = format!(
+            "First, a note:\n```json\n{}\n```\nAnd here is my finding.\n```json\n{}\n```\n",
+            r#"{"summary": "still working on it"}"#,
+            r#"{"metric_value": 3.5, "summary": "done"}"#
+        );
+        let result = parse_attempt_result(&text).unwrap();
+        assert_eq!(result.metric_value, 3.5);
+        assert_eq!(result.summary, "done");
     }
 
     #[test]

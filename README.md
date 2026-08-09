@@ -116,7 +116,7 @@ design specs live, and repo conventions.
 - [x] Base execution harness (forked from quecto, renamed, fully tested)
 - [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB + LanceDB)
 - [x] **validate**: is this question worth investigating (novelty and feasibility check)
-- [x] **investigate**: gather evidence through staged, sandboxed, pre-registered attempts, every attempt recorded
+- [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [ ] **co-write**: zorp drafts the artifact, a human is always the author of record
 - [ ] **deliver**: get the finished artifact into the right format for its audience (venue matching for a paper, stakeholder-ready memo for a decision)
 - [ ] A systems paper about zorp itself, submitted to arXiv
