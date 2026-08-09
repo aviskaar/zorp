@@ -1,5 +1,6 @@
 use crate::track::Store;
 use crate::TrackError;
+use duckdb::OptionalExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_millis() -> i64 {
@@ -69,6 +70,10 @@ impl MetricValue {
 
 impl Store {
     pub fn create_experiment(&self, track_id: &str, prereg_id: &str) -> Result<Experiment, TrackError> {
+        // Consistent with get_track's NotFound pattern rather than a
+        // DuckDB FOREIGN KEY constraint: fail loudly on a typo'd or
+        // stale track_id instead of silently creating an orphan row.
+        self.get_track(track_id)?;
         let id = format!("{track_id}-exp-{}", now_millis());
         self.conn.execute(
             "INSERT INTO experiments (id, track_id, prereg_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, NULL, NULL)",
@@ -105,6 +110,7 @@ impl Store {
     }
 
     pub fn record_metric(&self, experiment_id: &str, key: &str, value: MetricValue) -> Result<(), TrackError> {
+        self.assert_experiment_exists(experiment_id)?;
         let seq: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM metrics WHERE experiment_id = ?",
             duckdb::params![experiment_id],
@@ -146,6 +152,25 @@ impl Store {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    fn assert_experiment_exists(&self, experiment_id: &str) -> Result<(), TrackError> {
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM experiments WHERE id = ?",
+                duckdb::params![experiment_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(TrackError::NotFound {
+                kind: "experiment",
+                id: experiment_id.to_string(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -253,5 +278,24 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         let err = store.set_experiment_status("nope", ExperimentStatus::Running).unwrap_err();
         assert!(matches!(err, TrackError::NotFound { kind: "experiment", .. }));
+    }
+
+    #[test]
+    fn create_experiment_on_missing_track_errors() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        let err = store.create_experiment("nope", "nope-prereg").unwrap_err();
+        assert!(matches!(err, TrackError::NotFound { kind: "track", id } if id == "nope"));
+    }
+
+    #[test]
+    fn record_metric_on_missing_experiment_errors() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let err = store
+            .record_metric("nope", "accuracy", MetricValue::Number(1.0))
+            .unwrap_err();
+        assert!(matches!(err, TrackError::NotFound { kind: "experiment", id } if id == "nope"));
     }
 }
