@@ -6,5 +6,6 @@
 //! for its own async transport.
 
 pub mod error;
+pub mod id;
 
 pub use error::TrackError;
