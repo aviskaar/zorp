@@ -682,6 +682,17 @@ fn run(task: String, images: &[PathBuf], auto_approve: bool, no_verify: bool, ov
     }
 }
 
+/// Prepended to the composed system prompt for `validate`, so the model is
+/// framed as doing research with citation discipline rather than as a
+/// general coding assistant. The task prompt (TASK_PROMPT_PREFIX in
+/// validate/mod.rs) already spells out the exact scoring/citation format;
+/// this just sets the frame before that.
+#[cfg(feature = "research")]
+const VALIDATE_SYSTEM_PREAMBLE: &str = "\
+You are conducting research to validate a hypothesis, not writing or \
+modifying code. Every claim you make must be backed by a citation to \
+something you actually found; do not assert a score or conclusion without one.";
+
 #[cfg(feature = "research")]
 fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
     let cancel = install_cancel();
@@ -695,7 +706,9 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
         auto_approve,
     );
     let merged = user_flavor.clone().merge(project_flavor);
-    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    let mut system = VALIDATE_SYSTEM_PREAMBLE.to_string();
+    system.push_str("\n\n");
+    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("zorp-agent: {e}");
