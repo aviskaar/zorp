@@ -51,5 +51,9 @@ mcp      = ["dep:zorp-mcp"]
 research = ["dep:zorp-track", "mcp"]
 clipboard = ["dep:arboard"]
 
+[[bin]]
+name = "stub_search_mcp_server"
+path = "tests/fixtures/stub_search_mcp_server.rs"
+
 [dev-dependencies]
 tempfile = "3"
