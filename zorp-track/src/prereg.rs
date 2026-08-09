@@ -207,6 +207,36 @@ pub fn write_prereg(
     })
 }
 
+/// Read back the `preregistrations` row for `track_id`, if one exists.
+/// `None` means no pre-registration has been written yet for this track
+/// (a normal state for a fresh track, not an error); any other failure
+/// to read is a real `TrackError`.
+pub fn get_preregistration(store: &Store, track_id: &str) -> Result<Option<Preregistration>, TrackError> {
+    let row = store
+        .conn
+        .query_row(
+            "SELECT id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at \
+             FROM preregistrations WHERE track_id = ?",
+            duckdb::params![track_id],
+            |r| {
+                let file_path: String = r.get(5)?;
+                Ok(Preregistration {
+                    id: r.get(0)?,
+                    track_id: r.get(1)?,
+                    hypothesis_snapshot: r.get(2)?,
+                    metric_name: r.get(3)?,
+                    kill_threshold: r.get(4)?,
+                    file_path: PathBuf::from(file_path),
+                    file_hash: r.get(6)?,
+                    git_commit_hash: r.get(7)?,
+                    committed_at: r.get(8)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
 /// Verify that the `preregistrations` row for `track_id` matches the
 /// `prereg.md` file on disk: the file must exist, and its current
 /// SHA-256 must match what was recorded at commit time.
@@ -348,5 +378,26 @@ mod tests {
         assert_eq!(hypothesis, "does caching help");
         assert_eq!(metric, "latency_ms");
         assert_eq!(threshold, 42.5);
+    }
+
+    #[test]
+    fn get_preregistration_returns_none_when_absent() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+
+        assert_eq!(get_preregistration(&store, "t1").unwrap(), None);
+    }
+
+    #[test]
+    fn get_preregistration_returns_the_written_row() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "does caching help").unwrap();
+        let track_dir = dir.path().join("tracks").join("t1");
+        let written = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0).unwrap();
+
+        let read_back = get_preregistration(&store, "t1").unwrap().unwrap();
+        assert_eq!(read_back, written);
     }
 }
