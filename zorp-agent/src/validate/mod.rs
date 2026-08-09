@@ -67,7 +67,7 @@ pub fn run(
             .ok_or_else(|| ValidateError::Embedding("no embedding returned".to_string()))?;
         project
             .library
-            .insert_source(track_id, "validate-source", &citation.text, &embedding)?;
+            .insert_source(track_id, "validate-source", &citation.text, &citation.source, &embedding)?;
     }
 
     project.store.record_validation(

@@ -70,6 +70,7 @@ fn source_schema(dim: i32) -> Arc<Schema> {
         Field::new("track_id", DataType::Utf8, false),
         Field::new("kind", DataType::Utf8, false),
         Field::new("text", DataType::Utf8, false),
+        Field::new("source", DataType::Utf8, false),
         Field::new(
             "vector",
             DataType::FixedSizeList(Arc::new(ArrowField::new("item", DataType::Float32, true)), dim),
@@ -78,7 +79,14 @@ fn source_schema(dim: i32) -> Arc<Schema> {
     ]))
 }
 
-fn source_batch(schema: Arc<Schema>, track_id: &str, kind: &str, text: &str, embedding: &[f32]) -> Result<RecordBatch, TrackError> {
+fn source_batch(
+    schema: Arc<Schema>,
+    track_id: &str,
+    kind: &str,
+    text: &str,
+    source: &str,
+    embedding: &[f32],
+) -> Result<RecordBatch, TrackError> {
     let dim = embedding.len() as i32;
     let values = lancedb::arrow::arrow_array::Float32Array::from(embedding.to_vec());
     let vector_array = FixedSizeListArray::try_new(
@@ -94,6 +102,7 @@ fn source_batch(schema: Arc<Schema>, track_id: &str, kind: &str, text: &str, emb
             Arc::new(StringArray::from(vec![track_id])),
             Arc::new(StringArray::from(vec![kind])),
             Arc::new(StringArray::from(vec![text])),
+            Arc::new(StringArray::from(vec![source])),
             Arc::new(vector_array),
         ],
     )
@@ -101,16 +110,25 @@ fn source_batch(schema: Arc<Schema>, track_id: &str, kind: &str, text: &str, emb
 }
 
 impl Library {
-    /// Embed and store one source. Lazily creates the `sources` table on
-    /// the first call, with its vector column's dimension inferred from
-    /// that first `embedding`'s length. Later calls append; passing an
-    /// embedding of a different length than the table's fixed dimension
-    /// is a `TrackError::Library` error, not a silent failure.
-    pub fn insert_source(&self, track_id: &str, kind: &str, text: &str, embedding: &[f32]) -> Result<(), TrackError> {
+    /// Embed and store one source, including its provenance (`source`, the
+    /// URL or citation it came from) alongside its `text`. Lazily creates
+    /// the `sources` table on the first call, with its vector column's
+    /// dimension inferred from that first `embedding`'s length. Later calls
+    /// append; passing an embedding of a different length than the table's
+    /// fixed dimension is a `TrackError::Library` error, not a silent
+    /// failure.
+    pub fn insert_source(
+        &self,
+        track_id: &str,
+        kind: &str,
+        text: &str,
+        source: &str,
+        embedding: &[f32],
+    ) -> Result<(), TrackError> {
         self.runtime.block_on(async {
             let existing = self.connection.table_names().execute().await?;
             let schema = source_schema(embedding.len() as i32);
-            let batch = source_batch(schema.clone(), track_id, kind, text, embedding)?;
+            let batch = source_batch(schema.clone(), track_id, kind, text, source, embedding)?;
             let reader: Box<dyn RecordBatchReader + Send> =
                 Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
             if existing.iter().any(|n| n == "sources") {
@@ -150,7 +168,7 @@ mod tests {
     fn insert_source_creates_the_table_on_first_call() {
         let dir = tempdir().unwrap();
         let library = Library::open(&dir.path().join("lancedb")).unwrap();
-        library.insert_source("t1", "validate-source", "a snippet", &[0.1, 0.2, 0.3]).unwrap();
+        library.insert_source("t1", "validate-source", "a snippet", "https://example.com/paper", &[0.1, 0.2, 0.3]).unwrap();
         let names = library.table_names().unwrap();
         assert!(names.contains(&"sources".to_string()));
     }
@@ -159,8 +177,8 @@ mod tests {
     fn insert_source_appends_on_second_call() {
         let dir = tempdir().unwrap();
         let library = Library::open(&dir.path().join("lancedb")).unwrap();
-        library.insert_source("t1", "validate-source", "first", &[0.1, 0.2]).unwrap();
-        library.insert_source("t1", "validate-source", "second", &[0.3, 0.4]).unwrap();
+        library.insert_source("t1", "validate-source", "first", "https://example.com/1", &[0.1, 0.2]).unwrap();
+        library.insert_source("t1", "validate-source", "second", "https://example.com/2", &[0.3, 0.4]).unwrap();
         let count = library.runtime.block_on(async {
             library.connection.open_table("sources").execute().await.unwrap().count_rows(None).await.unwrap()
         });
