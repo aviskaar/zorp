@@ -87,6 +87,76 @@ fn rebuilds_from_prereg_files_if_duckdb_file_is_deleted() {
 }
 
 #[test]
+fn prereg_md_added_after_the_db_already_exists_is_indexed_on_next_open() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let track_id = "2026-08-09-added-later-test";
+
+    // First open creates the DB. It has no knowledge of this track yet.
+    {
+        let project = Project::open(dir.path()).unwrap();
+        assert!(project.store.get_track(track_id).is_err());
+    }
+
+    // Simulate a teammate's prereg.md landing on disk (e.g. via git
+    // pull) after the DB already existed: write both the track and its
+    // prereg row's file the same way write_prereg would, but do it
+    // without going through this project's Store, the way a git pull
+    // would just drop files on disk with no DB involved at all.
+    let track_dir = dir.path().join(".zorp/tracks").join(track_id);
+    std::fs::create_dir_all(&track_dir).unwrap();
+    std::fs::write(
+        track_dir.join("prereg.md"),
+        format!(
+            "# Pre-registration: {track_id}\n\nHypothesis: added later\nMetric: m\nKill threshold: 1\n"
+        ),
+    )
+    .unwrap();
+
+    // Reopening the same project, with the DB file still present, must
+    // pick up and index the new prereg.md rather than only doing so
+    // when the DB file was entirely absent.
+    let project = Project::open(dir.path()).unwrap();
+    let recovered = project.store.get_track(track_id).unwrap();
+    assert_eq!(recovered.hypothesis, "added later");
+    assert!(verify_prereg_integrity(&project.store, track_id).is_ok());
+}
+
+#[test]
+fn project_open_recovers_from_a_corrupted_duckdb_file() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let track_id = "2026-08-09-corruption-test";
+    {
+        let project = Project::open(dir.path()).unwrap();
+        project.store.create_track(track_id, "corruption test").unwrap();
+        let track_dir = project.track_dir(track_id);
+        write_prereg(&project.store, &track_dir, track_id, "corruption test", "m", 1.0).unwrap();
+    }
+
+    // Corrupt the DuckDB file so a fresh Store::open on it fails outright.
+    let db_path = dir.path().join(".zorp/zorp.duckdb");
+    std::fs::write(&db_path, b"not a duckdb file, definitely corrupted").unwrap();
+
+    // Project::open must recover: quarantine the bad file and start a
+    // fresh store, which the unconditional rebuild then repopulates
+    // from tracks/*/prereg.md, the source of truth.
+    let project = Project::open(dir.path()).unwrap();
+    let recovered = project.store.get_track(track_id).unwrap();
+    assert_eq!(recovered.hypothesis, "corruption test");
+    assert!(verify_prereg_integrity(&project.store, track_id).is_ok());
+
+    // The corrupted file must not simply be deleted: it should still
+    // exist somewhere under .zorp, quarantined under a different name.
+    let zorp_dir = dir.path().join(".zorp");
+    let quarantined_exists = std::fs::read_dir(&zorp_dir)
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains("corrupted"));
+    assert!(quarantined_exists, "expected a quarantined copy of the corrupted db file");
+}
+
+#[test]
 fn project_open_fails_when_a_track_has_an_orphan_prereg_file_with_no_row() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());
