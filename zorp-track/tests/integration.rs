@@ -157,7 +157,7 @@ fn project_open_recovers_from_a_corrupted_duckdb_file() {
 }
 
 #[test]
-fn project_open_fails_when_a_track_has_an_orphan_prereg_file_with_no_row() {
+fn project_open_self_heals_a_track_with_a_half_written_preregistration() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());
     let track_id = "2026-08-09-orphan-prereg-test";
@@ -165,7 +165,9 @@ fn project_open_fails_when_a_track_has_an_orphan_prereg_file_with_no_row() {
         let project = Project::open(dir.path()).unwrap();
         // Create the track row, but write prereg.md directly to disk
         // instead of going through `write_prereg`, so no
-        // preregistrations row is ever inserted for it.
+        // preregistrations row is ever inserted for it. This mirrors
+        // `write_prereg` writing the file and then failing (e.g. a
+        // failing git commit) before it can insert the row.
         project.store.create_track(track_id, "orphan prereg test").unwrap();
         let track_dir = project.track_dir(track_id);
         std::fs::create_dir_all(&track_dir).unwrap();
@@ -176,10 +178,13 @@ fn project_open_fails_when_a_track_has_an_orphan_prereg_file_with_no_row() {
         .unwrap();
     }
 
-    let Err(err) = Project::open(dir.path()) else {
-        panic!("expected Project::open to fail on an orphan prereg.md file");
-    };
-    assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
+    // `rebuild_from_prereg_files` runs unconditionally before the
+    // integrity check on every `Project::open`, so this half-written
+    // state self-heals rather than permanently locking the project out.
+    let project = Project::open(dir.path()).unwrap();
+    let track = project.store.get_track(track_id).unwrap();
+    assert_eq!(track.hypothesis, "orphan prereg test");
+    assert!(verify_prereg_integrity(&project.store, track_id).is_ok());
 }
 
 #[test]

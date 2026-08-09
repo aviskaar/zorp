@@ -75,3 +75,61 @@ impl Project {
         &self.root
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::track::Store;
+    use tempfile::tempdir;
+
+    /// Reproduces the half-written pre-registration left behind when
+    /// `write_prereg` writes `prereg.md` but fails (or the process
+    /// crashes) before it can insert the `preregistrations` row, e.g. a
+    /// failing git commit. Before the fix, `rebuild_from_prereg_files`
+    /// skipped this track because a `tracks` row already existed, so
+    /// `verify_all_prereg_integrity` hard-errored on every subsequent
+    /// `Project::open`, permanently locking the project out.
+    #[test]
+    fn project_open_self_heals_a_prereg_md_with_no_preregistrations_row() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let zorp_dir = root.join(".zorp");
+        let tracks_dir = zorp_dir.join("tracks");
+        let track_dir = tracks_dir.join("t1");
+        let db_path = zorp_dir.join("zorp.duckdb");
+
+        // Simulate a `tracks` row already existing (created before
+        // `write_prereg` was called) and `prereg.md` written to disk,
+        // but no `preregistrations` row: `write_prereg`'s git commit
+        // step is assumed to have failed or the process crashed in that
+        // window.
+        std::fs::create_dir_all(&zorp_dir).unwrap();
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.create_track("t1", "does caching help").unwrap();
+        }
+        std::fs::create_dir_all(&track_dir).unwrap();
+        std::fs::write(
+            track_dir.join("prereg.md"),
+            "# Pre-registration: t1\n\nHypothesis: does caching help\nMetric: latency_ms\nKill threshold: 100\n",
+        )
+        .unwrap();
+
+        // Before the fix this returned TrackError::IntegrityMismatch on
+        // every call, forever, since there was no way to get a Project
+        // handle to repair it.
+        let project = Project::open(root).unwrap();
+
+        // The track is now fully readable: both a `tracks` row and a
+        // `preregistrations` row exist, and integrity checks pass.
+        let track = project.store.get_track("t1").unwrap();
+        assert_eq!(track.hypothesis, "does caching help");
+        assert!(crate::prereg::verify_prereg_integrity(&project.store, "t1").is_ok());
+        assert!(project.store.verify_all_prereg_integrity(&tracks_dir).is_ok());
+
+        // Reopening again must also succeed (idempotent, not just a
+        // one-time repair).
+        drop(project);
+        assert!(Project::open(root).is_ok());
+    }
+}

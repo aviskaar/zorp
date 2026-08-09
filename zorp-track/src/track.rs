@@ -1,6 +1,6 @@
 use crate::schema::SCHEMA;
 use crate::TrackError;
-use duckdb::Connection;
+use duckdb::{Connection, OptionalExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -137,11 +137,35 @@ impl Store {
 }
 
 impl Store {
+    /// Returns true if a `preregistrations` row exists for `track_id`.
+    /// Used by `rebuild_from_prereg_files` instead of `get_track` because
+    /// a `tracks` row can exist without a matching `preregistrations`
+    /// row (e.g. `write_prereg` wrote `prereg.md` but crashed or failed
+    /// before the git commit / row insert), and that half-written state
+    /// must still be treated as needing a rebuild.
+    fn has_prereg_row(&self, track_id: &str) -> Result<bool, TrackError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM preregistrations WHERE track_id = ?",
+                duckdb::params![track_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
     /// Re-derive `tracks` and `preregistrations` rows by reading every
     /// `<tracks_dir>/<id>/prereg.md` on disk. Used to recover after
     /// `zorp.duckdb` is lost or deleted, since the files are the source
-    /// of truth. Skips a track directory if it has no `prereg.md`
-    /// (nothing to rebuild from) or already has a matching row.
+    /// of truth. Also self-heals a half-written pre-registration: if
+    /// `write_prereg` wrote `prereg.md` to disk but failed before
+    /// inserting the `preregistrations` row (e.g. the git commit step
+    /// failed), a `tracks` row may already exist but the
+    /// `preregistrations` row will not. Skips a track directory if it
+    /// has no `prereg.md` (nothing to rebuild from) or already has a
+    /// matching `preregistrations` row; otherwise backfills the
+    /// `tracks` row (if missing) and the `preregistrations` row.
     pub fn rebuild_from_prereg_files(&self, tracks_dir: &Path) -> Result<usize, TrackError> {
         let mut rebuilt = 0;
         let Ok(entries) = std::fs::read_dir(tracks_dir) else {
@@ -159,7 +183,7 @@ impl Store {
             if !prereg_path.exists() {
                 continue;
             }
-            if self.get_track(track_id).is_ok() {
+            if self.has_prereg_row(track_id)? {
                 continue; // already present, nothing to rebuild
             }
 
@@ -176,7 +200,9 @@ impl Store {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .filter(|s| !s.is_empty());
 
-            self.create_track(track_id, &hypothesis)?;
+            if self.get_track(track_id).is_err() {
+                self.create_track(track_id, &hypothesis)?;
+            }
             let committed_at_ms = std::fs::metadata(&prereg_path)
                 .and_then(|m| m.modified())
                 .ok()
@@ -407,10 +433,10 @@ mod tests {
         let tracks_dir = dir.path().join("tracks");
         let store = Store::open(&db_path).unwrap();
         // A track row exists, but no preregistrations row was ever
-        // inserted for it: this mirrors a bug where prereg.md was
-        // written directly rather than through `write_prereg`, and
-        // `rebuild_from_prereg_files` will not repair it either since
-        // it skips any track that already has a row.
+        // inserted for it, and `rebuild_from_prereg_files` was not run
+        // first: this exercises `verify_all_prereg_integrity` in
+        // isolation. `rebuild_from_prereg_files` (tested separately)
+        // does repair this scenario.
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = tracks_dir.join("t1");
         std::fs::create_dir_all(&track_dir).unwrap();
