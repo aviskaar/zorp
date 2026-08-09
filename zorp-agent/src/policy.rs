@@ -32,8 +32,15 @@ impl Preset {
 /// not nameable ahead of time) are always `Ask` rather than a hard deny, so they
 /// route through the same `ApprovalMode` gate as everything else: denied under
 /// `NonInteractive`, prompted under `Interactive`, run under `AutoApprove`.
-/// Per-server trust (sandbox vs. trusted) is handled separately by zorp-mcp's
-/// own TOFU/trust-store layer at connect time.
+/// This `ApprovalMode` gate is currently the *only* enforcement on MCP tool
+/// execution. Per-server trust (`trust = "sandbox"` vs `"trusted"` in server
+/// config) is parsed but not enforced anywhere at the tool-call boundary today:
+/// `TrustLevel` is stored on `McpServer` and never read again, and zorp-mcp's
+/// TOFU/trust-store layer (`zorp-mcp/src/tofu.rs`, `McpTofuStore`) is only ever
+/// constructed in its own test module, not on any production connect/discover/
+/// call_tool path. A `sandbox`-trust server's tools get identical treatment to
+/// a `trusted` server's under `AutoApprove` today. TODO: wire trust enforcement
+/// into the tool-call path before treating `trust = "sandbox"` as meaningful.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Policy {
     edit: Decision,
