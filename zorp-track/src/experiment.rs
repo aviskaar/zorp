@@ -157,12 +157,44 @@ mod tests {
     }
 
     #[test]
-    fn status_transition_to_running_sets_started_at() {
+    fn status_transition_to_running_sets_started_at_not_completed_at() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let exp = store.create_experiment("t1", "t1-prereg").unwrap();
+
         store.set_experiment_status(&exp.id, ExperimentStatus::Running).unwrap();
+
+        let (started_at, completed_at): (Option<i64>, Option<i64>) = store
+            .conn
+            .query_row(
+                "SELECT started_at, completed_at FROM experiments WHERE id = ?",
+                duckdb::params![exp.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(started_at.is_some());
+        assert_eq!(completed_at, None);
+    }
+
+    #[test]
+    fn status_transition_to_completed_sets_completed_at() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let exp = store.create_experiment("t1", "t1-prereg").unwrap();
+
+        store.set_experiment_status(&exp.id, ExperimentStatus::Completed).unwrap();
+
+        let completed_at: Option<i64> = store
+            .conn
+            .query_row(
+                "SELECT completed_at FROM experiments WHERE id = ?",
+                duckdb::params![exp.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(completed_at.is_some());
     }
 
     #[test]
