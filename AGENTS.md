@@ -35,6 +35,9 @@ research.
   short entry whenever a real decision gets made (not every change; use
   judgment), and check it before re-deriving a decision that's already
   there.
+- `docs/ARCHITECTURE.md` points at the current architecture proposal.
+  It's preliminary, not a spec; don't treat it as implementation-ready
+  without checking whether it's been through a real design pass first.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done.
 
