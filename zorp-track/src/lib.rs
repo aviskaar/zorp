@@ -5,6 +5,7 @@
 //! `tokio::Runtime::block_on`, the same pattern `zorp-mcp` already uses
 //! for its own async transport.
 
+pub mod checkpoint;
 pub mod error;
 pub mod experiment;
 pub mod id;
