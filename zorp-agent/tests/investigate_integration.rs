@@ -42,6 +42,16 @@ impl zorp_track::checkpoint::Decider for Rejecting {
     }
 }
 
+struct RejectSecondCall {
+    calls: AtomicUsize,
+}
+impl zorp_track::checkpoint::Decider for RejectSecondCall {
+    fn decide(&self, _prompt: &str) -> bool {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        n == 0 // first call (prereg checkpoint): approve; second call (post-attempt checkpoint): reject
+    }
+}
+
 fn build_agent(response: &str) -> Agent {
     let calls = Arc::new(AtomicUsize::new(0));
     let model = StubModel { response: response.to_string(), calls };
@@ -89,7 +99,7 @@ fn rejected_post_attempt_checkpoint_kills_the_track() {
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
     project.store.create_track("t1", "does caching help").unwrap();
-    let mode = CheckpointMode::Interactive(Arc::new(Rejecting));
+    let mode = CheckpointMode::Interactive(Arc::new(RejectSecondCall { calls: AtomicUsize::new(0) }));
 
     let approved = run(
         &mut agent,
@@ -104,6 +114,12 @@ fn rejected_post_attempt_checkpoint_kills_the_track() {
     assert!(!approved);
     let track = project.store.get_track("t1").unwrap();
     assert_eq!(track.status, TrackStatus::Killed);
+    // Confirm the code path actually reached the post-attempt checkpoint
+    // (not the prereg checkpoint): RejectSecondCall only rejects on its
+    // second `decide()` invocation, so a Killed track here proves the
+    // prereg checkpoint was approved, the attempt ran, and the metric
+    // was recorded (create_experiment/record_metric/set_experiment_status)
+    // before the post-attempt checkpoint rejected.
 }
 
 #[test]
