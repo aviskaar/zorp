@@ -103,10 +103,11 @@ design specs live, and repo conventions.
 ## Status & roadmap
 
 - [x] Base execution harness (forked from quecto, renamed, fully tested)
-- [ ] Research-agent design (experiment tree search, hypothesis loop)
-- [ ] Experiment tracking and reproducibility
-- [ ] Autonomous hypothesis-to-paper pipeline
-- [ ] arXiv publication of zorp's own results
+- [ ] Idea validation (literature search, novelty and feasibility check)
+- [ ] Experiment orchestration (staged, sandboxed, every attempt recorded)
+- [ ] Collaborative paper writing (zorp drafts, a human authors and finalizes)
+- [ ] Venue matching (conference and journal fit, given a finished paper)
+- [ ] A systems paper about zorp itself, submitted to arXiv
 
 ## Origins
 

@@ -7,6 +7,54 @@ exist, live in `docs/superpowers/specs/` and are linked from here.
 
 ---
 
+## 2026-08-09: zorp's own arXiv paper is about the harness, not a discovery it made
+
+**Decision:** The paper zorp itself publishes to arXiv is a systems paper
+describing zorp: its minimal-harness design, its lineage from quecto, and
+its evals/benchmarks (including comparisons against heavier frameworks
+like Sakana's AI-Scientist-v2 and Aviskaar's own lab-engine/Catalyst
+pipeline). It is not a scientific-discovery paper produced by using zorp
+to research some unrelated topic.
+
+**Why:** Stated directly. This scopes `docs/paper/` and keeps it separate
+from the product itself: what zorp offers users (validate an idea, run
+experiments, co-write a paper, find a venue) is general-purpose and not
+about zorp. What zorp publishes about itself is a tools paper, the same
+genre as the papers describing AI-Scientist-v2 or other agent harnesses.
+
+**Ruled out:** Treating "zorp writes a research paper" as meaning zorp
+needs to autonomously produce a novel scientific result end to end before
+it counts as done. That's a much larger, different bar than a systems
+paper needs, and conflating the two would have quietly inflated scope.
+
+---
+
+## 2026-08-09: zorp's product is four standalone capabilities, human-authored papers only
+
+**Decision:** zorp offers four capabilities that each work standalone,
+chained by human checkpoints when used as a full loop: validate an idea
+(literature/novelty check), run experiments (staged, sandboxed, every
+attempt recorded), co-write a paper (zorp drafts from the run record, a
+human edits and is the author of record, zorp never outputs a paper as
+"done" on its own), and find a venue (match a finished paper against a
+conference/journal catalog). zorp does not take a hard dependency on
+Aviskaar-private infrastructure (ORR, lab-engine/Catalyst); an ORR
+adapter can be optional and later, not the foundation.
+
+**Why:** Most "AI scientist" agents assume the deliverable is a finished,
+autonomously written paper. That's the wrong shape: AI-authored papers
+are rejected outright at most venues, so the paper step has to be
+collaborative, with the human as author, not a generator with a
+claim-check pass bolted on. The standalone-capabilities framing also
+matches how the harness will actually get used: someone validating one
+idea, or just running an experiment, without wanting the full loop.
+
+**Full writeup:** proposal artifact from this session (not yet a spec in
+`docs/superpowers/specs/`; still pending brainstorming and a real design
+pass before implementation).
+
+---
+
 ## 2026-08-08: No em dashes or en dashes in repo prose
 
 **Decision:** README, docs, commit messages, and comments in this repo
