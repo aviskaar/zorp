@@ -20,7 +20,7 @@ mod session;
 mod tools;
 mod trust;
 #[cfg(feature = "research")]
-mod validate;
+pub mod validate;
 mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};

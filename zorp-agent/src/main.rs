@@ -126,6 +126,9 @@ enum Command {
     Diff,
     /// Scaffold a new flavor manifest at ./.zorp/flavors/<name>.toml.
     New { name: String },
+    /// Validate whether a question is worth investigating.
+    #[cfg(feature = "research")]
+    Validate { question: String },
 }
 
 fn main() {
@@ -153,6 +156,8 @@ fn main() {
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
+        #[cfg(feature = "research")]
+        Some(Command::Validate { question }) => validate(&question, cli.yes, &overrides),
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -674,6 +679,92 @@ fn run(task: String, images: &[PathBuf], auto_approve: bool, no_verify: bool, ov
         let outcome = agent.run_multimodal(parts);
         let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
         finish(outcome, status_target);
+    }
+}
+
+#[cfg(feature = "research")]
+fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.clone().merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let model = HttpModel {
+        url: join_url(&base_url, provider.path_suffix()),
+        api_key,
+        model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        steps,
+        cwd.clone(),
+        cancel,
+        approval,
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+
+    agent = attach_mcp_tools(agent, overrides, false);
+
+    let project = match zorp_track::Project::open(&cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+    let track_id = zorp_track::id::track_id(question);
+    if let Err(e) = project.store.create_track(&track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    }
+    let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+    match zorp_agent::validate::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
+        Ok(true) => println!("validate: approved, track {track_id} ready for investigate"),
+        Ok(false) => println!("validate: rejected, track {track_id} killed"),
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
