@@ -23,33 +23,48 @@ new subcommand, `zorp-agent validate "<question>"`, behind the existing
 of the research-loop code will). It uses:
 
 - `zorp_track::Project` to open or create a track for the question.
-- `zorp_mcp::McpRegistry` (already built) to call whatever search-capable
-  MCP tools the user has configured. `validate` does not know about a
-  specific search provider; it discovers tools via `McpRegistry::discover()`
-  and calls them via `McpRegistry::call_tool(prefixed_name, args)`.
-- `zorp` core's existing `zorp_raw`, `join_url`, and `env_config`
-  primitives for both the scoring LLM call and a new embeddings call
-  (below). No changes to `zorp` core are needed; `validate` composes
-  these primitives itself, the same way `src/main.rs` already does for
-  chat completions.
+- `zorp-agent`'s own existing `Agent`, not a bespoke MCP orchestration
+  layer. `zorp-agent` already wires MCP tools into the normal
+  tool-calling loop (`attach_mcp_tools` in `main.rs`, used by both `chat`
+  and the oneshot task path): `Agent::new(...)`,
+  `.register_builtins_filtered(...)`, `attach_mcp_tools(agent, ...)`,
+  then `.run(task) -> Outcome`. `validate` builds a dedicated `Agent`
+  the same way and lets the model decide which available tools to call,
+  MCP-provided search tools included, exactly like any other task. No
+  new MCP discovery or heuristic-matching code is needed; that would
+  have duplicated infrastructure that already exists and already works.
+- `zorp` core's existing `join_url` and a raw HTTP primitive for one new
+  call this capability needs that doesn't exist yet: embeddings (below).
+
+This is a real design correction from the first draft of this spec,
+found while grounding the plan against the actual `zorp-agent` codebase
+rather than assumed: an earlier version of this document had `validate`
+reimplementing MCP tool discovery and calling from scratch, which would
+have duplicated `attach_mcp_tools` and the whole `Agent` tool loop.
 
 ## Search
 
-`validate` calls `McpRegistry::discover()` to find available tools, and
-treats any tool whose name or description matches search-shaped
-keywords (search, web, lookup, query) as a candidate, calling each with
-the question (or an LLM-refined query derived from it) as input. This is
-a heuristic, not a strict contract: MCP tool naming isn't standardized
-enough to assume a fixed shape. If no search-capable tool is discovered,
-`validate` fails with a clear error naming what's missing (configure a
-search-capable MCP server), rather than silently proceeding with no
-evidence.
+`validate` runs a dedicated `Agent` with a system prompt that states the
+research and citation discipline (find sources, cite what's found, no
+claim without a citation), and a task prompt built from the question,
+asking the model to research it using whatever tools are available and
+report back redundancy and feasibility findings as a fenced JSON block
+at the end of its answer (parsed with the existing `extract_fenced_block`
+helper plus `serde_json`, not a new parsing mechanism).
 
-The number of search calls is soft-capped (a small default, several
-queries), not hard-enforced, consistent with the no-hard-experiment-budget
-decision already made: `validate` is meant to be a cheap filter, not an
-exhaustive literature review, but a fixed hard ceiling would be wrong for
-some domains and right for others.
+Before running, `validate` checks `agent.tool_names()` (already a public
+method) for anything that looks search-capable (an MCP-prefixed tool
+name, `mcp__*`, is sufficient signal; `zorp-agent`'s built-in tools are
+all local file/shell/git/notes tools with no external search among
+them). If nothing search-capable is available, `validate` fails with a
+clear error naming the gap (configure a search-capable MCP server, e.g.
+via `--mcp` or `.zorp/mcp.toml`) rather than silently running with no
+way to find anything.
+
+The agent's own `max_steps` (already configurable via `--max-steps` or
+`ZORP_MAX_STEPS`, default 20) is the natural soft cap on how much
+searching happens; `validate` doesn't need a second, separate budget
+mechanism on top of one that already exists.
 
 ## Embeddings
 
@@ -64,12 +79,18 @@ chat completions already work in `src/main.rs`; no new primitive is
 needed in `zorp` core, `validate` just calls the existing ones with a
 different path and body shape.
 
-Every retrieved source (the search result's title, snippet or fetched
-content, and its URL or citation) is embedded and written into LanceDB's
-`library` table (provisioned, empty, by the `zorp-track` foundation),
-keyed by `track_id`, with a `kind` field (`validate-source`) so later
-capabilities can distinguish what each row is for without a schema
-change.
+Every source cited in the parsed verdict (its text or snippet, and its
+URL or citation) is embedded and written into LanceDB. The `library`
+table the foundation's `Library::open` provisions today has no vector
+column (it was deliberately left as a placeholder with no producers
+yet); `validate` is the first producer, and needs `Library` to grow a
+new method, `insert_source(track_id, kind, text, embedding: &[f32])`,
+that lazily creates a `sources` table on first call (schema inferred
+from the embedding's own length, a `FixedSizeList<Float32>` column
+alongside `track_id`/`kind`/`text`, all `Utf8`) and appends to it on
+later calls. `kind` is `"validate-source"` for these rows, a plain
+string, not a fixed enum, so later capabilities can add their own kinds
+without a schema change, same reasoning as `checkpoints.kind`.
 
 ## Scoring
 
@@ -88,12 +109,19 @@ fixed:
   given what sources and tools are available? Also requires a citation
   or concrete reasoning tied to what was found, not a bare assertion.
 
-Both scores, their citations, and a short verdict come from a single LLM
-call (`zorp::zorp_to` or an equivalent direct call, since `validate`
-needs a specific model and doesn't want to re-read env config
-mid-function; using the lower-level `zorp_raw` primitive directly, same
-as `zorp_to`'s own implementation does, is the likely shape) given the
-question and the retrieved sources as context.
+Both scores, their citations, and a short verdict come from the same
+`Agent::run(task)` call that does the searching, not a second LLM call.
+The task prompt asks for a fenced JSON block as the final answer, after
+whatever tool calls the model makes; `validate` parses that block with
+`extract_fenced_block` (already used elsewhere in `zorp-agent`) and
+`serde_json`, into a `ValidationResult { redundancy_score: f64,
+redundancy_citations: Vec<Citation>, feasibility_score: f64,
+feasibility_citations: Vec<Citation>, verdict: String }`, where
+`Citation { text: String, source: String }` is what gets embedded into
+`sources` per citation. A response with no valid JSON block, or with a
+score present but its citation list empty, is treated as a scoring
+failure (see Error handling), the same "no citation, no claim"
+discipline enforced at parse time, not just prompted for.
 
 ## Storage
 
@@ -127,27 +155,39 @@ the track stays active and ready for `investigate`; rejected means
 
 ## Error handling
 
-- No search-capable MCP tool discovered: clear error naming the gap,
-  not a silent empty-evidence proceed.
+- No search-capable tool available on the built agent (`tool_names()`
+  has nothing `mcp__`-prefixed): clear error naming the gap (configure a
+  search-capable MCP server), not a silent run with no way to find
+  anything.
 - `ZORP_EMBEDDING_MODEL` not set: clear error, same posture as a missing
   `ZORP_API_KEY` today.
-- A search call fails: log and continue with whatever succeeded, rather
-  than failing the whole run over one bad source, but if zero sources are
-  retrieved after all attempts, that's a hard error (nothing to score
-  against).
+- The agent's `Outcome` is anything other than `Complete(text)`
+  (`StepLimit`, `VerificationFailed`, `Cancelled`, `RepeatedAction`,
+  `Blocked`, `Error`): surfaced as a `validate` failure naming which
+  outcome occurred, not silently treated as "no verdict."
+- `Complete(text)` has no valid fenced JSON block, or the JSON parses
+  but a score's citation list is empty: a scoring failure, distinct from
+  a tool/agent failure, since the agent ran fine but didn't produce a
+  usable verdict. Worth a distinct error variant so a caller (and a
+  human reading the error) can tell "the agent couldn't research this"
+  apart from "the agent researched it but wouldn't commit to a citable
+  verdict."
 
 ## Testing
 
 - `Store::record_validation` and the new `validations` table: unit
   tests in `zorp-track`, following its existing conventions (real
   DuckDB, tempdir), same shape as `record_metric`'s tests.
+- `Library::insert_source`: unit tests in `zorp-track`, real LanceDB in
+  a tempdir, covering lazy table creation on first insert, a second
+  insert appending rather than recreating, and row count after both.
 - The embeddings call shape: a unit test against a stubbed HTTP
   response (matching how `zorp` core's existing tests construct
   responses by hand, e.g. `extract_content_ok`), not a live API call.
-- The MCP tool-discovery heuristic (which tools "look like" search
-  tools): a unit test with a fabricated `Vec<McpTool>` of mixed
-  search-shaped and non-search-shaped names, asserting the right subset
-  is selected.
+- The JSON-block parsing and citation-required validation: unit tests
+  in `zorp-agent` with fabricated `Outcome::Complete` strings, covering
+  a well-formed block, a missing block, and a block with an empty
+  citation list for one score.
 - End-to-end: `zorp-mcp` already has the pattern for this
   (`zorp-mcp/tests/integration.rs`, a `#[ignore]`d test that spins up a
   real MCP server over stdio via `npx`, with a `has_npx()` guard that
@@ -156,9 +196,10 @@ the track stays active and ready for `investigate`; rejected means
   written as a test fixture (canned search results, no real network
   call, no external package dependency), so the deterministic path runs
   in every CI environment. A second, genuinely `#[ignore]`d test against
-  a real, npx-installable search MCP server is a reasonable addition for
-  a manual smoke check, matching `zorp-mcp`'s existing convention
-  exactly, but the stub-server test is what actually runs by default.
+  a real, npx-installable search MCP server and a real embedding
+  endpoint is a reasonable addition for a manual smoke check, matching
+  `zorp-mcp`'s existing convention exactly, but the stub-server test is
+  what actually runs by default.
 
 ## Out of scope
 
