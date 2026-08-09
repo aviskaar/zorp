@@ -19,6 +19,8 @@
 //! `zorp_agent::model::{...}`.
 #![cfg(feature = "research")]
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -81,6 +83,82 @@ fn stub_server_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_stub_search_mcp_server"))
 }
 
+/// Minimal local HTTP embeddings stub: listens on `127.0.0.1:0`, and for
+/// each incoming POST request, reads the JSON body (`{"model": ..., "input":
+/// [...]}`), and responds with one fixed-shape embedding per entry in
+/// `input`, `{"data": [{"embedding": [...]}, ...]}`, matching the OpenAI
+/// embeddings response shape `embed_texts` expects. Handles `request_count`
+/// requests on a background thread, then the thread exits; the listener is
+/// dropped (and the port freed) when the returned guard is dropped.
+///
+/// This exists so the integration test's real tool-call round trip
+/// (McpToolAdapter -> registry.call_tool -> parse -> embed -> insert_source
+/// -> record_validation -> checkpoint) runs unconditionally in CI, with no
+/// external network dependency, rather than being skipped whenever
+/// ZORP_EMBEDDING_MODEL isn't set in the environment.
+struct EmbeddingsStub {
+    addr: String,
+}
+
+impl EmbeddingsStub {
+    fn start(request_count: usize) -> EmbeddingsStub {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind embeddings stub listener");
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for _ in 0..request_count {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let mut buf = [0u8; 8192];
+                let mut request = Vec::new();
+                // Read until we've seen the header/body separator, then keep
+                // reading according to Content-Length. Good enough for a
+                // single small JSON POST from ureq in a test.
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some(header_end) = text.find("\r\n\r\n") {
+                        let content_length = text
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(0);
+                        let body_so_far = request.len() - (header_end + 4);
+                        if body_so_far >= content_length {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(text.len());
+                let body_json: serde_json::Value = serde_json::from_str(text[body_start..].trim()).unwrap_or(serde_json::json!({}));
+                let input_len = body_json.get("input").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(1);
+                let data: Vec<serde_json::Value> = (0..input_len)
+                    .map(|_| serde_json::json!({ "embedding": [0.1_f32, 0.2, 0.3] }))
+                    .collect();
+                let payload = serde_json::json!({ "data": data }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        EmbeddingsStub { addr }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
 #[test]
 fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     let dir = tempdir().unwrap();
@@ -127,19 +205,23 @@ fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     project.store.create_track(track_id, "does caching help").unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
-    // embed_texts (Task 3) requires a real ZORP_EMBEDDING_MODEL and a
-    // reachable embeddings endpoint; validate::run calls it for every
-    // citation, after the search/scoring turn. Everything above this
-    // point (stub server spawn, MCP handshake, tool discovery) has
-    // already run and been asserted unconditionally; only the
-    // embedding-dependent tail is skipped when no embeddings provider
-    // is configured, matching zorp-mcp's own convention of guarding on
-    // external prerequisites (e.g. `has_npx()` in
-    // zorp-mcp/tests/integration.rs).
-    if std::env::var("ZORP_EMBEDDING_MODEL").is_err() {
-        eprintln!("skipping past this point: ZORP_EMBEDDING_MODEL is not set (no embeddings provider configured)");
-        return;
-    }
+    // embed_texts (Task 3) reads ZORP_BASE_URL/ZORP_API_KEY/ZORP_EMBEDDING_MODEL
+    // straight from the environment. Point them at a local HTTP stub for the
+    // duration of this test so the real embedding round trip runs
+    // unconditionally in CI, with no external network dependency, rather
+    // than being skipped whenever ZORP_EMBEDDING_MODEL isn't set. validate::run
+    // calls embed_texts once per citation; the well-formed response above has
+    // one redundancy citation and one feasibility citation, so the stub
+    // expects exactly 2 requests.
+    //
+    // Note: these are process-wide env vars set for the duration of a
+    // single-test integration binary (this file is its own test binary, per
+    // the module doc comment above), so there's no cross-test pollution risk
+    // here the way there would be in a multi-test binary.
+    let embeddings_stub = EmbeddingsStub::start(2);
+    std::env::set_var("ZORP_BASE_URL", embeddings_stub.base_url());
+    std::env::set_var("ZORP_EMBEDDING_MODEL", "stub-embedding-model");
+    std::env::remove_var("ZORP_API_KEY");
 
     let approved = zorp_agent::validate::run(&mut agent, &project, track_id, "does caching help", &mode).unwrap();
     assert!(approved);
