@@ -45,4 +45,14 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     decision_notes TEXT,
     created_at BIGINT NOT NULL,
     resolved_at BIGINT
+);
+CREATE TABLE IF NOT EXISTS validations (
+    id TEXT PRIMARY KEY,
+    track_id TEXT NOT NULL,
+    redundancy_score DOUBLE NOT NULL,
+    redundancy_citations TEXT NOT NULL,
+    feasibility_score DOUBLE NOT NULL,
+    feasibility_citations TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    created_at BIGINT NOT NULL
 );";

@@ -14,7 +14,9 @@ pub mod prereg;
 pub mod project;
 mod schema;
 pub mod track;
+pub mod validation;
 
 pub use error::TrackError;
 pub use project::Project;
 pub use track::Store;
+pub use validation::{Citation, Validation};

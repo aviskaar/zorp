@@ -306,7 +306,8 @@ mod tests {
                 "experiments",
                 "metrics",
                 "preregistrations",
-                "tracks"
+                "tracks",
+                "validations"
             ]
         );
     }
