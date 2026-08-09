@@ -11,8 +11,10 @@ pub mod experiment;
 pub mod id;
 pub mod library;
 pub mod prereg;
+pub mod project;
 mod schema;
 pub mod track;
 
 pub use error::TrackError;
+pub use project::Project;
 pub use track::Store;
