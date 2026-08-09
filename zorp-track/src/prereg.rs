@@ -90,6 +90,39 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, TrackError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Insert a preregistration row into the database. This is the single
+/// authoritative place where the preregistration INSERT statement is defined.
+pub(crate) fn insert_preregistration_row(
+    store: &Store,
+    track_id: &str,
+    hypothesis: &str,
+    metric_name: &str,
+    kill_threshold: f64,
+    file_path: &Path,
+    file_hash: &str,
+    git_commit_hash: Option<&str>,
+    committed_at: i64,
+) -> Result<(), TrackError> {
+    let id = format!("{track_id}-prereg");
+    store.conn.execute(
+        "INSERT INTO preregistrations \
+         (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        duckdb::params![
+            id,
+            track_id,
+            hypothesis,
+            metric_name,
+            kill_threshold,
+            file_path.to_string_lossy().to_string(),
+            file_hash,
+            git_commit_hash,
+            committed_at
+        ],
+    )?;
+    Ok(())
+}
+
 /// Write a pre-registration: the `prereg.md` file, a git commit of just
 /// that file (if `track_dir` is inside a git repository), and the
 /// corresponding `preregistrations` row.
@@ -126,21 +159,16 @@ pub fn write_prereg(
 
     let id = format!("{track_id}-prereg");
     let committed_at = now_millis();
-    store.conn.execute(
-        "INSERT INTO preregistrations \
-         (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        duckdb::params![
-            id,
-            track_id,
-            hypothesis,
-            metric_name,
-            kill_threshold,
-            file_path.to_string_lossy().to_string(),
-            file_hash,
-            git_commit_hash,
-            committed_at
-        ],
+    insert_preregistration_row(
+        store,
+        track_id,
+        hypothesis,
+        metric_name,
+        kill_threshold,
+        &file_path,
+        &file_hash,
+        git_commit_hash.as_deref(),
+        committed_at,
     )?;
 
     Ok(Preregistration {

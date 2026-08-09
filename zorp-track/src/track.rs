@@ -183,21 +183,16 @@ impl Store {
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
-            self.conn.execute(
-                "INSERT INTO preregistrations \
-                 (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                duckdb::params![
-                    format!("{track_id}-prereg"),
-                    track_id,
-                    hypothesis,
-                    metric_name,
-                    kill_threshold,
-                    prereg_path.to_string_lossy().to_string(),
-                    file_hash,
-                    git_commit_hash,
-                    committed_at_ms
-                ],
+            crate::prereg::insert_preregistration_row(
+                self,
+                track_id,
+                &hypothesis,
+                &metric_name,
+                kill_threshold,
+                &prereg_path,
+                &file_hash,
+                git_commit_hash.as_deref(),
+                committed_at_ms,
             )?;
             rebuilt += 1;
         }
