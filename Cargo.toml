@@ -10,7 +10,7 @@ ureq = { version = "2", features = ["json"] }   # do NOT set default-features = 
 serde_json = "1"
 
 [workspace]
-members = [".", "zorp-agent", "zorp-mcp", "zorp-eval"]
+members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track"]
 # Future companion members (own specs): "zorp-mcp"
 
 # Optimize the release binary for size — fitting for "the smallest harness."
