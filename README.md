@@ -23,8 +23,8 @@
 zorp is an agent harness aimed at autonomous scientific research. It forms
 hypotheses, runs experiments, evaluates results, and writes up findings,
 with the goal of eventually publishing its own output as a paper. It's
-part of [Aviskaar](https://github.com/aviskaar)'s applied AI research
-suite.
+built by [Aviskaar](https://github.com/aviskaar), an applied AI research
+lab.
 
 > **Status: early / pre-alpha.** The base execution harness is in place
 > and fully tested. The research-agent capabilities (experiment tree
