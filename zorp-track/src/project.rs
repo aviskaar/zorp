@@ -14,19 +14,29 @@ const GITIGNORE_CONTENT: &str = "zorp.duckdb\nlancedb/\n";
 /// DuckDB does not currently expose a dedicated error variant for "file
 /// is locked" (see `duckdb::Error::DuckDBFailure`, which wraps a bare
 /// error code plus a free-form message), so this inspects the message
-/// text. Keyed off the phrasing DuckDB has used historically ("Could
-/// not set lock on file", "Conflicting lock is held") plus more generic
-/// phrasing, so a wording change in a future DuckDB version degrades to
-/// a false negative (treated as corruption) rather than a false
-/// positive silently destroying a healthy, in-use database.
+/// text. Keyed off the specific phrasing DuckDB has used historically
+/// ("Could not set lock on file", "Conflicting lock is held") plus
+/// "being used by another process", deliberately not the bare word
+/// "lock": DuckDB's checksum-corruption message contains the substring
+/// "in block" (from "...checksum M in block at location..."), and a
+/// project path can itself contain "lock" (e.g. `unlock-utils/`), so a
+/// bare substring match would misclassify real corruption as lock
+/// contention and skip recovery. A wording change in a future DuckDB
+/// version degrades to a false negative (treated as corruption) rather
+/// than a false positive silently destroying a healthy, in-use
+/// database.
 fn is_lock_error(err: &TrackError) -> bool {
     let TrackError::Db(msg) = err else {
         return false;
     };
     let msg = msg.to_lowercase();
-    ["lock", "being used by another process"]
-        .iter()
-        .any(|kw| msg.contains(kw))
+    [
+        "could not set lock on file",
+        "conflicting lock is held",
+        "being used by another process",
+    ]
+    .iter()
+    .any(|kw| msg.contains(kw))
 }
 
 /// Open the DuckDB store at `db_path`, recovering from a corrupted file:
@@ -195,6 +205,38 @@ mod tests {
     #[test]
     fn is_lock_error_does_not_classify_non_db_errors_as_lock_errors() {
         let err = TrackError::Io("permission denied".to_string());
+        assert!(!is_lock_error(&err));
+    }
+
+    #[test]
+    fn is_lock_error_does_not_classify_a_checksum_corruption_message_as_a_lock_error() {
+        // The real message DuckDB returns for single-byte corruption of a
+        // zorp.duckdb file: the substring "in block" (from "...checksum
+        // M in block at location...") contains "lock", which a bare
+        // substring check on "lock" would misclassify as lock
+        // contention, silently skipping corruption recovery.
+        let err = TrackError::Db(
+            "IO Error: Corrupt database file: computed checksum 12345 does not match \
+             stored checksum 67890 in block at location 0"
+                .to_string(),
+        );
+        assert!(!is_lock_error(&err));
+    }
+
+    #[test]
+    fn is_lock_error_does_not_classify_a_corruption_message_with_lock_in_the_path_as_a_lock_error(
+    ) {
+        // A project directory whose path happens to contain the
+        // substring "lock" (e.g. a repo named `blockchain/` or
+        // `unlock-utils/`) embeds that substring in the error message
+        // via the file path, independent of whether the failure is
+        // actually lock contention.
+        let err = TrackError::Db(
+            "IO Error: Corrupt database file: computed checksum 111 does not match stored \
+             checksum 222 in block at location 0 while reading \
+             \"/home/user/unlock-utils/.zorp/zorp.duckdb\""
+                .to_string(),
+        );
         assert!(!is_lock_error(&err));
     }
 }
