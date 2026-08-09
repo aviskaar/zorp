@@ -6,16 +6,46 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const GITIGNORE_CONTENT: &str = "zorp.duckdb\nlancedb/\n";
 
+/// Substrings that show up in DuckDB's error message when `Store::open`
+/// fails because another connection already holds the file's lock (a
+/// second concurrent `Project::open` on the same path, whether from a
+/// second process or a second `Project` in the current process), as
+/// opposed to the file's contents actually being corrupt/unreadable.
+/// DuckDB does not currently expose a dedicated error variant for "file
+/// is locked" (see `duckdb::Error::DuckDBFailure`, which wraps a bare
+/// error code plus a free-form message), so this inspects the message
+/// text. Keyed off the phrasing DuckDB has used historically ("Could
+/// not set lock on file", "Conflicting lock is held") plus more generic
+/// phrasing, so a wording change in a future DuckDB version degrades to
+/// a false negative (treated as corruption) rather than a false
+/// positive silently destroying a healthy, in-use database.
+fn is_lock_error(err: &TrackError) -> bool {
+    let TrackError::Db(msg) = err else {
+        return false;
+    };
+    let msg = msg.to_lowercase();
+    ["lock", "being used by another process"]
+        .iter()
+        .any(|kw| msg.contains(kw))
+}
+
 /// Open the DuckDB store at `db_path`, recovering from a corrupted file:
 /// if the first open fails, the bad file is renamed aside (so it is not
 /// silently lost) and a fresh, empty store is opened in its place. The
 /// caller is responsible for repopulating it, e.g. via
 /// `rebuild_from_prereg_files`, since prereg.md files remain the source
 /// of truth.
+///
+/// A lock error (another connection already has `db_path` open, e.g. a
+/// concurrent `Project::open`) is deliberately excluded from recovery:
+/// it is not corruption, and quarantining the file out from under a
+/// healthy, currently-in-use database would silently lose
+/// `experiments`/`metrics`/`checkpoints` data that has no file-backed
+/// source of truth to rebuild from. See `is_lock_error`.
 fn open_store_recovering_from_corruption(db_path: &Path) -> Result<Store, TrackError> {
     match Store::open(db_path) {
         Ok(store) => Ok(store),
-        Err(_) if db_path.exists() => {
+        Err(e) if db_path.exists() && !is_lock_error(&e) => {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -131,5 +161,40 @@ mod tests {
         // one-time repair).
         drop(project);
         assert!(Project::open(root).is_ok());
+    }
+
+    #[test]
+    fn is_lock_error_classifies_duckdbs_actual_lock_message_as_a_lock_error() {
+        // The real message DuckDB (1.x, bundled) returns when a second
+        // connection is attempted on a file another process already
+        // has open, observed directly from `duckdb::Connection::open`.
+        let err = TrackError::Db(
+            "IO Error: Could not set lock on file \"/tmp/zorp.duckdb\": \
+             Conflicting lock is held in /usr/bin/other-process (PID 123) by user someone. \
+             See also https://duckdb.org/docs/stable/connect/concurrency"
+                .to_string(),
+        );
+        assert!(is_lock_error(&err));
+    }
+
+    #[test]
+    fn is_lock_error_classifies_a_permission_style_lock_message_as_a_lock_error() {
+        let err = TrackError::Db("database is being used by another process".to_string());
+        assert!(is_lock_error(&err));
+    }
+
+    #[test]
+    fn is_lock_error_does_not_classify_a_generic_corruption_message_as_a_lock_error() {
+        let err = TrackError::Db(
+            "IO Error: Failed to read file \"/tmp/zorp.duckdb\": file is not a valid DuckDB database file"
+                .to_string(),
+        );
+        assert!(!is_lock_error(&err));
+    }
+
+    #[test]
+    fn is_lock_error_does_not_classify_non_db_errors_as_lock_errors() {
+        let err = TrackError::Io("permission denied".to_string());
+        assert!(!is_lock_error(&err));
     }
 }

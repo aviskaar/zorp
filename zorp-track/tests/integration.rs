@@ -1,4 +1,6 @@
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use tempfile::tempdir;
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::experiment::{ExperimentStatus, MetricValue};
@@ -185,6 +187,77 @@ fn project_open_self_heals_a_track_with_a_half_written_preregistration() {
     let track = project.store.get_track(track_id).unwrap();
     assert_eq!(track.hypothesis, "orphan prereg test");
     assert!(verify_prereg_integrity(&project.store, track_id).is_ok());
+}
+
+/// Reproduces DuckDB's real file lock: a second, concurrent
+/// `Project::open` on the same path (here, a separate process, via the
+/// `lock_hold_helper` test binary) must fail because DuckDB refuses a
+/// second connection to a file another process already has open, but
+/// must NOT be treated as corruption. Before the fix,
+/// `open_store_recovering_from_corruption` matched on any `Store::open`
+/// error when the db file exists, so this healthy, in-use database
+/// would have been quarantined (renamed aside as "corrupted") and
+/// silently replaced with an empty one, losing any experiments/metrics/
+/// checkpoints data.
+#[test]
+fn project_open_does_not_quarantine_a_healthy_db_locked_by_another_process() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+
+    // Open once to create .zorp/zorp.duckdb and populate it with data
+    // that has no file-backed source of truth (so if this got
+    // quarantined and rebuilt from prereg.md files, the loss would be
+    // detectable).
+    let track_id = "2026-08-09-lock-test";
+    {
+        let project = Project::open(dir.path()).unwrap();
+        project.store.create_track(track_id, "lock test").unwrap();
+        let track_dir = project.track_dir(track_id);
+        write_prereg(&project.store, &track_dir, track_id, "lock test", "m", 1.0).unwrap();
+    }
+    let db_path = dir.path().join(".zorp/zorp.duckdb");
+    let original_contents = std::fs::read(&db_path).unwrap();
+
+    // Hold DuckDB's file lock from a separate process.
+    let helper_path = env!("CARGO_BIN_EXE_lock_hold_helper");
+    let mut child = Command::new(helper_path)
+        .arg(&db_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn lock_hold_helper");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "locked", "helper process did not report holding the lock");
+
+    // A concurrent Project::open must fail (DuckDB genuinely cannot
+    // open a second connection to a locked file) but must not quarantine
+    // the file: the error is a lock error, not corruption.
+    let result = Project::open(dir.path());
+    assert!(result.is_err(), "expected Project::open to fail while the db file is locked");
+
+    // Release the lock by closing the helper's stdin, which lets it exit.
+    drop(child.stdin.take());
+    let _ = child.wait();
+
+    // The original db file must be untouched: same path, same bytes,
+    // and no quarantined copy left behind.
+    assert!(db_path.exists(), "the original zorp.duckdb must still exist at its original path");
+    let contents_after = std::fs::read(&db_path).unwrap();
+    assert_eq!(contents_after, original_contents, "the original zorp.duckdb must not have been rewritten");
+    let zorp_dir = dir.path().join(".zorp");
+    let quarantined_exists = std::fs::read_dir(&zorp_dir)
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains("corrupted"));
+    assert!(!quarantined_exists, "a lock error must never quarantine the db file");
+
+    // And a subsequent open, once the lock is released, must see the
+    // original data intact.
+    let project = Project::open(dir.path()).unwrap();
+    let recovered = project.store.get_track(track_id).unwrap();
+    assert_eq!(recovered.hypothesis, "lock test");
 }
 
 #[test]
