@@ -11,8 +11,8 @@ zorp is not affiliated with or endorsed by the quecto project.
 ## Reference material (not distributed)
 
 `reference/` (gitignored, not committed) may contain local checkouts of
-other projects used purely for design inspiration while building zorp —
-e.g. [AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) by
+other projects used purely for design inspiration while building zorp,
+such as [AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) by
 Sakana AI, which is licensed under a custom, restrictive "Responsible AI
-Source Code License." No code from `reference/` is copied into zorp; it is
+Source Code License." No code from `reference/` is copied into zorp. It is
 consulted for ideas only and never redistributed as part of this repo.

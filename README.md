@@ -4,7 +4,7 @@
 
 ### A research agent for scientific discovery.
 
-*Forming hypotheses, running experiments, evaluating results, and writing up findings — autonomously.*
+*Forming hypotheses, running experiments, evaluating results, and writing up findings, autonomously.*
 
 <br/>
 
@@ -20,33 +20,34 @@
 
 ---
 
-zorp is an agent harness aimed at autonomous scientific research: forming
-hypotheses, running experiments, evaluating results, and writing up
-findings — with the goal of publishing its own output as a paper. It's
+zorp is an agent harness aimed at autonomous scientific research. It forms
+hypotheses, runs experiments, evaluates results, and writes up findings,
+with the goal of eventually publishing its own output as a paper. It's
 part of [Aviskaar](https://github.com/aviskaar)'s applied AI research
 suite.
 
 > **Status: early / pre-alpha.** The base execution harness is in place
-> and fully tested; the research-agent capabilities (experiment tree
+> and fully tested. The research-agent capabilities (experiment tree
 > search, autonomous hypothesis-to-paper loop, etc.) are still being
 > designed. See [Status & roadmap](#status--roadmap) below.
 
 ## Why zorp
 
 Most "AI scientist" projects wire a large agent framework directly to
-experiment code, making the harness and the research logic hard to
+experiment code, which makes the harness and the research logic hard to
 separate, test, or reason about independently. zorp starts from the
 opposite end: a minimal, dependency-light execution core, extended
-deliberately with the primitives autonomous research needs — long-running
-task loops, verification gates, session persistence, tool/MCP integration,
-and (soon) experiment tracking and paper synthesis — each added as a
-clearly-bounded layer on top of a harness that stays legible on its own.
+deliberately with the primitives autonomous research needs. Long-running
+task loops, verification gates, session persistence, and tool/MCP
+integration are already there, with experiment tracking and paper
+synthesis coming soon, each added as a clearly bounded layer on top of a
+harness that stays legible on its own.
 
 ## Architecture
 
 ```
 .
-├── src/                 # zorp core crate — model transport, raw primitives (binary: zorp)
+├── src/                 # zorp core crate: model transport, raw primitives (binary: zorp)
 ├── zorp-agent/          # the agent: tools, reasoning, verification, sessions, MCP, telemetry
 ├── zorp-mcp/            # MCP client/server integration
 ├── zorp-eval/           # deterministic evaluation harness
@@ -56,7 +57,7 @@ clearly-bounded layer on top of a harness that stays legible on its own.
 │   ├── paper/           # arXiv writeup (WIP)
 │   ├── superpowers/     # zorp's own design specs and plans
 │   └── upstream-quecto/ # preserved history of the upstream harness (see Origins)
-└── reference/            # gitignored — local-only research material, not distributed
+└── reference/            # gitignored, local-only research material, not distributed
 ```
 
 ## Getting started
@@ -95,8 +96,8 @@ cargo test --workspace    # 462 tests across all crates
 cargo run -p zorp-eval -- --help   # evaluation harness
 ```
 
-Working in this repo? Read [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md)
-first — they cover the inherited-vs-zorp-specific code boundary, where
+Working in this repo? Read [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md)
+first. They cover the inherited vs. zorp-specific code boundary, where
 design specs live, and repo conventions.
 
 ## Status & roadmap
@@ -111,23 +112,23 @@ design specs live, and repo conventions.
 
 zorp's execution layer started as a fork of
 [quecto](https://github.com/adityak74/quecto), a minimal, vendor-neutral
-harness for LLM agents (MIT licensed) — see [`NOTICE.md`](NOTICE.md) for
+harness for LLM agents (MIT licensed). See [`NOTICE.md`](NOTICE.md) for
 full attribution. We modify and extend it directly rather than depending
 on it as an external crate, since zorp's needs (long-running research
 loops, experiment tracking, paper synthesis) diverge substantially from a
 general agent harness. Crates and binaries have been renamed from
-`quecto-*` to `zorp-*`; [`docs/UPSTREAM_QUECTO_README.md`](docs/UPSTREAM_QUECTO_README.md)
+`quecto-*` to `zorp-*`. [`docs/UPSTREAM_QUECTO_README.md`](docs/UPSTREAM_QUECTO_README.md)
 and [`docs/upstream-quecto/`](docs/upstream-quecto/) preserve the original
 project's documentation and design history for reference.
 
 ## Contributing
 
 This repo is currently private and under active early-stage development,
-so we're not yet set up for external contributions. That will change as
-the project matures — check back, or reach out via
+so it's not yet set up for external contributions. That will change as
+the project matures. Check back, or reach out via
 [Aviskaar](https://github.com/aviskaar) in the meantime.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md) for
-third-party attribution.
+MIT. See [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md) for third-party
+attribution.
