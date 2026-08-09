@@ -6,6 +6,7 @@
 //! for its own async transport.
 
 pub mod error;
+pub mod experiment;
 pub mod id;
 pub mod prereg;
 mod schema;
