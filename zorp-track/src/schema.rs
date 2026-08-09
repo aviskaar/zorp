@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS metrics (
     value_number DOUBLE,
     value_string TEXT,
     value_bool BOOLEAN,
-    recorded_at BIGINT NOT NULL
+    recorded_at BIGINT NOT NULL,
+    seq BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS checkpoints (
     id TEXT PRIMARY KEY,

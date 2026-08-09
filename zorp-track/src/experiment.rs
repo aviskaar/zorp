@@ -105,6 +105,11 @@ impl Store {
     }
 
     pub fn record_metric(&self, experiment_id: &str, key: &str, value: MetricValue) -> Result<(), TrackError> {
+        let seq: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM metrics WHERE experiment_id = ?",
+            duckdb::params![experiment_id],
+            |r| r.get(0),
+        )?;
         let metric_id = format!("{experiment_id}-{key}-{}", now_millis());
         let (num, text, boolean) = match &value {
             MetricValue::Number(n) => (Some(*n), None, None),
@@ -112,16 +117,19 @@ impl Store {
             MetricValue::Bool(b) => (None, None, Some(*b)),
         };
         self.conn.execute(
-            "INSERT INTO metrics (id, experiment_id, metric_key, value_type, value_number, value_string, value_bool, recorded_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            duckdb::params![metric_id, experiment_id, key, value.type_str(), num, text, boolean, now_millis()],
+            "INSERT INTO metrics (id, experiment_id, metric_key, value_type, value_number, value_string, value_bool, recorded_at, seq) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![metric_id, experiment_id, key, value.type_str(), num, text, boolean, now_millis(), seq],
         )?;
         Ok(())
     }
 
+    /// Ordering within an experiment's metrics is by insertion order
+    /// (`seq`), not `recorded_at`: two metrics recorded in the same
+    /// millisecond would otherwise have no defined relative order.
     pub fn metrics_for(&self, experiment_id: &str) -> Result<Vec<(String, MetricValue)>, TrackError> {
         let mut stmt = self.conn.prepare(
-            "SELECT metric_key, value_type, value_number, value_string, value_bool FROM metrics WHERE experiment_id = ? ORDER BY recorded_at",
+            "SELECT metric_key, value_type, value_number, value_string, value_bool FROM metrics WHERE experiment_id = ? ORDER BY seq",
         )?;
         let rows = stmt.query_map(duckdb::params![experiment_id], |r| {
             let key: String = r.get(0)?;
@@ -213,6 +221,30 @@ mod tests {
         assert_eq!(metrics[0], ("accuracy".to_string(), MetricValue::Number(0.87)));
         assert_eq!(metrics[1], ("notes".to_string(), MetricValue::Text("looked promising".into())));
         assert_eq!(metrics[2], ("converged".to_string(), MetricValue::Bool(true)));
+    }
+
+    #[test]
+    fn metric_order_is_by_insertion_not_millisecond_timestamp() {
+        // record_metric's recorded_at is a millisecond timestamp, which
+        // gives no defined relative order for metrics recorded within
+        // the same millisecond. `seq` is what actually guarantees
+        // insertion order is preserved on read-back, regardless of how
+        // close together in time the inserts happen.
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let exp = store.create_experiment("t1", "t1-prereg").unwrap();
+
+        for i in 0..20 {
+            store
+                .record_metric(&exp.id, &format!("m{i}"), MetricValue::Number(i as f64))
+                .unwrap();
+        }
+
+        let metrics = store.metrics_for(&exp.id).unwrap();
+        let keys: Vec<String> = metrics.into_iter().map(|(k, _)| k).collect();
+        let expected: Vec<String> = (0..20).map(|i| format!("m{i}")).collect();
+        assert_eq!(keys, expected);
     }
 
     #[test]
