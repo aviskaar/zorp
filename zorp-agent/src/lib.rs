@@ -19,6 +19,8 @@ mod sandbox;
 mod session;
 mod tools;
 mod trust;
+#[cfg(feature = "research")]
+mod validate;
 mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
@@ -65,6 +67,8 @@ pub use tools::{
     ToolError, ToolOutput, ToolResult,
 };
 pub use trust::TrustStore;
+#[cfg(feature = "research")]
+pub use validate::{parse_validation_result, ParseError, ValidationResult};
 pub use verify::{Verifier, VerifyReport, VerifyResult};
 
 #[cfg(feature = "mcp")]
