@@ -29,11 +29,17 @@ experiments/metrics, the checkpoint primitive, and LanceDB provisioning.
 Wired into `zorp-agent` behind an optional `research` feature. See
 [`superpowers/specs/2026-08-09-zorp-track-foundation-design.md`](superpowers/specs/2026-08-09-zorp-track-foundation-design.md).
 
+## What's specced
+
+**validate** (is this question worth investigating): search via
+whatever MCP tools are configured, score redundancy and feasibility with
+required citations, checkpoint before moving on. See
+[`superpowers/specs/2026-08-09-zorp-validate-design.md`](superpowers/specs/2026-08-09-zorp-validate-design.md).
+
 ## What's still open
 
-Each of the four capabilities (validate, investigate, co-write, deliver)
-gets its own spec, written against the broadened scope, before any of
-them get built.
+investigate, co-write, and deliver each get their own spec, written
+against the broadened scope, before any of them get built.
 
 Also locked in, and worth knowing about even though they're not part of
 the core architecture: memory staying local for now (no Hypermemory
