@@ -28,6 +28,12 @@ impl Preset {
 
 /// Per-operation approval policy. Reads are always allowed and unknown tools are
 /// always denied; the `run_command` denylist always denies regardless of preset.
+/// `mcp__`-prefixed tools (external MCP server tools, discovered at runtime and
+/// not nameable ahead of time) are always `Ask` rather than a hard deny, so they
+/// route through the same `ApprovalMode` gate as everything else: denied under
+/// `NonInteractive`, prompted under `Interactive`, run under `AutoApprove`.
+/// Per-server trust (sandbox vs. trusted) is handled separately by zorp-mcp's
+/// own TOFU/trust-store layer at connect time.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Policy {
     edit: Decision,
@@ -99,6 +105,7 @@ impl Policy {
                     self.run.clone()
                 }
             }
+            name if name.starts_with("mcp__") => Decision::Ask,
             _ => Decision::Deny(format!(
                 "tool '{}' is not permitted by the built-in policy",
                 call.name
@@ -567,5 +574,34 @@ mod tests {
             assert_eq!(read_only.decide(&call), Decision::Ask);
             assert_eq!(full.decide(&call), Decision::Allow);
         }
+    }
+
+    #[test]
+    fn mcp_prefixed_tools_are_asked_not_hard_denied() {
+        // Any preset: mcp__ tools route through ApprovalMode (Ask), not the
+        // catch-all Deny that applies to genuinely unrecognized tool names.
+        // Without this, an agent running with ApprovalMode::AutoApprove
+        // (e.g. `zorp-agent validate --yes`, or this test's own use of
+        // AutoApprove) could never actually invoke a discovered MCP tool.
+        for preset in [Preset::ReadOnly, Preset::Editor, Preset::Full] {
+            let p = Policy::from_preset(preset);
+            let call = ToolCall {
+                id: "1".into(),
+                name: "mcp__stub__search".into(),
+                arguments: serde_json::json!({}),
+            };
+            assert_eq!(p.decide(&call), Decision::Ask, "preset {preset:?} should Ask for mcp__ tools");
+        }
+    }
+
+    #[test]
+    fn non_mcp_unknown_tools_are_still_hard_denied() {
+        let p = Policy::from_preset(Preset::Full);
+        let call = ToolCall {
+            id: "1".into(),
+            name: "totally_unknown_tool".into(),
+            arguments: serde_json::json!({}),
+        };
+        assert!(matches!(p.decide(&call), Decision::Deny(_)));
     }
 }

@@ -54,6 +54,7 @@ clipboard = ["dep:arboard"]
 [[bin]]
 name = "stub_search_mcp_server"
 path = "tests/fixtures/stub_search_mcp_server.rs"
+required-features = ["research"]
 
 [dev-dependencies]
 tempfile = "3"
