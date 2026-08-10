@@ -69,7 +69,7 @@ fn stub_server_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_stub_search_mcp_server"))
 }
 
-fn build_agent_with_huiban_stub(response: &str) -> (Agent, tempfile::TempDir) {
+fn build_agent_with_huiban_stub(response: &str) -> (Agent, tempfile::TempDir, Arc<AtomicUsize>) {
     let dir = tempdir().unwrap();
     let config = McpConfig::from_toml_str(&format!(
         "[[server]]\nname = \"huiban\"\ntransport = \"stdio\"\ncommand = \"{}\"\ntrust = \"sandbox\"\n",
@@ -87,14 +87,14 @@ fn build_agent_with_huiban_stub(response: &str) -> (Agent, tempfile::TempDir) {
     assert_eq!(search_tool_name, "mcp__huiban__search");
 
     let calls = Arc::new(AtomicUsize::new(0));
-    let model = StubModel { response: response.to_string(), search_tool_name: search_tool_name.clone(), calls };
+    let model = StubModel { response: response.to_string(), search_tool_name: search_tool_name.clone(), calls: calls.clone() };
     let mut agent = Agent::new(Box::new(model), "system", 5, dir.path().to_path_buf(), cancel_token(), ApprovalMode::AutoApprove)
         .register_builtins();
     let registry = Arc::new(Mutex::new(registry));
     for tool in tools {
         agent = agent.register(Box::new(zorp_agent::mcp_adapter::McpToolAdapter { tool, registry: registry.clone() }));
     }
-    (agent, dir)
+    (agent, dir, calls)
 }
 
 fn track_with_draft(project: &Project, track_id: &str) {
@@ -106,7 +106,7 @@ fn track_with_draft(project: &Project, track_id: &str) {
 
 #[test]
 fn full_round_trip_finds_venues_and_approves() {
-    let (mut agent, agent_dir) = build_agent_with_huiban_stub("## Candidate Venues\n\n1. Example Systems Conference (deadline 2026-12-01, CORE A)");
+    let (mut agent, agent_dir, calls) = build_agent_with_huiban_stub("## Candidate Venues\n\n1. Example Systems Conference (deadline 2026-12-01, CORE A)");
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
     track_with_draft(&project, "t1");
@@ -118,12 +118,19 @@ fn full_round_trip_finds_venues_and_approves() {
     let venues_path = project.track_dir("t1").join("venues.md");
     let content = std::fs::read_to_string(&venues_path).unwrap();
     assert!(content.contains("Example Systems Conference"));
+
+    // The model must have been called at least twice: once to request
+    // the search tool, once to read the tool's result and produce the
+    // final venue list. This confirms McpToolAdapter::run and
+    // registry.call_tool actually executed against the stub server's
+    // `tools/call` handler, not just the discovery handshake.
+    assert!(calls.load(Ordering::SeqCst) >= 2, "model should have been called again after the tool result was fed back");
     drop(agent_dir);
 }
 
 #[test]
 fn rejected_checkpoint_leaves_track_status_unchanged() {
-    let (mut agent, agent_dir) = build_agent_with_huiban_stub("## Candidate Venues\n\n1. Example Systems Conference");
+    let (mut agent, agent_dir, calls) = build_agent_with_huiban_stub("## Candidate Venues\n\n1. Example Systems Conference");
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
     track_with_draft(&project, "t1");
@@ -134,12 +141,20 @@ fn rejected_checkpoint_leaves_track_status_unchanged() {
 
     let track = project.store.get_track("t1").unwrap();
     assert_eq!(track.status, TrackStatus::Active);
+
+    // Even though the checkpoint was rejected, the agent still ran the
+    // full search round trip before reaching the checkpoint: once to
+    // request the search tool, once to read the tool's result. This
+    // confirms McpToolAdapter::run and registry.call_tool actually
+    // executed against the stub server's `tools/call` handler, not just
+    // the discovery handshake.
+    assert!(calls.load(Ordering::SeqCst) >= 2, "model should have been called again after the tool result was fed back");
     drop(agent_dir);
 }
 
 #[test]
 fn no_draft_refuses_before_running_the_agent() {
-    let (mut agent, agent_dir) = build_agent_with_huiban_stub("## Candidate Venues\n\n1. Example Systems Conference");
+    let (mut agent, agent_dir, calls) = build_agent_with_huiban_stub("## Candidate Venues\n\n1. Example Systems Conference");
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
     project.store.create_track("t1", "does caching help").unwrap();
@@ -147,6 +162,10 @@ fn no_draft_refuses_before_running_the_agent() {
 
     let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
     assert!(matches!(err, DeliverError::NoDraft));
+
+    // The missing-draft check must short-circuit before the agent (and
+    // therefore the model) ever runs.
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "model should never have been called when there's no draft");
     drop(agent_dir);
 }
 
