@@ -1,5 +1,6 @@
 use crate::track::Store;
 use crate::TrackError;
+use duckdb::OptionalExt;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -94,6 +95,22 @@ impl Store {
         )?;
         Ok(approved)
     }
+
+    /// Read back the `resolved_at` of the most recent checkpoint of
+    /// `kind` for `track_id`, or `None` if no such checkpoint exists yet.
+    /// Used by `co_write::run`'s mtime-warning heuristic, not for any
+    /// integrity enforcement.
+    pub fn latest_checkpoint_time(&self, track_id: &str, kind: &str) -> Result<Option<i64>, TrackError> {
+        let row: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT resolved_at FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
+                duckdb::params![track_id, kind],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(row.flatten())
+    }
 }
 
 #[cfg(test)]
@@ -159,5 +176,49 @@ mod tests {
             .unwrap();
         assert_eq!(status, "approved");
         assert_eq!(prompt, "is this novel?");
+    }
+
+    #[test]
+    fn latest_checkpoint_time_returns_none_when_absent() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+
+        assert_eq!(store.latest_checkpoint_time("t1", "co-write").unwrap(), None);
+    }
+
+    #[test]
+    fn latest_checkpoint_time_only_matches_the_given_kind() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let mode = CheckpointMode::AutoApprove;
+        store.record_checkpoint("t1", "validate", &mode, "novel?").unwrap();
+
+        assert_eq!(store.latest_checkpoint_time("t1", "co-write").unwrap(), None);
+    }
+
+    #[test]
+    fn latest_checkpoint_time_returns_the_most_recent_matching_row() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let mode = CheckpointMode::AutoApprove;
+        store.record_checkpoint("t1", "co-write", &mode, "draft 1 ready?").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.record_checkpoint("t1", "co-write", &mode, "draft 2 ready?").unwrap();
+
+        let (latest_prompt,): (String,) = store
+            .conn
+            .query_row(
+                "SELECT prompt_shown FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
+                duckdb::params!["t1", "co-write"],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(latest_prompt, "draft 2 ready?");
+
+        let time = store.latest_checkpoint_time("t1", "co-write").unwrap();
+        assert!(time.is_some());
     }
 }
