@@ -25,6 +25,8 @@ pub mod validate;
 pub mod investigate;
 #[cfg(feature = "research")]
 pub mod co_write;
+#[cfg(feature = "research")]
+pub mod deliver;
 mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
