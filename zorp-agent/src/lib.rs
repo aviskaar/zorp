@@ -23,6 +23,8 @@ mod trust;
 pub mod validate;
 #[cfg(feature = "research")]
 pub mod investigate;
+#[cfg(feature = "research")]
+pub mod co_write;
 mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
