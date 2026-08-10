@@ -9,11 +9,6 @@ use zorp_track::track::TrackStatus;
 use zorp_track::{Project, TrackError};
 use std::fmt::Write as _;
 
-const SYSTEM_PREAMBLE: &str = "\
-You are drafting an evidence-based artifact from a research run record. \
-Cite only the metric values and verdict given to you below; never invent \
-a number. State confidence no higher than the evidence given supports.";
-
 /// Collect every metric recorded across all of `track_id`'s experiments,
 /// as `(experiment_id, metric_key, MetricValue)` triples, in experiment
 /// order then metric order.
@@ -35,7 +30,12 @@ fn format_metric_value(value: &MetricValue) -> String {
     }
 }
 
-fn build_task_prompt(hypothesis: &str, project: &Project, track_id: &str, metrics: &[(String, String, MetricValue)]) -> String {
+fn build_task_prompt(
+    hypothesis: &str,
+    project: &Project,
+    track_id: &str,
+    metrics: &[(String, String, MetricValue)],
+) -> Result<String, TrackError> {
     let mut task = format!("Hypothesis: {hypothesis}\n\n");
 
     match project.store.get_validation(track_id) {
@@ -47,7 +47,7 @@ fn build_task_prompt(hypothesis: &str, project: &Project, track_id: &str, metric
             );
         }
         Err(TrackError::NotFound { kind: "validation", .. }) => {}
-        Err(_) => {}
+        Err(e) => return Err(e),
     }
 
     task.push_str("Recorded metrics:\n");
@@ -55,7 +55,7 @@ fn build_task_prompt(hypothesis: &str, project: &Project, track_id: &str, metric
         let _ = writeln!(task, "- [{experiment_id}] {key} = {}", format_metric_value(value));
     }
     task.push_str("\nDraft a short evidence-based artifact (a decision memo or summary) based only on this data.");
-    task
+    Ok(task)
 }
 
 /// Run co-write for an already-created track with at least one recorded
@@ -80,7 +80,7 @@ pub fn run(
         return Err(CoWriteError::NoMetrics);
     }
 
-    let task = build_task_prompt(hypothesis, project, track_id, &metrics);
+    let task = build_task_prompt(hypothesis, project, track_id, &metrics)?;
     let outcome = agent.run(&task);
     let draft = match outcome {
         Outcome::Complete(text) => text,
@@ -238,5 +238,52 @@ mod tests {
         fn decide(&self, _prompt: &str) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn existing_validation_is_included_without_breaking_the_run() {
+        let mut agent = build_agent("Latency improved to 42ms.");
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        project
+            .store
+            .record_validation("t1", 20.0, &[], 85.0, &[], "worth investigating")
+            .unwrap();
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        assert!(approved);
+
+        let draft_path = project.track_dir("t1").join("draft.md");
+        let content = std::fs::read_to_string(&draft_path).unwrap();
+        assert_eq!(content, "Latency improved to 42ms.");
+    }
+
+    #[test]
+    fn second_run_overwrites_draft_even_if_mtime_warning_would_fire() {
+        let mut agent = build_agent("first draft");
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        assert!(approved);
+
+        let draft_path = project.track_dir("t1").join("draft.md");
+        let content = std::fs::read_to_string(&draft_path).unwrap();
+        assert_eq!(content, "first draft");
+
+        // Run again immediately: draft.md's mtime from the first run is at
+        // or after the first checkpoint's resolved_at, so the mtime-warning
+        // branch may fire on this second run. It must be advisory only —
+        // the second run should still succeed and overwrite the file.
+        let mut agent2 = build_agent("second draft");
+        let approved2 = run(&mut agent2, &project, "t1", "does caching help", &mode).unwrap();
+        assert!(approved2);
+
+        let content2 = std::fs::read_to_string(&draft_path).unwrap();
+        assert_eq!(content2, "second draft");
     }
 }
