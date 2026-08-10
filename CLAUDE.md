@@ -62,5 +62,5 @@ word instead. Prefer short, direct sentences over stacked clauses.
 ## Status
 
 Early/pre-alpha. The base harness and the research foundation
-(`zorp-track`) are built and tested. validate and investigate are built
-and tested; co-write and deliver have not been built yet.
+(`zorp-track`) are built and tested. validate, investigate, and
+co-write are built and tested; deliver has not been built yet.

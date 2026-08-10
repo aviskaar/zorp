@@ -32,8 +32,8 @@ hypothesis are all the same shape of problem to zorp. It's built by
 > **Status: early / pre-alpha.** The base execution harness and the
 > shared research foundation (tracks, evidence records, checkpoints) are
 > in place and fully tested. Of the four capabilities built on top,
-> validate and investigate are built and tested; co-write and deliver
-> are still being designed. See [Status & roadmap](#status--roadmap)
+> validate, investigate, and co-write are built and tested; deliver is
+> still being designed. See [Status & roadmap](#status--roadmap)
 > below.
 
 ## Why zorp
@@ -50,8 +50,10 @@ landscape, a due-diligence package, or a paper. Long-running task loops,
 verification gates, session persistence, tool/MCP integration, and the
 research foundation (multi-track evidence records with git-backed,
 tamper-evident pre-registration) are already built and tested. Of the
-four capabilities on top, each a clearly bounded layer, validate and
-investigate are built and tested; co-write and deliver are next.
+four capabilities on top, each a clearly bounded layer, validate,
+investigate, and co-write are built and tested; co-write drafts the
+artifact from the track's recorded evidence, with a human as author of
+record, and deliver is next.
 
 ## Architecture
 
@@ -117,7 +119,7 @@ design specs live, and repo conventions.
 - [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB + LanceDB)
 - [x] **validate**: is this question worth investigating (novelty and feasibility check)
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
-- [ ] **co-write**: zorp drafts the artifact, a human is always the author of record
+- [x] **co-write**: zorp drafts the artifact, a human is always the author of record
 - [ ] **deliver**: get the finished artifact into the right format for its audience (venue matching for a paper, stakeholder-ready memo for a decision)
 - [ ] A systems paper about zorp itself, submitted to arXiv
 

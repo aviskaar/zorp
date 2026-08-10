@@ -42,10 +42,18 @@ invocation, typed metrics stored in the run record, human checkpoint
 decides kill or keep. See
 [`superpowers/specs/2026-08-09-zorp-investigate-design.md`](superpowers/specs/2026-08-09-zorp-investigate-design.md).
 
+**co-write** (draft the artifact from recorded evidence): hands the
+agent the track's recorded evidence (validate's verdict if present,
+every metric investigate recorded) as structured data and instructs it
+to cite only those figures; writes directly to `draft.md`, a human
+remains author of record. Rejecting the checkpoint does not kill the
+track. See
+[`superpowers/specs/2026-08-09-zorp-co-write-design.md`](superpowers/specs/2026-08-09-zorp-co-write-design.md).
+
 ## What's still open
 
-co-write and deliver each get their own spec, written against the
-broadened scope, before any of them get built.
+deliver gets its own spec, written against the broadened scope, before
+it gets built.
 
 Also locked in, and worth knowing about even though they're not part of
 the core architecture: memory staying local for now (no Hypermemory
