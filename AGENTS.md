@@ -26,8 +26,8 @@ resulting artifact, deliver it in the right form.
   records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
   built, not inherited. The four capabilities (validate, investigate,
   co-write, deliver) sit on top of it as `zorp-agent` subcommands,
-  behind the `research` feature. Validate, investigate, and co-write are
-  built (co-write most recently); deliver is not.
+  behind the `research` feature. All four are built and tested
+  (deliver most recently).
 - New, zorp-specific capabilities should be clearly separated from
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
@@ -63,5 +63,5 @@ word instead. Prefer short, direct sentences over stacked clauses.
 ## Status
 
 Early/pre-alpha. The base harness and the research foundation
-(`zorp-track`) are built and tested. validate, investigate, and
-co-write are built and tested; deliver has not been built yet.
+(`zorp-track`) are built and tested. All four capabilities, validate,
+investigate, co-write, and deliver, are built and tested.

@@ -31,10 +31,9 @@ hypothesis are all the same shape of problem to zorp. It's built by
 
 > **Status: early / pre-alpha.** The base execution harness and the
 > shared research foundation (tracks, evidence records, checkpoints) are
-> in place and fully tested. Of the four capabilities built on top,
-> validate, investigate, and co-write are built and tested; deliver is
-> still being designed. See [Status & roadmap](#status--roadmap)
-> below.
+> in place and fully tested. All four capabilities built on top,
+> validate, investigate, co-write, and deliver, are built and tested.
+> See [Status & roadmap](#status--roadmap) below.
 
 ## Why zorp
 
@@ -49,11 +48,11 @@ record for whatever gets produced, a decision memo, a competitive
 landscape, a due-diligence package, or a paper. Long-running task loops,
 verification gates, session persistence, tool/MCP integration, and the
 research foundation (multi-track evidence records with git-backed,
-tamper-evident pre-registration) are already built and tested. Of the
-four capabilities on top, each a clearly bounded layer, validate,
-investigate, and co-write are built and tested; co-write drafts the
+tamper-evident pre-registration) are already built and tested. All four
+capabilities on top, each a clearly bounded layer, validate, investigate,
+co-write, and deliver, are built and tested; co-write drafts the
 artifact from the track's recorded evidence, with a human as author of
-record, and deliver is next.
+record, and deliver matches the finished draft against real venues.
 
 ## Architecture
 
@@ -120,7 +119,7 @@ design specs live, and repo conventions.
 - [x] **validate**: is this question worth investigating (novelty and feasibility check)
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [x] **co-write**: zorp drafts the artifact, a human is always the author of record
-- [ ] **deliver**: get the finished artifact into the right format for its audience (venue matching for a paper, stakeholder-ready memo for a decision)
+- [x] **deliver**: match a finished draft against real academic venues (conferences and journals, via live huiban search), writing a ranked shortlist for a human to review
 - [ ] A systems paper about zorp itself, submitted to arXiv
 
 ## Origins

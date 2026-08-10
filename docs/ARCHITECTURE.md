@@ -50,13 +50,23 @@ remains author of record. Rejecting the checkpoint does not kill the
 track. See
 [`superpowers/specs/2026-08-09-zorp-co-write-design.md`](superpowers/specs/2026-08-09-zorp-co-write-design.md).
 
-## What's still open
+**deliver** (get the finished artifact into the right form): scoped to
+academic venue-matching for v1, requires `draft.md` (from co-write) and
+a huiban-prefixed MCP tool to be configured, checked the same way
+validate requires a search-capable tool. Uses huiban to find and rank
+real conferences and journals fitting the draft's scope, writes the
+shortlist to `venues.md`, and checkpoints it. Rejecting the checkpoint
+does not kill the track, matching co-write's behavior. See
+[`superpowers/specs/2026-08-09-zorp-deliver-design.md`](superpowers/specs/2026-08-09-zorp-deliver-design.md).
 
-deliver gets its own spec, written against the broadened scope, before
-it gets built.
+## What's open
 
-Also locked in, and worth knowing about even though they're not part of
-the core architecture: memory staying local for now (no Hypermemory
-dependency yet), and the scope of zorp's own arXiv paper (a systems paper
-about zorp itself, unaffected by the scope broadening, see
-[`paper/`](paper/)).
+All four capabilities, validate, investigate, co-write, and deliver, are
+built and tested. Nothing is left open in the core architecture.
+
+Still worth knowing about, even though it's not part of the core
+architecture: memory staying local for now (no Hypermemory dependency
+yet), and the scope of zorp's own arXiv paper (a systems paper about
+zorp itself, unaffected by the scope broadening, see
+[`paper/`](paper/)), which is tracked separately from the four
+capabilities and remains not yet written.
