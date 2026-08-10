@@ -141,6 +141,9 @@ enum Command {
     /// Draft an artifact from a track's recorded evidence.
     #[cfg(feature = "research")]
     CoWrite { question: String },
+    /// Match a co-written draft against real venues.
+    #[cfg(feature = "research")]
+    Deliver { question: String },
 }
 
 fn main() {
@@ -176,6 +179,8 @@ fn main() {
         }
         #[cfg(feature = "research")]
         Some(Command::CoWrite { question }) => co_write(&question, cli.yes, &overrides),
+        #[cfg(feature = "research")]
+        Some(Command::Deliver { question }) => deliver(&question, cli.yes, &overrides),
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -1010,6 +1015,101 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
     match zorp_agent::co_write::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
         Ok(true) => println!("co-write: approved, draft ready for review at .zorp/tracks/{track_id}/draft.md"),
         Ok(false) => println!("co-write: not yet approved, draft left at .zorp/tracks/{track_id}/draft.md"),
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "research")]
+const DELIVER_SYSTEM_PREAMBLE: &str = "\
+You are matching a finished draft against real academic venues using \
+the tools available to you. Only report venues you actually found \
+through those tools; never invent a conference or journal name.";
+
+#[cfg(feature = "research")]
+fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.clone().merge(project_flavor);
+    let mut system = DELIVER_SYSTEM_PREAMBLE.to_string();
+    system.push_str("\n\n");
+    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let model = HttpModel {
+        url: join_url(&base_url, provider.path_suffix()),
+        api_key,
+        model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        steps,
+        cwd.clone(),
+        cancel,
+        approval,
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+
+    agent = attach_mcp_tools(agent, overrides, true);
+
+    let project = match zorp_track::Project::open(&cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+    let track_id = zorp_track::id::track_id(question);
+    if let Err(e) = get_or_create_track(&project.store, &track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    }
+    let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    match zorp_agent::deliver::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
+        Ok(true) => println!("deliver: approved, shortlist ready for review at .zorp/tracks/{track_id}/venues.md"),
+        Ok(false) => println!("deliver: not yet approved, shortlist left at .zorp/tracks/{track_id}/venues.md"),
         Err(e) => {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
