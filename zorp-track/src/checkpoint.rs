@@ -196,6 +196,32 @@ mod tests {
         store.record_checkpoint("t1", "validate", &mode, "novel?").unwrap();
 
         assert_eq!(store.latest_checkpoint_time("t1", "co-write").unwrap(), None);
+
+        // Positive case: a co-write row alongside the validate row must be
+        // found and must not be confused with the validate row's timestamp.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.record_checkpoint("t1", "co-write", &mode, "draft ready?").unwrap();
+
+        let (validate_resolved_at,): (i64,) = store
+            .conn
+            .query_row(
+                "SELECT resolved_at FROM checkpoints WHERE track_id = ? AND kind = ?",
+                duckdb::params!["t1", "validate"],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        let (co_write_resolved_at,): (i64,) = store
+            .conn
+            .query_row(
+                "SELECT resolved_at FROM checkpoints WHERE track_id = ? AND kind = ?",
+                duckdb::params!["t1", "co-write"],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+
+        let time = store.latest_checkpoint_time("t1", "co-write").unwrap();
+        assert_eq!(time, Some(co_write_resolved_at));
+        assert_ne!(time, Some(validate_resolved_at));
     }
 
     #[test]
@@ -208,17 +234,17 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         store.record_checkpoint("t1", "co-write", &mode, "draft 2 ready?").unwrap();
 
-        let (latest_prompt,): (String,) = store
+        let (latest_prompt, latest_resolved_at): (String, i64) = store
             .conn
             .query_row(
-                "SELECT prompt_shown FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt_shown, resolved_at FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
                 duckdb::params!["t1", "co-write"],
-                |r| Ok((r.get(0)?,)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
         assert_eq!(latest_prompt, "draft 2 ready?");
 
         let time = store.latest_checkpoint_time("t1", "co-write").unwrap();
-        assert!(time.is_some());
+        assert_eq!(time, Some(latest_resolved_at));
     }
 }
