@@ -42,9 +42,16 @@ fn build_task_prompt(
         Ok(v) => {
             let _ = write!(
                 task,
-                "Validation verdict: {}\nRedundancy: {:.0}/100. Feasibility: {:.0}/100.\n\n",
+                "Validation verdict: {}\nRedundancy: {:.0}/100. Feasibility: {:.0}/100.\n",
                 v.verdict, v.redundancy_score, v.feasibility_score
             );
+            for c in &v.redundancy_citations {
+                let _ = writeln!(task, "- redundancy citation: \"{}\" ({})", c.text, c.source);
+            }
+            for c in &v.feasibility_citations {
+                let _ = writeln!(task, "- feasibility citation: \"{}\" ({})", c.text, c.source);
+            }
+            task.push('\n');
         }
         Err(TrackError::NotFound { kind: "validation", .. }) => {}
         Err(e) => return Err(e),
@@ -261,6 +268,26 @@ mod tests {
     }
 
     #[test]
+    fn task_prompt_carries_validation_citations() {
+        use zorp_track::validation::Citation;
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        let red = vec![Citation { text: "no prior benchmark found".into(), source: "search result 1".into() }];
+        let feas = vec![Citation { text: "a harness already exists".into(), source: "repo README".into() }];
+        project
+            .store
+            .record_validation("t1", 20.0, &red, 85.0, &feas, "worth investigating")
+            .unwrap();
+
+        let metrics = all_metrics(&project, "t1").unwrap();
+        let task = build_task_prompt("does caching help", &project, "t1", &metrics).unwrap();
+
+        assert!(task.contains("- redundancy citation: \"no prior benchmark found\" (search result 1)"), "{task}");
+        assert!(task.contains("- feasibility citation: \"a harness already exists\" (repo README)"), "{task}");
+    }
+
+    #[test]
     fn second_run_overwrites_draft_even_if_mtime_warning_would_fire() {
         let mut agent = build_agent("first draft");
         let dir = tempdir().unwrap();
@@ -275,10 +302,14 @@ mod tests {
         let content = std::fs::read_to_string(&draft_path).unwrap();
         assert_eq!(content, "first draft");
 
-        // Run again immediately: draft.md's mtime from the first run is at
-        // or after the first checkpoint's resolved_at, so the mtime-warning
-        // branch may fire on this second run. It must be advisory only —
-        // the second run should still succeed and overwrite the file.
+        // Simulate a hand-edit landing after the first run's checkpoint, so
+        // draft.md's mtime is strictly later than the latest co-write
+        // checkpoint. That is exactly the condition the mtime warning
+        // checks. The warning must be advisory only: the second run still
+        // succeeds and still overwrites the file.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&draft_path, "HUMAN EDIT").unwrap();
+
         let mut agent2 = build_agent("second draft");
         let approved2 = run(&mut agent2, &project, "t1", "does caching help", &mode).unwrap();
         assert!(approved2);

@@ -94,7 +94,7 @@ fn rejected_checkpoint_leaves_track_status_unchanged() {
 }
 
 #[test]
-fn a_second_call_overwrites_the_draft_and_still_succeeds() {
+fn a_second_call_overwrites_a_hand_edited_draft_and_still_succeeds() {
     let mut agent = build_agent("first draft");
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
@@ -103,11 +103,19 @@ fn a_second_call_overwrites_the_draft_and_still_succeeds() {
 
     run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
 
+    let draft_path = project.track_dir("t1").join("draft.md");
+
+    // Hand-edit draft.md after the first run's checkpoint was recorded, so
+    // its mtime is strictly later than the latest co-write checkpoint. That
+    // is the condition co-write's stale-draft warning looks for. The warning
+    // is advisory: the second run must still succeed and still overwrite.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&draft_path, "HUMAN EDIT").unwrap();
+
     let mut agent2 = build_agent("second draft, overwritten");
     let approved = run(&mut agent2, &project, "t1", "does caching help", &mode).unwrap();
     assert!(approved);
 
-    let draft_path = project.track_dir("t1").join("draft.md");
     let content = std::fs::read_to_string(&draft_path).unwrap();
     assert_eq!(content, "second draft, overwritten");
 }

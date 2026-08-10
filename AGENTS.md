@@ -25,8 +25,9 @@ resulting artifact, deliver it in the right form.
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
   records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
   built, not inherited. The four capabilities (validate, investigate,
-  co-write, deliver) will be built on top of it as `zorp-agent`
-  subcommands, behind the `research` feature; none of them exist yet.
+  co-write, deliver) sit on top of it as `zorp-agent` subcommands,
+  behind the `research` feature. Validate, investigate, and co-write are
+  built (co-write most recently); deliver is not.
 - New, zorp-specific capabilities should be clearly separated from
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
