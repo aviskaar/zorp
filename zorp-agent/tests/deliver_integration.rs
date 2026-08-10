@@ -182,11 +182,15 @@ fn no_huiban_tool_refuses_even_with_a_draft_present() {
     let model = StubModel {
         response: "irrelevant".to_string(),
         search_tool_name: "irrelevant".to_string(),
-        calls,
+        calls: calls.clone(),
     };
     let mut agent = Agent::new(Box::new(model), "system", 5, std::env::temp_dir(), cancel_token(), ApprovalMode::AutoApprove)
         .register_builtins();
 
     let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
     assert!(matches!(err, DeliverError::NoVenueTool));
+
+    // The huiban gate must short-circuit before the agent (and therefore
+    // the model) ever runs.
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "model should never have been called when there's no huiban tool");
 }

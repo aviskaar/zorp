@@ -22,6 +22,19 @@ fn build_task_prompt(hypothesis: &str, draft: &str) -> String {
     )
 }
 
+/// Count how many candidates a shortlist names. Only heading and list
+/// item lines count: blank lines and prose would inflate a raw line
+/// count and tell the human nothing useful.
+fn candidate_count(shortlist: &str) -> usize {
+    shortlist
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("## ") || t.starts_with("- ")
+        })
+        .count()
+}
+
 /// Run deliver for a track that already has a co-written draft: find
 /// real venues via huiban, write a ranked shortlist to `venues.md`, and
 /// checkpoint it. Returns whether the checkpoint was approved. Like
@@ -39,7 +52,11 @@ pub fn run(
     }
 
     let draft_path = project.track_dir(track_id).join("draft.md");
-    let draft = std::fs::read_to_string(&draft_path).map_err(|_| DeliverError::NoDraft)?;
+    let draft = match std::fs::read_to_string(&draft_path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(DeliverError::NoDraft),
+        Err(e) => return Err(e.into()),
+    };
 
     if !has_huiban_tool(agent) {
         return Err(DeliverError::NoVenueTool);
@@ -65,9 +82,9 @@ pub fn run(
     std::fs::write(&venues_path, &shortlist)?;
 
     let prompt = format!(
-        "deliver: shortlist written to {} ({} lines). Ready for review?",
+        "deliver: shortlist written to {} ({} candidates). Ready for review?",
         venues_path.display(),
-        shortlist.lines().count()
+        candidate_count(&shortlist)
     );
     let approved = project.store.record_checkpoint(track_id, "deliver", checkpoint_mode, &prompt)?;
 
@@ -80,7 +97,7 @@ mod tests {
     use crate::model::{AssistantMessage, Message, Model};
     use crate::BoxErr;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     struct StubModel {
@@ -148,6 +165,69 @@ mod tests {
 
         let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
         assert!(matches!(err, DeliverError::NoDraft));
+    }
+
+    struct FakeHuibanTool;
+
+    impl crate::tools::Tool for FakeHuibanTool {
+        fn name(&self) -> &str {
+            "mcp__huiban__search"
+        }
+        fn description(&self) -> &str {
+            "fake venue search"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn run(&self, _args: &serde_json::Value, _cx: &mut crate::tools::Context) -> crate::tools::ToolResult {
+            Ok(crate::tools::ToolOutput::new("no venues", "no venues"))
+        }
+    }
+
+    /// Captures the prompt string it was handed so a test can assert on
+    /// what the human would actually have been asked.
+    struct CapturingDecider {
+        prompt: Arc<Mutex<Option<String>>>,
+    }
+
+    impl zorp_track::checkpoint::Decider for CapturingDecider {
+        fn decide(&self, prompt: &str) -> bool {
+            *self.prompt.lock().unwrap() = Some(prompt.to_string());
+            true
+        }
+    }
+
+    #[test]
+    fn checkpoint_prompt_counts_candidates_not_lines() {
+        let shortlist = "Here is a short preamble.\n\nIt runs over several lines\nof plain prose that names no venue.\n\n## Example Systems Conference\n\ndeadline 2026-12-01\n\n- Journal of Caching\n- Journal of Latency\n";
+        // 3 candidates (one `## ` heading, two `- ` items) out of 11 lines.
+        let mut agent = build_agent(shortlist).register(Box::new(FakeHuibanTool));
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_draft(&project, "t1");
+        let captured = Arc::new(Mutex::new(None));
+        let mode = CheckpointMode::Interactive(Arc::new(CapturingDecider { prompt: captured.clone() }));
+
+        run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+
+        let prompt = captured.lock().unwrap().clone().expect("decider should have been asked");
+        assert!(prompt.contains("(3 candidates)"), "prompt should report 3 candidates, got: {prompt}");
+        assert!(!prompt.contains("11"), "prompt should not report the raw line count, got: {prompt}");
+    }
+
+    #[test]
+    fn unreadable_draft_is_an_io_error_not_no_draft() {
+        let mut agent = build_agent("a shortlist");
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        project.store.create_track("t1", "does caching help").unwrap();
+        // A directory where draft.md should be: reading it fails with
+        // something other than NotFound.
+        std::fs::create_dir_all(project.track_dir("t1").join("draft.md")).unwrap();
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        assert!(matches!(err, DeliverError::Io(_)), "expected Io, got {err:?}");
     }
 
     #[test]

@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-519%20passing-success?style=flat-square)](#development)
+[![Tests](https://img.shields.io/badge/tests-538%20passing-success?style=flat-square)](#development)
 [![Status](https://img.shields.io/badge/status-pre--alpha-critical?style=flat-square)](#status--roadmap)
 [![Part of Aviskaar](https://img.shields.io/badge/part%20of-Aviskaar-6f42c1?style=flat-square)](https://github.com/aviskaar)
 
@@ -104,7 +104,7 @@ cargo run -p zorp-agent -- "<task>"
 
 ```bash
 cargo build --workspace   # build everything
-cargo test --workspace    # 462 tests across all crates
+cargo test --workspace    # 538 tests across all crates
 cargo run -p zorp-eval -- --help   # evaluation harness
 ```
 

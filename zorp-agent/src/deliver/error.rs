@@ -23,7 +23,7 @@ impl fmt::Display for DeliverError {
                 "no huiban-prefixed tool is available; configure the huiban MCP server (--mcp or .zorp/mcp.toml)"
             ),
             DeliverError::AgentOutcome(outcome) => write!(f, "agent did not complete: {outcome}"),
-            DeliverError::Io(msg) => write!(f, "could not write venues.md: {msg}"),
+            DeliverError::Io(msg) => write!(f, "could not read or write track files: {msg}"),
             DeliverError::Track(e) => write!(f, "{e}"),
         }
     }
