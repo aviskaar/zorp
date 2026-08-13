@@ -48,6 +48,12 @@ fn run_oneshot(prompt: &str) {
         stream_enabled(),
     ) {
         eprintln!("zorp: {e}");
+        if key.is_none() {
+            eprintln!(
+                "zorp: no ZORP_API_KEY set (talking to {base}). \
+                 Set ZORP_API_KEY, or point ZORP_BASE_URL at a local endpoint that doesn't need one."
+            );
+        }
         std::process::exit(1);
     }
     println!();

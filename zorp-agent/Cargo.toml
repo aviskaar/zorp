@@ -4,6 +4,7 @@ version = "0.2.1"
 edition = "2021"
 description = "Coding agent built on the zorp core."
 license = "MIT"
+default-run = "zorp-agent"
 
 [dependencies]
 crossterm = "0.27"

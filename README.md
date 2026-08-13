@@ -79,8 +79,17 @@ Requires a recent stable Rust toolchain ([rustup.rs](https://rustup.rs)).
 ```bash
 git clone https://github.com/aviskaar/zorp.git
 cd zorp
-cargo build --workspace
+cargo build --workspace --exclude zorp-track
 ```
+
+> `zorp-track` (the research foundation) bundles DuckDB and pulls in
+> LanceDB/Arrow/DataFusion, which take 20-30 minutes to compile from
+> scratch on a cold cache. The command above skips it, which is enough
+> for the core `zorp` and `zorp-agent` binaries below. Drop
+> `--exclude zorp-track` (plain `cargo build --workspace`, or
+> `cargo build --workspace --features research` for `zorp-agent`) only
+> once, if you need the `validate`/`investigate`/`co-write`/`deliver`
+> capabilities — budget time for that first build.
 
 Run the core transport directly:
 
@@ -98,14 +107,48 @@ cargo run -p zorp-agent -- "<task>"
 ```
 
 `./install.sh` builds release binaries and installs `zorp` and
-`zorp-agent` to `~/.local/bin`.
+`zorp-agent` to `~/.local/bin`. It builds the full workspace (including
+`zorp-track`), so expect the same 20-30 minute cold-build cost noted
+above on first run.
+
+### Using validate, investigate, co-write, deliver
+
+Two of the four need an MCP tool connected first (behind `zorp-agent`'s
+`research` feature): `validate` needs any MCP tool, to search for
+evidence before scoring a question; `deliver` specifically needs a
+huiban-prefixed tool, to match a draft against real venues (see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). Connect one with
+`--mcp`, or configure it once in `.zorp/mcp.toml`:
+
+```bash
+# any MCP server satisfies validate; here, a real search server
+cargo run -p zorp-agent --features research -- --yes \
+  --mcp "stdio:brave-search:npx:-y:@modelcontextprotocol/server-brave-search" \
+  validate "Should we migrate off Kafka to Redpanda?"
+```
+
+```toml
+# .zorp/mcp.toml
+[[server]]
+name = "brave-search"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-brave-search"]
+trust = "sandbox"
+```
+
+Tools show up prefixed `mcp__<server>__<tool>`, so a server named
+`huiban` satisfies `deliver`'s check. Without any MCP tool connected,
+`validate` fails fast with "no search-capable tool is available" and
+`deliver` with "no huiban-prefixed tool is available", rather than
+running with no evidence.
 
 ## Development
 
 ```bash
-cargo build --workspace   # build everything
-cargo test --workspace    # 538 tests across all crates
-cargo run -p zorp-eval -- --help   # evaluation harness
+cargo build --workspace --exclude zorp-track   # fast path, see note above
+cargo test --workspace --exclude zorp-track    # matches CI; see CONTRIBUTING.md for full coverage
+cargo run -p zorp-eval -- --help               # evaluation harness
 ```
 
 Working in this repo? Read [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md)
