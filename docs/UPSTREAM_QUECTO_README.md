@@ -236,7 +236,7 @@ quecto-agent --version
 
 Interactive chat with the rotating loading verbs:
 
-![quecto-agent chat in action](quecto-agent-in-action-verbs.png)
+![quecto-agent chat in action](upstream-quecto/quecto-agent-in-action-verbs.png)
 
 **Chat REPL commands** (type inside an active `chat` session):
 

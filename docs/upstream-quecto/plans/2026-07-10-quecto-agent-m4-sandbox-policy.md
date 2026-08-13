@@ -12,7 +12,7 @@
 
 - Build on the completed M3 APIs exactly as present in the working tree: `Context::changes`, `WriteFile`, `ApplyPatch`, and their built-in registration must land before M4 implementation starts.
 - Preserve unrelated user changes. Stage and commit only files named by each task.
-- Run every repository shell command through `rtk`, per `AGENTS.md` → `/Users/adityakarnam/.codex/RTK.md`.
+- Run every repository shell command through `rtk`, per `AGENTS.md` → local RTK config.
 - M4 supports Unix only. Put `compile_error!("quecto-agent M4 requires a Unix target")` behind `#[cfg(not(unix))]` in `sandbox.rs`.
 - The fixed 120-second timeout and fixed built-in policy are not configurable. Flavor configuration remains M7.
 - Policy is enforced in `Agent`, never inside individual edit tools. All tool calls, including custom tools, must receive an explicit decision; unknown tool names are denied.

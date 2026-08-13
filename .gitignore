@@ -7,6 +7,8 @@ __pycache__/
 evals/**/__pycache__/
 evals/**/*.pyc
 scratchpad/
+.env
+.env.*
 
 # Local-only reference material (not redistributed — see NOTICE.md)
 /reference/
