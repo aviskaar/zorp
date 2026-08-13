@@ -8,7 +8,7 @@ Judge : deterministic verify.sh
 ════════════════════════════════════════
  Task: tb_01_git_conflict_resolution
 ════════════════════════════════════════
-  [setup] Initialized empty Git repository in /Users/adityakarnam/Projects/quecto/evals/results/workspace_tb_01_git_conflict_resolution/.git/
+  [setup] Initialized empty Git repository in <workspace>/evals/results/workspace_tb_01_git_conflict_resolution/.git/
   [setup] [main (root-commit) 88c84d9] init
   [setup]  1 file changed, 1 insertion(+)
   [setup]  create mode 100644 file.txt

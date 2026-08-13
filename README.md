@@ -137,10 +137,11 @@ project's documentation and design history for reference.
 
 ## Contributing
 
-This repo is currently private and under active early-stage development,
-so it's not yet set up for external contributions. That will change as
-the project matures. Check back, or reach out via
-[Aviskaar](https://github.com/aviskaar) in the meantime.
+Contributions are welcome. zorp is early and still moving fast, so it's
+worth opening an issue to discuss larger changes before sending a PR.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and PR
+guidelines, and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community
+expectations.
 
 ## License
 

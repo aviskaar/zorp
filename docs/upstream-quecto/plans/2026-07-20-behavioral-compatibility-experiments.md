@@ -2137,7 +2137,7 @@ Simpler direct check — add a temporary `#[test]` is unnecessary; instead confi
 ```bash
 python3 - <<'EOF'
 import yaml
-with open("/Users/adityakarnam/Projects/api-compatible-behavior-incompatible-paper/experiments/manifests/pilot-reasoning-mode-v1.yaml") as f:
+with open("<experiments-repo>/manifests/pilot-reasoning-mode-v1.yaml") as f:
     data = yaml.safe_load(f)
 assert data["experiment"]["repetitions"] == 3
 assert data["reference"]["reasoning_mode"] == "high"
