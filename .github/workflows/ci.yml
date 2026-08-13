@@ -24,8 +24,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Test workspace
-        run: cargo test --workspace
-
-      - name: Test research feature (zorp-agent)
-        run: cargo test -p zorp-agent --features research
+      # zorp-track pulls in duckdb (bundled — compiles DuckDB's C++ amalgamation
+      # from source) and lancedb (Arrow + DataFusion transitively). That single
+      # crate dominates cold-build time on shared runners. It's excluded here so
+      # CI stays fast; the research feature (which depends on zorp-track) is
+      # covered by `cargo test -p zorp-agent --features research`, required
+      # locally before considering research-feature changes done (see CLAUDE.md).
+      - name: Test workspace (excluding zorp-track)
+        run: cargo test --workspace --exclude zorp-track
