@@ -17,6 +17,11 @@ something that's already been decided against.
 
 ## Development setup
 
+Requires `protoc` (the Protocol Buffers compiler), needed to build the
+`lance-encoding` dependency. Install it with your package manager, e.g.
+`brew install protobuf` (macOS) or `apt-get install protobuf-compiler`
+(Debian/Ubuntu).
+
 ```bash
 git clone https://github.com/aviskaar/zorp.git
 cd zorp
