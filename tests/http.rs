@@ -27,6 +27,35 @@ fn raw_non_2xx_is_err() {
 }
 
 #[test]
+fn raw_error_includes_body() {
+    // The server's error body (where providers explain what went wrong) must
+    // reach the caller, not just the bare status code.
+    let base = mock(
+        401,
+        "application/json",
+        r#"{"error":{"message":"invalid api key"}}"#,
+    );
+    let url = zorp::join_url(&base, "chat/completions");
+    let err = zorp::zorp_raw(&url, &[], json!({})).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("401"), "missing status in: {msg}");
+    assert!(msg.contains("invalid api key"), "missing body in: {msg}");
+}
+
+#[test]
+fn raw_error_body_is_capped() {
+    // A huge error body must not balloon the error message.
+    let big = "x".repeat(64 * 1024);
+    let base = mock(500, "text/plain", &big);
+    let url = zorp::join_url(&base, "chat/completions");
+    let err = zorp::zorp_raw(&url, &[], json!({})).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("500"), "missing status in: {msg}");
+    assert!(msg.contains("xxx"), "missing body prefix in: {msg}");
+    assert!(msg.len() < 16 * 1024, "uncapped error message: {} bytes", msg.len());
+}
+
+#[test]
 fn to_extracts_content() {
     let base = mock(
         200,

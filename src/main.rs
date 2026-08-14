@@ -24,10 +24,12 @@ fn answer(
         headers.push(("Authorization", a.as_str()));
     }
     if stream {
+        // Lock stdout once for the whole stream instead of per token.
+        let mut out = io::stdout().lock();
         zorp::zorp_stream(&url, &headers, body, |delta| {
             if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
-                print!("{t}");
-                let _ = io::stdout().flush();
+                let _ = write!(out, "{t}");
+                let _ = out.flush();
             }
         })?;
     } else {

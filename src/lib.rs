@@ -4,6 +4,7 @@
 //! binary and future companion crates.
 
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Shared boxed error: every fallible fn returns this. Both ureq::Error and
@@ -50,26 +51,69 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
     if data == "[DONE]" {
         return None;
     }
-    let chunk: Value = serde_json::from_str(data).ok()?;
-    chunk.get("choices")?.get(0)?.get("delta").cloned()
+    let mut chunk: Value = serde_json::from_str(data).ok()?;
+    // Take the delta out of the parsed chunk instead of deep-cloning it; the
+    // rest of the chunk is dropped anyway.
+    Some(chunk.get_mut("choices")?.get_mut(0)?.get_mut("delta")?.take())
 }
 
+/// Shared HTTP agent: built once, cloned per use (a cheap Arc clone). Reusing
+/// one agent keeps the connection pool and TLS config alive across calls, so
+/// keep-alive works and each request avoids a fresh TLS handshake. The config
+/// is fixed (no per-call knobs), so a single static is enough.
+static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(60))
-        .timeout_read(Duration::from_secs(60))
-        .build()
+    AGENT
+        .get_or_init(|| {
+            ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(60))
+                .timeout_read(Duration::from_secs(60))
+                .build()
+        })
+        .clone()
+}
+
+/// How much of a non-2xx response body gets included in the error message.
+/// Enough for any real provider error, small enough to never bloat a message.
+const ERROR_BODY_CAP: u64 = 8 * 1024;
+
+/// Send the request; on a non-2xx status, read the response body (capped) and
+/// include it in the error. Providers put the useful part ("invalid api key",
+/// "model not found", "context length exceeded") in the body, and ureq's own
+/// Display drops it.
+fn send_json(req: ureq::Request, body: Value) -> Result<ureq::Response, BoxErr> {
+    match req.send_json(body) {
+        Ok(resp) => Ok(resp),
+        Err(ureq::Error::Status(code, resp)) => {
+            let url = resp.get_url().to_string();
+            let mut bytes = Vec::new();
+            use std::io::Read;
+            let _ = resp
+                .into_reader()
+                .take(ERROR_BODY_CAP)
+                .read_to_end(&mut bytes);
+            let text = String::from_utf8_lossy(&bytes);
+            let text = text.trim();
+            if text.is_empty() {
+                Err(format!("{url}: status code {code}").into())
+            } else {
+                Err(format!("{url}: status code {code}: {text}").into())
+            }
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Buffered primitive: POST an arbitrary JSON body to an arbitrary URL with
 /// arbitrary headers; return the full parsed response. No path/auth/shape opinions.
-/// `ureq` returns `Err` on non-2xx status, so no explicit status check is needed.
+/// A non-2xx status becomes an error that includes the response body.
 pub fn zorp_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
     let mut req = agent().post(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
-    let resp = req.send_json(body)?;
+    let resp = send_json(req, body)?;
     let value: Value = resp.into_json()?;
     Ok(value)
 }
@@ -134,47 +178,49 @@ pub fn zorp_stream(
     for (k, v) in headers {
         req = req.set(k, v);
     }
-    let resp = req.send_json(body)?;
+    let resp = send_json(req, body)?;
 
     use std::io::BufRead;
-    let reader = std::io::BufReader::new(resp.into_reader());
-    let mut lines = reader.lines();
+    let mut reader = std::io::BufReader::new(resp.into_reader());
+    // One line buffer reused across frames: read_line + clear instead of a
+    // fresh String allocation per SSE frame.
+    let mut line = String::new();
     let mut acc = String::new();
 
     // Find the first non-empty line to decide SSE vs buffered.
-    let mut first = None;
-    for line in lines.by_ref() {
-        let line = line?;
+    let first = loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            // An empty 200 body must not silently succeed. Surface it (the
+            // spec's "never silent-empty" guarantee).
+            return Err("empty response body".into());
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        // SSE comment/heartbeat lines start with ':' — some proxies emit one
+        // SSE comment/heartbeat lines start with ':'. Some proxies emit one
         // before the first data frame. Skip them so they don't trigger the
         // non-SSE fallback (a stray comment must not hard-fail a real stream).
         if trimmed.starts_with(':') {
             continue;
         }
-        first = Some(line);
-        break;
-    }
-    let first = match first {
-        // An empty 200 body must not silently succeed — surface it (the spec's
-        // "never silent-empty" guarantee).
-        None => return Err("empty response body".into()),
-        Some(f) => f,
+        break trimmed;
     };
 
-    if let Some(payload) = first.trim().strip_prefix("data:") {
+    if let Some(payload) = first.strip_prefix("data:") {
         // SSE path: process the first frame, then the rest.
         handle_frame(payload.trim(), &mut acc, &mut on_delta);
-        for line in lines {
-            let line = line?;
-            let line = line.trim();
-            if line.is_empty() {
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            if let Some(payload) = line.strip_prefix("data:") {
+            if let Some(payload) = trimmed.strip_prefix("data:") {
                 let payload = payload.trim();
                 if payload == "[DONE]" {
                     break;
@@ -184,10 +230,16 @@ pub fn zorp_stream(
         }
     } else {
         // Non-SSE fallback: reassemble the whole body and parse as buffered.
-        let mut whole = first;
-        for line in lines {
+        // The joining '\n' can double up with read_line's kept newline; JSON
+        // ignores the extra whitespace.
+        let mut whole = first.to_string();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
             whole.push('\n');
-            whole.push_str(&line?);
+            whole.push_str(&line);
         }
         let resp: Value = serde_json::from_str(&whole)?;
         let content = extract_content(&resp)?;
