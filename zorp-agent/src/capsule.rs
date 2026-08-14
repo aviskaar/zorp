@@ -152,9 +152,10 @@ impl CapsuleRegistry {
         CapsuleRegistry { capsules }
     }
 
-    /// Look up a capsule by name, case-insensitively.
+    /// Look up a capsule by name, case-insensitively. The map is keyed by
+    /// lowercased name, so this is a direct lookup.
     pub fn get(&self, name: &str) -> Option<&Capsule> {
-        self.capsules.values().find(|c| c.name.eq_ignore_ascii_case(name))
+        self.capsules.get(&name.to_lowercase())
     }
 
     /// All discovered capsule names, in each capsule's originally-declared

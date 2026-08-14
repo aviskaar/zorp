@@ -47,6 +47,7 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         provider: None,
         max_tokens: None,
         max_steps: Some(10),
+        reasoning_mode: None,
         auto_verify: None,
         auto_approve: None,
         system_prompt: None,

@@ -437,13 +437,6 @@ impl Agent {
         }
         let allow = |name: &str| enabled.is_none_or(|list| list.iter().any(|n| n == name));
 
-        // Only temporary for this branch; invoke_subagent has been replaced with spawn_subagent in subagent.rs
-        // Wait, no! We replaced InvokeSubagent with SpawnSubagent struct earlier, but the plan
-        // assumes InvokeSubagent was NOT touched!
-        // Task 5 said: "Change `InvokeSubagent`... wait, in docs it said 'Change `InvokeSubagent` to `SpawnSubagent`? No, Task 5 step 4 says:
-        // "Add to `zorp-agent/src/tools/subagent.rs`: pub struct SpawnSubagent { ... }"
-        // OH! I completely missed that InvokeSubagent was supposed to stay! I replaced it!
-        // Let's just restore the code that registers SpawnSubagent for now and fix it later if needed.
         let pool = crate::tools::subagent::SubagentPool::new();
         if allow("spawn_subagent") {
             self.registry

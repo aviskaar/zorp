@@ -4,6 +4,19 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Lowercase hex SHA-256 of the given text.
+pub fn content_hash(text: &str) -> String {
+    use std::fmt::Write;
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
 /// True if `name` is a single normal path component: no separators, no `..`,
 /// no absolute paths. Applied to `--flavor` names (and flavor scaffolding) so
 /// a name cannot escape the flavors directories and load an arbitrary
@@ -14,29 +27,6 @@ pub fn is_valid_flavor_name(name: &str) -> bool {
         (components.next(), components.next()),
         (Some(std::path::Component::Normal(_)), None)
     )
-}
-
-fn validate_flavor_name(flavor_name: Option<&str>) -> Result<(), BoxErr> {
-    if let Some(name) = flavor_name {
-        if !is_valid_flavor_name(name) {
-            return Err(format!(
-                "invalid flavor name '{name}': must be a single path component, no '/' or '..'"
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
-/// Lowercase hex SHA-256 of the given text.
-pub fn content_hash(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 /// A flavor manifest. Every scalar field is optional so manifests can be merged
@@ -50,6 +40,7 @@ pub struct Flavor {
     pub provider: Option<crate::provider::Provider>,
     pub max_tokens: Option<u32>,
     pub max_steps: Option<usize>,
+    pub reasoning_mode: Option<crate::reasoning::ReasoningMode>,
     pub auto_verify: Option<bool>,
     pub auto_approve: Option<bool>,
     pub system_prompt: Option<String>,
@@ -62,33 +53,23 @@ pub struct Flavor {
     pub verify: VerifySection,
 }
 
-/// A flavor plus additive reasoning configuration.
+/// A flavor with the reasoning mode lifted out of the manifest fields, kept
+/// for source compatibility with callers that read `.reasoning_mode` beside
+/// the plain `Flavor`.
 #[derive(Clone, Debug, Default)]
 pub struct ConfiguredFlavor {
     pub flavor: Flavor,
     pub reasoning_mode: Option<crate::reasoning::ReasoningMode>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConfiguredFlavorDocument {
-    name: Option<String>,
-    model: Option<String>,
-    base_url: Option<String>,
-    provider: Option<crate::provider::Provider>,
-    max_tokens: Option<u32>,
-    max_steps: Option<usize>,
-    reasoning_mode: Option<crate::reasoning::ReasoningMode>,
-    auto_verify: Option<bool>,
-    auto_approve: Option<bool>,
-    system_prompt: Option<String>,
-    system_prompt_file: Option<String>,
-    #[serde(default)]
-    tools: ToolsSection,
-    #[serde(default)]
-    approval: ApprovalSection,
-    #[serde(default)]
-    verify: VerifySection,
+impl From<Flavor> for ConfiguredFlavor {
+    fn from(mut flavor: Flavor) -> Self {
+        let reasoning_mode = flavor.reasoning_mode.take();
+        Self {
+            flavor,
+            reasoning_mode,
+        }
+    }
 }
 
 impl std::ops::Deref for ConfiguredFlavor {
@@ -158,6 +139,7 @@ impl Flavor {
             provider: or(self.provider, over.provider),
             max_tokens: or(self.max_tokens, over.max_tokens),
             max_steps: or(self.max_steps, over.max_steps),
+            reasoning_mode: or(self.reasoning_mode, over.reasoning_mode),
             auto_verify: or(self.auto_verify, over.auto_verify),
             auto_approve: or(self.auto_approve, over.auto_approve),
             system_prompt: or(self.system_prompt, over.system_prompt),
@@ -210,39 +192,17 @@ impl Flavor {
 }
 
 impl ConfiguredFlavor {
-    /// Parse a manifest that may include additive reasoning configuration.
+    /// Parse a manifest, lifting `reasoning_mode` beside the plain flavor.
     pub fn parse(text: &str) -> Result<Self, BoxErr> {
-        let document: ConfiguredFlavorDocument = toml::from_str(text)?;
-        Ok(Self {
-            flavor: Flavor {
-                name: document.name,
-                model: document.model,
-                base_url: document.base_url,
-                provider: document.provider,
-                max_tokens: document.max_tokens,
-                max_steps: document.max_steps,
-                auto_verify: document.auto_verify,
-                auto_approve: document.auto_approve,
-                system_prompt: document.system_prompt,
-                system_prompt_file: document.system_prompt_file,
-                tools: document.tools,
-                approval: document.approval,
-                verify: document.verify,
-            },
-            reasoning_mode: document.reasoning_mode,
-        })
+        Ok(Flavor::parse(text)?.into())
     }
 
     /// Load a configured manifest from a file, if it exists.
     pub fn load(path: &Path) -> Result<Option<Self>, BoxErr> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Ok(Some(Self::parse(&text)?)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(Box::new(e)),
-        }
+        Ok(Flavor::load(path)?.map(Self::from))
     }
 
-    /// Merge `over` on top of `self`, including additive reasoning config.
+    /// Merge `over` on top of `self`, including the reasoning mode.
     pub fn merge(self, over: Self) -> Self {
         Self {
             flavor: self.flavor.merge(over.flavor),
@@ -295,7 +255,8 @@ pub fn layer_paths(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Vec<(S
 }
 
 /// Concatenate the raw text of existing project-scope layer files (in layer
-/// order). Returns `None` when no project flavor file exists.
+/// order). Returns `None` when no project flavor file exists or the flavor
+/// name is invalid.
 pub fn project_raw(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Option<String> {
     if flavor_name.is_some_and(|name| !is_valid_flavor_name(name)) {
         return None;
@@ -316,26 +277,22 @@ pub fn project_raw(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Option
     }
 }
 
-/// Merge every existing layer, low → high precedence, into one flavor.
-pub fn resolve(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Result<Flavor, BoxErr> {
-    validate_flavor_name(flavor_name)?;
-    let mut merged = Flavor::default();
-    for (_scope, path) in layer_paths(home, cwd, flavor_name) {
-        if let Some(layer) = Flavor::load(&path)? {
-            merged = merged.merge(layer);
-        }
-    }
-    Ok(merged)
-}
-
-/// Resolve user-scope and project-scope layers separately so a caller can apply
-/// project command-bearing fields only when trusted (M7b).
-pub fn resolve_scoped(
+/// The one core resolver: merge existing layers into per-scope flavors,
+/// low → high precedence within each scope. Every public resolver is a thin
+/// wrapper over this.
+fn resolve_scoped_core(
     home: &Path,
     cwd: &Path,
     flavor_name: Option<&str>,
 ) -> Result<(Flavor, Flavor), BoxErr> {
-    validate_flavor_name(flavor_name)?;
+    if let Some(name) = flavor_name {
+        if !is_valid_flavor_name(name) {
+            return Err(format!(
+                "invalid flavor name '{name}': must be a single path component, no '/' or '..'"
+            )
+            .into());
+        }
+    }
     let mut user = Flavor::default();
     let mut project = Flavor::default();
     for (scope, path) in layer_paths(home, cwd, flavor_name) {
@@ -349,20 +306,29 @@ pub fn resolve_scoped(
     Ok((user, project))
 }
 
-/// Merge every configured layer, including additive reasoning settings.
+/// Merge every existing layer, low → high precedence, into one flavor.
+pub fn resolve(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Result<Flavor, BoxErr> {
+    let (user, project) = resolve_scoped_core(home, cwd, flavor_name)?;
+    Ok(user.merge(project))
+}
+
+/// Resolve user-scope and project-scope layers separately so a caller can apply
+/// project command-bearing fields only when trusted (M7b).
+pub fn resolve_scoped(
+    home: &Path,
+    cwd: &Path,
+    flavor_name: Option<&str>,
+) -> Result<(Flavor, Flavor), BoxErr> {
+    resolve_scoped_core(home, cwd, flavor_name)
+}
+
+/// Merge every configured layer, including the reasoning mode.
 pub fn resolve_configured(
     home: &Path,
     cwd: &Path,
     flavor_name: Option<&str>,
 ) -> Result<ConfiguredFlavor, BoxErr> {
-    validate_flavor_name(flavor_name)?;
-    let mut merged = ConfiguredFlavor::default();
-    for (_scope, path) in layer_paths(home, cwd, flavor_name) {
-        if let Some(layer) = ConfiguredFlavor::load(&path)? {
-            merged = merged.merge(layer);
-        }
-    }
-    Ok(merged)
+    Ok(resolve(home, cwd, flavor_name)?.into())
 }
 
 /// Resolve configured user and project layers separately.
@@ -371,18 +337,8 @@ pub fn resolve_scoped_configured(
     cwd: &Path,
     flavor_name: Option<&str>,
 ) -> Result<(ConfiguredFlavor, ConfiguredFlavor), BoxErr> {
-    validate_flavor_name(flavor_name)?;
-    let mut user = ConfiguredFlavor::default();
-    let mut project = ConfiguredFlavor::default();
-    for (scope, path) in layer_paths(home, cwd, flavor_name) {
-        if let Some(layer) = ConfiguredFlavor::load(&path)? {
-            match scope {
-                Scope::User => user = user.merge(layer),
-                Scope::Project => project = project.merge(layer),
-            }
-        }
-    }
-    Ok((user, project))
+    let (user, project) = resolve_scoped_core(home, cwd, flavor_name)?;
+    Ok((user.into(), project.into()))
 }
 
 #[cfg(test)]
@@ -436,6 +392,16 @@ required = ["test"]
             f.reasoning_mode,
             Some(crate::reasoning::ReasoningMode::High)
         );
+    }
+
+    #[test]
+    fn configured_parse_lifts_reasoning_mode_out_of_flavor_fields() {
+        let f = ConfiguredFlavor::parse("reasoning_mode = \"high\"").unwrap();
+        assert_eq!(
+            f.reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+        assert_eq!(f.flavor.reasoning_mode, None);
     }
 
     #[test]
