@@ -247,7 +247,8 @@ fn is_image_extension(path: &Path) -> bool {
 /// Parse `@image <path>` or `@img <path>` references from text.
 /// Returns (cleaned_text, vec of (image_data, mime_type)).
 fn extract_image_refs(text: &str, cwd: &Path) -> (String, Vec<(Vec<u8>, String)>) {
-    let re = regex::Regex::new(r"@(?:image|img)\s+(\S+)").unwrap();
+    static IMAGE_REF: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = IMAGE_REF.get_or_init(|| regex::Regex::new(r"@(?:image|img)\s+(\S+)").unwrap());
     let mut images = Vec::new();
     let cleaned = re.replace_all(text, |caps: &regex::Captures| {
         let raw_path = &caps[1];
@@ -315,6 +316,13 @@ fn segments_to_parts(segments: &[Segment], cwd: &Path) -> Vec<zorp_agent::Conten
 }
 
 fn scaffold(name: &str) {
+    if !zorp_agent::is_valid_flavor_name(name) {
+        eprintln!(
+            "zorp-agent: {name} is not a valid flavor name \
+             (must be a single path component, no '/' or '..')"
+        );
+        std::process::exit(1);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let dir = cwd.join(".zorp").join("flavors");
     let path = dir.join(format!("{name}.toml"));
@@ -416,7 +424,12 @@ fn gated_flavor(
     }
     let trusted = auto_approve || prompt_trust(project);
     if trusted {
-        store.trust(&hash);
+        if let Err(e) = store.trust(&hash) {
+            eprintln!(
+                "zorp-agent: could not persist trust decision ({e}); \
+                 you will be asked again next run"
+            );
+        }
     } else {
         eprintln!(
             "zorp-agent: project flavor not trusted; its verify/approval settings are ignored"
@@ -559,6 +572,8 @@ fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, St
 
     if model_name.is_empty() && base_url.contains("localhost:11434") {
         let tags_url = base_url.replace("/v1", "/api/tags");
+        // Plain GET; the zorp core only exposes POST-a-JSON-body helpers
+        // (zorp_raw), so this one call keeps a direct ureq dependency.
         if let Ok(res) = ureq::get(&tags_url).call() {
             if let Ok(json) = res.into_json::<OllamaTagsResponse>() {
                 if !json.models.is_empty() {
@@ -1173,6 +1188,59 @@ Images:
   Drag & drop        drag an image file into the terminal
   --image <path>     attach image in one-shot mode (repeatable)";
 
+/// Disables terminal raw mode on drop, so a panic anywhere in the chat loop
+/// cannot leave the user's shell with echo off.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Option<RawModeGuard> {
+        crossterm::terminal::enable_raw_mode()
+            .ok()
+            .map(|()| RawModeGuard)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
+/// Line-based chat input loop, used for piped stdin and as the fallback when
+/// raw mode cannot be enabled on a TTY.
+#[allow(clippy::too_many_arguments)]
+fn chat_line_loop(
+    agent: &mut Agent,
+    store: &Option<Store>,
+    session_id: &str,
+    cwd: &Path,
+    model_name: &str,
+    capsules: &mut CapsuleState,
+    out: &mut dyn Renderer,
+) {
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    loop {
+        print!("› ");
+        let _ = std::io::stdout().flush();
+        let Some(line) = lines.next() else { break };
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let exit = handle_chat_command(
+            &line, agent, store, session_id, cwd, model_name, capsules, out,
+        );
+        if exit {
+            break;
+        }
+    }
+    if let Some(s) = store {
+        let _ = s.set_status(session_id, "done");
+    }
+    out.notice("bye");
+}
+
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -1269,35 +1337,16 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let mut out = LineRenderer::new(std::io::stdout(), color);
     out.notice("zorp-agent chat — /help for commands, /exit to quit");
 
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        let mut lines = stdin.lock().lines();
-        loop {
-            print!("› ");
-            let _ = std::io::stdout().flush();
-            let Some(line) = lines.next() else { break };
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            let exit = handle_chat_command(
-                &line,
-                &mut agent,
-                &store,
-                &session_id,
-                &cwd,
-                &model_name,
-                &mut capsules,
-                &mut out,
-            );
-            if exit {
-                break;
-            }
-        }
-        if let Some(s) = &store {
-            let _ = s.set_status(&session_id, "done");
-        }
-        out.notice("bye");
+    if !std::io::stdin().is_terminal() {
+        chat_line_loop(
+            &mut agent,
+            &store,
+            &session_id,
+            &cwd,
+            &model_name,
+            &mut capsules,
+            &mut out,
+        );
         return;
     }
 
@@ -1305,7 +1354,21 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let mut image_counter: usize = 0;
     let mut redraw = true;
 
-    crossterm::terminal::enable_raw_mode().unwrap();
+    // The guard restores the terminal even if the loop below panics. When raw
+    // mode is unavailable, fall back to plain line input instead of dying.
+    let Some(_raw_guard) = RawModeGuard::enable() else {
+        eprintln!("zorp-agent: could not enable raw terminal mode; using line input");
+        chat_line_loop(
+            &mut agent,
+            &store,
+            &session_id,
+            &cwd,
+            &model_name,
+            &mut capsules,
+            &mut out,
+        );
+        return;
+    };
     #[cfg(feature = "clipboard")]
     let mut clipboard = arboard::Clipboard::new().ok();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
@@ -1409,7 +1472,12 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                 }
                             }
 
-                            crossterm::terminal::enable_raw_mode().unwrap();
+                            if crossterm::terminal::enable_raw_mode().is_err() {
+                                out.notice(
+                                    "(could not re-enable raw terminal mode; exiting chat)",
+                                );
+                                break;
+                            }
                             let _ = crossterm::execute!(
                                 std::io::stdout(),
                                 crossterm::event::EnableBracketedPaste

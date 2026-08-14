@@ -45,7 +45,9 @@ pub const DEFAULT_ANTHROPIC_MAX_TOKENS: u32 = 4096;
 /// `system`-role messages are pulled out into the top-level `system` field
 /// (Anthropic has no `system` role inside `messages`); tool calls become
 /// `tool_use` content blocks; tool results are re-roled to `user` messages
-/// carrying a `tool_result` content block.
+/// carrying a `tool_result` content block. Each non-system message's JSON is
+/// cached on the message after its first serialization, so only
+/// newly-appended messages are built on later turns.
 pub fn messages_to_anthropic_body(
     model: &str,
     messages: &[crate::model::Message],
@@ -55,61 +57,10 @@ pub fn messages_to_anthropic_body(
     let mut anthropic_messages: Vec<Value> = Vec::new();
 
     for m in messages {
-        match m.role.as_str() {
-            "system" => system_parts.push(m.text()),
-            "tool" => {
-                let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
-                anthropic_messages.push(json!({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": m.text(),
-                    }]
-                }));
-            }
-            "assistant" if !m.tool_calls.is_empty() => {
-                let mut blocks: Vec<Value> = Vec::new();
-                if !m.text().is_empty() {
-                    blocks.push(json!({"type": "text", "text": m.text()}));
-                }
-                for call in &m.tool_calls {
-                    blocks.push(json!({
-                        "type": "tool_use",
-                        "id": call.id,
-                        "name": call.name,
-                        "input": call.arguments,
-                    }));
-                }
-                anthropic_messages.push(json!({"role": "assistant", "content": blocks}));
-            }
-            _ => {
-                if m.has_images() {
-                    use base64::Engine;
-
-                    let blocks: Vec<Value> = m
-                        .content
-                        .iter()
-                        .map(|part| match part {
-                            ContentPart::Text(t) => json!({"type": "text", "text": t}),
-                            ContentPart::Image { data, mime_type } => {
-                                let b64 = base64::engine::general_purpose::STANDARD.encode(data);
-                                json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": mime_type,
-                                        "data": b64,
-                                    }
-                                })
-                            }
-                        })
-                        .collect();
-                    anthropic_messages.push(json!({"role": m.role, "content": blocks}));
-                } else {
-                    anthropic_messages.push(json!({"role": m.role, "content": m.text()}));
-                }
-            }
+        if m.role == "system" {
+            system_parts.push(m.text().into_owned());
+        } else {
+            anthropic_messages.push(anthropic_message_json(m));
         }
     }
 
@@ -122,6 +73,72 @@ pub fn messages_to_anthropic_body(
         body["system"] = json!(system_parts.join("\n\n"));
     }
     body
+}
+
+fn anthropic_message_json(m: &crate::model::Message) -> Value {
+    m.body_cache
+        .anthropic
+        .get_or_init(|| build_anthropic_message_json(m))
+        .clone()
+}
+
+fn build_anthropic_message_json(m: &crate::model::Message) -> Value {
+    match m.role.as_str() {
+        "tool" => {
+            let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
+            json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": m.text(),
+                }]
+            })
+        }
+        "assistant" if !m.tool_calls.is_empty() => {
+            let mut blocks: Vec<Value> = Vec::new();
+            if !m.text().is_empty() {
+                blocks.push(json!({"type": "text", "text": m.text()}));
+            }
+            for call in &m.tool_calls {
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": call.arguments,
+                }));
+            }
+            json!({"role": "assistant", "content": blocks})
+        }
+        _ => {
+            if m.has_images() {
+                let encoded = m.image_b64();
+                let mut image_idx = 0;
+                let blocks: Vec<Value> = m
+                    .content
+                    .iter()
+                    .map(|part| match part {
+                        ContentPart::Text(t) => json!({"type": "text", "text": t}),
+                        ContentPart::Image { mime_type, .. } => {
+                            let b64 = &encoded[image_idx];
+                            image_idx += 1;
+                            json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": mime_type,
+                                    "data": b64,
+                                }
+                            })
+                        }
+                    })
+                    .collect();
+                json!({"role": m.role, "content": blocks})
+            } else {
+                json!({"role": m.role, "content": m.text()})
+            }
+        }
+    }
 }
 
 /// Convert OpenAI-shaped function tool defs
@@ -350,6 +367,7 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: crate::model::BodyCache::default(),
         };
         let body = messages_to_anthropic_body("claude-x", &[m], 4096);
         let content = body["messages"][0]["content"].as_array().expect("array");
@@ -360,6 +378,61 @@ mod tests {
         assert_eq!(content[1]["source"]["type"], "base64");
         assert_eq!(content[1]["source"]["media_type"], "image/jpeg");
         assert!(content[1]["source"]["data"].as_str().unwrap().len() > 0);
+    }
+
+    #[test]
+    fn anthropic_body_cache_matches_fresh_serialization() {
+        let make = || {
+            vec![
+                Message::system("be terse"),
+                Message::user_multimodal(vec![
+                    ContentPart::Text("look".into()),
+                    ContentPart::Image {
+                        data: vec![0xFF, 0xD8, 1, 2],
+                        mime_type: "image/jpeg".into(),
+                    },
+                ]),
+                Message::assistant_with_calls(
+                    "checking",
+                    vec![ToolCall {
+                        id: "c1".into(),
+                        name: "read_file".into(),
+                        arguments: json!({"path": "a.rs"}),
+                    }],
+                ),
+                Message::tool_result("c1", "contents"),
+            ]
+        };
+        let cached = make();
+        let first = messages_to_anthropic_body("claude-x", &cached, 4096);
+        assert_eq!(first, messages_to_anthropic_body("claude-x", &cached, 4096));
+        assert_eq!(first, messages_to_anthropic_body("claude-x", &make(), 4096));
+        // Non-system messages carry a populated anthropic cache; the image
+        // encoding is memoized alongside it.
+        assert!(cached[1].body_cache.anthropic.get().is_some());
+        assert!(cached[1].body_cache.images.get().is_some());
+        assert!(cached[0].body_cache.anthropic.get().is_none());
+    }
+
+    #[test]
+    fn image_encoding_is_shared_between_provider_bodies() {
+        let messages = vec![Message::user_multimodal(vec![ContentPart::Image {
+            data: vec![9, 9, 9],
+            mime_type: "image/png".into(),
+        }])];
+        // Build the OpenAI-shaped body first: the image is encoded once.
+        let openai = crate::model::messages_to_body("m", &messages);
+        let encoded = messages[0].body_cache.images.get().unwrap()[0].clone();
+        // The Anthropic body reuses that same encoding.
+        let anthropic = messages_to_anthropic_body("claude-x", &messages, 4096);
+        assert_eq!(
+            anthropic["messages"][0]["content"][0]["source"]["data"],
+            json!(encoded)
+        );
+        let url = openai["messages"][0]["content"][0]["image_url"]["url"]
+            .as_str()
+            .unwrap();
+        assert!(url.ends_with(&encoded));
     }
 
     #[test]

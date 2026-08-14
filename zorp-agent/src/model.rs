@@ -1,5 +1,7 @@
 use crate::BoxErr;
 use serde_json::{json, Value};
+use std::borrow::Cow;
+use std::sync::OnceLock;
 
 /// A single part of a message's content.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +15,25 @@ pub enum ContentPart {
     },
 }
 
+/// Lazily-populated serialization caches for one message. Messages are
+/// immutable once pushed to the transcript, so each provider body shape and
+/// each image's base64 encoding is computed once and reused every turn.
+/// Cleared via `Message::invalidate_body_cache` when a message is rewritten
+/// (history elision). Equality ignores the cache: two messages with the same
+/// content compare equal whether or not either has been serialized.
+#[derive(Clone, Debug, Default)]
+pub struct BodyCache {
+    pub(crate) openai: OnceLock<Value>,
+    pub(crate) anthropic: OnceLock<Value>,
+    pub(crate) images: OnceLock<Vec<String>>,
+}
+
+impl PartialEq for BodyCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
 /// A single chat message in the running transcript.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Message {
@@ -21,6 +42,7 @@ pub struct Message {
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub reasoning_content: Option<String>,
+    pub(crate) body_cache: BodyCache,
 }
 
 impl Message {
@@ -31,6 +53,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
@@ -53,6 +76,7 @@ impl Message {
             tool_calls,
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
@@ -63,6 +87,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
@@ -73,19 +98,56 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
-    /// Concatenate all text parts into a single string.
-    pub fn text(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("")
+    /// Concatenate all text parts. Borrows when the message has zero or one
+    /// text part, which is every message in practice.
+    pub fn text(&self) -> Cow<'_, str> {
+        let mut texts = self.content.iter().filter_map(|p| match p {
+            ContentPart::Text(t) => Some(t.as_str()),
+            _ => None,
+        });
+        let Some(first) = texts.next() else {
+            return Cow::Borrowed("");
+        };
+        match texts.next() {
+            None => Cow::Borrowed(first),
+            Some(second) => {
+                let mut joined = String::with_capacity(first.len() + second.len());
+                joined.push_str(first);
+                joined.push_str(second);
+                for t in texts {
+                    joined.push_str(t);
+                }
+                Cow::Owned(joined)
+            }
+        }
+    }
+
+    /// Base64 encodings of this message's image parts, in part order. Encoded
+    /// once and shared by every provider body builder.
+    pub(crate) fn image_b64(&self) -> &[String] {
+        self.body_cache.images.get_or_init(|| {
+            use base64::Engine;
+            self.content
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Image { data, .. } => {
+                        Some(base64::engine::general_purpose::STANDARD.encode(data))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// Drop every cached serialization. Must be called whenever a message's
+    /// content is rewritten after it may have been serialized (history
+    /// elision).
+    pub(crate) fn invalidate_body_cache(&mut self) {
+        self.body_cache = BodyCache::default();
     }
 
     /// Whether this message contains any image parts.
@@ -140,6 +202,24 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+}
+
+/// Argument-object key carrying the raw argument string of a tool call whose
+/// JSON arguments failed to parse. Paired with `MALFORMED_ARGS_ERROR_KEY`.
+pub(crate) const MALFORMED_ARGS_KEY: &str = "__zorp_malformed_arguments";
+/// Argument-object key carrying the JSON parse error for malformed arguments.
+pub(crate) const MALFORMED_ARGS_ERROR_KEY: &str = "__zorp_arguments_parse_error";
+
+impl ToolCall {
+    /// If this call's arguments were an unparseable JSON string, return
+    /// `(parse_error, raw_arguments)` so the agent loop can surface the
+    /// failure to the model instead of dispatching garbage.
+    pub(crate) fn malformed_arguments(&self) -> Option<(&str, &str)> {
+        let obj = self.arguments.as_object()?;
+        let raw = obj.get(MALFORMED_ARGS_KEY)?.as_str()?;
+        let error = obj.get(MALFORMED_ARGS_ERROR_KEY)?.as_str()?;
+        Some((error, raw))
+    }
 }
 
 /// The assistant's turn: free text plus any tool calls it requested.
@@ -285,8 +365,16 @@ pub fn parse_assistant_completion(resp: &Value) -> Result<ModelCompletion, BoxEr
                 .unwrap_or("")
                 .to_string();
             // Native protocol encodes arguments as a JSON string; tolerate an object too.
+            // A string that fails to parse keeps the raw text plus the parse
+            // error so the loop can report the failure back to the model.
             let arguments = match func.get("arguments") {
-                Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+                Some(Value::String(s)) => match serde_json::from_str(s) {
+                    Ok(parsed) => parsed,
+                    Err(e) => json!({
+                        MALFORMED_ARGS_KEY: s,
+                        MALFORMED_ARGS_ERROR_KEY: e.to_string(),
+                    }),
+                },
                 Some(other) => other.clone(),
                 None => Value::Null,
             };
@@ -313,26 +401,36 @@ pub fn parse_assistant_completion(resp: &Value) -> Result<ModelCompletion, BoxEr
     })
 }
 
-/// Serialize the transcript into an OpenAI-compatible request body.
+/// Serialize the transcript into an OpenAI-compatible request body. Each
+/// message's JSON is cached on the message after its first serialization, so
+/// only newly-appended messages are built on later turns.
 pub fn messages_to_body(model: &str, messages: &[Message]) -> Value {
     let msgs: Vec<Value> = messages.iter().map(message_to_json).collect();
     json!({"model": model, "messages": msgs})
 }
 
 fn message_to_json(m: &Message) -> Value {
-    use base64::Engine;
+    m.body_cache
+        .openai
+        .get_or_init(|| build_message_json(m))
+        .clone()
+}
 
+fn build_message_json(m: &Message) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), json!(m.role));
 
     if m.has_images() {
+        let encoded = m.image_b64();
+        let mut image_idx = 0;
         let blocks: Vec<Value> = m
             .content
             .iter()
             .map(|part| match part {
                 ContentPart::Text(t) => json!({"type": "text", "text": t}),
-                ContentPart::Image { data, mime_type } => {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+                ContentPart::Image { mime_type, .. } => {
+                    let b64 = &encoded[image_idx];
+                    image_idx += 1;
                     json!({
                         "type": "image_url",
                         "image_url": {
@@ -348,7 +446,7 @@ fn message_to_json(m: &Message) -> Value {
         let content = if let Some(reasoning) = &m.reasoning_content {
             format!("<think>\n{}\n</think>\n{}", reasoning, text)
         } else {
-            text
+            text.into_owned()
         };
         obj.insert("content".into(), json!(content));
     }
@@ -489,6 +587,22 @@ impl ConfiguredHttpModel {
     }
 }
 
+/// The `max_tokens` actually sent to Anthropic. Anthropic rejects any request
+/// where `max_tokens <= thinking.budget_tokens`, so when thinking is enabled
+/// the configured value is raised to the budget plus headroom for the visible
+/// answer.
+fn anthropic_max_tokens(
+    configured: Option<u32>,
+    reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+) -> u32 {
+    let mut max_tokens = configured.unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+    if let Some(budget) = reasoning_mode.and_then(crate::reasoning::anthropic_thinking_budget) {
+        let budget = u32::try_from(budget).unwrap_or(u32::MAX - 1024);
+        max_tokens = max_tokens.max(budget.saturating_add(1024));
+    }
+    max_tokens
+}
+
 fn effective_reasoning_mode(
     default_mode: Option<crate::reasoning::ReasoningMode>,
     options: &crate::reasoning::CompletionOptions,
@@ -587,9 +701,7 @@ impl Model for HttpModel {
                 )
             }
             crate::provider::Provider::Anthropic => {
-                let max_tokens = self
-                    .max_tokens
-                    .unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+                let max_tokens = anthropic_max_tokens(self.max_tokens, reasoning_mode);
                 let mut body =
                     crate::provider::messages_to_anthropic_body(&self.model, messages, max_tokens);
                 if !tools.is_empty() {
@@ -1045,7 +1157,12 @@ mod tests {
         let (sent_body, sent_headers) = request_rx.recv().unwrap();
 
         assert_eq!(sent_body["model"], "claude-x");
-        assert_eq!(sent_body["max_tokens"], 1234);
+        // Anthropic requires max_tokens > thinking.budget_tokens: the small
+        // configured max_tokens (1234) must be raised above the 24000 budget.
+        let sent_max_tokens = sent_body["max_tokens"].as_u64().unwrap();
+        let sent_budget = sent_body["thinking"]["budget_tokens"].as_u64().unwrap();
+        assert!(sent_max_tokens > sent_budget);
+        assert_eq!(sent_max_tokens, 24000 + 1024);
         assert_eq!(
             sent_body["thinking"],
             json!({"type": "enabled", "budget_tokens": 24000})
@@ -1162,6 +1279,86 @@ mod tests {
     #[test]
     fn errors_on_missing_choices() {
         assert!(parse_assistant(&json!({"error":"x"})).is_err());
+    }
+
+    #[test]
+    fn malformed_tool_call_arguments_keep_raw_string_and_error() {
+        let r = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"call_1","function":{"name":"read_file","arguments":"{not json"}}
+        ]},"finish_reason":"tool_calls"}]});
+        let m = parse_assistant(&r).unwrap();
+        let (error, raw) = m.tool_calls[0].malformed_arguments().unwrap();
+        assert_eq!(raw, "{not json");
+        assert!(!error.is_empty());
+    }
+
+    #[test]
+    fn well_formed_arguments_are_not_marked_malformed() {
+        let r = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":\"a.rs\"}"}}
+        ]},"finish_reason":"tool_calls"}]});
+        let m = parse_assistant(&r).unwrap();
+        assert!(m.tool_calls[0].malformed_arguments().is_none());
+    }
+
+    #[test]
+    fn anthropic_max_tokens_raised_above_thinking_budget() {
+        use crate::reasoning::ReasoningMode;
+        // Small configured value is raised above the budget plus headroom.
+        assert_eq!(
+            anthropic_max_tokens(Some(1234), Some(ReasoningMode::High)),
+            24000 + 1024
+        );
+        // No reasoning: the configured or default value is untouched.
+        assert_eq!(anthropic_max_tokens(Some(1234), None), 1234);
+        assert_eq!(
+            anthropic_max_tokens(None, None),
+            crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS
+        );
+        // Already-large values win over the clamp.
+        assert_eq!(
+            anthropic_max_tokens(Some(50_000), Some(ReasoningMode::High)),
+            50_000
+        );
+        // A small budget below the default leaves the default alone.
+        assert_eq!(
+            anthropic_max_tokens(None, Some(ReasoningMode::Minimal)),
+            crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS
+        );
+    }
+
+    #[test]
+    fn message_body_cache_matches_fresh_serialization() {
+        let make = || {
+            vec![
+                Message::system("s"),
+                Message::user_multimodal(vec![
+                    ContentPart::Text("look".into()),
+                    ContentPart::Image {
+                        data: vec![1, 2, 3, 4],
+                        mime_type: "image/png".into(),
+                    },
+                ]),
+                Message::assistant_with_calls(
+                    "",
+                    vec![ToolCall {
+                        id: "c1".into(),
+                        name: "t".into(),
+                        arguments: json!({"a": 1}),
+                    }],
+                ),
+                Message::tool_result("c1", "result"),
+            ]
+        };
+        let cached = make();
+        let first = messages_to_body("m", &cached);
+        // Every message is now cached, including its image encoding.
+        assert!(cached.iter().all(|m| m.body_cache.openai.get().is_some()));
+        assert!(cached[1].body_cache.images.get().is_some());
+        // A second pass over the cache and a fresh, cache-free serialization
+        // both produce byte-identical bodies.
+        assert_eq!(first, messages_to_body("m", &cached));
+        assert_eq!(first, messages_to_body("m", &make()));
     }
 
     #[test]
@@ -1318,6 +1515,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         };
         assert_eq!(m.text(), "hello world");
     }
@@ -1336,6 +1534,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         };
         assert_eq!(m.text(), "describe this: ");
         assert!(m.has_images());
@@ -1377,6 +1576,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         };
         let json = super::message_to_json(&m);
         let content = json["content"].as_array().expect("should be array");

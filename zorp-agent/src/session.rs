@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS message_images (
     data BLOB NOT NULL
 );";
 
+/// Per-session lookup indexes. Applied with IF NOT EXISTS on every open so
+/// databases created before these indexes existed pick them up too.
+const INDEXES: &str = "\
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, seq);
+CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);";
+
 /// A stored session's header row.
 pub struct SessionRow {
     pub id: String,
@@ -210,6 +217,7 @@ impl Store {
         tx.execute_batch(SCHEMA)?;
         migrate_session_columns(&tx)?;
         migrate_message_columns(&tx)?;
+        tx.execute_batch(INDEXES)?;
         tx.commit()?;
         Ok(Store { conn })
     }
@@ -324,7 +332,7 @@ impl Store {
                 id,
                 seq,
                 &m.role,
-                &m.text(),
+                m.text().as_ref(),
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
                 &m.reasoning_content,
@@ -449,6 +457,7 @@ impl Store {
                         tool_calls: calls_from_json(tool_calls),
                         tool_call_id,
                         reasoning_content,
+                        body_cache: crate::model::BodyCache::default(),
                     },
                     metadata: MessageMetadata {
                         requested_reasoning_mode: requested_reasoning_mode
@@ -484,7 +493,7 @@ impl Store {
                 images.push(img?);
             }
             if !images.is_empty() {
-                let text = record.message.text();
+                let text = record.message.text().into_owned();
                 let mut parts: Vec<(usize, ContentPart)> = Vec::new();
                 let image_indices: std::collections::HashSet<usize> =
                     images.iter().map(|(idx, _, _)| *idx).collect();
@@ -636,6 +645,25 @@ CREATE TABLE file_changes (
         assert_eq!(loaded[2].tool_calls[0].name, "read_file");
         assert_eq!(loaded[2].tool_calls[0].arguments, json!({"path": "a.rs"}));
         assert_eq!(loaded[3].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn open_creates_session_indexes_even_on_old_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+
+        let store = Store::open_at(&path).unwrap();
+
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
     }
 
     #[test]

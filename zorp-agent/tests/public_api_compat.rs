@@ -35,13 +35,11 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         max_tokens: None,
     };
     let message = LegacyModel.complete(&[Message::user("hello")], &[]).unwrap();
-    let transcript_message = Message {
-        role: "assistant".into(),
-        content: vec![ContentPart::Text("legacy response".into())],
-        tool_calls: Vec::new(),
-        tool_call_id: None,
-        reasoning_content: None,
-    };
+    // Message carries a private per-message serialization cache, so it is
+    // constructed through its helpers instead of a struct literal. Field
+    // reads stay public.
+    let mut transcript_message = Message::assistant("legacy response");
+    transcript_message.content = vec![ContentPart::Text("legacy response".into())];
     let flavor = Flavor {
         name: Some("legacy".into()),
         model: Some("legacy-model".into()),
@@ -49,6 +47,7 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         provider: None,
         max_tokens: None,
         max_steps: Some(10),
+        reasoning_mode: None,
         auto_verify: None,
         auto_approve: None,
         system_prompt: None,
