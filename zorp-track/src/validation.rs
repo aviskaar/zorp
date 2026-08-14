@@ -53,14 +53,19 @@ impl Store {
         verdict: &str,
     ) -> Result<Validation, TrackError> {
         let created_at = now_millis();
-        let seq = crate::id::next_seq();
-        let id = format!("{track_id}-validation-{created_at}-{seq}");
+        // next_seq only keeps the primary key unique when two inserts
+        // land in the same millisecond. Ordering uses the seq column
+        // below, which is derived from the table itself.
+        let id = format!(
+            "{track_id}-validation-{created_at}-{}",
+            crate::id::next_seq()
+        );
         let redundancy_json = citations_to_json(redundancy_citations);
         let feasibility_json = citations_to_json(feasibility_citations);
         self.conn.execute(
             "INSERT INTO validations \
              (id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at, seq) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(seq), -1) + 1 FROM validations WHERE track_id = ?",
             duckdb::params![
                 id,
                 track_id,
@@ -70,7 +75,7 @@ impl Store {
                 feasibility_json,
                 verdict,
                 created_at,
-                seq as i64
+                track_id
             ],
         )?;
         Ok(Validation {
@@ -213,5 +218,22 @@ mod tests {
         let fetched = store.get_validation("t1").unwrap();
         assert!(fetched.redundancy_citations.is_empty());
         assert!(fetched.feasibility_citations.is_empty());
+    }
+
+    #[test]
+    fn the_last_validation_written_wins_even_in_one_millisecond() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        // No sleeps: these land in the same millisecond, where created_at
+        // gives no ordering at all.
+        for i in 0..12 {
+            store
+                .record_validation("t1", i as f64, &[], 0.0, &[], &format!("pass {i}"))
+                .unwrap();
+        }
+        let latest = store.get_validation("t1").unwrap();
+        assert_eq!(latest.verdict, "pass 11");
+        assert_eq!(latest.redundancy_score, 11.0);
     }
 }

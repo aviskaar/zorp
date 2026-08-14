@@ -86,8 +86,8 @@ impl Store {
         );
         let now = now_millis();
         self.conn.execute(
-            "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at, seq) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(seq), -1) + 1 FROM checkpoints WHERE track_id = ?",
             duckdb::params![
                 id,
                 track_id,
@@ -96,7 +96,8 @@ impl Store {
                 prompt,
                 Option::<String>::None,
                 now,
-                now
+                now,
+                track_id
             ],
         )?;
         Ok(approved)
@@ -121,8 +122,8 @@ impl Store {
         );
         let now = now_millis();
         self.conn.execute(
-            "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at, seq) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(seq), -1) + 1 FROM checkpoints WHERE track_id = ?",
             duckdb::params![
                 id,
                 track_id,
@@ -131,7 +132,8 @@ impl Store {
                 reason,
                 Option::<String>::None,
                 now,
-                now
+                now,
+                track_id
             ],
         )?;
         self.set_track_status(track_id, crate::track::TrackStatus::Killed)?;
@@ -150,7 +152,7 @@ impl Store {
         let row: Option<Option<i64>> = self
             .conn
             .query_row(
-                "SELECT resolved_at FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT resolved_at FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC, seq DESC NULLS LAST LIMIT 1",
                 duckdb::params![track_id, kind],
                 |r| r.get(0),
             )
@@ -353,15 +355,18 @@ mod tests {
         store
             .record_checkpoint("t1", "co-write", &mode, "draft 1 ready?")
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
         store
             .record_checkpoint("t1", "co-write", &mode, "draft 2 ready?")
             .unwrap();
 
+        // Deliberately no sleep between the two: AutoApprove does no I/O
+        // while deciding, so back-to-back checkpoints land in the same
+        // millisecond and created_at alone cannot order them. seq does.
         let (latest_prompt, latest_resolved_at): (String, i64) = store
             .conn
             .query_row(
-                "SELECT prompt_shown, resolved_at FROM checkpoints WHERE track_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT prompt_shown, resolved_at FROM checkpoints WHERE track_id = ? AND kind = ? \
+                 ORDER BY created_at DESC, seq DESC NULLS LAST LIMIT 1",
                 duckdb::params!["t1", "co-write"],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -370,5 +375,75 @@ mod tests {
 
         let time = store.latest_checkpoint_time("t1", "co-write").unwrap();
         assert_eq!(time, Some(latest_resolved_at));
+    }
+
+    #[test]
+    fn each_checkpoint_on_a_track_gets_the_next_sequence_number() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        store.create_track("t2", "other").unwrap();
+        let mode = CheckpointMode::AutoApprove;
+        for i in 0..12 {
+            store
+                .record_checkpoint("t1", "co-write", &mode, &format!("draft {i}?"))
+                .unwrap();
+        }
+        store
+            .record_enforced_kill("t1", "investigate", "threshold breached")
+            .unwrap();
+        store
+            .record_checkpoint("t2", "validate", &mode, "unrelated")
+            .unwrap();
+
+        // The sequence must actually advance. Ordering by created_at
+        // cannot be trusted here, so this asserts the column itself.
+        let mut stmt = store
+            .conn
+            .prepare("SELECT seq FROM checkpoints WHERE track_id = ? ORDER BY seq")
+            .unwrap();
+        let seqs: Vec<i64> = stmt
+            .query_map(duckdb::params!["t1"], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(seqs, (0..13).collect::<Vec<i64>>());
+
+        // Sequences are per track, so a second track starts over.
+        let t2_seq: i64 = store
+            .conn
+            .query_row(
+                "SELECT seq FROM checkpoints WHERE track_id = ?",
+                duckdb::params!["t2"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(t2_seq, 0);
+    }
+
+    #[test]
+    fn the_latest_checkpoint_is_decided_by_seq_when_the_timestamp_ties() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+
+        // Pin both rows to the same created_at so the timestamp cannot
+        // break the tie and only the seq ordering can. Written oldest
+        // first, so a query that ignores seq returns the wrong one.
+        for (id, seq, resolved) in [("cp-old", 0_i64, 111_i64), ("cp-new", 1, 222)] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at, seq) \
+                     VALUES (?, 't1', 'co-write', 'approved', ?, NULL, 5000, ?, ?)",
+                    duckdb::params![id, id, resolved, seq],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            store.latest_checkpoint_time("t1", "co-write").unwrap(),
+            Some(222)
+        );
     }
 }
