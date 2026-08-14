@@ -16,7 +16,9 @@ pandoc zorp-paper.md -o zorp-paper.pdf --pdf-engine=xelatex -V mainfont="Helveti
 
 `figures/` holds the generated architecture, pipeline, and test-count
 diagrams (from `make_figures.py`, built from real repo state, not
-mockups) plus the logo redrawn from `zorp-landing/public/favicon.svg`.
+mockups; colors match `zorp-landing/src/styles/tokens.css`, not an
+assumed dark/purple theme) plus `logo.png`, the real zorp mark. Don't
+regenerate `logo.png` with the script; it's placed directly, not drawn.
 
 See `venues.md` for where to submit once there's a real eval story to
 report.
