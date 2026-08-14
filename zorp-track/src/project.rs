@@ -1,3 +1,4 @@
+#[cfg(feature = "library")]
 use crate::library::Library;
 use crate::track::Store;
 use crate::TrackError;
@@ -69,13 +70,15 @@ fn open_store_recovering_from_corruption(db_path: &Path) -> Result<Store, TrackE
 }
 
 /// The single entry point for a project's `.zorp/` directory: opens (or
-/// creates) the DuckDB run record, the LanceDB library, and a
-/// `.gitignore` covering the two regenerable stores while leaving
-/// `tracks/*/prereg.md` tracked.
+/// creates) the DuckDB run record and a `.gitignore` covering the
+/// regenerable stores while leaving `tracks/*/prereg.md` tracked. The
+/// LanceDB library (behind the `library` feature) is opened lazily on
+/// first use via `Project::library`, so nothing touches it otherwise.
 pub struct Project {
     root: PathBuf,
     pub store: Store,
-    pub library: Library,
+    #[cfg(feature = "library")]
+    library: std::cell::OnceCell<Library>,
 }
 
 impl Project {
@@ -99,9 +102,23 @@ impl Project {
         store.rebuild_from_prereg_files(&tracks_dir)?;
         store.verify_all_prereg_integrity(&tracks_dir)?;
 
-        let library = Library::open(&zorp_dir.join("lancedb"))?;
+        Ok(Project {
+            root: zorp_dir,
+            store,
+            #[cfg(feature = "library")]
+            library: std::cell::OnceCell::new(),
+        })
+    }
 
-        Ok(Project { root: zorp_dir, store, library })
+    /// The LanceDB library for this project, opened (and created on
+    /// disk) only on the first call.
+    #[cfg(feature = "library")]
+    pub fn library(&self) -> Result<&Library, TrackError> {
+        if self.library.get().is_none() {
+            let opened = Library::open(&self.root.join("lancedb"))?;
+            let _ = self.library.set(opened);
+        }
+        Ok(self.library.get().expect("library cell was just filled"))
     }
 
     /// The directory a track's `prereg.md` and future capability

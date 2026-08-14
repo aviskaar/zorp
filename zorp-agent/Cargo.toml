@@ -50,6 +50,9 @@ otel = [
 ]
 mcp      = ["dep:zorp-mcp"]
 research = ["dep:zorp-track", "mcp"]
+# Opt-in vector store for validate's cited sources. Deliberately not
+# part of `research`: it drags in LanceDB's arrow stack at build time.
+library  = ["research", "zorp-track/library"]
 clipboard = ["dep:arboard"]
 
 [[bin]]

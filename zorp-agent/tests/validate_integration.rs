@@ -212,7 +212,9 @@ fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     // than being skipped whenever ZORP_EMBEDDING_MODEL isn't set. validate::run
     // calls embed_texts once per citation; the well-formed response above has
     // one redundancy citation and one feasibility citation, so the stub
-    // expects exactly 2 requests.
+    // expects exactly 2 requests. Without the `library` feature, validate
+    // skips the embed-and-insert loop entirely and the stub simply idles
+    // until its listener is dropped; everything else still runs.
     //
     // Note: these are process-wide env vars set for the duration of a
     // single-test integration binary (this file is its own test binary, per
