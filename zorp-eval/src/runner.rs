@@ -25,6 +25,9 @@ pub fn init_db(db_path: &Path) -> anyhow::Result<Connection> {
         ("runtime_id", "TEXT"),
         ("run_id", "TEXT"),
         ("repetition", "INTEGER"),
+        // Malformed (skipped) trace lines for the run. NULL when the trace
+        // file could not be read at all.
+        ("trace_malformed_lines", "INTEGER"),
     ] {
         ensure_column(&conn, "runs", col, ty)?;
     }
@@ -85,7 +88,7 @@ pub fn run_suite(
     let conn = init_db(db_path)?;
 
     // Command::current_dir resolves a relative program path against the new
-    // cwd on some platforms, not the caller's cwd — canonicalize up front so
+    // cwd on some platforms, not the caller's cwd: canonicalize up front so
     // spawning still works once we chdir into each task's workspace below.
     let agent_binary = agent_binary.canonicalize()?;
     let agent_binary = agent_binary.as_path();
@@ -127,7 +130,7 @@ pub fn run_suite(
             .to_string_lossy()
             .to_string();
         // Skip our own leftover snapshot-backup dirs (e.g. from a prior run
-        // that crashed before cleanup) — otherwise they get treated as
+        // that crashed before cleanup): otherwise they get treated as
         // bogus extra tasks since they contain a copy of prompt.md/setup.sh.
         if task_id.starts_with('.') && task_id.ends_with(".snapshot-backup") {
             continue;
@@ -199,20 +202,41 @@ pub fn run_suite(
                     // Wires the task's verify.sh into zorp-agent's own
                     // completion-gate verifier, so it emits verifier.start/
                     // verifier.result and the verify_after_final_change
-                    // contract has something real to evaluate — otherwise
+                    // contract has something real to evaluate: otherwise
                     // the agent only ever runs tests as ordinary shell
                     // commands, which the contract can't observe.
                     cmd.env("ZORP_VERIFY", "sh verify.sh");
                 }
                 let status = cmd.status()?;
 
-                let events = crate::contracts::load_trace(&trace_path).unwrap_or_default();
+                // An unreadable trace, or one with zero parseable events, is
+                // not evidence that any contract failed. Record a distinct
+                // trace_unavailable outcome instead of evaluating contracts.
+                let trace = crate::contracts::load_trace(&trace_path);
+                let (events, malformed_lines): (Option<&[serde_json::Value]>, Option<i64>) =
+                    match &trace {
+                        Ok(t) if !t.events.is_empty() => {
+                            (Some(t.events.as_slice()), Some(t.malformed_lines as i64))
+                        }
+                        Ok(t) => (None, Some(t.malformed_lines as i64)),
+                        Err(_) => (None, None),
+                    };
                 for contract in &contracts {
-                    let outcome = crate::contracts::evaluate_contract(contract, &events);
-                    let (outcome_str, violated) = match &outcome {
-                        crate::contracts::ContractOutcome::Pass => ("pass".to_string(), String::new()),
-                        crate::contracts::ContractOutcome::Fail { violated } => {
-                            ("fail".to_string(), violated.join(","))
+                    let (outcome_str, violated) = match events {
+                        None => ("trace_unavailable".to_string(), String::new()),
+                        Some(events) => {
+                            let outcome = crate::contracts::evaluate_contract(contract, events);
+                            match &outcome {
+                                crate::contracts::ContractOutcome::Pass => {
+                                    ("pass".to_string(), String::new())
+                                }
+                                crate::contracts::ContractOutcome::Fail { violated } => {
+                                    ("fail".to_string(), violated.join(","))
+                                }
+                                crate::contracts::ContractOutcome::Unevaluable { predicates } => {
+                                    ("unevaluable".to_string(), predicates.join(","))
+                                }
+                            }
                         }
                     };
                     conn.execute(
@@ -222,7 +246,7 @@ pub fn run_suite(
                 }
 
                 conn.execute(
-                    "INSERT INTO runs (task_id, suite, passed, experiment_id, runtime_id, run_id, repetition) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO runs (task_id, suite, passed, experiment_id, runtime_id, run_id, repetition, trace_malformed_lines) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         task_id,
                         "pilot",
@@ -230,12 +254,13 @@ pub fn run_suite(
                         manifest.experiment.id,
                         runtime.id,
                         run_id,
-                        repetition
+                        repetition,
+                        malformed_lines
                     ],
                 )?;
             }
         }
-        // Leave the task directory exactly as it was found — otherwise the
+        // Leave the task directory exactly as it was found: otherwise the
         // last repetition's mutations linger in a git-tracked eval suite.
         crate::snapshot::restore(&backup_dir, &task_dir)?;
         fs::remove_dir_all(&backup_dir)?;
@@ -469,7 +494,7 @@ mod tests {
         }
 
         // suite_dir is relative to the manifest file's directory, not the
-        // process cwd — this manifest lives in manifests/ and points at
+        // process cwd: this manifest lives in manifests/ and points at
         // ../contracts, mirroring the real pilot manifest's layout.
         let manifest_path = manifest_dir.join("pilot.yaml");
         fs::write(
@@ -508,7 +533,7 @@ mod tests {
         fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
 
         // A fake agent binary that writes to $ZORP_TRACE_FILE after the
-        // harness has chdir'd it into the task workspace — this is exactly
+        // harness has chdir'd it into the task workspace: this is exactly
         // what fails if ZORP_TRACE_FILE is left as a tasks_dir-relative
         // path instead of being canonicalized up front.
         let fake_agent = root.join("fake_agent.sh");
@@ -586,7 +611,7 @@ mod tests {
         fs::create_dir_all(&task_dir).unwrap();
         fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
 
-        // Simulate a leftover backup dir from a previous crashed run — it
+        // Simulate a leftover backup dir from a previous crashed run: it
         // has the same shape as a real task dir (a copy of prompt.md etc.)
         // and must not be treated as one.
         let stray_backup = tasks_dir.join(".tb_real.snapshot-backup");
@@ -619,6 +644,121 @@ mod tests {
             .unwrap();
         // Only tb_real should have run, not the stray backup dir.
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn run_suite_records_trace_unavailable_when_agent_writes_no_trace() {
+        let root = tempdir().unwrap();
+        let contracts_dir = root.path().join("contracts");
+        fs::create_dir_all(&contracts_dir).unwrap();
+        // A contract with a required predicate that would read as violated
+        // on an empty event list. With no trace at all it must be recorded
+        // as trace_unavailable, not as a genuine fail.
+        fs::write(
+            contracts_dir.join("verify_after_final_change.yaml"),
+            "schema_version: zorp.contract/v1\nid: verify_after_final_change\nversion: 1.0.0\ncriticality: critical\napplies_when: {}\nrequired:\n  - id: verifier_invoked\nforbidden: []\ncompatibility:\n  reference_reliability_floor: 0.90\n  negative_flip_tolerance: 0.05\n",
+        )
+        .unwrap();
+
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_no_trace");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        // A fake agent binary that never writes a trace file.
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(&fake_agent, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: zorp.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: contracts\n  critical:\n    - verify_after_final_change\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let (outcome, violated): (String, String) = conn
+            .query_row(
+                "SELECT outcome, violated_predicates FROM contract_results",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(outcome, "trace_unavailable");
+        assert_eq!(violated, "");
+        let malformed: Option<i64> = conn
+            .query_row("SELECT trace_malformed_lines FROM runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(malformed, None);
+    }
+
+    #[test]
+    fn run_suite_counts_malformed_lines_and_still_evaluates_valid_events() {
+        let root = tempdir().unwrap();
+        let contracts_dir = root.path().join("contracts");
+        fs::create_dir_all(&contracts_dir).unwrap();
+        fs::write(
+            contracts_dir.join("verify_after_final_change.yaml"),
+            "schema_version: zorp.contract/v1\nid: verify_after_final_change\nversion: 1.0.0\ncriticality: critical\napplies_when: {}\nrequired:\n  - id: verifier_invoked\nforbidden: []\ncompatibility:\n  reference_reliability_floor: 0.90\n  negative_flip_tolerance: 0.05\n",
+        )
+        .unwrap();
+
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_truncated");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        // A fake agent binary that writes valid events, including the one
+        // the contract requires, then a truncated final line.
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(
+            &fake_agent,
+            "#!/bin/sh\n\
+             echo '{\"event_type\":\"run.start\",\"seq\":0}' >> \"$ZORP_TRACE_FILE\"\n\
+             echo '{\"event_type\":\"verifier.start\",\"seq\":1}' >> \"$ZORP_TRACE_FILE\"\n\
+             printf '{\"event_type\":\"trunc' >> \"$ZORP_TRACE_FILE\"\n\
+             exit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: zorp.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: contracts\n  critical:\n    - verify_after_final_change\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let outcome: String = conn
+            .query_row("SELECT outcome FROM contract_results", [], |r| r.get(0))
+            .unwrap();
+        // The valid events satisfy the required predicate; the truncated
+        // line is skipped, not turned into a blanket failure.
+        assert_eq!(outcome, "pass");
+        let malformed: Option<i64> = conn
+            .query_row("SELECT trace_malformed_lines FROM runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(malformed, Some(1));
     }
 
     #[test]
