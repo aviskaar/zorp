@@ -53,7 +53,7 @@ pub struct Trace {
 
 pub fn load_contract(path: &Path) -> anyhow::Result<Contract> {
     let text = fs::read_to_string(path)?;
-    let contract: Contract = serde_yaml::from_str(&text)?;
+    let contract: Contract = serde_yaml_ng::from_str(&text)?;
     // A typo in a predicate id must fail loudly at load time. Otherwise it
     // would evaluate to false forever: a permanent violation in a required
     // list, or a silent pass in a forbidden list.

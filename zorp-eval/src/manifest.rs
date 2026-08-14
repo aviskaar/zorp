@@ -31,7 +31,7 @@ pub struct RuntimeConfig {
     pub base_url: Option<String>,
     /// Name of an environment variable (in the process running zorp-eval)
     /// holding this runtime's API key. Never put the key itself in the
-    /// manifest — the runner reads this var and forwards it to zorp-agent
+    /// manifest: the runner reads this var and forwards it to zorp-agent
     /// as ZORP_API_KEY.
     #[serde(default)]
     pub api_key_env: Option<String>,
@@ -45,7 +45,7 @@ pub struct ContractsConfig {
 
 pub fn load_manifest(path: &Path) -> anyhow::Result<Manifest> {
     let text = fs::read_to_string(path)?;
-    Ok(serde_yaml::from_str(&text)?)
+    Ok(serde_yaml_ng::from_str(&text)?)
 }
 
 #[cfg(test)]
