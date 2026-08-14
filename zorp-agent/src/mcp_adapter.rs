@@ -24,7 +24,10 @@ impl Tool for McpToolAdapter {
                 };
                 Ok(ToolOutput::new(text, "mcp tool result"))
             }
-            Err(e) => Ok(ToolOutput::new(format!("error: {e}"), "mcp error")),
+            // A failed MCP call is a tool error: route it through the uniform
+            // error path so trace success accounting sees the failure instead
+            // of recording a success with an error-shaped body.
+            Err(e) => Err(ToolError::new(format!("mcp call failed: {e}"))),
         }
     }
 }

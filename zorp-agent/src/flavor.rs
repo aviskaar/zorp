@@ -4,6 +4,30 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// True if `name` is a single normal path component: no separators, no `..`,
+/// no absolute paths. Applied to `--flavor` names (and flavor scaffolding) so
+/// a name cannot escape the flavors directories and load an arbitrary
+/// manifest. Same rule `/capsule-create` applies to capsule names.
+pub fn is_valid_flavor_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    )
+}
+
+fn validate_flavor_name(flavor_name: Option<&str>) -> Result<(), BoxErr> {
+    if let Some(name) = flavor_name {
+        if !is_valid_flavor_name(name) {
+            return Err(format!(
+                "invalid flavor name '{name}': must be a single path component, no '/' or '..'"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Lowercase hex SHA-256 of the given text.
 pub fn content_hash(text: &str) -> String {
     let mut hasher = Sha256::new();
@@ -273,6 +297,9 @@ pub fn layer_paths(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Vec<(S
 /// Concatenate the raw text of existing project-scope layer files (in layer
 /// order). Returns `None` when no project flavor file exists.
 pub fn project_raw(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Option<String> {
+    if flavor_name.is_some_and(|name| !is_valid_flavor_name(name)) {
+        return None;
+    }
     let mut parts = Vec::new();
     for (scope, path) in layer_paths(home, cwd, flavor_name) {
         if scope != Scope::Project {
@@ -291,6 +318,7 @@ pub fn project_raw(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Option
 
 /// Merge every existing layer, low → high precedence, into one flavor.
 pub fn resolve(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Result<Flavor, BoxErr> {
+    validate_flavor_name(flavor_name)?;
     let mut merged = Flavor::default();
     for (_scope, path) in layer_paths(home, cwd, flavor_name) {
         if let Some(layer) = Flavor::load(&path)? {
@@ -307,6 +335,7 @@ pub fn resolve_scoped(
     cwd: &Path,
     flavor_name: Option<&str>,
 ) -> Result<(Flavor, Flavor), BoxErr> {
+    validate_flavor_name(flavor_name)?;
     let mut user = Flavor::default();
     let mut project = Flavor::default();
     for (scope, path) in layer_paths(home, cwd, flavor_name) {
@@ -326,6 +355,7 @@ pub fn resolve_configured(
     cwd: &Path,
     flavor_name: Option<&str>,
 ) -> Result<ConfiguredFlavor, BoxErr> {
+    validate_flavor_name(flavor_name)?;
     let mut merged = ConfiguredFlavor::default();
     for (_scope, path) in layer_paths(home, cwd, flavor_name) {
         if let Some(layer) = ConfiguredFlavor::load(&path)? {
@@ -341,6 +371,7 @@ pub fn resolve_scoped_configured(
     cwd: &Path,
     flavor_name: Option<&str>,
 ) -> Result<(ConfiguredFlavor, ConfiguredFlavor), BoxErr> {
+    validate_flavor_name(flavor_name)?;
     let mut user = ConfiguredFlavor::default();
     let mut project = ConfiguredFlavor::default();
     for (scope, path) in layer_paths(home, cwd, flavor_name) {
@@ -405,6 +436,28 @@ required = ["test"]
             f.reasoning_mode,
             Some(crate::reasoning::ReasoningMode::High)
         );
+    }
+
+    #[test]
+    fn flavor_name_validation_rejects_traversal() {
+        assert!(is_valid_flavor_name("reviewer"));
+        assert!(is_valid_flavor_name("rev-2"));
+        for name in ["../evil", "/tmp/evil", "a/b", "..", "", "."] {
+            assert!(!is_valid_flavor_name(name), "{name} should be invalid");
+        }
+    }
+
+    #[test]
+    fn resolvers_reject_path_traversal_flavor_names() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        for name in ["../evil", "/tmp/evil", "a/b"] {
+            assert!(resolve(home.path(), repo.path(), Some(name)).is_err());
+            assert!(resolve_scoped(home.path(), repo.path(), Some(name)).is_err());
+            assert!(resolve_configured(home.path(), repo.path(), Some(name)).is_err());
+            assert!(resolve_scoped_configured(home.path(), repo.path(), Some(name)).is_err());
+            assert!(project_raw(home.path(), repo.path(), Some(name)).is_none());
+        }
     }
 
     #[test]

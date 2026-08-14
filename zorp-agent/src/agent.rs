@@ -705,14 +705,27 @@ impl Agent {
                     });
                 }
 
-                let out = match self.policy.decide(call) {
-                    Decision::Allow => self.registry.dispatch(call, &mut self.cx),
-                    Decision::Ask if self.approval.allows(call) => {
-                        self.registry.dispatch(call, &mut self.cx)
-                    }
-                    Decision::Ask => ToolOutput::new("denied: approval required", "denied"),
-                    Decision::Deny(reason) => {
-                        ToolOutput::new(format!("denied: {reason}"), "denied")
+                let out = if let Some((error, raw)) = call.malformed_arguments() {
+                    // The provider sent an argument string that was not valid
+                    // JSON. Surface the parse error to the model instead of
+                    // dispatching the tool with garbage arguments.
+                    ToolOutput::new(
+                        format!(
+                            "error: tool call arguments were not valid JSON ({error}); \
+                             raw arguments: {raw}"
+                        ),
+                        "error",
+                    )
+                } else {
+                    match self.policy.decide(call) {
+                        Decision::Allow => self.registry.dispatch(call, &mut self.cx),
+                        Decision::Ask if self.approval.allows(call) => {
+                            self.registry.dispatch(call, &mut self.cx)
+                        }
+                        Decision::Ask => ToolOutput::new("denied: approval required", "denied"),
+                        Decision::Deny(reason) => {
+                            ToolOutput::new(format!("denied: {reason}"), "denied")
+                        }
                     }
                 };
                 if self.cancel.load(Ordering::SeqCst) {
@@ -725,7 +738,10 @@ impl Agent {
                     self.emit_trace_event(TraceEvent::ToolResult {
                         seq,
                         tool_name: call.name.clone(),
-                        success: out.summary != "denied",
+                        success: !matches!(
+                            out.summary.as_str(),
+                            "denied" | "error" | "unknown tool"
+                        ),
                         identity,
                     });
                 }
@@ -1308,6 +1324,39 @@ mod tests {
             }));
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         assert!(!ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn malformed_tool_arguments_are_reported_not_dispatched() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let call = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "read_file".into(),
+                arguments: json!({
+                    (crate::model::MALFORMED_ARGS_KEY): "{oops",
+                    (crate::model::MALFORMED_ARGS_ERROR_KEY): "expected value at line 1",
+                }),
+            }],
+            finish_reason: "tool_calls".into(),
+            reasoning_content: None,
+        };
+        let mut a = agent(Scripted::new(vec![call, text("done")])).register(Box::new(
+            RecordingNamed {
+                name: "read_file",
+                ran: ran.clone(),
+            },
+        ));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a tool must not run on malformed arguments"
+        );
+        let tool_msg = a.messages.iter().find(|m| m.role == "tool").unwrap();
+        assert!(tool_msg.text().contains("not valid JSON"));
+        assert!(tool_msg.text().contains("{oops"));
+        assert!(tool_msg.text().contains("expected value at line 1"));
     }
 
     #[test]

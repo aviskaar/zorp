@@ -142,6 +142,24 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
+/// Argument-object key carrying the raw argument string of a tool call whose
+/// JSON arguments failed to parse. Paired with `MALFORMED_ARGS_ERROR_KEY`.
+pub(crate) const MALFORMED_ARGS_KEY: &str = "__zorp_malformed_arguments";
+/// Argument-object key carrying the JSON parse error for malformed arguments.
+pub(crate) const MALFORMED_ARGS_ERROR_KEY: &str = "__zorp_arguments_parse_error";
+
+impl ToolCall {
+    /// If this call's arguments were an unparseable JSON string, return
+    /// `(parse_error, raw_arguments)` so the agent loop can surface the
+    /// failure to the model instead of dispatching garbage.
+    pub(crate) fn malformed_arguments(&self) -> Option<(&str, &str)> {
+        let obj = self.arguments.as_object()?;
+        let raw = obj.get(MALFORMED_ARGS_KEY)?.as_str()?;
+        let error = obj.get(MALFORMED_ARGS_ERROR_KEY)?.as_str()?;
+        Some((error, raw))
+    }
+}
+
 /// The assistant's turn: free text plus any tool calls it requested.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssistantMessage {
@@ -285,8 +303,16 @@ pub fn parse_assistant_completion(resp: &Value) -> Result<ModelCompletion, BoxEr
                 .unwrap_or("")
                 .to_string();
             // Native protocol encodes arguments as a JSON string; tolerate an object too.
+            // A string that fails to parse keeps the raw text plus the parse
+            // error so the loop can report the failure back to the model.
             let arguments = match func.get("arguments") {
-                Some(Value::String(s)) => serde_json::from_str(s).unwrap_or(Value::Null),
+                Some(Value::String(s)) => match serde_json::from_str(s) {
+                    Ok(parsed) => parsed,
+                    Err(e) => json!({
+                        MALFORMED_ARGS_KEY: s,
+                        MALFORMED_ARGS_ERROR_KEY: e.to_string(),
+                    }),
+                },
                 Some(other) => other.clone(),
                 None => Value::Null,
             };
@@ -489,6 +515,22 @@ impl ConfiguredHttpModel {
     }
 }
 
+/// The `max_tokens` actually sent to Anthropic. Anthropic rejects any request
+/// where `max_tokens <= thinking.budget_tokens`, so when thinking is enabled
+/// the configured value is raised to the budget plus headroom for the visible
+/// answer.
+fn anthropic_max_tokens(
+    configured: Option<u32>,
+    reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+) -> u32 {
+    let mut max_tokens = configured.unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+    if let Some(budget) = reasoning_mode.and_then(crate::reasoning::anthropic_thinking_budget) {
+        let budget = u32::try_from(budget).unwrap_or(u32::MAX - 1024);
+        max_tokens = max_tokens.max(budget.saturating_add(1024));
+    }
+    max_tokens
+}
+
 fn effective_reasoning_mode(
     default_mode: Option<crate::reasoning::ReasoningMode>,
     options: &crate::reasoning::CompletionOptions,
@@ -587,9 +629,7 @@ impl Model for HttpModel {
                 )
             }
             crate::provider::Provider::Anthropic => {
-                let max_tokens = self
-                    .max_tokens
-                    .unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+                let max_tokens = anthropic_max_tokens(self.max_tokens, reasoning_mode);
                 let mut body =
                     crate::provider::messages_to_anthropic_body(&self.model, messages, max_tokens);
                 if !tools.is_empty() {
@@ -1045,7 +1085,12 @@ mod tests {
         let (sent_body, sent_headers) = request_rx.recv().unwrap();
 
         assert_eq!(sent_body["model"], "claude-x");
-        assert_eq!(sent_body["max_tokens"], 1234);
+        // Anthropic requires max_tokens > thinking.budget_tokens: the small
+        // configured max_tokens (1234) must be raised above the 24000 budget.
+        let sent_max_tokens = sent_body["max_tokens"].as_u64().unwrap();
+        let sent_budget = sent_body["thinking"]["budget_tokens"].as_u64().unwrap();
+        assert!(sent_max_tokens > sent_budget);
+        assert_eq!(sent_max_tokens, 24000 + 1024);
         assert_eq!(
             sent_body["thinking"],
             json!({"type": "enabled", "budget_tokens": 24000})
@@ -1162,6 +1207,52 @@ mod tests {
     #[test]
     fn errors_on_missing_choices() {
         assert!(parse_assistant(&json!({"error":"x"})).is_err());
+    }
+
+    #[test]
+    fn malformed_tool_call_arguments_keep_raw_string_and_error() {
+        let r = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"call_1","function":{"name":"read_file","arguments":"{not json"}}
+        ]},"finish_reason":"tool_calls"}]});
+        let m = parse_assistant(&r).unwrap();
+        let (error, raw) = m.tool_calls[0].malformed_arguments().unwrap();
+        assert_eq!(raw, "{not json");
+        assert!(!error.is_empty());
+    }
+
+    #[test]
+    fn well_formed_arguments_are_not_marked_malformed() {
+        let r = json!({"choices":[{"message":{"content":null,"tool_calls":[
+            {"id":"call_1","function":{"name":"read_file","arguments":"{\"path\":\"a.rs\"}"}}
+        ]},"finish_reason":"tool_calls"}]});
+        let m = parse_assistant(&r).unwrap();
+        assert!(m.tool_calls[0].malformed_arguments().is_none());
+    }
+
+    #[test]
+    fn anthropic_max_tokens_raised_above_thinking_budget() {
+        use crate::reasoning::ReasoningMode;
+        // Small configured value is raised above the budget plus headroom.
+        assert_eq!(
+            anthropic_max_tokens(Some(1234), Some(ReasoningMode::High)),
+            24000 + 1024
+        );
+        // No reasoning: the configured or default value is untouched.
+        assert_eq!(anthropic_max_tokens(Some(1234), None), 1234);
+        assert_eq!(
+            anthropic_max_tokens(None, None),
+            crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS
+        );
+        // Already-large values win over the clamp.
+        assert_eq!(
+            anthropic_max_tokens(Some(50_000), Some(ReasoningMode::High)),
+            50_000
+        );
+        // A small budget below the default leaves the default alone.
+        assert_eq!(
+            anthropic_max_tokens(None, Some(ReasoningMode::Minimal)),
+            crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS
+        );
     }
 
     #[test]
