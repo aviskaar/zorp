@@ -25,8 +25,13 @@ Requires `protoc` (the Protocol Buffers compiler), needed to build the
 ```bash
 git clone https://github.com/aviskaar/zorp.git
 cd zorp
-cargo build --workspace
+cargo build --workspace --exclude zorp-track
 ```
+
+`zorp-track` bundles DuckDB and pulls in LanceDB/Arrow/DataFusion,
+which take 20-30 minutes to compile cold. The command above skips it;
+drop `--exclude zorp-track` only when you're touching `zorp-track` or
+the `research` feature, and budget time for that first build.
 
 ## Testing
 
