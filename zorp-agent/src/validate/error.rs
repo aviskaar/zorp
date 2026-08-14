@@ -58,6 +58,9 @@ mod tests {
     #[test]
     fn from_parse_error_wraps_correctly() {
         let e: ValidateError = ParseError::NoFencedBlock.into();
-        assert!(matches!(e, ValidateError::Scoring(ParseError::NoFencedBlock)));
+        assert!(matches!(
+            e,
+            ValidateError::Scoring(ParseError::NoFencedBlock)
+        ));
     }
 }

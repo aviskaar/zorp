@@ -19,7 +19,11 @@ struct StubModel {
 }
 
 impl Model for StubModel {
-    fn complete(&self, _messages: &[Message], _tools: &[serde_json::Value]) -> Result<AssistantMessage, BoxErr> {
+    fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[serde_json::Value],
+    ) -> Result<AssistantMessage, BoxErr> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(AssistantMessage {
             content: self.response.clone(),
@@ -30,7 +34,10 @@ impl Model for StubModel {
     }
 
     fn clone_box(&self) -> Box<dyn Model> {
-        Box::new(StubModel { response: self.response.clone(), calls: self.calls.clone() })
+        Box::new(StubModel {
+            response: self.response.clone(),
+            calls: self.calls.clone(),
+        })
     }
 }
 
@@ -43,7 +50,10 @@ impl zorp_track::checkpoint::Decider for RejectAll {
 
 fn build_agent(response: &str) -> Agent {
     let calls = Arc::new(AtomicUsize::new(0));
-    let model = StubModel { response: response.to_string(), calls };
+    let model = StubModel {
+        response: response.to_string(),
+        calls,
+    };
     Agent::new(
         Box::new(model),
         "system",
@@ -56,10 +66,22 @@ fn build_agent(response: &str) -> Agent {
 }
 
 fn track_with_one_metric(project: &Project, track_id: &str) {
-    project.store.create_track(track_id, "does caching help").unwrap();
-    let exp = project.store.create_experiment(track_id, "no-prereg").unwrap();
-    project.store.set_experiment_status(&exp.id, ExperimentStatus::Completed).unwrap();
-    project.store.record_metric(&exp.id, "latency_ms", MetricValue::Number(42.0)).unwrap();
+    project
+        .store
+        .create_track(track_id, "does caching help")
+        .unwrap();
+    let exp = project
+        .store
+        .create_experiment(track_id, "no-prereg")
+        .unwrap();
+    project
+        .store
+        .set_experiment_status(&exp.id, ExperimentStatus::Completed)
+        .unwrap();
+    project
+        .store
+        .record_metric(&exp.id, "latency_ms", MetricValue::Number(42.0))
+        .unwrap();
 }
 
 #[test]
@@ -125,7 +147,10 @@ fn no_metrics_refuses_before_running_the_agent() {
     let mut agent = build_agent("a draft");
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();

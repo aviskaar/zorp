@@ -91,7 +91,11 @@ pub fn run(
             }
             existing
         }
-        (None, None) => return Err(InvestigateError::PreregRequired { missing: "metric-name, --kill-threshold, and --threshold-direction" }),
+        (None, None) => {
+            return Err(InvestigateError::PreregRequired {
+                missing: "metric-name, --kill-threshold, and --threshold-direction",
+            })
+        }
         (None, Some(params)) => {
             let track_dir = project.track_dir(track_id);
             let written = write_prereg(
@@ -110,9 +114,16 @@ pub fn run(
                 params.threshold_direction.as_str(),
                 hypothesis
             );
-            let approved = project.store.record_checkpoint(track_id, "investigate-prereg", checkpoint_mode, &prereg_prompt)?;
+            let approved = project.store.record_checkpoint(
+                track_id,
+                "investigate-prereg",
+                checkpoint_mode,
+                &prereg_prompt,
+            )?;
             if !approved {
-                project.store.set_track_status(track_id, TrackStatus::Killed)?;
+                project
+                    .store
+                    .set_track_status(track_id, TrackStatus::Killed)?;
                 return Ok(false);
             }
             written
@@ -120,34 +131,53 @@ pub fn run(
     };
 
     let experiment = project.store.create_experiment(track_id, &prereg.id)?;
-    project.store.set_experiment_status(&experiment.id, ExperimentStatus::Running)?;
+    project
+        .store
+        .set_experiment_status(&experiment.id, ExperimentStatus::Running)?;
 
-    let task = format!("{TASK_PROMPT_PREFIX}{}{TASK_PROMPT_SUFFIX}{hypothesis}", prereg.metric_name);
+    let task = format!(
+        "{TASK_PROMPT_PREFIX}{}{TASK_PROMPT_SUFFIX}{hypothesis}",
+        prereg.metric_name
+    );
     let outcome = agent.run(&task);
     let text = match outcome {
         Outcome::Complete(text) => text,
         Outcome::StepLimit => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
             return Err(InvestigateError::AgentOutcome("StepLimit".to_string()));
         }
         Outcome::VerificationFailed { attempts } => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome(format!("VerificationFailed after {attempts} attempts")));
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            return Err(InvestigateError::AgentOutcome(format!(
+                "VerificationFailed after {attempts} attempts"
+            )));
         }
         Outcome::Cancelled => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
             return Err(InvestigateError::AgentOutcome("Cancelled".to_string()));
         }
         Outcome::RepeatedAction => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
             return Err(InvestigateError::AgentOutcome("RepeatedAction".to_string()));
         }
         Outcome::Blocked => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
             return Err(InvestigateError::AgentOutcome("Blocked".to_string()));
         }
         Outcome::Error(e) => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
             return Err(InvestigateError::AgentOutcome(format!("Error: {e}")));
         }
     };
@@ -155,13 +185,21 @@ pub fn run(
     let attempt = match parse_attempt_result(&text) {
         Ok(a) => a,
         Err(e) => {
-            project.store.set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
+            project
+                .store
+                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
             return Err(e.into());
         }
     };
 
-    project.store.record_metric(&experiment.id, &prereg.metric_name, MetricValue::Number(attempt.metric_value))?;
-    project.store.set_experiment_status(&experiment.id, ExperimentStatus::Completed)?;
+    project.store.record_metric(
+        &experiment.id,
+        &prereg.metric_name,
+        MetricValue::Number(attempt.metric_value),
+    )?;
+    project
+        .store
+        .set_experiment_status(&experiment.id, ExperimentStatus::Completed)?;
 
     // Enforce the pre-registered kill threshold. This is not a
     // checkpoint: a breach kills the track unconditionally, so
@@ -183,7 +221,9 @@ pub fn run(
                 prereg.kill_threshold,
                 direction.as_str()
             );
-            project.store.record_enforced_kill(track_id, "investigate-threshold", &reason)?;
+            project
+                .store
+                .record_enforced_kill(track_id, "investigate-threshold", &reason)?;
             eprintln!("zorp-agent: {reason}; track killed");
             return Ok(false);
         }
@@ -199,11 +239,20 @@ pub fn run(
 
     let prompt = format!(
         "investigate: {} = {} (kill threshold {}). {}\nHypothesis: {}\nKeep this track alive?",
-        prereg.metric_name, attempt.metric_value, prereg.kill_threshold, attempt.summary, hypothesis
+        prereg.metric_name,
+        attempt.metric_value,
+        prereg.kill_threshold,
+        attempt.summary,
+        hypothesis
     );
-    let approved = project.store.record_checkpoint(track_id, "investigate", checkpoint_mode, &prompt)?;
+    let approved =
+        project
+            .store
+            .record_checkpoint(track_id, "investigate", checkpoint_mode, &prompt)?;
     if !approved {
-        project.store.set_track_status(track_id, TrackStatus::Killed)?;
+        project
+            .store
+            .set_track_status(track_id, TrackStatus::Killed)?;
     }
 
     Ok(approved)
@@ -224,7 +273,11 @@ mod tests {
     }
 
     impl Model for StubModel {
-        fn complete(&self, _messages: &[Message], _tools: &[serde_json::Value]) -> Result<AssistantMessage, BoxErr> {
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[serde_json::Value],
+        ) -> Result<AssistantMessage, BoxErr> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(AssistantMessage {
                 content: self.response.clone(),
@@ -235,7 +288,10 @@ mod tests {
         }
 
         fn clone_box(&self) -> Box<dyn Model> {
-            Box::new(StubModel { response: self.response.clone(), calls: self.calls.clone() })
+            Box::new(StubModel {
+                response: self.response.clone(),
+                calls: self.calls.clone(),
+            })
         }
     }
 
@@ -262,8 +318,14 @@ mod tests {
         let mut agent = build_agent(well_formed_response());
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
-        project.store.set_track_status("t1", TrackStatus::Killed).unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
+        project
+            .store
+            .set_track_status("t1", TrackStatus::Killed)
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let err = run(&mut agent, &project, "t1", "does caching help", None, &mode).unwrap_err();
@@ -275,7 +337,10 @@ mod tests {
         let mut agent = build_agent(well_formed_response());
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let err = run(&mut agent, &project, "t1", "does caching help", None, &mode).unwrap_err();
@@ -287,7 +352,10 @@ mod tests {
         let mut agent = build_agent(well_formed_response());
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         run(
@@ -295,7 +363,11 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+            Some(PreregParams {
+                metric_name: "latency_ms",
+                kill_threshold: 100.0,
+                threshold_direction: ThresholdDirection::LowerIsBetter,
+            }),
             &mode,
         )
         .unwrap();
@@ -305,11 +377,21 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 50.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+            Some(PreregParams {
+                metric_name: "latency_ms",
+                kill_threshold: 50.0,
+                threshold_direction: ThresholdDirection::LowerIsBetter,
+            }),
             &mode,
         )
         .unwrap_err();
-        assert!(matches!(err, InvestigateError::PreregMismatch { field: "kill-threshold", .. }));
+        assert!(matches!(
+            err,
+            InvestigateError::PreregMismatch {
+                field: "kill-threshold",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -317,7 +399,10 @@ mod tests {
         let mut agent = build_agent(well_formed_response());
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let approved = run(
@@ -325,7 +410,11 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+            Some(PreregParams {
+                metric_name: "latency_ms",
+                kill_threshold: 100.0,
+                threshold_direction: ThresholdDirection::LowerIsBetter,
+            }),
             &mode,
         )
         .unwrap();
@@ -338,7 +427,10 @@ mod tests {
         assert_eq!(experiments.len(), 1);
         assert_eq!(experiments[0].status, ExperimentStatus::Completed);
         let metrics = project.store.metrics_for(&experiments[0].id).unwrap();
-        assert_eq!(metrics, vec![("latency_ms".to_string(), MetricValue::Number(42.0))]);
+        assert_eq!(
+            metrics,
+            vec![("latency_ms".to_string(), MetricValue::Number(42.0))]
+        );
     }
 
     #[test]
@@ -346,7 +438,10 @@ mod tests {
         let mut agent = build_agent(well_formed_response());
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         run(
@@ -354,7 +449,11 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+            Some(PreregParams {
+                metric_name: "latency_ms",
+                kill_threshold: 100.0,
+                threshold_direction: ThresholdDirection::LowerIsBetter,
+            }),
             &mode,
         )
         .unwrap();
@@ -364,10 +463,20 @@ mod tests {
             &project,
             "t1",
             "does sharding help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+            Some(PreregParams {
+                metric_name: "latency_ms",
+                kill_threshold: 100.0,
+                threshold_direction: ThresholdDirection::LowerIsBetter,
+            }),
             &mode,
         )
         .unwrap_err();
-        assert!(matches!(err, InvestigateError::PreregMismatch { field: "hypothesis", .. }));
+        assert!(matches!(
+            err,
+            InvestigateError::PreregMismatch {
+                field: "hypothesis",
+                ..
+            }
+        ));
     }
 }

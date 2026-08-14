@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::tempdir;
-use zorp_agent::{cancel_token, Agent, ApprovalMode, AssistantMessage, BoxErr, Message, Model, ToolCall};
+use zorp_agent::{
+    cancel_token, Agent, ApprovalMode, AssistantMessage, BoxErr, Message, Model, ToolCall,
+};
 use zorp_mcp::{McpConfig, McpRegistry};
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::Project;
@@ -43,7 +45,11 @@ struct StubModel {
 }
 
 impl Model for StubModel {
-    fn complete(&self, _messages: &[Message], _tools: &[serde_json::Value]) -> Result<AssistantMessage, BoxErr> {
+    fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[serde_json::Value],
+    ) -> Result<AssistantMessage, BoxErr> {
         let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
         if call_index == 0 {
             Ok(AssistantMessage {
@@ -125,7 +131,11 @@ impl EmbeddingsStub {
                     if let Some(header_end) = text.find("\r\n\r\n") {
                         let content_length = text
                             .lines()
-                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().to_string()))
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().to_string())
+                            })
                             .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(0);
                         let body_so_far = request.len() - (header_end + 4);
@@ -136,8 +146,13 @@ impl EmbeddingsStub {
                 }
                 let text = String::from_utf8_lossy(&request);
                 let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(text.len());
-                let body_json: serde_json::Value = serde_json::from_str(text[body_start..].trim()).unwrap_or(serde_json::json!({}));
-                let input_len = body_json.get("input").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(1);
+                let body_json: serde_json::Value = serde_json::from_str(text[body_start..].trim())
+                    .unwrap_or(serde_json::json!({}));
+                let input_len = body_json
+                    .get("input")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(1);
                 let data: Vec<serde_json::Value> = (0..input_len)
                     .map(|_| serde_json::json!({ "embedding": [0.1_f32, 0.2, 0.3] }))
                     .collect();
@@ -162,9 +177,24 @@ impl EmbeddingsStub {
 #[test]
 fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     let dir = tempdir().unwrap();
-    std::process::Command::new("git").arg("-C").arg(dir.path()).args(["init", "-q"]).output().unwrap();
-    std::process::Command::new("git").arg("-C").arg(dir.path()).args(["config", "user.email", "t@example.com"]).output().unwrap();
-    std::process::Command::new("git").arg("-C").arg(dir.path()).args(["config", "user.name", "T"]).output().unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "user.email", "t@example.com"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "user.name", "T"])
+        .output()
+        .unwrap();
 
     // Everything from here through the tool-call assertions below needs
     // no embeddings provider: spawning the stub server, the
@@ -178,7 +208,10 @@ fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     .unwrap();
     let mut registry = McpRegistry::new(config);
     let tools = registry.discover();
-    assert!(!tools.is_empty(), "stub server should advertise at least one tool");
+    assert!(
+        !tools.is_empty(),
+        "stub server should advertise at least one tool"
+    );
     let search_tool_name = tools
         .iter()
         .find(|t| t.name == "search")
@@ -188,21 +221,38 @@ fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     assert_eq!(search_tool_name, "mcp__stub__search");
 
     let calls = Arc::new(AtomicUsize::new(0));
-    let model = StubModel { response: well_formed_response(), search_tool_name: search_tool_name.clone(), calls: calls.clone() };
-    let mut agent = Agent::new(Box::new(model), "system", 5, dir.path().to_path_buf(), cancel_token(), ApprovalMode::AutoApprove)
-        .register_builtins();
+    let model = StubModel {
+        response: well_formed_response(),
+        search_tool_name: search_tool_name.clone(),
+        calls: calls.clone(),
+    };
+    let mut agent = Agent::new(
+        Box::new(model),
+        "system",
+        5,
+        dir.path().to_path_buf(),
+        cancel_token(),
+        ApprovalMode::AutoApprove,
+    )
+    .register_builtins();
     // Attach the stub MCP tool the same way attach_mcp_tools does, adapted
     // inline here since attach_mcp_tools itself lives in the binary crate,
     // not the library, and isn't reachable from an integration test.
     use std::sync::Mutex;
     let registry = Arc::new(Mutex::new(registry));
     for tool in tools {
-        agent = agent.register(Box::new(zorp_agent::mcp_adapter::McpToolAdapter { tool, registry: registry.clone() }));
+        agent = agent.register(Box::new(zorp_agent::mcp_adapter::McpToolAdapter {
+            tool,
+            registry: registry.clone(),
+        }));
     }
 
     let project = Project::open(dir.path()).unwrap();
     let track_id = "2026-08-09-validate-integration-test";
-    project.store.create_track(track_id, "does caching help").unwrap();
+    project
+        .store
+        .create_track(track_id, "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     // embed_texts (Task 3) reads ZORP_BASE_URL/ZORP_API_KEY/ZORP_EMBEDDING_MODEL
@@ -225,7 +275,9 @@ fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     std::env::set_var("ZORP_EMBEDDING_MODEL", "stub-embedding-model");
     std::env::remove_var("ZORP_API_KEY");
 
-    let approved = zorp_agent::validate::run(&mut agent, &project, track_id, "does caching help", &mode).unwrap();
+    let approved =
+        zorp_agent::validate::run(&mut agent, &project, track_id, "does caching help", &mode)
+            .unwrap();
     assert!(approved);
 
     // The model must have been called at least twice: once to request
@@ -233,7 +285,10 @@ fn validate_end_to_end_with_a_stub_search_server_and_stub_model() {
     // final scored answer. This confirms McpToolAdapter::run and
     // registry.call_tool actually executed against the stub server's
     // `tools/call` handler, not just the discovery handshake.
-    assert!(calls.load(Ordering::SeqCst) >= 2, "model should have been called again after the tool result was fed back");
+    assert!(
+        calls.load(Ordering::SeqCst) >= 2,
+        "model should have been called again after the tool result was fed back"
+    );
 
     let validation = project.store.get_validation(track_id).unwrap();
     assert_eq!(validation.redundancy_score, 15.0);

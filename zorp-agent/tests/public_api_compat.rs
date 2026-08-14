@@ -34,7 +34,9 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         provider: Provider::OpenAiCompatible,
         max_tokens: None,
     };
-    let message = LegacyModel.complete(&[Message::user("hello")], &[]).unwrap();
+    let message = LegacyModel
+        .complete(&[Message::user("hello")], &[])
+        .unwrap();
     // Message carries a private per-message serialization cache, so it is
     // constructed through its helpers instead of a struct literal. Field
     // reads stay public.

@@ -30,7 +30,9 @@ pub enum ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::NoFencedBlock => write!(f, "no fenced JSON block found in the agent's answer"),
+            ParseError::NoFencedBlock => {
+                write!(f, "no fenced JSON block found in the agent's answer")
+            }
             ParseError::InvalidJson(msg) => write!(f, "fenced block was not valid JSON: {msg}"),
             ParseError::MissingCitation { dimension } => {
                 write!(f, "{dimension} has a nonzero score with no citation")
@@ -90,10 +92,14 @@ pub fn parse_validation_result(agent_output: &str) -> Result<ValidationResult, P
     };
 
     if raw.redundancy_score > 0.0 && raw.redundancy_citations.is_empty() {
-        return Err(ParseError::MissingCitation { dimension: "redundancy" });
+        return Err(ParseError::MissingCitation {
+            dimension: "redundancy",
+        });
     }
     if raw.feasibility_score > 0.0 && raw.feasibility_citations.is_empty() {
-        return Err(ParseError::MissingCitation { dimension: "feasibility" });
+        return Err(ParseError::MissingCitation {
+            dimension: "feasibility",
+        });
     }
 
     Ok(ValidationResult {
@@ -136,7 +142,12 @@ mod tests {
             r#"{"redundancy_score": 40.0, "redundancy_citations": [], "feasibility_score": 0.0, "feasibility_citations": [], "verdict": "unclear"}"#,
         );
         let err = parse_validation_result(&text).unwrap_err();
-        assert!(matches!(err, ParseError::MissingCitation { dimension: "redundancy" }));
+        assert!(matches!(
+            err,
+            ParseError::MissingCitation {
+                dimension: "redundancy"
+            }
+        ));
     }
 
     #[test]

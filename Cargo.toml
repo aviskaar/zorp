@@ -1,16 +1,50 @@
 [package]
 name = "zorp"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 description = "The smallest harness of all time."
-license = "MIT"
+license.workspace = true
 
 [dependencies]
-ureq = { version = "2", features = ["json"] }   # do NOT set default-features = false
-serde_json = "1"
+ureq = { workspace = true }   # do NOT set default-features = false
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
 
 [workspace]
 members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+# Floor is set by Option::is_none_or (stable 1.82), used in zorp-agent
+# and zorp-eval. Raise deliberately, not by accident.
+rust-version = "1.82"
+
+# Shared dependencies. Declared once here so feature lists cannot drift
+# apart between crates; members refer to them with `workspace = true`.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
+toml = "0.8"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+# Cheap policy for a project that sells itself on minimalism and on not
+# lying about results. These are warnings, not hard errors, so they do
+# not block work in progress.
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
 
 # Optimize the release binary for size, fitting for "the smallest harness."
 # panic stays at the default (unwind): zorp-agent catches subagent panics

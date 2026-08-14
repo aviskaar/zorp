@@ -54,7 +54,13 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
     let mut chunk: Value = serde_json::from_str(data).ok()?;
     // Take the delta out of the parsed chunk instead of deep-cloning it; the
     // rest of the chunk is dropped anyway.
-    Some(chunk.get_mut("choices")?.get_mut(0)?.get_mut("delta")?.take())
+    Some(
+        chunk
+            .get_mut("choices")?
+            .get_mut(0)?
+            .get_mut("delta")?
+            .take(),
+    )
 }
 
 /// Shared HTTP agent: built once, cloned per use (a cheap Arc clone). Reusing
@@ -120,8 +126,8 @@ pub fn zorp_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Valu
 
 /// Read the four env knobs, applying defaults for base_url and model.
 pub fn env_config() -> (String, Option<String>, String, Option<String>) {
-    let base = std::env::var("ZORP_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let base =
+        std::env::var("ZORP_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let key = std::env::var("ZORP_API_KEY").ok();
     let model = std::env::var("ZORP_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
     let system = std::env::var("ZORP_SYSTEM").ok();

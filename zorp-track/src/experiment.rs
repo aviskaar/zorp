@@ -69,7 +69,11 @@ impl MetricValue {
 }
 
 impl Store {
-    pub fn create_experiment(&self, track_id: &str, prereg_id: &str) -> Result<Experiment, TrackError> {
+    pub fn create_experiment(
+        &self,
+        track_id: &str,
+        prereg_id: &str,
+    ) -> Result<Experiment, TrackError> {
         // Consistent with get_track's NotFound pattern rather than a
         // DuckDB FOREIGN KEY constraint: fail loudly on a typo'd or
         // stale track_id instead of silently creating an orphan row.
@@ -77,7 +81,11 @@ impl Store {
         // The sequence is zero-padded because `experiments_for` orders by
         // id: without padding, seq 10 would sort before seq 9 within the
         // same millisecond.
-        let id = format!("{track_id}-exp-{}-{:06}", now_millis(), crate::id::next_seq());
+        let id = format!(
+            "{track_id}-exp-{}-{:06}",
+            now_millis(),
+            crate::id::next_seq()
+        );
         self.conn.execute(
             "INSERT INTO experiments (id, track_id, prereg_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, NULL, NULL)",
             duckdb::params![id, track_id, prereg_id, ExperimentStatus::Planned.as_str()],
@@ -92,29 +100,49 @@ impl Store {
         })
     }
 
-    pub fn set_experiment_status(&self, id: &str, status: ExperimentStatus) -> Result<(), TrackError> {
+    pub fn set_experiment_status(
+        &self,
+        id: &str,
+        status: ExperimentStatus,
+    ) -> Result<(), TrackError> {
         let now = now_millis();
         let sql = match status {
-            ExperimentStatus::Running => "UPDATE experiments SET status = ?, started_at = ? WHERE id = ?",
+            ExperimentStatus::Running => {
+                "UPDATE experiments SET status = ?, started_at = ? WHERE id = ?"
+            }
             ExperimentStatus::Completed | ExperimentStatus::Failed | ExperimentStatus::Killed => {
                 "UPDATE experiments SET status = ?, completed_at = ? WHERE id = ?"
             }
             ExperimentStatus::Planned => "UPDATE experiments SET status = ? WHERE id = ?",
         };
         let updated = if matches!(status, ExperimentStatus::Planned) {
-            self.conn.execute(sql, duckdb::params![status.as_str(), id])?
+            self.conn
+                .execute(sql, duckdb::params![status.as_str(), id])?
         } else {
-            self.conn.execute(sql, duckdb::params![status.as_str(), now, id])?
+            self.conn
+                .execute(sql, duckdb::params![status.as_str(), now, id])?
         };
         if updated == 0 {
-            return Err(TrackError::NotFound { kind: "experiment", id: id.to_string() });
+            return Err(TrackError::NotFound {
+                kind: "experiment",
+                id: id.to_string(),
+            });
         }
         Ok(())
     }
 
-    pub fn record_metric(&self, experiment_id: &str, key: &str, value: MetricValue) -> Result<(), TrackError> {
+    pub fn record_metric(
+        &self,
+        experiment_id: &str,
+        key: &str,
+        value: MetricValue,
+    ) -> Result<(), TrackError> {
         self.assert_experiment_exists(experiment_id)?;
-        let metric_id = format!("{experiment_id}-{key}-{}-{:06}", now_millis(), crate::id::next_seq());
+        let metric_id = format!(
+            "{experiment_id}-{key}-{}-{:06}",
+            now_millis(),
+            crate::id::next_seq()
+        );
         let (num, text, boolean) = match &value {
             MetricValue::Number(n) => (Some(*n), None, None),
             MetricValue::Text(s) => (None, Some(s.clone()), None),
@@ -134,7 +162,10 @@ impl Store {
     /// Ordering within an experiment's metrics is by insertion order
     /// (`seq`), not `recorded_at`: two metrics recorded in the same
     /// millisecond would otherwise have no defined relative order.
-    pub fn metrics_for(&self, experiment_id: &str) -> Result<Vec<(String, MetricValue)>, TrackError> {
+    pub fn metrics_for(
+        &self,
+        experiment_id: &str,
+    ) -> Result<Vec<(String, MetricValue)>, TrackError> {
         let mut stmt = self.conn.prepare(
             "SELECT metric_key, value_type, value_number, value_string, value_bool FROM metrics WHERE experiment_id = ? ORDER BY seq",
         )?;
@@ -159,7 +190,10 @@ impl Store {
     /// `(experiment_id, metric_key, MetricValue)` triples, in experiment
     /// order (by id, matching `experiments_for`) then metric order (by
     /// seq). One join instead of one `metrics_for` query per experiment.
-    pub fn metrics_for_track(&self, track_id: &str) -> Result<Vec<(String, String, MetricValue)>, TrackError> {
+    pub fn metrics_for_track(
+        &self,
+        track_id: &str,
+    ) -> Result<Vec<(String, String, MetricValue)>, TrackError> {
         let mut stmt = self.conn.prepare(
             "SELECT m.experiment_id, m.metric_key, m.value_type, m.value_number, m.value_string, m.value_bool \
              FROM metrics m JOIN experiments e ON m.experiment_id = e.id \
@@ -252,7 +286,9 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let exp = store.create_experiment("t1", "t1-prereg").unwrap();
 
-        store.set_experiment_status(&exp.id, ExperimentStatus::Running).unwrap();
+        store
+            .set_experiment_status(&exp.id, ExperimentStatus::Running)
+            .unwrap();
 
         let (started_at, completed_at): (Option<i64>, Option<i64>) = store
             .conn
@@ -273,7 +309,9 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let exp = store.create_experiment("t1", "t1-prereg").unwrap();
 
-        store.set_experiment_status(&exp.id, ExperimentStatus::Completed).unwrap();
+        store
+            .set_experiment_status(&exp.id, ExperimentStatus::Completed)
+            .unwrap();
 
         let completed_at: Option<i64> = store
             .conn
@@ -293,15 +331,37 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let exp = store.create_experiment("t1", "t1-prereg").unwrap();
 
-        store.record_metric(&exp.id, "accuracy", MetricValue::Number(0.87)).unwrap();
-        store.record_metric(&exp.id, "notes", MetricValue::Text("looked promising".into())).unwrap();
-        store.record_metric(&exp.id, "converged", MetricValue::Bool(true)).unwrap();
+        store
+            .record_metric(&exp.id, "accuracy", MetricValue::Number(0.87))
+            .unwrap();
+        store
+            .record_metric(
+                &exp.id,
+                "notes",
+                MetricValue::Text("looked promising".into()),
+            )
+            .unwrap();
+        store
+            .record_metric(&exp.id, "converged", MetricValue::Bool(true))
+            .unwrap();
 
         let metrics = store.metrics_for(&exp.id).unwrap();
         assert_eq!(metrics.len(), 3);
-        assert_eq!(metrics[0], ("accuracy".to_string(), MetricValue::Number(0.87)));
-        assert_eq!(metrics[1], ("notes".to_string(), MetricValue::Text("looked promising".into())));
-        assert_eq!(metrics[2], ("converged".to_string(), MetricValue::Bool(true)));
+        assert_eq!(
+            metrics[0],
+            ("accuracy".to_string(), MetricValue::Number(0.87))
+        );
+        assert_eq!(
+            metrics[1],
+            (
+                "notes".to_string(),
+                MetricValue::Text("looked promising".into())
+            )
+        );
+        assert_eq!(
+            metrics[2],
+            ("converged".to_string(), MetricValue::Bool(true))
+        );
     }
 
     #[test]
@@ -336,7 +396,9 @@ mod tests {
         store.create_track("t2", "other").unwrap();
         let a = store.create_experiment("t1", "t1-prereg").unwrap();
         let b = store.create_experiment("t2", "t2-prereg").unwrap();
-        store.set_experiment_status(&a.id, ExperimentStatus::Completed).unwrap();
+        store
+            .set_experiment_status(&a.id, ExperimentStatus::Completed)
+            .unwrap();
 
         let found = store.experiments_for("t1").unwrap();
         assert_eq!(found.len(), 1);
@@ -374,10 +436,18 @@ mod tests {
         let a = store.create_experiment("t1", "t1-prereg").unwrap();
         let b = store.create_experiment("t1", "t1-prereg").unwrap();
         let other = store.create_experiment("t2", "t2-prereg").unwrap();
-        store.record_metric(&a.id, "m1", MetricValue::Number(1.0)).unwrap();
-        store.record_metric(&b.id, "m2", MetricValue::Number(2.0)).unwrap();
-        store.record_metric(&a.id, "m3", MetricValue::Number(3.0)).unwrap();
-        store.record_metric(&other.id, "mx", MetricValue::Number(9.0)).unwrap();
+        store
+            .record_metric(&a.id, "m1", MetricValue::Number(1.0))
+            .unwrap();
+        store
+            .record_metric(&b.id, "m2", MetricValue::Number(2.0))
+            .unwrap();
+        store
+            .record_metric(&a.id, "m3", MetricValue::Number(3.0))
+            .unwrap();
+        store
+            .record_metric(&other.id, "mx", MetricValue::Number(9.0))
+            .unwrap();
 
         let all = store.metrics_for_track("t1").unwrap();
         assert_eq!(
@@ -395,8 +465,16 @@ mod tests {
     fn set_status_on_missing_experiment_errors() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
-        let err = store.set_experiment_status("nope", ExperimentStatus::Running).unwrap_err();
-        assert!(matches!(err, TrackError::NotFound { kind: "experiment", .. }));
+        let err = store
+            .set_experiment_status("nope", ExperimentStatus::Running)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TrackError::NotFound {
+                kind: "experiment",
+                ..
+            }
+        ));
     }
 
     #[test]

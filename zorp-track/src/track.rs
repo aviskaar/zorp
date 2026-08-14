@@ -391,7 +391,12 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("b", "second").unwrap();
         store.create_track("a", "first").unwrap();
-        let ids: Vec<String> = store.list_tracks().unwrap().into_iter().map(|t| t.id).collect();
+        let ids: Vec<String> = store
+            .list_tracks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
         assert_eq!(ids, vec!["a", "b"]);
     }
 
@@ -419,14 +424,31 @@ mod tests {
     fn set_status_on_missing_track_errors() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
-        let err = store.set_track_status("nope", TrackStatus::Killed).unwrap_err();
+        let err = store
+            .set_track_status("nope", TrackStatus::Killed)
+            .unwrap_err();
         assert!(matches!(err, TrackError::NotFound { kind: "track", .. }));
     }
 
     fn init_git_repo(dir: &Path) {
-        std::process::Command::new("git").arg("-C").arg(dir).args(["init", "-q"]).output().unwrap();
-        std::process::Command::new("git").arg("-C").arg(dir).args(["config", "user.email", "test@example.com"]).output().unwrap();
-        std::process::Command::new("git").arg("-C").arg(dir).args(["config", "user.name", "Test"]).output().unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.email", "test@example.com"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
     }
 
     #[test]
@@ -438,7 +460,16 @@ mod tests {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
             let track_dir = tracks_dir.join("t1");
-            crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
+            crate::prereg::write_prereg(
+                &store,
+                &track_dir,
+                "t1",
+                "does caching help",
+                "latency_ms",
+                100.0,
+                crate::prereg::ThresholdDirection::LowerIsBetter,
+            )
+            .unwrap();
         }
 
         std::fs::remove_file(&db_path).unwrap();
@@ -454,9 +485,13 @@ mod tests {
         // No git repo here, so the rebuilt hash cannot be verified
         // against a committed blob: it must carry the unverified marker
         // rather than posing as a committed, tamper-evident hash.
-        let prereg = crate::prereg::get_preregistration(&fresh_store, "t1").unwrap().unwrap();
+        let prereg = crate::prereg::get_preregistration(&fresh_store, "t1")
+            .unwrap()
+            .unwrap();
         assert!(
-            prereg.file_hash.starts_with(crate::prereg::UNVERIFIED_HASH_PREFIX),
+            prereg
+                .file_hash
+                .starts_with(crate::prereg::UNVERIFIED_HASH_PREFIX),
             "expected an unverified marker, got: {}",
             prereg.file_hash
         );
@@ -471,17 +506,33 @@ mod tests {
         {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
-            crate::prereg::write_prereg(&store, &tracks_dir.join("t1"), "t1", "does caching help", "latency_ms", 100.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
+            crate::prereg::write_prereg(
+                &store,
+                &tracks_dir.join("t1"),
+                "t1",
+                "does caching help",
+                "latency_ms",
+                100.0,
+                crate::prereg::ThresholdDirection::LowerIsBetter,
+            )
+            .unwrap();
         }
 
         std::fs::remove_file(&db_path).unwrap();
 
         let fresh_store = Store::open(&db_path).unwrap();
-        assert_eq!(fresh_store.rebuild_from_prereg_files(&tracks_dir).unwrap(), 1);
+        assert_eq!(
+            fresh_store.rebuild_from_prereg_files(&tracks_dir).unwrap(),
+            1
+        );
         assert!(crate::prereg::verify_prereg_integrity(&fresh_store, "t1").is_ok());
-        let prereg = crate::prereg::get_preregistration(&fresh_store, "t1").unwrap().unwrap();
+        let prereg = crate::prereg::get_preregistration(&fresh_store, "t1")
+            .unwrap()
+            .unwrap();
         assert!(prereg.git_commit_hash.is_some());
-        assert!(!prereg.file_hash.starts_with(crate::prereg::UNVERIFIED_HASH_PREFIX));
+        assert!(!prereg
+            .file_hash
+            .starts_with(crate::prereg::UNVERIFIED_HASH_PREFIX));
     }
 
     #[test]
@@ -493,7 +544,16 @@ mod tests {
         {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
-            crate::prereg::write_prereg(&store, &tracks_dir.join("t1"), "t1", "does caching help", "latency_ms", 100.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
+            crate::prereg::write_prereg(
+                &store,
+                &tracks_dir.join("t1"),
+                "t1",
+                "does caching help",
+                "latency_ms",
+                100.0,
+                crate::prereg::ThresholdDirection::LowerIsBetter,
+            )
+            .unwrap();
         }
 
         // Tamper with the committed file, then destroy the DuckDB store.
@@ -507,10 +567,14 @@ mod tests {
         std::fs::remove_file(&db_path).unwrap();
 
         let fresh_store = Store::open(&db_path).unwrap();
-        let err = fresh_store.rebuild_from_prereg_files(&tracks_dir).unwrap_err();
+        let err = fresh_store
+            .rebuild_from_prereg_files(&tracks_dir)
+            .unwrap_err();
         assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
         // The tampered track must not have been inserted.
-        assert!(crate::prereg::get_preregistration(&fresh_store, "t1").unwrap().is_none());
+        assert!(crate::prereg::get_preregistration(&fresh_store, "t1")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -521,7 +585,16 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.create_track("t1", "already here").unwrap();
         let track_dir = tracks_dir.join("t1");
-        crate::prereg::write_prereg(&store, &track_dir, "t1", "already here", "m", 1.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
+        crate::prereg::write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "already here",
+            "m",
+            1.0,
+            crate::prereg::ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         let rebuilt = store.rebuild_from_prereg_files(&tracks_dir).unwrap();
         assert_eq!(rebuilt, 0);
@@ -531,7 +604,9 @@ mod tests {
     fn rebuild_on_empty_tracks_dir_is_a_no_op() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
-        let rebuilt = store.rebuild_from_prereg_files(&dir.path().join("tracks")).unwrap();
+        let rebuilt = store
+            .rebuild_from_prereg_files(&dir.path().join("tracks"))
+            .unwrap();
         assert_eq!(rebuilt, 0);
     }
 
@@ -543,7 +618,16 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = tracks_dir.join("t1");
-        crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "m", 1.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
+        crate::prereg::write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "does caching help",
+            "m",
+            1.0,
+            crate::prereg::ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         assert!(store.verify_all_prereg_integrity(&tracks_dir).is_ok());
     }

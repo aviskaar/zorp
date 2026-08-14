@@ -22,7 +22,11 @@ struct StubModel {
 }
 
 impl Model for StubModel {
-    fn complete(&self, _messages: &[Message], _tools: &[serde_json::Value]) -> Result<AssistantMessage, BoxErr> {
+    fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[serde_json::Value],
+    ) -> Result<AssistantMessage, BoxErr> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(AssistantMessage {
             content: self.response.clone(),
@@ -33,7 +37,10 @@ impl Model for StubModel {
     }
 
     fn clone_box(&self) -> Box<dyn Model> {
-        Box::new(StubModel { response: self.response.clone(), calls: self.calls.clone() })
+        Box::new(StubModel {
+            response: self.response.clone(),
+            calls: self.calls.clone(),
+        })
     }
 }
 
@@ -56,7 +63,10 @@ impl zorp_track::checkpoint::Decider for RejectSecondCall {
 
 fn build_agent(response: &str) -> Agent {
     let calls = Arc::new(AtomicUsize::new(0));
-    let model = StubModel { response: response.to_string(), calls };
+    let model = StubModel {
+        response: response.to_string(),
+        calls,
+    };
     Agent::new(
         Box::new(model),
         "system",
@@ -77,7 +87,10 @@ fn full_round_trip_prereg_attempt_metric_checkpoint_approved() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let approved = run(
@@ -85,7 +98,11 @@ fn full_round_trip_prereg_attempt_metric_checkpoint_approved() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 100.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap();
@@ -100,7 +117,10 @@ fn full_round_trip_prereg_attempt_metric_checkpoint_approved() {
     assert_eq!(experiments.len(), 1);
     assert_eq!(experiments[0].status, ExperimentStatus::Completed);
     let metrics = project.store.metrics_for(&experiments[0].id).unwrap();
-    assert_eq!(metrics, vec![("latency_ms".to_string(), MetricValue::Number(42.0))]);
+    assert_eq!(
+        metrics,
+        vec![("latency_ms".to_string(), MetricValue::Number(42.0))]
+    );
 }
 
 #[test]
@@ -112,7 +132,10 @@ fn a_threshold_breach_kills_the_track_even_under_auto_approve() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let approved = run(
@@ -120,7 +143,11 @@ fn a_threshold_breach_kills_the_track_even_under_auto_approve() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 10.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 10.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap();
@@ -134,13 +161,19 @@ fn a_threshold_breach_kills_the_track_even_under_auto_approve() {
     assert_eq!(experiments.len(), 1);
     assert_eq!(experiments[0].status, ExperimentStatus::Completed);
     let metrics = project.store.metrics_for(&experiments[0].id).unwrap();
-    assert_eq!(metrics, vec![("latency_ms".to_string(), MetricValue::Number(42.0))]);
+    assert_eq!(
+        metrics,
+        vec![("latency_ms".to_string(), MetricValue::Number(42.0))]
+    );
 
     // The kill left its record behind: an investigate-threshold row
     // exists (record_enforced_kill's persistence of the reason itself is
     // asserted in zorp-track's unit tests, where the connection is
     // reachable).
-    let killed_at = project.store.latest_checkpoint_time("t1", "investigate-threshold").unwrap();
+    let killed_at = project
+        .store
+        .latest_checkpoint_time("t1", "investigate-threshold")
+        .unwrap();
     assert!(killed_at.is_some());
 }
 
@@ -152,7 +185,10 @@ fn a_metric_within_the_threshold_keeps_the_track_active() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let approved = run(
@@ -160,13 +196,20 @@ fn a_metric_within_the_threshold_keeps_the_track_active() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 100.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap();
 
     assert!(approved);
-    assert_eq!(project.store.get_track("t1").unwrap().status, TrackStatus::Active);
+    assert_eq!(
+        project.store.get_track("t1").unwrap().status,
+        TrackStatus::Active
+    );
 }
 
 #[test]
@@ -176,7 +219,10 @@ fn a_higher_is_better_metric_below_the_threshold_is_killed() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let approved = run(
@@ -184,13 +230,20 @@ fn a_higher_is_better_metric_below_the_threshold_is_killed() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "accuracy", kill_threshold: 50.0, threshold_direction: ThresholdDirection::HigherIsBetter }),
+        Some(PreregParams {
+            metric_name: "accuracy",
+            kill_threshold: 50.0,
+            threshold_direction: ThresholdDirection::HigherIsBetter,
+        }),
         &mode,
     )
     .unwrap();
 
     assert!(!approved);
-    assert_eq!(project.store.get_track("t1").unwrap().status, TrackStatus::Killed);
+    assert_eq!(
+        project.store.get_track("t1").unwrap().status,
+        TrackStatus::Killed
+    );
 }
 
 #[test]
@@ -203,7 +256,10 @@ fn a_legacy_prereg_without_a_direction_is_not_enforced() {
     let track_id = "t1";
     {
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track(track_id, "does caching help").unwrap();
+        project
+            .store
+            .create_track(track_id, "does caching help")
+            .unwrap();
         let track_dir = project.track_dir(track_id);
         std::fs::create_dir_all(&track_dir).unwrap();
         std::fs::write(
@@ -220,9 +276,20 @@ fn a_legacy_prereg_without_a_direction_is_not_enforced() {
     // 42.0 would breach a lower-is-better threshold of 10, but no
     // direction is recorded, so the auto-approved checkpoint keeps the
     // track alive.
-    let approved = run(&mut agent, &project, track_id, "does caching help", None, &mode).unwrap();
+    let approved = run(
+        &mut agent,
+        &project,
+        track_id,
+        "does caching help",
+        None,
+        &mode,
+    )
+    .unwrap();
     assert!(approved);
-    assert_eq!(project.store.get_track(track_id).unwrap().status, TrackStatus::Active);
+    assert_eq!(
+        project.store.get_track(track_id).unwrap().status,
+        TrackStatus::Active
+    );
 }
 
 #[test]
@@ -233,7 +300,10 @@ fn an_unscorable_answer_fails_the_experiment() {
     let mut agent = build_agent("I could not measure anything, sorry.");
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let err = run(
@@ -241,16 +311,27 @@ fn an_unscorable_answer_fails_the_experiment() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 100.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap_err();
-    assert!(matches!(err, InvestigateError::Scoring(_)), "unexpected error: {err}");
+    assert!(
+        matches!(err, InvestigateError::Scoring(_)),
+        "unexpected error: {err}"
+    );
 
     let experiments = project.store.experiments_for("t1").unwrap();
     assert_eq!(experiments.len(), 1);
     assert_eq!(experiments[0].status, ExperimentStatus::Failed);
-    assert!(project.store.metrics_for(&experiments[0].id).unwrap().is_empty());
+    assert!(project
+        .store
+        .metrics_for(&experiments[0].id)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -258,15 +339,24 @@ fn rejected_post_attempt_checkpoint_kills_the_track() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
-    let mode = CheckpointMode::Interactive(Arc::new(RejectSecondCall { calls: AtomicUsize::new(0) }));
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
+    let mode = CheckpointMode::Interactive(Arc::new(RejectSecondCall {
+        calls: AtomicUsize::new(0),
+    }));
 
     let approved = run(
         &mut agent,
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 100.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap();
@@ -287,7 +377,10 @@ fn rejected_prereg_checkpoint_kills_the_track_before_any_attempt_runs() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
     let mode = CheckpointMode::Interactive(Arc::new(Rejecting));
 
     let approved = run(
@@ -295,7 +388,11 @@ fn rejected_prereg_checkpoint_kills_the_track_before_any_attempt_runs() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 100.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap();
@@ -310,8 +407,14 @@ fn a_killed_track_refuses_a_second_investigate_call() {
     let mut agent = build_agent(well_formed_response());
     let dir = tempdir().unwrap();
     let project = Project::open(dir.path()).unwrap();
-    project.store.create_track("t1", "does caching help").unwrap();
-    project.store.set_track_status("t1", TrackStatus::Killed).unwrap();
+    project
+        .store
+        .create_track("t1", "does caching help")
+        .unwrap();
+    project
+        .store
+        .set_track_status("t1", TrackStatus::Killed)
+        .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
     let err = run(
@@ -319,7 +422,11 @@ fn a_killed_track_refuses_a_second_investigate_call() {
         &project,
         "t1",
         "does caching help",
-        Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
+        Some(PreregParams {
+            metric_name: "latency_ms",
+            kill_threshold: 100.0,
+            threshold_direction: ThresholdDirection::LowerIsBetter,
+        }),
         &mode,
     )
     .unwrap_err();

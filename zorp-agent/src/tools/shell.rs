@@ -1,4 +1,4 @@
-use super::{Context, Tool, ToolError, ToolResult, ToolOutput};
+use super::{Context, Tool, ToolError, ToolOutput, ToolResult};
 use serde_json::{json, Value};
 
 pub struct RunCommand;
@@ -26,7 +26,6 @@ impl Tool for RunCommand {
     }
 }
 
-
 pub struct StartBackgroundProcess;
 
 impl Tool for StartBackgroundProcess {
@@ -49,7 +48,10 @@ impl Tool for StartBackgroundProcess {
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::new("requires a non-empty string 'command'"))?;
         let pid = cx.start_background_process(command)?;
-        Ok(ToolOutput::new(format!("Started background process with PID {}", pid), format!("started PID {}", pid)))
+        Ok(ToolOutput::new(
+            format!("Started background process with PID {}", pid),
+            format!("started PID {}", pid),
+        ))
     }
 }
 
@@ -74,7 +76,10 @@ impl Tool for KillBackgroundProcess {
             .and_then(|v| v.as_u64())
             .ok_or_else(|| ToolError::new("requires an integer 'pid'"))? as u32;
         cx.kill_background_process(pid)?;
-        Ok(ToolOutput::new(format!("Killed background process {}", pid), format!("killed PID {}", pid)))
+        Ok(ToolOutput::new(
+            format!("Killed background process {}", pid),
+            format!("killed PID {}", pid),
+        ))
     }
 }
 

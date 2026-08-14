@@ -4,8 +4,14 @@ use std::fmt;
 #[derive(Debug)]
 pub enum InvestigateError {
     TrackKilled,
-    PreregRequired { missing: &'static str },
-    PreregMismatch { field: &'static str, recorded: String, provided: String },
+    PreregRequired {
+        missing: &'static str,
+    },
+    PreregMismatch {
+        field: &'static str,
+        recorded: String,
+        provided: String,
+    },
     AgentOutcome(String),
     Scoring(ParseError),
     Track(zorp_track::TrackError),
@@ -55,7 +61,9 @@ mod tests {
 
     #[test]
     fn display_prereg_required_names_the_missing_flag() {
-        let e = InvestigateError::PreregRequired { missing: "metric-name" };
+        let e = InvestigateError::PreregRequired {
+            missing: "metric-name",
+        };
         assert!(e.to_string().contains("--metric-name"));
     }
 
@@ -73,6 +81,9 @@ mod tests {
     #[test]
     fn from_parse_error_wraps_correctly() {
         let e: InvestigateError = ParseError::NoFencedBlock.into();
-        assert!(matches!(e, InvestigateError::Scoring(ParseError::NoFencedBlock)));
+        assert!(matches!(
+            e,
+            InvestigateError::Scoring(ParseError::NoFencedBlock)
+        ));
     }
 }

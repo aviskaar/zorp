@@ -1,5 +1,7 @@
 use crate::error::McpError;
-use crate::protocol::{id_matches, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, PROTOCOL_VERSION};
+use crate::protocol::{
+    id_matches, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, PROTOCOL_VERSION,
+};
 use crate::transport::Transport;
 use std::collections::HashMap;
 
@@ -14,22 +16,34 @@ pub struct StreamableHttpTransport {
 
 impl StreamableHttpTransport {
     pub fn new(url: String, headers: HashMap<String, String>, call_timeout_secs: u64) -> Self {
-        let resolved_headers = headers.into_iter().map(|(k, v)| (k, expand_env(&v, |k| std::env::var(k).ok()))).collect();
+        let resolved_headers = headers
+            .into_iter()
+            .map(|(k, v)| (k, expand_env(&v, |k| std::env::var(k).ok())))
+            .collect();
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(call_timeout_secs))
             .build();
-        StreamableHttpTransport { url, resolved_headers, agent, session_id: None }
+        StreamableHttpTransport {
+            url,
+            resolved_headers,
+            agent,
+            session_id: None,
+        }
     }
 
     fn build_post(&self) -> ureq::Request {
-        let mut request = self.agent.post(&self.url)
+        let mut request = self
+            .agent
+            .post(&self.url)
             .set("Content-Type", "application/json")
             .set("Accept", "application/json, text/event-stream")
             .set("MCP-Protocol-Version", PROTOCOL_VERSION);
         if let Some(sid) = &self.session_id {
             request = request.set("Mcp-Session-Id", sid);
         }
-        for (k, v) in &self.resolved_headers { request = request.set(k, v); }
+        for (k, v) in &self.resolved_headers {
+            request = request.set(k, v);
+        }
         request
     }
 
@@ -49,7 +63,9 @@ where
     while let Some(idx) = remainder.find('$') {
         result.push_str(&remainder[..idx]);
         let rest = &remainder[idx + 1..];
-        let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
         let var_name = &rest[..end];
         if !var_name.is_empty() {
             if let Some(val) = get_env(var_name) {
@@ -69,16 +85,25 @@ where
 
 impl Transport for StreamableHttpTransport {
     fn send(&mut self, req: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let body = serde_json::to_string(&req).map_err(|e| McpError::Protocol(format!("serialize: {e}")))?;
-        let response = self.build_post().send_string(&body)
+        let body = serde_json::to_string(&req)
+            .map_err(|e| McpError::Protocol(format!("serialize: {e}")))?;
+        let response = self
+            .build_post()
+            .send_string(&body)
             .map_err(|e| McpError::Transport(format!("HTTP POST failed: {e}")))?;
         self.capture_session_id(&response);
-        let ct = response.header("content-type").unwrap_or("application/json").to_string();
+        let ct = response
+            .header("content-type")
+            .unwrap_or("application/json")
+            .to_string();
         if ct.contains("text/event-stream") {
             parse_sse_response(response, &req.id)
         } else {
-            let text = response.into_string().map_err(|e| McpError::Transport(format!("read body: {e}")))?;
-            serde_json::from_str(&text).map_err(|e| McpError::Protocol(format!("bad JSON-RPC: {e}")))
+            let text = response
+                .into_string()
+                .map_err(|e| McpError::Transport(format!("read body: {e}")))?;
+            serde_json::from_str(&text)
+                .map_err(|e| McpError::Protocol(format!("bad JSON-RPC: {e}")))
         }
     }
 
@@ -87,14 +112,19 @@ impl Transport for StreamableHttpTransport {
             .map_err(|e| McpError::Protocol(format!("serialize notification: {e}")))?;
         // A notification is a plain POST. The server replies 202 (or 200)
         // and the body carries nothing we need.
-        let response = self.build_post().send_string(&body)
+        let response = self
+            .build_post()
+            .send_string(&body)
             .map_err(|e| McpError::Transport(format!("HTTP POST failed: {e}")))?;
         self.capture_session_id(&response);
         Ok(())
     }
 }
 
-fn parse_sse_response(response: ureq::Response, target_id: &serde_json::Value) -> Result<JsonRpcResponse, McpError> {
+fn parse_sse_response(
+    response: ureq::Response,
+    target_id: &serde_json::Value,
+) -> Result<JsonRpcResponse, McpError> {
     use std::io::BufRead;
     let reader = std::io::BufReader::new(response.into_reader());
     let mut data_buf = String::new();
@@ -106,12 +136,16 @@ fn parse_sse_response(response: ureq::Response, target_id: &serde_json::Value) -
             data_buf.push('\n');
         } else if line.is_empty() && !data_buf.is_empty() {
             if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&data_buf) {
-                if id_matches(resp.id.as_ref(), target_id) { return Ok(resp); }
+                if id_matches(resp.id.as_ref(), target_id) {
+                    return Ok(resp);
+                }
             }
             data_buf.clear();
         }
     }
-    Err(McpError::Transport(format!("SSE stream ended without response for id {target_id}")))
+    Err(McpError::Transport(format!(
+        "SSE stream ended without response for id {target_id}"
+    )))
 }
 
 #[cfg(test)]
@@ -145,11 +179,14 @@ mod tests {
         let mut chunk = [0u8; 1024];
         loop {
             let n = stream.read(&mut chunk).unwrap();
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             buf.extend_from_slice(&chunk[..n]);
             let text = String::from_utf8_lossy(&buf);
             if let Some(header_end) = text.find("\r\n\r\n") {
-                let content_length = text.lines()
+                let content_length = text
+                    .lines()
                     .find_map(|l| {
                         let (k, v) = l.split_once(':')?;
                         if k.eq_ignore_ascii_case("content-length") {
@@ -159,13 +196,20 @@ mod tests {
                         }
                     })
                     .unwrap_or(0);
-                if buf.len() >= header_end + 4 + content_length { break; }
+                if buf.len() >= header_end + 4 + content_length {
+                    break;
+                }
             }
         }
         String::from_utf8_lossy(&buf).into_owned()
     }
 
-    fn write_http_response(stream: &mut std::net::TcpStream, status: &str, extra_headers: &str, body: &str) {
+    fn write_http_response(
+        stream: &mut std::net::TcpStream,
+        status: &str,
+        extra_headers: &str,
+        body: &str,
+    ) {
         let resp = format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -183,13 +227,21 @@ mod tests {
             // Request 1: initialize, respond with a session id.
             let (mut s, _) = listener.accept().unwrap();
             captured.push(read_http_request(&mut s));
-            write_http_response(&mut s, "200 OK", "Mcp-Session-Id: sess-123\r\n",
-                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+            write_http_response(
+                &mut s,
+                "200 OK",
+                "Mcp-Session-Id: sess-123\r\n",
+                r#"{"jsonrpc":"2.0","id":1,"result":{}}"#,
+            );
             // Request 2: a normal request, must carry the session id.
             let (mut s, _) = listener.accept().unwrap();
             captured.push(read_http_request(&mut s));
-            write_http_response(&mut s, "200 OK", "",
-                r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#);
+            write_http_response(
+                &mut s,
+                "200 OK",
+                "",
+                r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}"#,
+            );
             // Request 3: a notification, must also carry the session id.
             let (mut s, _) = listener.accept().unwrap();
             captured.push(read_http_request(&mut s));
@@ -202,17 +254,29 @@ mod tests {
         assert!(r1.result.is_some());
         let r2 = t.send(JsonRpcRequest::new(2, "tools/list", None)).unwrap();
         assert!(r2.result.is_some());
-        t.send_notification(JsonRpcNotification::new("notifications/initialized", None)).unwrap();
+        t.send_notification(JsonRpcNotification::new("notifications/initialized", None))
+            .unwrap();
 
         let captured = handle.join().unwrap();
         let lower: Vec<String> = captured.iter().map(|c| c.to_lowercase()).collect();
         // No session id yet on the first request; protocol version always sent.
-        assert!(!lower[0].contains("mcp-session-id"), "first request should have no session id");
+        assert!(
+            !lower[0].contains("mcp-session-id"),
+            "first request should have no session id"
+        );
         assert!(lower[0].contains(&format!("mcp-protocol-version: {PROTOCOL_VERSION}")));
         // The captured session id rides on every later request.
-        assert!(lower[1].contains("mcp-session-id: sess-123"), "second request missing session id: {}", captured[1]);
+        assert!(
+            lower[1].contains("mcp-session-id: sess-123"),
+            "second request missing session id: {}",
+            captured[1]
+        );
         assert!(lower[1].contains(&format!("mcp-protocol-version: {PROTOCOL_VERSION}")));
-        assert!(lower[2].contains("mcp-session-id: sess-123"), "notification missing session id: {}", captured[2]);
+        assert!(
+            lower[2].contains("mcp-session-id: sess-123"),
+            "notification missing session id: {}",
+            captured[2]
+        );
         assert!(captured[2].contains("notifications/initialized"));
     }
 
@@ -224,8 +288,12 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             let _req = read_http_request(&mut s);
             // Server echoes the numeric id as a string.
-            write_http_response(&mut s, "200 OK", "",
-                r#"{"jsonrpc":"2.0","id":"1","result":{"ok":true}}"#);
+            write_http_response(
+                &mut s,
+                "200 OK",
+                "",
+                r#"{"jsonrpc":"2.0","id":"1","result":{"ok":true}}"#,
+            );
         });
         let mut t = StreamableHttpTransport::new(format!("http://{addr}/mcp"), HashMap::new(), 5);
         let resp = t.send(JsonRpcRequest::new(1, "initialize", None)).unwrap();

@@ -1,10 +1,11 @@
 mod common;
 
 use common::{mock, mock_capture};
-use zorp_agent::{
-    parse_assistant_completion, CompletionOptions, HttpModel, Message, Model, Provider, ReasoningMode,
-};
 use serde_json::{json, Value};
+use zorp_agent::{
+    parse_assistant_completion, CompletionOptions, HttpModel, Message, Model, Provider,
+    ReasoningMode,
+};
 
 #[cfg(feature = "otel")]
 use std::collections::HashMap;
@@ -154,10 +155,7 @@ fn unsupported_endpoint_omits_reasoning_parameters() {
     let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
 
     assert!(body.get("reasoning_effort").is_none());
-    assert!(completion
-        .telemetry
-        .provider_reasoning_parameters
-        .is_none());
+    assert!(completion.telemetry.provider_reasoning_parameters.is_none());
     assert!(!completion.telemetry.reasoning_parameters_sent);
 }
 

@@ -1,5 +1,5 @@
-use zorp::BoxErr;
 use std::io::{self, BufRead, Write};
+use zorp::BoxErr;
 
 fn stream_enabled() -> bool {
     std::env::var("ZORP_STREAM")

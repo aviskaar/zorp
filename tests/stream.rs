@@ -40,8 +40,7 @@ fn stream_skips_leading_comment_line() {
     let sse = ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
     let base = mock(200, "text/event-stream", sse);
     let url = zorp::join_url(&base, "chat/completions");
-    let out =
-        zorp::zorp_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {}).unwrap();
+    let out = zorp::zorp_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {}).unwrap();
     assert_eq!(out, "ok");
 }
 
@@ -53,8 +52,8 @@ fn stream_error_includes_body() {
         r#"{"error":{"message":"model not found"}}"#,
     );
     let url = zorp::join_url(&base, "chat/completions");
-    let err = zorp::zorp_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {})
-        .unwrap_err();
+    let err =
+        zorp::zorp_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {}).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("404"), "missing status in: {msg}");
     assert!(msg.contains("model not found"), "missing body in: {msg}");

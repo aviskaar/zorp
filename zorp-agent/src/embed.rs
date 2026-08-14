@@ -20,7 +20,11 @@ pub fn parse_embedding_response(resp: &Value, index: usize) -> Result<Vec<f32>, 
         .ok_or_else(|| format!("embeddings response entry {index} missing embedding array"))?;
     embedding
         .iter()
-        .map(|v| v.as_f64().map(|f| f as f32).ok_or_else(|| format!("non-numeric value in embedding at index {index}")))
+        .map(|v| {
+            v.as_f64()
+                .map(|f| f as f32)
+                .ok_or_else(|| format!("non-numeric value in embedding at index {index}"))
+        })
         .collect()
 }
 
@@ -30,7 +34,8 @@ pub fn parse_embedding_response(resp: &Value, index: usize) -> Result<Vec<f32>, 
 /// and `ZORP_MODEL` (chat completions), which have defaults, embeddings
 /// have no sensible default model to fall back to.
 pub fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
-    let base = std::env::var("ZORP_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let base =
+        std::env::var("ZORP_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let key = std::env::var("ZORP_API_KEY").ok();
     let model = std::env::var("ZORP_EMBEDDING_MODEL")
         .map_err(|_| "ZORP_EMBEDDING_MODEL is not set".to_string())?;
@@ -55,7 +60,10 @@ mod tests {
 
     #[test]
     fn embed_request_body_shape() {
-        let body = embed_request_body("text-embedding-3-small", &["a".to_string(), "b".to_string()]);
+        let body = embed_request_body(
+            "text-embedding-3-small",
+            &["a".to_string(), "b".to_string()],
+        );
         assert_eq!(body["model"], "text-embedding-3-small");
         assert_eq!(body["input"].as_array().unwrap().len(), 2);
     }

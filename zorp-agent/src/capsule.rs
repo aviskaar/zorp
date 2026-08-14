@@ -119,8 +119,26 @@ fn parse_frontmatter_fields(text: &str) -> Result<BTreeMap<String, String>, Stri
 
 /// Command names a capsule can never shadow — built-ins always win.
 pub const RESERVED_NAMES: &[&str] = &[
-    "help", "h", "?", "model", "context", "diff", "status", "undo", "approve", "deny", "clear",
-    "exit", "quit", "q", "reasoning", "tools", "commands", "capsules", "load", "unload",
+    "help",
+    "h",
+    "?",
+    "model",
+    "context",
+    "diff",
+    "status",
+    "undo",
+    "approve",
+    "deny",
+    "clear",
+    "exit",
+    "quit",
+    "q",
+    "reasoning",
+    "tools",
+    "commands",
+    "capsules",
+    "load",
+    "unload",
     "capsule-create",
 ];
 
@@ -400,12 +418,16 @@ mod tests {
             PathBuf::from("."),
         )
         .unwrap();
-        assert_eq!(capsule.writes, vec!["theme".to_string(), "active_branch".to_string()]);
+        assert_eq!(
+            capsule.writes,
+            vec!["theme".to_string(), "active_branch".to_string()]
+        );
     }
 
     #[test]
     fn errors_when_name_missing() {
-        let err = Capsule::parse("---\ndescription: no name\n---\nbody", PathBuf::from(".")).unwrap_err();
+        let err =
+            Capsule::parse("---\ndescription: no name\n---\nbody", PathBuf::from(".")).unwrap_err();
         assert!(err.contains("name"));
     }
 
@@ -417,7 +439,8 @@ mod tests {
 
     #[test]
     fn errors_when_closing_delimiter_missing() {
-        let err = Capsule::parse("---\nname: demo\nbody with no closer", PathBuf::from(".")).unwrap_err();
+        let err =
+            Capsule::parse("---\nname: demo\nbody with no closer", PathBuf::from(".")).unwrap_err();
         assert!(err.contains("closing frontmatter delimiter"));
     }
 
@@ -560,7 +583,11 @@ mod tests {
         let project = tempdir().unwrap();
         write_capsule(project.path(), "good", "fine", "body");
         fs::create_dir_all(project.path().join("bad")).unwrap();
-        fs::write(project.path().join("bad").join("CAPSULE.md"), "not frontmatter at all").unwrap();
+        fs::write(
+            project.path().join("bad").join("CAPSULE.md"),
+            "not frontmatter at all",
+        )
+        .unwrap();
 
         let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), project.path());
 

@@ -51,7 +51,9 @@ impl CheckpointMode {
         } else if io::stdin().is_terminal() {
             Ok(CheckpointMode::Interactive(Arc::new(TerminalDecider)))
         } else {
-            Err(TrackError::CheckpointBlocked { kind: "terminal".to_string() })
+            Err(TrackError::CheckpointBlocked {
+                kind: "terminal".to_string(),
+            })
         }
     }
 
@@ -77,7 +79,11 @@ impl Store {
         prompt: &str,
     ) -> Result<bool, TrackError> {
         let approved = mode.decide(prompt);
-        let id = format!("{track_id}-{kind}-{}-{}", now_millis(), crate::id::next_seq());
+        let id = format!(
+            "{track_id}-{kind}-{}-{}",
+            now_millis(),
+            crate::id::next_seq()
+        );
         let now = now_millis();
         self.conn.execute(
             "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
@@ -102,8 +108,17 @@ impl Store {
     /// which AutoApprove must not be able to skip. The reason is
     /// persisted as a checkpoints row of the given `kind` with status
     /// "enforced-kill" so the run record shows what killed the track.
-    pub fn record_enforced_kill(&self, track_id: &str, kind: &str, reason: &str) -> Result<(), TrackError> {
-        let id = format!("{track_id}-{kind}-{}-{}", now_millis(), crate::id::next_seq());
+    pub fn record_enforced_kill(
+        &self,
+        track_id: &str,
+        kind: &str,
+        reason: &str,
+    ) -> Result<(), TrackError> {
+        let id = format!(
+            "{track_id}-{kind}-{}-{}",
+            now_millis(),
+            crate::id::next_seq()
+        );
         let now = now_millis();
         self.conn.execute(
             "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
@@ -127,7 +142,11 @@ impl Store {
     /// `kind` for `track_id`, or `None` if no such checkpoint exists yet.
     /// Used by `co_write::run`'s mtime-warning heuristic, not for any
     /// integrity enforcement.
-    pub fn latest_checkpoint_time(&self, track_id: &str, kind: &str) -> Result<Option<i64>, TrackError> {
+    pub fn latest_checkpoint_time(
+        &self,
+        track_id: &str,
+        kind: &str,
+    ) -> Result<Option<i64>, TrackError> {
         let row: Option<Option<i64>> = self
             .conn
             .query_row(
@@ -164,9 +183,15 @@ mod tests {
 
     #[test]
     fn interactive_mode_defers_to_the_decider() {
-        let approve = CheckpointMode::Interactive(Arc::new(Stub { answer: true, calls: AtomicUsize::new(0) }));
+        let approve = CheckpointMode::Interactive(Arc::new(Stub {
+            answer: true,
+            calls: AtomicUsize::new(0),
+        }));
         assert!(approve.decide("proceed?"));
-        let reject = CheckpointMode::Interactive(Arc::new(Stub { answer: false, calls: AtomicUsize::new(0) }));
+        let reject = CheckpointMode::Interactive(Arc::new(Stub {
+            answer: false,
+            calls: AtomicUsize::new(0),
+        }));
         assert!(!reject.decide("proceed?"));
     }
 
@@ -188,9 +213,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
-        let mode = CheckpointMode::Interactive(Arc::new(Stub { answer: true, calls: AtomicUsize::new(0) }));
+        let mode = CheckpointMode::Interactive(Arc::new(Stub {
+            answer: true,
+            calls: AtomicUsize::new(0),
+        }));
 
-        let approved = store.record_checkpoint("t1", "validate", &mode, "is this novel?").unwrap();
+        let approved = store
+            .record_checkpoint("t1", "validate", &mode, "is this novel?")
+            .unwrap();
         assert!(approved);
 
         let (status, prompt): (String, String) = store
@@ -212,10 +242,17 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
 
         store
-            .record_enforced_kill("t1", "investigate-threshold", "latency_ms = 150 went above threshold 100")
+            .record_enforced_kill(
+                "t1",
+                "investigate-threshold",
+                "latency_ms = 150 went above threshold 100",
+            )
             .unwrap();
 
-        assert_eq!(store.get_track("t1").unwrap().status, crate::track::TrackStatus::Killed);
+        assert_eq!(
+            store.get_track("t1").unwrap().status,
+            crate::track::TrackStatus::Killed
+        );
         let (status, reason): (String, String) = store
             .conn
             .query_row(
@@ -236,7 +273,9 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let mode = CheckpointMode::AutoApprove;
         for _ in 0..50 {
-            store.record_checkpoint("t1", "validate", &mode, "proceed?").unwrap();
+            store
+                .record_checkpoint("t1", "validate", &mode, "proceed?")
+                .unwrap();
         }
         let count: i64 = store
             .conn
@@ -255,7 +294,10 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
 
-        assert_eq!(store.latest_checkpoint_time("t1", "co-write").unwrap(), None);
+        assert_eq!(
+            store.latest_checkpoint_time("t1", "co-write").unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -264,14 +306,21 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let mode = CheckpointMode::AutoApprove;
-        store.record_checkpoint("t1", "validate", &mode, "novel?").unwrap();
+        store
+            .record_checkpoint("t1", "validate", &mode, "novel?")
+            .unwrap();
 
-        assert_eq!(store.latest_checkpoint_time("t1", "co-write").unwrap(), None);
+        assert_eq!(
+            store.latest_checkpoint_time("t1", "co-write").unwrap(),
+            None
+        );
 
         // Positive case: a co-write row alongside the validate row must be
         // found and must not be confused with the validate row's timestamp.
         std::thread::sleep(std::time::Duration::from_millis(5));
-        store.record_checkpoint("t1", "co-write", &mode, "draft ready?").unwrap();
+        store
+            .record_checkpoint("t1", "co-write", &mode, "draft ready?")
+            .unwrap();
 
         let (validate_resolved_at,): (i64,) = store
             .conn
@@ -301,9 +350,13 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let mode = CheckpointMode::AutoApprove;
-        store.record_checkpoint("t1", "co-write", &mode, "draft 1 ready?").unwrap();
+        store
+            .record_checkpoint("t1", "co-write", &mode, "draft 1 ready?")
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        store.record_checkpoint("t1", "co-write", &mode, "draft 2 ready?").unwrap();
+        store
+            .record_checkpoint("t1", "co-write", &mode, "draft 2 ready?")
+            .unwrap();
 
         let (latest_prompt, latest_resolved_at): (String, i64) = store
             .conn

@@ -624,11 +624,8 @@ impl Agent {
             }
 
             #[cfg(feature = "otel")]
-            let step_span = tracing::span!(
-                tracing::Level::INFO,
-                "agent_step",
-                zorp.step_number = step
-            );
+            let step_span =
+                tracing::span!(tracing::Level::INFO, "agent_step", zorp.step_number = step);
             #[cfg(feature = "otel")]
             let _step_guard = step_span.enter();
 
@@ -1376,12 +1373,11 @@ mod tests {
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
         };
-        let mut a = agent(Scripted::new(vec![call, text("done")])).register(Box::new(
-            RecordingNamed {
+        let mut a =
+            agent(Scripted::new(vec![call, text("done")])).register(Box::new(RecordingNamed {
                 name: "read_file",
                 ran: ran.clone(),
-            },
-        ));
+            }));
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         assert!(
             !ran.load(Ordering::SeqCst),

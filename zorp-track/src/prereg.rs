@@ -70,7 +70,11 @@ fn now_millis() -> i64 {
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn render_prereg_md(
@@ -238,7 +242,13 @@ pub fn write_prereg(
 
     fs::create_dir_all(track_dir)?;
     let file_path = track_dir.join("prereg.md");
-    let content = render_prereg_md(track_id, hypothesis, metric_name, kill_threshold, threshold_direction);
+    let content = render_prereg_md(
+        track_id,
+        hypothesis,
+        metric_name,
+        kill_threshold,
+        threshold_direction,
+    );
     fs::write(&file_path, &content)?;
     let file_hash = sha256_hex(content.as_bytes());
 
@@ -292,7 +302,10 @@ pub fn write_prereg(
 /// `None` means no pre-registration has been written yet for this track
 /// (a normal state for a fresh track, not an error); any other failure
 /// to read is a real `TrackError`.
-pub fn get_preregistration(store: &Store, track_id: &str) -> Result<Option<Preregistration>, TrackError> {
+pub fn get_preregistration(
+    store: &Store,
+    track_id: &str,
+) -> Result<Option<Preregistration>, TrackError> {
     let row = store
         .conn
         .query_row(
@@ -329,7 +342,9 @@ pub const UNVERIFIED_HASH_PREFIX: &str = "unverified:";
 /// The plain SHA-256 a stored file hash asserts, with the unverified
 /// marker (if any) stripped.
 pub(crate) fn asserted_hash(stored: &str) -> &str {
-    stored.strip_prefix(UNVERIFIED_HASH_PREFIX).unwrap_or(stored)
+    stored
+        .strip_prefix(UNVERIFIED_HASH_PREFIX)
+        .unwrap_or(stored)
 }
 
 /// The columns `full_verify_row` needs, read either one row at a time
@@ -384,10 +399,11 @@ pub(crate) fn full_verify_row(store: &Store, row: &PreregIntegrityRow) -> Result
                 detail: format!("recorded git commit {commit} for prereg.md no longer exists"),
             });
         }
-        let blob_hash = git_blob_hash(track_dir, commit).ok_or_else(|| TrackError::IntegrityMismatch {
-            track_id: row.track_id.clone(),
-            detail: format!("prereg.md could not be read from recorded git commit {commit}"),
-        })?;
+        let blob_hash =
+            git_blob_hash(track_dir, commit).ok_or_else(|| TrackError::IntegrityMismatch {
+                track_id: row.track_id.clone(),
+                detail: format!("prereg.md could not be read from recorded git commit {commit}"),
+            })?;
         if blob_hash != asserted_hash(&row.file_hash) {
             return Err(TrackError::IntegrityMismatch {
                 track_id: row.track_id.clone(),
@@ -421,7 +437,10 @@ pub(crate) fn git_blob_hash(track_dir: &Path, commit: &str) -> Option<String> {
     Some(sha256_hex(&out.stdout))
 }
 
-pub(crate) fn get_integrity_row(store: &Store, track_id: &str) -> Result<PreregIntegrityRow, TrackError> {
+pub(crate) fn get_integrity_row(
+    store: &Store,
+    track_id: &str,
+) -> Result<PreregIntegrityRow, TrackError> {
     store
         .conn
         .query_row(
@@ -462,9 +481,24 @@ mod tests {
     use tempfile::tempdir;
 
     fn init_git_repo(dir: &Path) {
-        std::process::Command::new("git").arg("-C").arg(dir).args(["init", "-q"]).output().unwrap();
-        std::process::Command::new("git").arg("-C").arg(dir).args(["config", "user.email", "test@example.com"]).output().unwrap();
-        std::process::Command::new("git").arg("-C").arg(dir).args(["config", "user.name", "Test"]).output().unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.email", "test@example.com"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
     }
 
     #[test]
@@ -475,7 +509,16 @@ mod tests {
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
 
-        let prereg = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0, ThresholdDirection::LowerIsBetter).unwrap();
+        let prereg = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "does caching help",
+            "latency_ms",
+            100.0,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
         assert!(prereg.git_commit_hash.is_some());
         assert!(prereg.file_path.exists());
 
@@ -489,7 +532,16 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
 
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
+        let prereg = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "hyp",
+            "accuracy",
+            0.9,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
         assert_eq!(prereg.git_commit_hash, None);
         assert!(verify_prereg_integrity(&store, "t1").is_ok());
     }
@@ -500,7 +552,16 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
+        let prereg = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "hyp",
+            "accuracy",
+            0.9,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         fs::write(&prereg.file_path, "tampered content").unwrap();
 
@@ -515,7 +576,16 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
+        let prereg = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "hyp",
+            "accuracy",
+            0.9,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         // Tamper with the file, rewrite history to cover it, and update
         // the row's stored hash to match, the way an attacker with disk
@@ -524,8 +594,18 @@ mod tests {
         // registration, whose blob no longer matches the stored hash.
         let tampered = "tampered content";
         fs::write(&prereg.file_path, tampered).unwrap();
-        std::process::Command::new("git").arg("-C").arg(&track_dir).args(["add", "--", "prereg.md"]).output().unwrap();
-        std::process::Command::new("git").arg("-C").arg(&track_dir).args(["commit", "-q", "--amend", "--no-edit"]).output().unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&track_dir)
+            .args(["add", "--", "prereg.md"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&track_dir)
+            .args(["commit", "-q", "--amend", "--no-edit"])
+            .output()
+            .unwrap();
         store
             .conn
             .execute(
@@ -544,7 +624,16 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
+        let prereg = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "hyp",
+            "accuracy",
+            0.9,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         fs::remove_file(&prereg.file_path).unwrap();
 
@@ -569,22 +658,54 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
 
-        let first = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
+        let first = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "hyp",
+            "accuracy",
+            0.9,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
-        let err = write_prereg(&store, &track_dir, "t1", "different hypothesis", "other_metric", 0.5, ThresholdDirection::LowerIsBetter)
-            .unwrap_err();
+        let err = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "different hypothesis",
+            "other_metric",
+            0.5,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap_err();
         assert!(matches!(err, TrackError::AlreadyRegistered { track_id } if track_id == "t1"));
 
         // The first registration must be untouched: the file on disk
         // still matches what the first call wrote and recorded.
         let content = fs::read_to_string(&first.file_path).unwrap();
-        assert_eq!(content, render_prereg_md("t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter));
+        assert_eq!(
+            content,
+            render_prereg_md(
+                "t1",
+                "hyp",
+                "accuracy",
+                0.9,
+                ThresholdDirection::LowerIsBetter
+            )
+        );
         assert!(verify_prereg_integrity(&store, "t1").is_ok());
     }
 
     #[test]
     fn parse_prereg_md_round_trips_render_prereg_md() {
-        let content = render_prereg_md("t1", "does caching help", "latency_ms", 42.5, ThresholdDirection::HigherIsBetter);
+        let content = render_prereg_md(
+            "t1",
+            "does caching help",
+            "latency_ms",
+            42.5,
+            ThresholdDirection::HigherIsBetter,
+        );
         let (hypothesis, metric, threshold, direction) = parse_prereg_md(&content).unwrap();
         assert_eq!(hypothesis, "does caching help");
         assert_eq!(metric, "latency_ms");
@@ -627,7 +748,16 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let written = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0, ThresholdDirection::LowerIsBetter).unwrap();
+        let written = write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "does caching help",
+            "latency_ms",
+            100.0,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         let read_back = get_preregistration(&store, "t1").unwrap().unwrap();
         assert_eq!(read_back, written);

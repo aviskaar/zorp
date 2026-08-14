@@ -1,16 +1,16 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
-use zorp_agent::{
-    cancel_token, chat_spinner_renderer, content_hash, default_user_capsules_dir,
-    extract_fenced_block, is_reserved, join_url, load_instructions, new_session_id,
-    parse_command, parse_spinner_verbs, project_capsules_dir, project_raw,
-    render_assistant_text, render_change_summary, resolve_scoped_configured, seed_context, Agent,
-    ApprovalMode, Capsule, CapsuleRegistry, CapsuleState, ChatCommand, ConfiguredFlavor, Flavor,
-    HttpModel, LineRenderer, Message, Outcome, Policy, Preset, Provider, ReasoningCommand,
-    ReasoningMode, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
-};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use zorp_agent::{
+    cancel_token, chat_spinner_renderer, content_hash, default_user_capsules_dir,
+    extract_fenced_block, is_reserved, join_url, load_instructions, new_session_id, parse_command,
+    parse_spinner_verbs, project_capsules_dir, project_raw, render_assistant_text,
+    render_change_summary, resolve_scoped_configured, seed_context, Agent, ApprovalMode, Capsule,
+    CapsuleRegistry, CapsuleState, ChatCommand, ConfiguredFlavor, Flavor, HttpModel, LineRenderer,
+    Message, Outcome, Policy, Preset, Provider, ReasoningCommand, ReasoningMode, Renderer,
+    SqliteRecorder, Store, TrustStore, Verifier,
+};
 
 #[cfg(feature = "otel")]
 mod otel_init {
@@ -180,9 +180,19 @@ fn main() {
         #[cfg(feature = "research")]
         Some(Command::Validate { question }) => validate(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
-        Some(Command::Investigate { question, metric_name, kill_threshold, threshold_direction }) => {
-            investigate(&question, metric_name, kill_threshold, threshold_direction, cli.yes, &overrides)
-        }
+        Some(Command::Investigate {
+            question,
+            metric_name,
+            kill_threshold,
+            threshold_direction,
+        }) => investigate(
+            &question,
+            metric_name,
+            kill_threshold,
+            threshold_direction,
+            cli.yes,
+            &overrides,
+        ),
         #[cfg(feature = "research")]
         Some(Command::CoWrite { question }) => co_write(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
@@ -200,7 +210,13 @@ fn main() {
                     )
                     .exit();
             }
-            run(cli.task.join(" "), &cli.images, cli.yes, cli.no_verify, &overrides);
+            run(
+                cli.task.join(" "),
+                &cli.images,
+                cli.yes,
+                cli.no_verify,
+                &overrides,
+            );
         }
     }
 }
@@ -292,11 +308,11 @@ fn segments_to_parts(segments: &[Segment], cwd: &Path) -> Vec<zorp_agent::Conten
         match seg {
             Segment::Text(t) => text_buf.push_str(t),
             Segment::Paste(s) => text_buf.push_str(s),
-            Segment::Image { data, mime_type, .. } => {
+            Segment::Image {
+                data, mime_type, ..
+            } => {
                 if !text_buf.is_empty() {
-                    parts.push(ContentPart::Text(
-                        std::mem::take(&mut text_buf),
-                    ));
+                    parts.push(ContentPart::Text(std::mem::take(&mut text_buf)));
                 }
                 parts.push(ContentPart::Image {
                     data: data.clone(),
@@ -474,7 +490,7 @@ fn pick(flag: Option<&str>, env: &str, flavor: Option<&str>, default: &str) -> S
         .unwrap_or_else(|| default.to_string())
 }
 
-fn build_policy(flag: Option<&str>, user: &Flavor) -> Policy {
+fn build_policy(flag: Option<&str>, user: &Flavor, repo_root: &Path) -> Policy {
     let preset_name = flag
         .map(str::to_string)
         .or_else(|| user.approval.preset.clone());
@@ -482,6 +498,10 @@ fn build_policy(flag: Option<&str>, user: &Flavor) -> Policy {
         Some(p) => Policy::from_preset(p),
         None => Policy::default(),
     };
+    // The destructive-rm and redirect checks compare targets against the
+    // root. Without it every absolute target denies, which is safe but
+    // needlessly blunt.
+    policy = policy.with_repo_root(repo_root);
     for (op, decision) in &user.approval.overrides {
         policy = policy.with_override(op, decision);
     }
@@ -607,7 +627,10 @@ fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, St
     (base_url, model_name)
 }
 
-fn resolve_provider(overrides: &Overrides, merged: &Flavor) -> Result<Provider, zorp_agent::BoxErr> {
+fn resolve_provider(
+    overrides: &Overrides,
+    merged: &Flavor,
+) -> Result<Provider, zorp_agent::BoxErr> {
     if let Some(flag) = &overrides.provider {
         return flag.parse();
     }
@@ -630,7 +653,13 @@ fn resolve_max_tokens(overrides: &Overrides, merged: &Flavor) -> Option<u32> {
         .or(merged.max_tokens)
 }
 
-fn run(task: String, images: &[PathBuf], auto_approve: bool, no_verify: bool, overrides: &Overrides) {
+fn run(
+    task: String,
+    images: &[PathBuf],
+    auto_approve: bool,
+    no_verify: bool,
+    overrides: &Overrides,
+) {
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -648,9 +677,7 @@ fn run(task: String, images: &[PathBuf], auto_approve: bool, no_verify: bool, ov
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);
     });
-    let api_key = std::env::var("ZORP_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
         api_key,
@@ -683,7 +710,7 @@ fn run(task: String, images: &[PathBuf], auto_approve: bool, no_verify: bool, ov
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -752,15 +779,16 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
     let merged = user_flavor.clone().merge(project_flavor);
     let mut system = VALIDATE_SYSTEM_PREAMBLE.to_string();
     system.push_str("\n\n");
-    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
+    system.push_str(&compose_system_with_persona(
+        &cwd,
+        persona(&cwd, &merged).as_deref(),
+    ));
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);
     });
-    let api_key = std::env::var("ZORP_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
         api_key,
@@ -792,7 +820,7 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -863,15 +891,16 @@ fn investigate(
     let merged = user_flavor.clone().merge(project_flavor);
     let mut system = INVESTIGATE_SYSTEM_PREAMBLE.to_string();
     system.push_str("\n\n");
-    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
+    system.push_str(&compose_system_with_persona(
+        &cwd,
+        persona(&cwd, &merged).as_deref(),
+    ));
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);
     });
-    let api_key = std::env::var("ZORP_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
         api_key,
@@ -903,7 +932,7 @@ fn investigate(
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -927,10 +956,16 @@ fn investigate(
         }
     };
 
-    let prereg_params = match (metric_name.as_deref(), kill_threshold, threshold_direction.as_deref()) {
+    let prereg_params = match (
+        metric_name.as_deref(),
+        kill_threshold,
+        threshold_direction.as_deref(),
+    ) {
         (Some(name), Some(threshold), Some(direction)) => {
             let Some(direction) = zorp_track::prereg::ThresholdDirection::parse(direction) else {
-                eprintln!("zorp-agent: --threshold-direction must be lower-is-better or higher-is-better");
+                eprintln!(
+                    "zorp-agent: --threshold-direction must be lower-is-better or higher-is-better"
+                );
                 std::process::exit(2);
             };
             Some(zorp_agent::investigate::PreregParams {
@@ -946,7 +981,14 @@ fn investigate(
         }
     };
 
-    match zorp_agent::investigate::run(&mut agent, &project, &track_id, question, prereg_params, &checkpoint_mode) {
+    match zorp_agent::investigate::run(
+        &mut agent,
+        &project,
+        &track_id,
+        question,
+        prereg_params,
+        &checkpoint_mode,
+    ) {
         Ok(true) => println!("investigate: approved, track {track_id} stays active"),
         Ok(false) => println!("investigate: rejected, track {track_id} killed"),
         Err(e) => {
@@ -977,15 +1019,16 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
     let merged = user_flavor.clone().merge(project_flavor);
     let mut system = CO_WRITE_SYSTEM_PREAMBLE.to_string();
     system.push_str("\n\n");
-    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
+    system.push_str(&compose_system_with_persona(
+        &cwd,
+        persona(&cwd, &merged).as_deref(),
+    ));
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);
     });
-    let api_key = std::env::var("ZORP_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
         api_key,
@@ -1017,7 +1060,7 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -1042,8 +1085,12 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
     };
 
     match zorp_agent::co_write::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
-        Ok(true) => println!("co-write: approved, draft ready for review at .zorp/tracks/{track_id}/draft.md"),
-        Ok(false) => println!("co-write: not yet approved, draft left at .zorp/tracks/{track_id}/draft.md"),
+        Ok(true) => println!(
+            "co-write: approved, draft ready for review at .zorp/tracks/{track_id}/draft.md"
+        ),
+        Ok(false) => {
+            println!("co-write: not yet approved, draft left at .zorp/tracks/{track_id}/draft.md")
+        }
         Err(e) => {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
@@ -1072,15 +1119,16 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
     let merged = user_flavor.clone().merge(project_flavor);
     let mut system = DELIVER_SYSTEM_PREAMBLE.to_string();
     system.push_str("\n\n");
-    system.push_str(&compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref()));
+    system.push_str(&compose_system_with_persona(
+        &cwd,
+        persona(&cwd, &merged).as_deref(),
+    ));
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);
     });
-    let api_key = std::env::var("ZORP_API_KEY")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
         api_key,
@@ -1112,7 +1160,7 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -1137,8 +1185,12 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
     };
 
     match zorp_agent::deliver::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
-        Ok(true) => println!("deliver: approved, shortlist ready for review at .zorp/tracks/{track_id}/venues.md"),
-        Ok(false) => println!("deliver: not yet approved, shortlist left at .zorp/tracks/{track_id}/venues.md"),
+        Ok(true) => println!(
+            "deliver: approved, shortlist ready for review at .zorp/tracks/{track_id}/venues.md"
+        ),
+        Ok(false) => println!(
+            "deliver: not yet approved, shortlist left at .zorp/tracks/{track_id}/venues.md"
+        ),
         Err(e) => {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
@@ -1269,7 +1321,8 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let user_capsules_dir = default_user_capsules_dir().unwrap_or_default();
     let project_capsules_dir_path = project_capsules_dir(&cwd);
-    let capsule_registry = CapsuleRegistry::discover(&user_capsules_dir, &project_capsules_dir_path);
+    let capsule_registry =
+        CapsuleRegistry::discover(&user_capsules_dir, &project_capsules_dir_path);
     let mut capsules = CapsuleState::new(capsule_registry, system.clone());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
@@ -1278,9 +1331,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     });
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
-        api_key: std::env::var("ZORP_API_KEY")
-            .ok()
-            .filter(|s| !s.is_empty()),
+        api_key: std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty()),
         model: model_name.clone(),
         provider,
         max_tokens: resolve_max_tokens(overrides, &merged),
@@ -1317,7 +1368,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated))
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
     .with_renderer(if color {
         chat_spinner_renderer(spinner_verbs)
     } else {
@@ -1396,9 +1447,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                     Segment::Paste(s) => {
                         prompt.push_str(&format!("[pasted +{} characters]", s.len()))
                     }
-                    Segment::Image { index, .. } => {
-                        prompt.push_str(&format!("[Image {}]", index))
-                    }
+                    Segment::Image { index, .. } => prompt.push_str(&format!("[Image {}]", index)),
                 }
             }
             let _ = crossterm::execute!(
@@ -1456,18 +1505,31 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
 
                             if has_content {
                                 // Check if it's a command (first text part)
-                                let first_text = parts.iter().find_map(|p| match p {
-                                    ContentPart::Text(t) => Some(t.as_str()),
-                                    _ => None,
-                                }).unwrap_or("");
+                                let first_text = parts
+                                    .iter()
+                                    .find_map(|p| match p {
+                                        ContentPart::Text(t) => Some(t.as_str()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or("");
 
-                                if first_text.trim_start().starts_with('/') && !parts.iter().any(|p| matches!(p, ContentPart::Image { .. })) {
+                                if first_text.trim_start().starts_with('/')
+                                    && !parts.iter().any(|p| matches!(p, ContentPart::Image { .. }))
+                                {
                                     // Pure text command — use existing command handler
                                     let exit = handle_chat_command(
-                                        first_text, &mut agent, &store, &session_id,
-                                        &cwd, &model_name, &mut capsules, &mut out,
+                                        first_text,
+                                        &mut agent,
+                                        &store,
+                                        &session_id,
+                                        &cwd,
+                                        &model_name,
+                                        &mut capsules,
+                                        &mut out,
                                     );
-                                    if exit { break; }
+                                    if exit {
+                                        break;
+                                    }
                                 } else {
                                     // Multimodal or text message
                                     match agent.run_multimodal(parts) {
@@ -1487,9 +1549,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             }
 
                             if crossterm::terminal::enable_raw_mode().is_err() {
-                                out.notice(
-                                    "(could not re-enable raw terminal mode; exiting chat)",
-                                );
+                                out.notice("(could not re-enable raw terminal mode; exiting chat)");
                                 break;
                             }
                             let _ = crossterm::execute!(
@@ -1859,9 +1919,9 @@ fn handle_chat_command(
                     )),
                     Outcome::Cancelled => out.notice("(cancelled)"),
                     Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
-                    Outcome::Blocked => out.notice(
-                        "(stopped: actions denied — use /approve to allow this session)",
-                    ),
+                    Outcome::Blocked => {
+                        out.notice("(stopped: actions denied — use /approve to allow this session)")
+                    }
                     Outcome::Error(e) => out.notice(&format!("(error: {e})")),
                 }
             }
@@ -1951,9 +2011,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     });
     let model = HttpModel {
         url: join_url(&base_url, provider.path_suffix()),
-        api_key: std::env::var("ZORP_API_KEY")
-            .ok()
-            .filter(|s| !s.is_empty()),
+        api_key: std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty()),
         model: model_name,
         provider,
         max_tokens: resolve_max_tokens(overrides, &merged),
@@ -1981,10 +2039,17 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
 
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
-    let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
-        .register_builtins_filtered(merged.tools.enabled.as_deref())
-        .with_policy(build_policy(overrides.approval.as_deref(), &gated))
-        .with_message_records(messages);
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        steps,
+        cwd.clone(),
+        cancel,
+        approval,
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_message_records(messages);
 
     agent = attach_mcp_tools(agent, overrides, false);
 
@@ -2073,9 +2138,9 @@ fn attach_mcp_tools(agent: Agent, _overrides: &Overrides, _add_prompt_additions:
 
 #[cfg(feature = "mcp")]
 fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_additions: bool) -> Agent {
-    use zorp_mcp::{McpConfig, McpRegistry};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
+    use zorp_mcp::{McpConfig, McpRegistry};
 
     let file_cfg = McpConfig::from_file(Path::new(".zorp/mcp.toml")).unwrap_or_else(|e| {
         eprintln!("zorp-mcp: config warning: {e}");
@@ -2109,7 +2174,8 @@ fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_addition
                     text.push_str("\n\n");
                     text.push_str(addition);
                 } else {
-                    msg.content.push(ContentPart::Text(format!("\n\n{addition}")));
+                    msg.content
+                        .push(ContentPart::Text(format!("\n\n{addition}")));
                 }
             }
         }
@@ -2119,8 +2185,8 @@ fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_addition
 
 #[cfg(feature = "mcp")]
 fn mcp_config_from_flags(flags: &[String]) -> zorp_mcp::McpConfig {
-    use zorp_mcp::config::{ServerConfig, TransportKind, TrustLevel};
     use std::collections::HashMap;
+    use zorp_mcp::config::{ServerConfig, TransportKind, TrustLevel};
     let mut servers = Vec::new();
     for flag in flags {
         let parts: Vec<&str> = flag.splitn(3, ':').collect();
@@ -2175,8 +2241,8 @@ fn mcp_config_from_flags(flags: &[String]) -> zorp_mcp::McpConfig {
 #[cfg(test)]
 mod main_tests {
     use super::*;
-    use zorp_agent::Renderer;
     use std::path::Path;
+    use zorp_agent::Renderer;
 
     #[derive(Default)]
     struct TestRenderer {
@@ -2265,7 +2331,8 @@ mod main_tests {
     }
 
     fn capsules_from(project_root: &Path) -> CapsuleState {
-        let registry = CapsuleRegistry::discover(Path::new("/does-not-exist-user-dir"), project_root);
+        let registry =
+            CapsuleRegistry::discover(Path::new("/does-not-exist-user-dir"), project_root);
         CapsuleState::new(registry, "system".to_string())
     }
 
@@ -2277,8 +2344,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/load demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2291,15 +2364,26 @@ mod main_tests {
     #[test]
     fn load_capsule_updates_agent_system_prompt() {
         let dir = tempfile::tempdir().unwrap();
-        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        write_capsule(
+            dir.path(),
+            "demo",
+            "demo capsule",
+            "Follow the demo workflow.",
+        );
         let mut capsules = capsules_from(dir.path());
         let mut agent = test_agent(None);
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/load demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2312,19 +2396,36 @@ mod main_tests {
     #[test]
     fn unload_capsule_reverts_agent_system_prompt() {
         let dir = tempfile::tempdir().unwrap();
-        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        write_capsule(
+            dir.path(),
+            "demo",
+            "demo capsule",
+            "Follow the demo workflow.",
+        );
         let mut capsules = capsules_from(dir.path());
         let mut agent = test_agent(None);
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
         handle_chat_command(
-            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/load demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         let exit = handle_chat_command(
-            "/unload demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/unload demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2334,25 +2435,48 @@ mod main_tests {
     #[test]
     fn clear_does_not_unload_active_capsules() {
         let dir = tempfile::tempdir().unwrap();
-        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        write_capsule(
+            dir.path(),
+            "demo",
+            "demo capsule",
+            "Follow the demo workflow.",
+        );
         let mut capsules = capsules_from(dir.path());
         let mut agent = fake_agent("done!");
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
         handle_chat_command(
-            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/load demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         handle_chat_command(
-            "hello", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "hello",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         assert_eq!(agent.messages.len(), 3); // system, user, assistant
 
         let exit = handle_chat_command(
-            "/clear", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/clear",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2370,13 +2494,25 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         handle_chat_command(
-            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/load demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         out.notices.clear();
         handle_chat_command(
-            "/capsules", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/capsules",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert_eq!(out.notices, vec!["● demo — demo capsule".to_string()]);
@@ -2392,8 +2528,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2412,8 +2554,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/unload demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/unload demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2423,22 +2571,39 @@ mod main_tests {
     #[test]
     fn capsule_session_lifecycle_load_invoke_unload_exit() {
         let dir = tempfile::tempdir().unwrap();
-        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        write_capsule(
+            dir.path(),
+            "demo",
+            "demo capsule",
+            "Follow the demo workflow.",
+        );
         let mut capsules = capsules_from(dir.path());
         let mut agent = fake_agent("done!");
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/load demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         assert!(!exit);
         assert!(agent.messages[0].text().contains("## Capsule: demo"));
 
         let exit = handle_chat_command(
-            "/demo please help", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/demo please help",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         assert!(!exit);
         let prompt_after_invoke = agent.messages[0].text();
@@ -2447,15 +2612,27 @@ mod main_tests {
         assert_eq!(out.assistant_replies, vec!["done!".to_string()]);
 
         let exit = handle_chat_command(
-            "/unload demo", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/unload demo",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         assert!(!exit);
         assert_eq!(agent.messages[0].text(), "system");
 
         let exit = handle_chat_command(
-            "/exit", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/exit",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
         assert!(exit);
     }
@@ -2466,13 +2643,20 @@ mod main_tests {
         write_capsule(dir.path(), "demo", "demo capsule", "body");
         let mut capsules = capsules_from(dir.path());
         // fake_agent's FakeModel would return this reply if called; assert it wasn't.
-        let mut agent = fake_agent("```\n---\nname: demo\ndescription: x\n---\nshould not run\n```");
+        let mut agent =
+            fake_agent("```\n---\nname: demo\ndescription: x\n---\nshould not run\n```");
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/capsule-create demo does the thing", &mut agent, &store, "s1", dir.path(),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create demo does the thing",
+            &mut agent,
+            &store,
+            "s1",
+            dir.path(),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2492,8 +2676,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/capsule-create", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2511,8 +2701,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/capsule-create load does the thing", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create load does the thing",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2530,8 +2726,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/capsule-create ../../evil do the thing", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create ../../evil do the thing",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2547,8 +2749,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/capsule-create /tmp/evil do the thing", &mut agent, &store, "s1", Path::new("/repo"),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create /tmp/evil do the thing",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
@@ -2568,14 +2776,24 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         let exit = handle_chat_command(
-            "/capsule-create demo draft a demo workflow", &mut agent, &store, "s1", dir.path(),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create demo draft a demo workflow",
+            &mut agent,
+            &store,
+            "s1",
+            dir.path(),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!exit);
         assert!(capsules.is_active("demo"));
         let written = std::fs::read_to_string(
-            dir.path().join(".zorp").join("capsules").join("demo").join("CAPSULE.md"),
+            dir.path()
+                .join(".zorp")
+                .join("capsules")
+                .join("demo")
+                .join("CAPSULE.md"),
         )
         .unwrap();
         assert!(written.contains("name: demo"));
@@ -2593,15 +2811,20 @@ mod main_tests {
     fn capsule_create_reconciles_mismatched_model_provided_name() {
         let dir = tempfile::tempdir().unwrap();
         let mut capsules = capsules_from(dir.path());
-        let mut agent = fake_agent(
-            "```\n---\nname: wrong-name\ndescription: demo capsule\n---\nbody\n```",
-        );
+        let mut agent =
+            fake_agent("```\n---\nname: wrong-name\ndescription: demo capsule\n---\nbody\n```");
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
         handle_chat_command(
-            "/capsule-create demo do the thing", &mut agent, &store, "s1", dir.path(),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create demo do the thing",
+            &mut agent,
+            &store,
+            "s1",
+            dir.path(),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(capsules.is_active("demo"));
@@ -2617,8 +2840,14 @@ mod main_tests {
         let mut out = TestRenderer::default();
 
         handle_chat_command(
-            "/capsule-create demo do the thing", &mut agent, &store, "s1", dir.path(),
-            "test-model", &mut capsules, &mut out,
+            "/capsule-create demo do the thing",
+            &mut agent,
+            &store,
+            "s1",
+            dir.path(),
+            "test-model",
+            &mut capsules,
+            &mut out,
         );
 
         assert!(!capsules.is_active("demo"));
@@ -2626,7 +2855,12 @@ mod main_tests {
             .notices
             .iter()
             .any(|n| n == "capsule draft failed: no fenced code block found in model output"));
-        assert!(!dir.path().join(".zorp").join("capsules").join("demo").exists());
+        assert!(!dir
+            .path()
+            .join(".zorp")
+            .join("capsules")
+            .join("demo")
+            .exists());
     }
 
     struct EnvGuard(Vec<(String, Option<String>)>);
@@ -2811,12 +3045,30 @@ mod main_tests {
     #[test]
     fn test_mime_from_extension() {
         use std::path::Path;
-        assert_eq!(super::mime_from_extension(Path::new("test.png")), "image/png");
-        assert_eq!(super::mime_from_extension(Path::new("test.jpg")), "image/jpeg");
-        assert_eq!(super::mime_from_extension(Path::new("test.jpeg")), "image/jpeg");
-        assert_eq!(super::mime_from_extension(Path::new("test.gif")), "image/gif");
-        assert_eq!(super::mime_from_extension(Path::new("test.webp")), "image/webp");
-        assert_eq!(super::mime_from_extension(Path::new("test.unknown")), "image/png");
+        assert_eq!(
+            super::mime_from_extension(Path::new("test.png")),
+            "image/png"
+        );
+        assert_eq!(
+            super::mime_from_extension(Path::new("test.jpg")),
+            "image/jpeg"
+        );
+        assert_eq!(
+            super::mime_from_extension(Path::new("test.jpeg")),
+            "image/jpeg"
+        );
+        assert_eq!(
+            super::mime_from_extension(Path::new("test.gif")),
+            "image/gif"
+        );
+        assert_eq!(
+            super::mime_from_extension(Path::new("test.webp")),
+            "image/webp"
+        );
+        assert_eq!(
+            super::mime_from_extension(Path::new("test.unknown")),
+            "image/png"
+        );
     }
 
     #[test]
@@ -2842,7 +3094,10 @@ mod main_tests {
         let text = "Look at @image img1.png and @img img2.jpg or @image missing.png end";
         let (cleaned, images) = super::extract_image_refs(text, dir.path());
 
-        assert_eq!(cleaned, "Look at [Image 1] and [Image 2] or @image missing.png end");
+        assert_eq!(
+            cleaned,
+            "Look at [Image 1] and [Image 2] or @image missing.png end"
+        );
         assert_eq!(images.len(), 2);
         assert_eq!(images[0].0, b"fake png");
         assert_eq!(images[0].1, "image/png");
@@ -2872,7 +3127,7 @@ mod main_tests {
 
         let parts = super::segments_to_parts(&segments, dir.path());
         assert_eq!(parts.len(), 4);
-        
+
         match &parts[0] {
             ContentPart::Text(t) => assert_eq!(t, "Hello world. "),
             _ => panic!("Expected text part"),
@@ -2916,7 +3171,10 @@ mod main_tests {
         let dir = tempfile::tempdir().unwrap();
         let project = zorp_track::Project::open(dir.path()).unwrap();
         let track_id = zorp_track::id::track_id("does caching help");
-        project.store.create_track(&track_id, "does caching help").unwrap();
+        project
+            .store
+            .create_track(&track_id, "does caching help")
+            .unwrap();
 
         // A retry of the same question must succeed by reusing the row,
         // not fail with a duplicate primary-key error.

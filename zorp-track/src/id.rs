@@ -75,7 +75,10 @@ mod tests {
         let long = "word ".repeat(30);
         let id = track_id(&long);
         let slug_part = &id[11..]; // strip the fixed "YYYY-MM-DD-" prefix
-        assert!(slug_part.chars().count() <= MAX_SLUG_CHARS, "got: {slug_part}");
+        assert!(
+            slug_part.chars().count() <= MAX_SLUG_CHARS,
+            "got: {slug_part}"
+        );
     }
 
     #[test]

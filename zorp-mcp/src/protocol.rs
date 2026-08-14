@@ -14,7 +14,12 @@ pub struct JsonRpcRequest {
 }
 impl JsonRpcRequest {
     pub fn new(id: impl Into<Value>, method: impl Into<String>, params: Option<Value>) -> Self {
-        JsonRpcRequest { jsonrpc: "2.0", id: id.into(), method: method.into(), params }
+        JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: id.into(),
+            method: method.into(),
+            params,
+        }
     }
 }
 
@@ -28,7 +33,10 @@ pub struct JsonRpcResponse {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct JsonRpcError { pub code: i64, pub message: String }
+pub struct JsonRpcError {
+    pub code: i64,
+    pub message: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcNotification {
@@ -40,7 +48,11 @@ pub struct JsonRpcNotification {
 }
 impl JsonRpcNotification {
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
-        JsonRpcNotification { jsonrpc: "2.0".into(), method: method.into(), params }
+        JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: method.into(),
+            params,
+        }
     }
 }
 
@@ -131,14 +143,19 @@ mod tests {
     }
     #[test]
     fn mcp_prefix_format() {
-        assert_eq!(mcp_prefix("filesystem", "read_file"), "mcp__filesystem__read_file");
+        assert_eq!(
+            mcp_prefix("filesystem", "read_file"),
+            "mcp__filesystem__read_file"
+        );
     }
     #[test]
     fn mcp_tool_prefixed_name_correct() {
         let t = McpTool {
-            server: "fs".into(), name: "read_file".into(),
+            server: "fs".into(),
+            name: "read_file".into(),
             prefixed_name: mcp_prefix("fs", "read_file"),
-            description: None, input_schema: json!({}),
+            description: None,
+            input_schema: json!({}),
         };
         assert_eq!(t.prefixed_name, "mcp__fs__read_file");
     }

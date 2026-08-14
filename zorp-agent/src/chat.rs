@@ -22,8 +22,14 @@ pub enum ChatCommand {
     Capsules,
     LoadCapsule(String),
     UnloadCapsule(String),
-    InvokeCapsule { name: String, prompt: Option<String> },
-    CreateCapsule { name: String, description: String },
+    InvokeCapsule {
+        name: String,
+        prompt: Option<String>,
+    },
+    CreateCapsule {
+        name: String,
+        description: String,
+    },
     Say(String),
     Unknown(String),
 }
@@ -85,7 +91,6 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         },
     }
 }
-
 
 #[cfg(test)]
 mod tests {

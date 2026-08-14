@@ -55,7 +55,7 @@ impl Tool for TakeNote {
 
         writeln!(file, "{}", content)
             .map_err(|e| ToolError::new(format!("failed to write to note {}: {}", filename, e)))?;
-        
+
         drop(file);
         let after = fs::read_to_string(&file_path).unwrap_or_default();
         cx.record_change(&rel_path, before, after);
@@ -91,7 +91,7 @@ impl Tool for SearchNotes {
             .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("search_notes: 'query' is required"))?;
-        
+
         let qkb_dir = cx.repo_root.join(".qkb");
         if !qkb_dir.exists() {
             return Ok(ToolOutput::new("no matches".to_string(), "0 matches"));
@@ -123,7 +123,7 @@ impl Tool for SearchNotes {
                 .unwrap_or(dent.path())
                 .display()
                 .to_string();
-            
+
             for (i, line) in text.lines().enumerate() {
                 if line.contains(query) {
                     hits.push(format!("{}:{}: {}", shown, i + 1, line.trim_end()));
@@ -133,7 +133,7 @@ impl Tool for SearchNotes {
                 }
             }
         }
-        
+
         let n = hits.len();
         let content = if hits.is_empty() {
             "no matches".to_string()
@@ -157,41 +157,54 @@ mod tests {
     fn take_note_creates_and_appends() {
         let dir = tempdir().unwrap();
         let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
-        
+
         // Create note
-        let out = TakeNote.run(
-            &json!({"title": "Test Note", "content": "hello world"}),
-            &mut cx,
-        ).unwrap();
+        let out = TakeNote
+            .run(
+                &json!({"title": "Test Note", "content": "hello world"}),
+                &mut cx,
+            )
+            .unwrap();
         assert!(out.content.contains("Test-Note.md"));
-        
+
         let path = dir.path().join(".qkb").join("Test-Note.md");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello world\n");
-        
+
         // Append to note
-        TakeNote.run(
-            &json!({"title": "Test Note", "content": "second line"}),
-            &mut cx,
-        ).unwrap();
-        
-        assert_eq!(fs::read_to_string(&path).unwrap(), "hello world\nsecond line\n");
+        TakeNote
+            .run(
+                &json!({"title": "Test Note", "content": "second line"}),
+                &mut cx,
+            )
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "hello world\nsecond line\n"
+        );
     }
 
     #[test]
     fn search_notes_finds_matches() {
         let dir = tempdir().unwrap();
         let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
-        
-        TakeNote.run(
-            &json!({"title": "Rust Tips", "content": "Use cargo clippy"}),
-            &mut cx,
-        ).unwrap();
-        TakeNote.run(
-            &json!({"title": "Cargo", "content": "cargo build --release"}),
-            &mut cx,
-        ).unwrap();
-        
-        let out = SearchNotes.run(&json!({"query": "cargo"}), &mut cx).unwrap();
+
+        TakeNote
+            .run(
+                &json!({"title": "Rust Tips", "content": "Use cargo clippy"}),
+                &mut cx,
+            )
+            .unwrap();
+        TakeNote
+            .run(
+                &json!({"title": "Cargo", "content": "cargo build --release"}),
+                &mut cx,
+            )
+            .unwrap();
+
+        let out = SearchNotes
+            .run(&json!({"query": "cargo"}), &mut cx)
+            .unwrap();
         assert!(out.content.contains("Rust-Tips.md"));
         assert!(out.content.contains("Cargo.md"));
     }

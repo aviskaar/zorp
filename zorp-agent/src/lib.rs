@@ -5,10 +5,16 @@ mod agent;
 mod approval;
 mod capsule;
 mod chat;
+#[cfg(feature = "research")]
+pub mod co_write;
 mod context;
+#[cfg(feature = "research")]
+pub mod deliver;
 mod embed;
 mod flavor;
 mod instructions;
+#[cfg(feature = "research")]
+pub mod investigate;
 mod model;
 mod policy;
 mod provider;
@@ -21,12 +27,6 @@ mod tools;
 mod trust;
 #[cfg(feature = "research")]
 pub mod validate;
-#[cfg(feature = "research")]
-pub mod investigate;
-#[cfg(feature = "research")]
-pub mod co_write;
-#[cfg(feature = "research")]
-pub mod deliver;
 mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
@@ -51,7 +51,6 @@ pub use model::{
 };
 pub use policy::{Decision, Policy, Preset};
 pub use provider::Provider;
-pub use zorp::join_url;
 pub use reasoning::{
     parse_env_reasoning_mode, reasoning_payload, CompletionOptions, CompletionTelemetry,
     ReasoningMode,
@@ -76,6 +75,7 @@ pub use trust::TrustStore;
 #[cfg(feature = "research")]
 pub use validate::{parse_validation_result, ParseError, ValidateError, ValidationResult};
 pub use verify::{Verifier, VerifyReport, VerifyResult};
+pub use zorp::join_url;
 
 #[cfg(feature = "mcp")]
 pub mod mcp_adapter;

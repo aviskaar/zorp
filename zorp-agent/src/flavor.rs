@@ -470,9 +470,15 @@ required = ["test"]
         )
         .unwrap();
 
-        assert_eq!(configured.flavor.provider, Some(crate::provider::Provider::Anthropic));
+        assert_eq!(
+            configured.flavor.provider,
+            Some(crate::provider::Provider::Anthropic)
+        );
         assert_eq!(configured.flavor.max_tokens, Some(4096));
-        assert_eq!(configured.reasoning_mode, Some(crate::reasoning::ReasoningMode::High));
+        assert_eq!(
+            configured.reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
     }
 
     #[test]

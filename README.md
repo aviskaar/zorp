@@ -2,15 +2,19 @@
 
 # zorp
 
-### Zorp investigates hard questions and delivers evidence-backed answers.
+### A research agent for scientific discovery.
 
-*LLMs made intelligence cheap. Zorp makes validated intelligence cheap.*
+*Answers are cheap. Evidence is not.*
+
+Investigation is scattered, and the AI version of it is neither grounded
+nor validated. zorp turns a question into a pre-registered investigation,
+an evidence record, and a report where every claim traces back to it.
 
 <br/>
 
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-538%20passing-success?style=flat-square)](#development)
+[![Tests](https://img.shields.io/badge/tests-605%20passing-success?style=flat-square)](#development)
 [![Status](https://img.shields.io/badge/status-pre--alpha-critical?style=flat-square)](#status--roadmap)
 [![Part of Aviskaar](https://img.shields.io/badge/part%20of-Aviskaar-6f42c1?style=flat-square)](https://github.com/aviskaar)
 
@@ -36,6 +40,22 @@ hypothesis are all the same shape of problem to zorp. It's built by
 > See [Status & roadmap](#status--roadmap) below.
 
 ## Why zorp
+
+A confident answer is not a defensible one. An LLM will produce a fluent
+answer to a hard question in seconds. What it will not do is tell you
+whether to believe it, what evidence it weighed, or what it found that
+pointed the other way. zorp treats that gap as the actual problem. A
+question becomes an investigation, the investigation produces an evidence
+record, and the record is what the answer is accountable to.
+
+The core primitive is the Kill Threshold: a number a human supplies that
+says, in advance, what would prove the investigation wrong. Before zorp
+gathers anything, the hypothesis, the metric, and the threshold are
+written to a file, hashed, and committed to git, so a run cannot quietly
+rewrite what it set out to test. The agent never proposes the threshold,
+and only a human can move it. Every attempt is recorded, not just the one
+that worked, and when a run crosses the line the record says why it was
+killed.
 
 Most "AI scientist" projects wire a large agent framework directly to
 experiment code, which makes the harness and the research logic hard to
@@ -163,6 +183,8 @@ design specs live, and repo conventions.
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [x] **co-write**: zorp drafts the artifact, a human is always the author of record
 - [x] **deliver**: match a finished draft against real academic venues (conferences and journals, via live huiban search), writing a ranked shortlist for a human to review
+- [ ] A published investigation trace, start to finish
+- [ ] A grounded-vs-baseline evaluation
 - [ ] A systems paper about zorp itself, submitted to arXiv
 
 ## Origins

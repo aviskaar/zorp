@@ -34,12 +34,16 @@ pub struct CompatibilityConfig {
 #[derive(Debug, PartialEq)]
 pub enum ContractOutcome {
     Pass,
-    Fail { violated: Vec<String> },
+    Fail {
+        violated: Vec<String>,
+    },
     /// One or more predicates could not be evaluated against this trace
     /// (for example, an ordering predicate over events that lack a seq).
     /// Recording this instead of Pass or Fail keeps a broken trace from
     /// being counted as a real measurement.
-    Unevaluable { predicates: Vec<String> },
+    Unevaluable {
+        predicates: Vec<String>,
+    },
 }
 
 /// A parsed trace file. Malformed lines are skipped, not treated as a
@@ -565,7 +569,10 @@ mod tests {
             "schema_version: zorp.contract/v1\nid: verify_after_final_change\nversion: 1.0.0\ncriticality: critical\nrequired:\n  - id: verifier_invokd\ncompatibility:\n  reference_reliability_floor: 0.90\n  negative_flip_tolerance: 0.05\n"
         ).unwrap();
         let err = load_contract(&path).unwrap_err().to_string();
-        assert!(err.contains("verifier_invokd"), "error should name the offending id: {err}");
+        assert!(
+            err.contains("verifier_invokd"),
+            "error should name the offending id: {err}"
+        );
         assert!(
             err.contains("verify_after_final_change.yaml"),
             "error should name the offending file: {err}"
@@ -582,7 +589,10 @@ mod tests {
             "schema_version: zorp.contract/v1\nid: inspect_before_modify\nversion: 1.0.0\ncriticality: standard\nforbidden:\n  - id: blind_mutashun\ncompatibility:\n  reference_reliability_floor: 0.80\n  negative_flip_tolerance: 0.10\n"
         ).unwrap();
         let err = load_contract(&path).unwrap_err().to_string();
-        assert!(err.contains("blind_mutashun"), "error should name the offending id: {err}");
+        assert!(
+            err.contains("blind_mutashun"),
+            "error should name the offending id: {err}"
+        );
     }
 }
 

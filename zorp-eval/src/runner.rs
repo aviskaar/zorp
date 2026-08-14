@@ -1,6 +1,6 @@
 use rusqlite::Connection;
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn init_db(db_path: &Path) -> anyhow::Result<Connection> {
     if let Some(parent) = db_path.parent() {
@@ -124,11 +124,7 @@ pub fn run_suite(
         if !task_dir.is_dir() {
             continue;
         }
-        let task_id = task_dir
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let task_id = task_dir.file_name().unwrap().to_string_lossy().to_string();
         // Skip our own leftover snapshot-backup dirs (e.g. from a prior run
         // that crashed before cleanup): otherwise they get treated as
         // bogus extra tasks since they contain a copy of prompt.md/setup.sh.
@@ -277,11 +273,11 @@ mod tests {
     fn test_init_db_creates_dir_and_schema() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("subdir").join("test.db");
-        
+
         // Should succeed and create the directory and schema
-        let conn = init_db(&db_path).unwrap();
+        let _conn = init_db(&db_path).unwrap();
         assert!(db_path.exists());
-        
+
         // Running it twice should also succeed (IF NOT EXISTS logic)
         let _conn2 = init_db(&db_path).unwrap();
     }
@@ -417,7 +413,9 @@ mod tests {
 
         let conn = Connection::open(&db_path).unwrap();
         let passed: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runs WHERE passed = 1", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM runs WHERE passed = 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(passed, 1);
     }
@@ -429,7 +427,11 @@ mod tests {
         let task_dir = tasks_dir.join("tb_setup");
         fs::create_dir_all(&task_dir).unwrap();
         fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
-        fs::write(task_dir.join("setup.sh"), "#!/bin/sh\necho fixture > fixture.txt\n").unwrap();
+        fs::write(
+            task_dir.join("setup.sh"),
+            "#!/bin/sh\necho fixture > fixture.txt\n",
+        )
+        .unwrap();
 
         // A fake agent binary: fails loudly if setup.sh hasn't produced the fixture file.
         let fake_agent = root.path().join("fake_agent.sh");
@@ -458,7 +460,9 @@ mod tests {
 
         let conn = Connection::open(&db_path).unwrap();
         let passed: i64 = conn
-            .query_row("SELECT COUNT(*) FROM runs WHERE passed = 1", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM runs WHERE passed = 1", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         // 1 task * 1 runtime * 2 repetitions = 2 runs, all must have seen the fixture.
         assert_eq!(passed, 2);
@@ -522,10 +526,7 @@ mod tests {
         // wrong (post-chdir) directory inside the child. Reproduced by
         // giving run_suite a tasks_dir that is relative to the crate root
         // (cargo test's cwd), rather than tempdir's absolute path.
-        let unique = format!(
-            "target/relative_tasks_dir_uat_{}",
-            std::process::id()
-        );
+        let unique = format!("target/relative_tasks_dir_uat_{}", std::process::id());
         let root = PathBuf::from(&unique);
         let tasks_dir = root.join("tasks");
         let task_dir = tasks_dir.join("tb_relative");
@@ -574,7 +575,11 @@ mod tests {
 
         // A fake agent binary that mutates the workspace it runs in.
         let fake_agent = root.path().join("fake_agent.sh");
-        fs::write(&fake_agent, "#!/bin/sh\necho mutated > scratch.txt\nexit 0\n").unwrap();
+        fs::write(
+            &fake_agent,
+            "#!/bin/sh\necho mutated > scratch.txt\nexit 0\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

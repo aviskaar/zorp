@@ -1,5 +1,7 @@
 use crate::TrackError;
-use lancedb::arrow::arrow_array::{FixedSizeListArray, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
+use lancedb::arrow::arrow_array::{
+    FixedSizeListArray, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
+};
 use lancedb::arrow::arrow_schema::{DataType, Field, Field as ArrowField, Schema};
 use std::path::Path;
 use std::sync::Arc;
@@ -48,20 +50,28 @@ impl Library {
                         Arc::new(StringArray::from(Vec::<&str>::new())),
                     ],
                 )
-                .map_err(|e| lancedb::Error::Other { message: e.to_string(), source: None })?;
+                .map_err(|e| lancedb::Error::Other {
+                    message: e.to_string(),
+                    source: None,
+                })?;
                 let reader: Box<dyn RecordBatchReader + Send> =
                     Box::new(RecordBatchIterator::new(vec![Ok(empty_batch)], schema));
                 conn.create_table("library", reader).execute().await?;
             }
             Ok::<_, lancedb::Error>(conn)
         })?;
-        Ok(Library { runtime, connection })
+        Ok(Library {
+            runtime,
+            connection,
+        })
     }
 
     /// The names of tables currently in this store, `["library"]` right
     /// after `open` on a fresh path.
     pub fn table_names(&self) -> Result<Vec<String>, TrackError> {
-        Ok(self.runtime.block_on(self.connection.table_names().execute())?)
+        Ok(self
+            .runtime
+            .block_on(self.connection.table_names().execute())?)
     }
 }
 
@@ -73,7 +83,10 @@ fn source_schema(dim: i32) -> Arc<Schema> {
         Field::new("source", DataType::Utf8, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(ArrowField::new("item", DataType::Float32, true)), dim),
+            DataType::FixedSizeList(
+                Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                dim,
+            ),
             false,
         ),
     ]))
@@ -135,7 +148,10 @@ impl Library {
                 let tbl = self.connection.open_table("sources").execute().await?;
                 tbl.add(reader).execute().await?;
             } else {
-                self.connection.create_table("sources", reader).execute().await?;
+                self.connection
+                    .create_table("sources", reader)
+                    .execute()
+                    .await?;
             }
             Ok::<(), TrackError>(())
         })
@@ -161,14 +177,25 @@ mod tests {
         Library::open(&path).unwrap();
         let reopened = Library::open(&path);
         assert!(reopened.is_ok());
-        assert_eq!(reopened.unwrap().table_names().unwrap(), vec!["library".to_string()]);
+        assert_eq!(
+            reopened.unwrap().table_names().unwrap(),
+            vec!["library".to_string()]
+        );
     }
 
     #[test]
     fn insert_source_creates_the_table_on_first_call() {
         let dir = tempdir().unwrap();
         let library = Library::open(&dir.path().join("lancedb")).unwrap();
-        library.insert_source("t1", "validate-source", "a snippet", "https://example.com/paper", &[0.1, 0.2, 0.3]).unwrap();
+        library
+            .insert_source(
+                "t1",
+                "validate-source",
+                "a snippet",
+                "https://example.com/paper",
+                &[0.1, 0.2, 0.3],
+            )
+            .unwrap();
         let names = library.table_names().unwrap();
         assert!(names.contains(&"sources".to_string()));
     }
@@ -177,10 +204,34 @@ mod tests {
     fn insert_source_appends_on_second_call() {
         let dir = tempdir().unwrap();
         let library = Library::open(&dir.path().join("lancedb")).unwrap();
-        library.insert_source("t1", "validate-source", "first", "https://example.com/1", &[0.1, 0.2]).unwrap();
-        library.insert_source("t1", "validate-source", "second", "https://example.com/2", &[0.3, 0.4]).unwrap();
+        library
+            .insert_source(
+                "t1",
+                "validate-source",
+                "first",
+                "https://example.com/1",
+                &[0.1, 0.2],
+            )
+            .unwrap();
+        library
+            .insert_source(
+                "t1",
+                "validate-source",
+                "second",
+                "https://example.com/2",
+                &[0.3, 0.4],
+            )
+            .unwrap();
         let count = library.runtime.block_on(async {
-            library.connection.open_table("sources").execute().await.unwrap().count_rows(None).await.unwrap()
+            library
+                .connection
+                .open_table("sources")
+                .execute()
+                .await
+                .unwrap()
+                .count_rows(None)
+                .await
+                .unwrap()
         });
         assert_eq!(count, 2);
     }

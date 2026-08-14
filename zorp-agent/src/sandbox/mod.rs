@@ -1,3 +1,9 @@
+// Process supervision needs raw syscalls: setpgid in pre_exec so the
+// child leads its own process group, and waitid/killpg to reap it and
+// its descendants. There is no safe std equivalent, so the workspace
+// unsafe_code lint is turned off for this module only.
+#![allow(unsafe_code)]
+
 #[cfg(not(unix))]
 compile_error!("zorp-agent M4 requires a Unix target");
 

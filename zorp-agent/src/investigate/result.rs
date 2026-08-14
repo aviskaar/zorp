@@ -23,7 +23,9 @@ pub enum ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::NoFencedBlock => write!(f, "no fenced JSON block found in the agent's answer"),
+            ParseError::NoFencedBlock => {
+                write!(f, "no fenced JSON block found in the agent's answer")
+            }
             ParseError::InvalidJson(msg) => write!(f, "fenced block was not valid JSON: {msg}"),
             ParseError::MissingMetricValue => write!(f, "fenced block has no metric_value"),
         }
@@ -74,7 +76,12 @@ pub fn parse_attempt_result(agent_output: &str) -> Result<AttemptResult, ParseEr
             // carries both fields. MissingMetricValue is only reported if
             // no block in the whole answer had one.
             Ok(raw) => match raw.metric_value {
-                Some(metric_value) => return Ok(AttemptResult { metric_value, summary: raw.summary }),
+                Some(metric_value) => {
+                    return Ok(AttemptResult {
+                        metric_value,
+                        summary: raw.summary,
+                    })
+                }
                 None => saw_shaped_block = true,
             },
             Err(e) => last_err = Some(e),
@@ -131,8 +138,7 @@ mod tests {
     fn skips_a_decoy_block_that_has_a_summary_but_no_metric_value() {
         let text = format!(
             "First, a note:\n```json\n{}\n```\nAnd here is my finding.\n```json\n{}\n```\n",
-            r#"{"summary": "still working on it"}"#,
-            r#"{"metric_value": 3.5, "summary": "done"}"#
+            r#"{"summary": "still working on it"}"#, r#"{"metric_value": 3.5, "summary": "done"}"#
         );
         let result = parse_attempt_result(&text).unwrap();
         assert_eq!(result.metric_value, 3.5);

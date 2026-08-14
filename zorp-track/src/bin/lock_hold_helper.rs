@@ -9,7 +9,9 @@
 use std::io::Read;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: lock_hold_helper <db-path>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: lock_hold_helper <db-path>");
     let path = std::path::PathBuf::from(path);
     match zorp_track::Store::open(&path) {
         Ok(_store) => {

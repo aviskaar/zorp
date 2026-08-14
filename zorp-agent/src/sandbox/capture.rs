@@ -106,12 +106,24 @@ pub(super) fn capture_stream(
                 thread::sleep(finalize_delay);
             }
             let process_len = pending.len();
-            redact_pending(&mut pending, process_len, &secrets, &first_bytes, &mut capture);
+            redact_pending(
+                &mut pending,
+                process_len,
+                &secrets,
+                &first_bytes,
+                &mut capture,
+            );
             break;
         }
         pending.extend_from_slice(&buffer[..count]);
         let process_len = pending.len().saturating_sub(overlap);
-        redact_pending(&mut pending, process_len, &secrets, &first_bytes, &mut capture);
+        redact_pending(
+            &mut pending,
+            process_len,
+            &secrets,
+            &first_bytes,
+            &mut capture,
+        );
     }
     Ok(capture)
 }

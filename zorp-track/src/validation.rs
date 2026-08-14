@@ -53,7 +53,10 @@ impl Store {
         verdict: &str,
     ) -> Result<Validation, TrackError> {
         let created_at = now_millis();
-        let id = format!("{track_id}-validation-{created_at}-{}", crate::id::next_seq());
+        let id = format!(
+            "{track_id}-validation-{created_at}-{}",
+            crate::id::next_seq()
+        );
         let redundancy_json = citations_to_json(redundancy_citations);
         let feasibility_json = citations_to_json(feasibility_citations);
         self.conn.execute(
@@ -123,7 +126,10 @@ mod tests {
     use tempfile::tempdir;
 
     fn citation(text: &str, source: &str) -> Citation {
-        Citation { text: text.to_string(), source: source.to_string() }
+        Citation {
+            text: text.to_string(),
+            source: source.to_string(),
+        }
     }
 
     #[test]
@@ -133,7 +139,10 @@ mod tests {
         store.create_track("t1", "does caching help").unwrap();
 
         let red = vec![citation("no prior benchmark found", "search result 1")];
-        let feas = vec![citation("a benchmark harness already exists", "repo README")];
+        let feas = vec![citation(
+            "a benchmark harness already exists",
+            "repo README",
+        )];
         let recorded = store
             .record_validation("t1", 20.0, &red, 85.0, &feas, "worth investigating")
             .unwrap();
@@ -155,9 +164,19 @@ mod tests {
             .record_validation("t1", 10.0, &first_red, 0.0, &[], "inconclusive, retrying")
             .unwrap();
 
-        let second_red = vec![citation("second pass, found a prior benchmark", "search result 2")];
+        let second_red = vec![citation(
+            "second pass, found a prior benchmark",
+            "search result 2",
+        )];
         let second = store
-            .record_validation("t1", 40.0, &second_red, 90.0, &[citation("tooling exists", "readme")], "worth investigating")
+            .record_validation(
+                "t1",
+                40.0,
+                &second_red,
+                90.0,
+                &[citation("tooling exists", "readme")],
+                "worth investigating",
+            )
             .unwrap();
 
         let fetched = store.get_validation("t1").unwrap();
@@ -172,7 +191,13 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let err = store.get_validation("t1").unwrap_err();
-        assert!(matches!(err, TrackError::NotFound { kind: "validation", .. }));
+        assert!(matches!(
+            err,
+            TrackError::NotFound {
+                kind: "validation",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -180,7 +205,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
-        store.record_validation("t1", 0.0, &[], 0.0, &[], "no evidence found").unwrap();
+        store
+            .record_validation("t1", 0.0, &[], 0.0, &[], "no evidence found")
+            .unwrap();
         let fetched = store.get_validation("t1").unwrap();
         assert!(fetched.redundancy_citations.is_empty());
         assert!(fetched.feasibility_citations.is_empty());

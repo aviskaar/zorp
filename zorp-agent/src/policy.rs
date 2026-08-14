@@ -116,11 +116,20 @@ impl Policy {
 
     pub fn decide(&self, call: &ToolCall) -> Decision {
         match call.name.as_str() {
-            "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" | "search_notes" | "list_background_processes" | "monitor_subagents" => {
-                Decision::Allow
-            }
+            "read_file"
+            | "list_files"
+            | "search_text"
+            | "git_diff"
+            | "git_status"
+            | "search_notes"
+            | "list_background_processes"
+            | "monitor_subagents" => Decision::Allow,
             "write_file" | "apply_patch" | "take_note" => self.edit.clone(),
-            "run_command" | "start_background_process" | "kill_background_process" | "spawn_subagent" | "cancel_subagent" => {
+            "run_command"
+            | "start_background_process"
+            | "kill_background_process"
+            | "spawn_subagent"
+            | "cancel_subagent" => {
                 let command = call
                     .arguments
                     .get("command")
@@ -994,7 +1003,11 @@ mod tests {
                 name: "mcp__stub__search".into(),
                 arguments: serde_json::json!({}),
             };
-            assert_eq!(p.decide(&call), Decision::Ask, "preset {preset:?} should Ask for mcp__ tools");
+            assert_eq!(
+                p.decide(&call),
+                Decision::Ask,
+                "preset {preset:?} should Ask for mcp__ tools"
+            );
         }
     }
 

@@ -13,6 +13,6 @@ pub mod transport;
 
 pub use config::{McpConfig, ServerConfig, TransportKind, TrustLevel};
 pub use error::McpError;
-pub use protocol::{McpTool, mcp_prefix};
+pub use protocol::{mcp_prefix, McpTool};
 pub use registry::McpRegistry;
 pub use tofu::McpTofuStore;

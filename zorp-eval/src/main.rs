@@ -20,7 +20,10 @@ fn main() -> anyhow::Result<()> {
             agent_binary,
         } => {
             runner::run_suite(&manifest, &tasks_dir, &db, &agent_binary)?;
-            println!("Compatibility experiment complete. Results in {}", db.display());
+            println!(
+                "Compatibility experiment complete. Results in {}",
+                db.display()
+            );
         }
     }
     Ok(())

@@ -80,10 +80,7 @@ impl TrustStore {
 /// Write `contents` to `path` via a temp file in the same directory, created
 /// with owner-only permissions on unix, then rename it into place.
 pub(crate) fn atomic_write(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("state");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("state");
     let tmp = path.with_file_name(format!(".{file_name}.tmp{}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);

@@ -1,6 +1,6 @@
-use zorp_mcp::{McpRegistry, McpTool};
 use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult};
 use std::sync::{Arc, Mutex};
+use zorp_mcp::{McpRegistry, McpTool};
 
 pub struct McpToolAdapter {
     pub tool: McpTool,
@@ -9,11 +9,19 @@ pub struct McpToolAdapter {
 
 impl Tool for McpToolAdapter {
     #[allow(clippy::misnamed_getters)]
-    fn name(&self) -> &str { &self.tool.prefixed_name }
-    fn description(&self) -> &str { self.tool.description.as_deref().unwrap_or("MCP tool") }
-    fn schema(&self) -> serde_json::Value { self.tool.input_schema.clone() }
+    fn name(&self) -> &str {
+        &self.tool.prefixed_name
+    }
+    fn description(&self) -> &str {
+        self.tool.description.as_deref().unwrap_or("MCP tool")
+    }
+    fn schema(&self) -> serde_json::Value {
+        self.tool.input_schema.clone()
+    }
     fn run(&self, args: &serde_json::Value, _cx: &mut Context) -> ToolResult {
-        let mut reg = self.registry.lock()
+        let mut reg = self
+            .registry
+            .lock()
             .map_err(|e| ToolError::new(format!("mcp registry lock poisoned: {e}")))?;
         match reg.call_tool(&self.tool.prefixed_name, args.clone()) {
             Ok(result) => {

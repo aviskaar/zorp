@@ -129,9 +129,15 @@ contracts:
         .unwrap();
         let manifest = load_manifest(&path).unwrap();
         assert_eq!(manifest.reference.provider.as_deref(), Some("openai"));
-        assert_eq!(manifest.reference.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(
+            manifest.reference.api_key_env.as_deref(),
+            Some("OPENAI_API_KEY")
+        );
         assert_eq!(manifest.candidates.len(), 3);
-        assert_eq!(manifest.candidates[1].provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            manifest.candidates[1].provider.as_deref(),
+            Some("anthropic")
+        );
         assert_eq!(
             manifest.candidates[2].base_url.as_deref(),
             Some("http://localhost:11434/v1")

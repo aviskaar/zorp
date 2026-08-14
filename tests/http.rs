@@ -52,7 +52,11 @@ fn raw_error_body_is_capped() {
     let msg = err.to_string();
     assert!(msg.contains("500"), "missing status in: {msg}");
     assert!(msg.contains("xxx"), "missing body prefix in: {msg}");
-    assert!(msg.len() < 16 * 1024, "uncapped error message: {} bytes", msg.len());
+    assert!(
+        msg.len() < 16 * 1024,
+        "uncapped error message: {} bytes",
+        msg.len()
+    );
 }
 
 #[test]

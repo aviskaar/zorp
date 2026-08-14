@@ -621,15 +621,9 @@ fn record_reasoning_request_fields(
         span.record("zorp.requested_reasoning_mode", mode.effort_str());
     }
     if let Some(parameters) = provider_reasoning_parameters {
-        span.record(
-            "zorp.provider_reasoning_parameters",
-            parameters.to_string(),
-        );
+        span.record("zorp.provider_reasoning_parameters", parameters.to_string());
     }
-    span.record(
-        "zorp.reasoning_parameters_sent",
-        reasoning_parameters_sent,
-    );
+    span.record("zorp.reasoning_parameters_sent", reasoning_parameters_sent);
 }
 
 impl Model for HttpModel {

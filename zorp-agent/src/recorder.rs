@@ -33,12 +33,10 @@ impl RunRecorder for SqliteRecorder {
     }
 
     fn message_with_metadata(&mut self, m: &Message, metadata: &MessageMetadata) {
-        if let Err(e) = self.store.record_message_with_metadata(
-            &self.session_id,
-            self.msg_seq,
-            m,
-            metadata,
-        ) {
+        if let Err(e) =
+            self.store
+                .record_message_with_metadata(&self.session_id, self.msg_seq, m, metadata)
+        {
             eprintln!("zorp-agent: failed to persist message: {e}");
         }
         self.msg_seq += 1;

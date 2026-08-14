@@ -56,10 +56,7 @@ fn instrumentation_validation_gate() {
     );
 
     let trace = contracts::load_trace(&trace_path).unwrap();
-    assert_eq!(
-        trace.malformed_lines, 0,
-        "trace contains malformed lines"
-    );
+    assert_eq!(trace.malformed_lines, 0, "trace contains malformed lines");
     let events = &trace.events;
     let has = |t: &str| {
         events

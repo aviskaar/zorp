@@ -182,7 +182,10 @@ mod tests {
         let track = project.store.get_track("t1").unwrap();
         assert_eq!(track.hypothesis, "does caching help");
         assert!(crate::prereg::verify_prereg_integrity(&project.store, "t1").is_ok());
-        assert!(project.store.verify_all_prereg_integrity(&tracks_dir).is_ok());
+        assert!(project
+            .store
+            .verify_all_prereg_integrity(&tracks_dir)
+            .is_ok());
 
         // Reopening again must also succeed (idempotent, not just a
         // one-time repair).
@@ -241,8 +244,8 @@ mod tests {
     }
 
     #[test]
-    fn is_lock_error_does_not_classify_a_corruption_message_with_lock_in_the_path_as_a_lock_error(
-    ) {
+    fn is_lock_error_does_not_classify_a_corruption_message_with_lock_in_the_path_as_a_lock_error()
+    {
         // A project directory whose path happens to contain the
         // substring "lock" (e.g. a repo named `blockchain/` or
         // `unlock-utils/`) embeds that substring in the error message
