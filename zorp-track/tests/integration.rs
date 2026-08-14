@@ -125,6 +125,33 @@ fn prereg_md_added_after_the_db_already_exists_is_indexed_on_next_open() {
 }
 
 #[test]
+fn project_open_refuses_to_rebuild_from_a_tampered_prereg_md() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let track_id = "2026-08-14-tamper-test";
+    {
+        let project = Project::open(dir.path()).unwrap();
+        project.store.create_track(track_id, "tamper test").unwrap();
+        let track_dir = project.track_dir(track_id);
+        write_prereg(&project.store, &track_dir, track_id, "tamper test", "m", 1.0).unwrap();
+    }
+
+    // Tamper with the committed prereg.md, then delete the DuckDB store.
+    // The rebuild on the next open must compare the file against its
+    // committed blob and refuse, not re-bless the tampered file.
+    let track_dir = dir.path().join(".zorp/tracks").join(track_id);
+    std::fs::write(
+        track_dir.join("prereg.md"),
+        format!("# Pre-registration: {track_id}\n\nHypothesis: tamper test\nMetric: m\nKill threshold: 999999\n"),
+    )
+    .unwrap();
+    std::fs::remove_file(dir.path().join(".zorp/zorp.duckdb")).unwrap();
+
+    let result = Project::open(dir.path());
+    assert!(matches!(result, Err(TrackError::IntegrityMismatch { .. })));
+}
+
+#[test]
 fn project_open_recovers_from_a_corrupted_duckdb_file() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());

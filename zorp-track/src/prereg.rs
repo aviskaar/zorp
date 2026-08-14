@@ -257,6 +257,18 @@ pub fn get_preregistration(store: &Store, track_id: &str) -> Result<Option<Prere
     Ok(row)
 }
 
+/// Marker prefixed to a stored file hash when the row was rebuilt from a
+/// prereg.md that has no git commit backing it: the hash was
+/// self-attested at rebuild time, not tamper-evident, so it must not be
+/// presented as equivalent to a committed one.
+pub const UNVERIFIED_HASH_PREFIX: &str = "unverified:";
+
+/// The plain SHA-256 a stored file hash asserts, with the unverified
+/// marker (if any) stripped.
+pub(crate) fn asserted_hash(stored: &str) -> &str {
+    stored.strip_prefix(UNVERIFIED_HASH_PREFIX).unwrap_or(stored)
+}
+
 /// The columns `full_verify_row` needs, read either one row at a time
 /// (`verify_prereg_integrity`) or all at once
 /// (`verify_all_prereg_integrity`).
@@ -264,15 +276,19 @@ pub(crate) struct PreregIntegrityRow {
     pub(crate) track_id: String,
     pub(crate) file_path: String,
     pub(crate) file_hash: String,
+    pub(crate) git_commit_hash: Option<String>,
     pub(crate) file_mtime_ms: Option<i64>,
     pub(crate) file_len: Option<i64>,
 }
 
 /// The full integrity check for one preregistration row: the file must
-/// exist and its current SHA-256 must match what was recorded at commit
-/// time. On success, the row's cached (mtime, len) is refreshed so the
-/// next `verify_all_prereg_integrity` can skip re-hashing an unchanged
-/// file.
+/// exist, its current SHA-256 must match what was recorded at commit
+/// time, and when a git commit was recorded, that commit must still
+/// exist and its prereg.md blob must hash to the same recorded value
+/// (so tampering with the row's stored hash cannot be laundered by also
+/// rewriting history). On success, the row's cached (mtime, len) is
+/// refreshed so the next `verify_all_prereg_integrity` can skip
+/// re-hashing an unchanged file.
 pub(crate) fn full_verify_row(store: &Store, row: &PreregIntegrityRow) -> Result<(), TrackError> {
     let path = Path::new(&row.file_path);
     if !path.exists() {
@@ -283,11 +299,40 @@ pub(crate) fn full_verify_row(store: &Store, row: &PreregIntegrityRow) -> Result
     }
     let current_content = fs::read(path)?;
     let current_hash = sha256_hex(&current_content);
-    if current_hash != row.file_hash {
+    if current_hash != asserted_hash(&row.file_hash) {
         return Err(TrackError::IntegrityMismatch {
             track_id: row.track_id.clone(),
             detail: "prereg.md content does not match the hash recorded at commit time".to_string(),
         });
+    }
+
+    if let Some(commit) = row.git_commit_hash.as_deref() {
+        let track_dir = path.parent().unwrap_or(Path::new("."));
+        let commit_exists = std::process::Command::new("git")
+            .arg("-C")
+            .arg(track_dir)
+            .args(["cat-file", "-e", commit])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !commit_exists {
+            return Err(TrackError::IntegrityMismatch {
+                track_id: row.track_id.clone(),
+                detail: format!("recorded git commit {commit} for prereg.md no longer exists"),
+            });
+        }
+        let blob_hash = git_blob_hash(track_dir, commit).ok_or_else(|| TrackError::IntegrityMismatch {
+            track_id: row.track_id.clone(),
+            detail: format!("prereg.md could not be read from recorded git commit {commit}"),
+        })?;
+        if blob_hash != asserted_hash(&row.file_hash) {
+            return Err(TrackError::IntegrityMismatch {
+                track_id: row.track_id.clone(),
+                detail: format!(
+                    "prereg.md content in recorded git commit {commit} does not match the hash recorded at commit time"
+                ),
+            });
+        }
     }
 
     if let Some((mtime_ms, len)) = file_stamp(path) {
@@ -299,19 +344,34 @@ pub(crate) fn full_verify_row(store: &Store, row: &PreregIntegrityRow) -> Result
     Ok(())
 }
 
+/// SHA-256 of the prereg.md blob as committed at `commit`, or `None` if
+/// git cannot produce it. `:./prereg.md` is resolved relative to
+/// `track_dir`, which is where every prereg.md lives.
+pub(crate) fn git_blob_hash(track_dir: &Path, commit: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(track_dir)
+        .args(["show", &format!("{commit}:./prereg.md")])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    Some(sha256_hex(&out.stdout))
+}
+
 pub(crate) fn get_integrity_row(store: &Store, track_id: &str) -> Result<PreregIntegrityRow, TrackError> {
     store
         .conn
         .query_row(
-            "SELECT track_id, file_path, file_hash, file_mtime_ms, file_len FROM preregistrations WHERE track_id = ?",
+            "SELECT track_id, file_path, file_hash, git_commit_hash, file_mtime_ms, file_len FROM preregistrations WHERE track_id = ?",
             duckdb::params![track_id],
             |r| {
                 Ok(PreregIntegrityRow {
                     track_id: r.get(0)?,
                     file_path: r.get(1)?,
                     file_hash: r.get(2)?,
-                    file_mtime_ms: r.get(3)?,
-                    file_len: r.get(4)?,
+                    git_commit_hash: r.get(3)?,
+                    file_mtime_ms: r.get(4)?,
+                    file_len: r.get(5)?,
                 })
             },
         )
@@ -380,6 +440,36 @@ mod tests {
         let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
 
         fs::write(&prereg.file_path, "tampered content").unwrap();
+
+        let err = verify_prereg_integrity(&store, "t1").unwrap_err();
+        assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
+    }
+
+    #[test]
+    fn verify_fails_when_the_prereg_commit_is_rewritten_to_match_a_tampered_file() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let track_dir = dir.path().join("tracks").join("t1");
+        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+
+        // Tamper with the file, rewrite history to cover it, and update
+        // the row's stored hash to match, the way an attacker with disk
+        // access would. The file-only check now passes; only the
+        // recorded commit hash still points at the original
+        // registration, whose blob no longer matches the stored hash.
+        let tampered = "tampered content";
+        fs::write(&prereg.file_path, tampered).unwrap();
+        std::process::Command::new("git").arg("-C").arg(&track_dir).args(["add", "--", "prereg.md"]).output().unwrap();
+        std::process::Command::new("git").arg("-C").arg(&track_dir).args(["commit", "-q", "--amend", "--no-edit"]).output().unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE preregistrations SET file_hash = ? WHERE track_id = ?",
+                duckdb::params![sha256_hex(tampered.as_bytes()), "t1"],
+            )
+            .unwrap();
 
         let err = verify_prereg_integrity(&store, "t1").unwrap_err();
         assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
