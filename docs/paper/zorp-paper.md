@@ -1,417 +1,433 @@
 ---
-title: "zorp: A Standalone-Capability Research Agent for Evidence-Based Investigation"
+title: "zorp: A Human-Checkpointed Research Agent with a Tamper-Evident Evidence Record"
 author: "Aviskaar"
 date: "August 2026"
-geometry: margin=1in
-fontsize: 10pt
+runninghead: "zorp: a human-checkpointed research agent"
+bibliography: references.bib
 numbersections: true
-colorlinks: true
-linkcolor: zorpblue
-urlcolor: zorpblue
-citecolor: zorpblue
-header-includes:
-  - \usepackage{fancyhdr}
-  - \usepackage{graphicx}
-  - \usepackage{titlesec}
-  - \usepackage{titling}
-  - \definecolor{zorpblue}{HTML}{1450F5}
-  - \definecolor{zorpnavy}{HTML}{12182B}
-  - \definecolor{zorpmuted}{HTML}{5B6478}
-  - \titleformat{\section}{\normalfont\Large\bfseries\color{zorpnavy}}{\thesection}{0.6em}{}
-  - \titleformat{\subsection}{\normalfont\large\bfseries\color{zorpnavy}}{\thesubsection}{0.6em}{}
-  - \pretitle{\begin{center}\includegraphics[height=1.3cm]{figures/logo.png}\\[0.5em]\LARGE\bfseries\color{zorpnavy}}
-  - \posttitle{\par\end{center}}
-  - \preauthor{\begin{center}\large}
-  - \postauthor{\end{center}}
-  - \predate{\begin{center}\small\color{zorpmuted}}
-  - \postdate{\par\end{center}\vspace{-0.5em}}
-  - \pagestyle{fancy}
-  - \fancyhf{}
-  - '\fancyhead[L]{\footnotesize\color{zorpmuted}Aviskaar: zorp, a standalone-capability research agent}'
-  - \fancyhead[R]{\footnotesize\color{zorpmuted}Preprint. Under review.}
-  - \fancyfoot[C]{\thepage}
-  - \renewcommand{\headrulewidth}{0.4pt}
-  - \renewcommand{\headrule}{\hbox to\headwidth{\color{zorpblue}\leaders\hrule height \headrulewidth\hfill}}
+abstract: |
+  Answers are cheap; evidence is not. A large language model will produce
+  a fluent answer to a hard question in seconds, but it will not tell you
+  whether to believe it, what evidence it weighed, or what it found that
+  pointed the other way. Recent autonomous-research systems address the
+  wrong half of this problem: they treat the finished paper as the
+  artifact the system produces end to end, an assumption that does not
+  survive contact with how research and technical decisions actually get
+  published or adopted, since work with no human author of record is
+  rejected outright at most venues and distrusted inside most
+  organizations. We present zorp, a research agent built on the opposite
+  premise. zorp turns a question into a pre-registered investigation, an
+  evidence record, and a draft in which every claim resolves to a row in
+  that record. It decomposes the work into four capabilities, validate,
+  investigate, co-write, and deliver, each usable on its own and chained
+  only through explicit human checkpoints, over a shared foundation that
+  commits the hypothesis, metric, and falsification threshold to git
+  before any evidence is gathered, and hash-verifies them on every load.
+  We describe the architecture, the six-table evidence record, and the
+  design decisions that follow from treating the human as the author of
+  record rather than a downstream reviewer. zorp is implemented in Rust
+  as a single multi-subcommand binary. This is a design and status
+  report, not a benchmark study: all four capabilities are built and
+  tested (538 passing tests over 24,965 lines as of August 2026), and we
+  are explicit about what is not yet claimed, chiefly any comparative
+  evaluation of output quality.
 ---
-
-\begin{abstract}
-Answers are cheap. Evidence is not. An LLM will produce a fluent answer
-to a hard question in seconds; it will not tell you whether to believe
-it, what evidence it weighed, or what it found that pointed the other
-way. Most autonomous-research agents make this worse, not better, by
-treating the finished document itself as the thing the system produces
-end to end, an assumption that does not survive contact with how
-research and technical decisions actually get published or adopted,
-since work with no human author of record is rejected outright at most
-venues and distrusted in most organizations. We present zorp, a research
-agent that instead turns a question into a pre-registered investigation,
-an evidence record, and a report where every claim traces back to it,
-decomposed into four standalone capabilities, \emph{validate},
-\emph{investigate}, \emph{co-write}, and \emph{deliver}, any one of
-which can be used alone, chained through human-reviewed checkpoints, and
-built on a shared foundation that keeps a tamper-evident, git-backed
-record of what was tried. We describe the system's architecture, its
-evidence-record data model, and the design decisions that follow from
-treating the human as the author of record rather than a downstream
-reviewer. zorp is implemented in Rust as a single multi-subcommand
-binary (\texttt{zorp-agent}) with an optional research feature, is early
-and pre-alpha, and this paper is a systems and design report rather than
-a benchmark study: we describe what is built and tested (all four
-capabilities, 538 passing tests workspace-wide, 445 in
-\texttt{zorp-agent} alone with the research feature enabled, as of
-2026-08-13) and are explicit about what remains open, chiefly a
-comparative evaluation against systems like AI-Scientist-v2.
-\end{abstract}
 
 # Introduction
 
-An uncertain question, worked all the way through to a defensible answer,
-has the same shape whether it is "should we migrate off Kafka to
-Redpanda," a competitive teardown, an investment thesis, a
-due-diligence package, or an academic hypothesis: state the question,
-gather evidence, reason about conflicting evidence, produce an answer or
-artifact, and be able to show your work. zorp is a harness for that
-shape of problem. It turns an uncertain question into evidence,
-evidence into a defensible answer, and keeps a record of how it got
-there.
+An uncertain question worked through to a defensible answer has the same
+shape regardless of domain. Whether the question is "should we migrate
+off Kafka," a competitive teardown, an investment thesis, a
+due-diligence package, or an academic hypothesis, the work is the same:
+state the question, gather evidence, reason about evidence that
+conflicts, produce an answer or an artifact, and be able to show how you
+got there. What distinguishes a defensible answer from a merely fluent
+one is not the prose. It is the record behind it.
 
-The dominant pattern in "AI scientist" systems, Sakana AI's
-AI-Scientist-v2 chief among them, and, closer to home, Aviskaar's own
-internal lab-engine/Catalyst pipeline, wires a large agent framework
-directly to experiment code and treats "write the paper" as one more
-autonomous step, with a fact-check or a review pass bolted on at the
-end. That pattern solves a narrower problem than the one that actually
-matters: a paper an AI wrote end to end is not submittable at most
-venues, and a technical recommendation nobody on a team can vouch for is
-not actionable, regardless of how sound the underlying reasoning was.
-Treating authored-document generation as the finish line is solving the
-wrong problem. zorp starts from the opposite end: the harness is built
-so that a human is the author of record for whatever gets produced,
-whether that is a paper, a decision memo, or a competitive landscape,
-and the system's job is to make that human's evidence trail complete,
-inspectable, and hard to quietly tamper with after the fact.
+Large language models are very good at the prose and structurally
+indifferent to the record. They produce confident output whether or not
+the underlying evidence supports it [@ji2023hallucination], and the
+techniques that improved their reasoning, chain-of-thought prompting
+[@wei2022chain] and interleaved reasoning with tool use
+[@yao2023react], improved the process without making its evidence
+inspectable afterward. An agent that reasons well and leaves no
+auditable trail has moved the problem rather than solved it.
 
-This paper describes zorp's design: why it is shaped as four standalone
-capabilities rather than one pipeline, what shared foundation they sit
-on, how the checkpoint pattern keeps a human in the loop without making
-every capability interactive-only, and what is built and tested as of
-this writing. It is a systems and design paper, not an empirical
-comparison; we are explicit in Section 7 about what a rigorous
-comparison against AI-Scientist-v2 and similar systems would require and
-why we have not yet run one.
+The most ambitious response to this has been to automate the entire
+research loop. The AI Scientist [@lu2024aiscientist] and its successor
+[@yamada2025aiscientistv2] generate hypotheses, run experiments, and
+author manuscripts end to end, with an automated review step appended
+afterward; the latter produced a manuscript that passed peer review at
+a workshop. This is a genuine result, and it also encodes an assumption
+worth separating from it: that the deliverable is a document the system
+produces, and that human involvement is a review that happens after.
+
+That assumption does not survive contact with how this work is
+consumed. A paper an AI wrote end to end is not submittable at most
+venues. A technical recommendation nobody on the team can vouch for is
+not actionable, however sound the reasoning behind it was. In both
+cases the blocker is not output quality; it is that authorship and
+accountability cannot be retrofitted onto a finished artifact. Treating
+document generation as the finish line optimizes the step that was
+never the bottleneck.
+
+zorp starts from the other end. The human is the author of record for
+whatever gets produced, and the system's job is to make that person's
+evidence trail complete, inspectable, and hard to revise after the
+fact. Three commitments follow, and this paper is largely about their
+consequences:
+
+1. **The record is the product.** Every attempt is stored, including
+   the ones that failed and the ones that contradicted each other, as
+   typed rows rather than narrative logs, so a claim in a draft
+   resolves to a measurement rather than to a paragraph the agent wrote
+   about itself.
+2. **Falsification is committed in advance.** The hypothesis, the
+   metric, and a numeric threshold that would refute it are written to
+   a git-committed file before any evidence is gathered, and
+   hash-verified on every load, so the bar cannot be quietly lowered
+   after results are seen.
+3. **Capabilities are standalone and checkpointed.** The four
+   capabilities each run alone and compose only through explicit human
+   decision points, because most real use is partial rather than a full
+   loop.
+
+**Contributions.** We contribute (i) a decomposition of automated
+investigation into four independently usable capabilities joined by
+human checkpoints, rather than a single autonomous pipeline; (ii) a
+tamper-evident evidence record that applies the discipline of
+pre-registration [@nosek2018preregistration] to agent runs, with
+git-backed commitment and hash verification as an enforced precondition
+rather than a convention; and (iii) an implementation of both in a
+single Rust binary, together with an honest account of what is built,
+what is tested, and what remains unevaluated.
+
+We state the scope plainly. This is a systems and design paper. We
+report what the mechanisms do and that they are tested, and we do not
+report a comparative evaluation of investigation quality against the AI
+Scientist [@yamada2025aiscientistv2] or any other system. Section 9
+says what such an evaluation would require and why we have not run one.
 
 # Related Work
 
-**AI-Scientist-v2** (Sakana AI) automates the full research loop,
-ideation, experimentation, and paper writing, with the paper as an
-autonomously produced artifact, subjected to an automated review step
-after the fact. This is the clearest example of the assumption zorp
-argues against: treating the finished document as something the system
-produces, rather than something a human produces with the system's
-help.
+**Autonomous research systems.** The AI Scientist [@lu2024aiscientist;
+@yamada2025aiscientistv2] is the closest point of comparison and the
+clearest statement of the position we argue against: the manuscript is
+an artifact the system produces, with review bolted on afterward.
+Aviskaar's internal lab-engine/Catalyst pipeline occupies similar
+ground for an internal audience. zorp borrows one piece of Catalyst's
+discipline directly, its `prereg.md` convention, in which a
+git-committed, human-readable pre-registration file gives a commit
+timestamp that cannot be moved after results are seen. It does not
+adopt Catalyst's hard experiment budget (150 lines of code, 10 minutes,
+no GPU), which is well-tuned to that system's narrow
+validation-experiment use case but arbitrary for questions zorp targets;
+zorp ships guidance rather than enforcement.
 
-**Aviskaar's lab-engine/Catalyst** is a working idea-to-paper pipeline
-built to bootstrap Aviskaar's own sub-projects, with real, useful
-discipline this paper borrows directly: capped, cheap validation
-experiments and a `prereg.md` convention, a git-committed,
-human-readable pre-registration file whose commit timestamp cannot be
-quietly moved after results are seen. zorp adopts the same
-tamper-evidence idea for its own pre-registration but does not adopt
-Catalyst's hard experiment budget (150 lines of code, 10 minutes, no
-GPU); that cap is well-tuned for Catalyst's narrow validation-experiment
-use case but would be arbitrary for zorp's broader scope of arbitrary
-evidence-based questions, so zorp ships guidance rather than
-enforcement.
+**Pre-registration and research integrity.** The commitments zorp
+enforces mechanically are borrowed from a body of work on why results
+fail to replicate. Undisclosed flexibility in analysis lets a
+researcher present almost anything as significant [@simmons2011false];
+pre-registration and registered reports were introduced to constrain
+that flexibility by fixing the hypothesis and the analysis in advance
+[@chambers2013registered; @nosek2018preregistration; @munafo2017manifesto].
+That literature concerns human researchers and social incentives. Our
+observation is that an agentic system has the same degree of freedom
+and none of the social friction: nothing stops a run from adjusting
+what counted as success once results are visible, and no reviewer is
+watching. zorp therefore treats pre-registration as a precondition the
+system checks rather than a norm it encourages.
 
-**Open Research Review (ORR)**, an Aviskaar-internal system, does real,
-overlapping work in tracking and experiment state. zorp deliberately
-does not take a hard dependency on it, or on any other Aviskaar-private
-infrastructure: zorp has to work for someone who has never heard of
-Aviskaar, so it owns its own run record (Section 4) rather than
-requiring a private service most users cannot install.
+**Agent harnesses and their evaluation.** zorp's execution layer is a
+fork of quecto [@quecto], a minimal vendor-neutral harness, extended
+rather than depended upon as a crate. Tool access is via the Model
+Context Protocol [@anthropic2024mcp], which lets the same capability
+run against different evidence sources without changes. Benchmarks such
+as SWE-bench [@jimenez2024swebench] have made agent evaluation
+concrete for software tasks by fixing a task set with a mechanical
+success criterion. No comparable fixture exists for open-ended
+investigation, where the interesting property is whether the evidence
+supports the conclusion, which is why the evaluation we owe (Section 9)
+is harder to construct than a pass rate.
 
-Across all three systems, the common thread zorp diverges on is where
-the human sits. AI-Scientist-v2 and, to a lesser extent, Catalyst place
-the human after the fact, reviewing an output. zorp places the human
-inside the loop at explicit checkpoints and as the author of record for
-the two capabilities (co-write, deliver) that produce human-facing
-artifacts.
+**Where zorp diverges.** Across these systems the common thread is
+where the human sits. Prior autonomous-research work places the human
+after the fact, reviewing an output. zorp places the human inside the
+loop at explicit checkpoints, and as the author of record for both
+capabilities that produce human-facing artifacts.
 
-# System Overview
+# Design Principles
 
-zorp is a single Rust workspace forked from
-[quecto](https://github.com/adityak74/quecto), a minimal, vendor-neutral
-harness for LLM agents (MIT licensed), and extended directly rather than
-depended on as an external crate, since zorp's needs, long-running
-research loops, experiment tracking, paper synthesis, diverge
-substantially from a general agent harness. The workspace has five
-crates: a core transport crate (`src/`, binary `zorp`) with the raw
-model-calling primitives; `zorp-agent`, the full agent with tools,
-sandboxing, trust levels, verification, sessions, and MCP integration,
-compiled to a single binary; `zorp-mcp`, the Model Context Protocol
-client/server integration; `zorp-eval`, a deterministic evaluation
-harness; and `zorp-track`, zorp's own research foundation, described in
-Section 4.
+Three principles determine most of the design, and each rules out an
+option that would otherwise be natural.
 
-![Layered architecture. Each of the four capabilities is a
-`zorp-agent` subcommand, not a separate program; parallel workers are
-additional copies of the same binary run as isolated
-subprocesses.](figures/architecture.png){width=88%}
+**The record is the product, not the prose.** Because a claim must
+resolve to a measurement, metrics are stored as typed key-value rows
+rather than as narrative logs. A narrative log is easy to write and
+useless as evidence: it cannot be checked mechanically, and it lets an
+agent describe its own results in terms it chose. Typed rows make the
+co-write step a lookup instead of a paraphrase.
 
-## One binary, not one pipeline
+**Every attempt is retained.** The record keeps failed and mutually
+contradictory attempts alongside successful ones. Keeping only the
+attempt that worked produces a highlight reel, which is exactly the
+selection effect pre-registration exists to prevent
+[@simmons2011false].
 
-`zorp-agent` gains subcommands for all four capabilities rather than a
-separate `zorp-research` binary that shells out to it. This is a
-deliberate simplicity choice: one thing to install, learn, and support,
-and parallel experiment workers (for `investigate`) are isolated
-subprocesses spawned as more copies of `zorp-agent` itself, not a second
-program with its own lifecycle.
+**No silent defaults at decision points.** A checkpoint reached with no
+human available and no explicit approval flag is an error, not a
+skipped step and not an implicit yes. Unlike a single tool call, a
+research checkpoint has no safe default: proceeding and halting are
+both wrong in ways the system cannot distinguish. Making it an error
+means unattended runs must opt in explicitly and visibly.
 
-## Feature-gating the heavy dependencies
+# System Architecture
 
-`zorp-track` bundles DuckDB (via `duckdb`, bundled) and provisions a
-LanceDB store, which pulls in Arrow and DataFusion. These are
-substantial dependencies: compiling them from a cold cache takes
-20 to 30 minutes, so `zorp-agent` depends on `zorp-track` behind an
-optional `research` Cargo feature, the same pattern already used for
-`zorp-mcp` behind an `mcp` feature and for OpenTelemetry behind an
-`otel` feature. A user who only wants the base agent (tools, sandbox,
-verification, MCP, no research capabilities) never pays that
-compilation cost; `cargo build --workspace --exclude zorp-track` is the
-documented fast path, and CI itself runs the excluded form for the same
-reason.
+zorp is a single Rust [@matsakis2014rust] workspace of five crates. The
+core crate holds model transport and raw primitives. `zorp-agent` is
+the agent proper: tools, sandboxing, trust levels, verification,
+sessions, and MCP integration, compiled to one binary. `zorp-mcp`
+implements the Model Context Protocol client and server integration
+[@anthropic2024mcp]. `zorp-eval` is a deterministic evaluation harness.
+`zorp-track`, described in Section 5, is the evidence foundation, and
+is the only crate written specifically for this work rather than
+inherited from the upstream harness.
 
-# The Shared Foundation: zorp-track
+![Layered architecture. The four capabilities are subcommands of one
+binary rather than separate programs, and sit on a shared evidence
+foundation that has no knowledge of any individual
+capability.](figures/architecture.png){width=100%}
 
-None of the four capabilities can exist without a record of what was
-tried, a place to put it, and a mechanism for pausing at points where a
-human needs to decide something. `zorp-track` is that foundation. It
-owns the track data model, the DuckDB run record, the LanceDB store, the
-pre-registration file and row management, and the checkpoint primitive.
-It does not know about validate, investigate, co-write, or deliver;
-they are built on top of it, not into it, which keeps the foundation
-testable independent of any specific capability's logic.
+**One binary, not one pipeline.** All four capabilities are subcommands
+of `zorp-agent` rather than a separate research binary that shells out
+to it. Parallel investigation workers are additional copies of the same
+binary run as isolated subprocesses, not a second program with its own
+lifecycle. This keeps one artifact to install, learn, and support.
 
-## Two stores, split by job
+**The foundation does not know its consumers.** `zorp-track` owns the
+track model, the evidence record, pre-registration, and the checkpoint
+primitive, and knows nothing about validate, investigate, co-write, or
+deliver. They are built on it, not into it, which keeps the
+tamper-evidence machinery testable independently of any capability's
+logic.
 
-zorp splits its data across two stores by what kind of question each
-answers. **DuckDB** holds the transactional and analytical run record,
-a six-table evidence store: `tracks` (one investigation: its question,
-hypothesis, status), `preregistrations` (the committed hypothesis,
-metric, and kill threshold, with the hash that makes them
-tamper-evident), `experiments` (every attempt, including the ones that
-conflicted and the one that ended the run), `metrics` (typed key-value
-measurements, such as `accuracy: 0.87`), `checkpoints` (each human yes
-or no, and when it was given), and `validations` (validate's redundancy
-and feasibility scores, each with the citation that justified it). A
-metric is a `(key, value_type, value)` tuple, where `value_type` is one
-of `number`, `string`, or `bool` and the value lives in whichever typed
-column matches. This typed-not-narrative choice matters directly for
-co-write: when co-write drafts a claim like "the p99 latency dropped by
-40%," it resolves to a row in `metrics`, not to a paragraph an agent
-wrote about itself. This is what the answer is accountable to, and what
-makes it checkable by someone who was not there. **LanceDB** is
-provisioned for multimodal, semantically searchable content:
-literature embeddings, figures, plots, keyed by track id so later
-capabilities can scope a search to one track. As of this writing LanceDB
-is provisioned but has no producers or consumers yet; each capability's
-own use of it is left to that capability's own design.
+**Heavy dependencies are opt-in.** `zorp-track` bundles DuckDB
+[@raasveldt2019duckdb] and provisions LanceDB [@lancedb], which pulls
+in Arrow and DataFusion. Compiling these from a cold cache takes 20 to
+30 minutes, so `zorp-agent` depends on `zorp-track` behind an optional
+`research` feature, matching the existing pattern for MCP and
+OpenTelemetry support. A user who wants only the base agent never pays
+that cost.
 
-## The Kill Threshold
+# The Evidence Record
 
-Before zorp gathers anything, it commits the hypothesis, the metric, and
-what zorp calls the **kill threshold**, a number, supplied by a human,
-that states in advance what would prove the hypothesis wrong, to git,
-as a human-readable `prereg.md` file, before any experiment code runs.
-The choice of a git-committed file, rather than only a database row, is
-deliberate: a git commit timestamp cannot be quietly moved after results
-are seen, which is exactly the guarantee a database row alone cannot
-provide. The agent never proposes the threshold; a human does, and only
-a human can move it. `zorp.duckdb` and the LanceDB store are gitignored,
-regenerable indexes over these files, not the source of truth: if
-either is lost or corrupted, `zorp-track` rebuilds the index by
-re-reading every `prereg.md` under `tracks/`. On every track load,
-`zorp-track` re-hashes each `prereg.md` (SHA-256 of the raw bytes) and
-compares it against the hash recorded at commit time; a mismatch,
-whether a missing file, a missing database row, or content that no
-longer matches its recorded hash, is a hard error, not a warning. This
-is what makes the tamper-evidence guarantee real: a threshold changed
-after the fact, without a new commit, is detected on the next load, not
-silently accepted. Every attempt is recorded, not just the one that
-worked: when a run crosses the threshold, the record says why it was
-killed.
+## Two stores, split by question
 
-## The checkpoint pattern
+DuckDB [@raasveldt2019duckdb] holds the transactional and analytical
+record as six tables: `tracks` (one investigation, its question and
+status), `preregistrations` (the committed hypothesis, metric, and
+threshold, with the hash that makes them tamper-evident), `experiments`
+(every attempt, including those that conflicted and the one that ended
+the run), `metrics` (typed measurements), `checkpoints` (each human
+decision and when it was made), and `validations` (redundancy and
+feasibility scores, each with the citation that justified it).
 
-A `Checkpoint` type gates progress at track granularity, mirroring the
-shape of `zorp-agent`'s existing per-tool-call `Approver` trait and
-`ApprovalMode` enum but applied at a coarser grain. Two modes:
-`Interactive` (default, blocks synchronously and prompts a human) and
-`AutoApprove` (explicit opt-in, for unattended runs via the `--yes`
-flag). Deliberately, there is no silent-skip default: a checkpoint
-reached in a non-interactive terminal without `AutoApprove` set is a
-hard error, because unlike a single tool call, a research checkpoint has
-no safe default to fall back to when nobody is there to answer. Every
-checkpoint records what was shown to the human (`prompt_shown`) and
-their decision (`decision_notes`), so a track's history captures not
-just what was tried, but what a human was asked and how they answered.
+A metric is a `(key, value_type, value)` tuple where `value_type` is
+`number`, `string`, or `bool` and the value occupies the matching typed
+column. This is the concrete form of the first design principle: when
+co-write drafts a claim such as "p99 latency fell by 40 percent," that
+claim resolves to a row in `metrics`, not to a sentence the agent wrote
+about its own results. It is also what makes the finished artifact
+checkable by someone who was not present for the work.
+
+LanceDB [@lancedb] is provisioned for multimodal, semantically
+searchable content, keyed by track so a search can be scoped to one
+investigation. As of this writing the store exists and is reachable but
+has no producers or consumers; what goes into it is each capability's
+own concern and is not yet implemented.
+
+## The kill threshold
+
+Before zorp gathers anything, it commits the hypothesis, the metric,
+and a **kill threshold**, a number supplied by a human stating in
+advance what would refute the hypothesis, to a human-readable
+`prereg.md` file in git. The agent never proposes this number; a human
+does, and only a human can change it.
+
+The choice of a git-committed file rather than only a database row is
+the mechanism, not a stylistic preference. A commit timestamp cannot be
+moved quietly after results are seen, which is precisely the guarantee
+a mutable row cannot offer. The DuckDB and LanceDB stores are
+gitignored, regenerable indexes over these files rather than the source
+of truth: if either is lost or corrupted, `zorp-track` rebuilds it by
+re-reading every `prereg.md`.
+
+On every track load, `zorp-track` re-hashes each `prereg.md` (SHA-256
+over raw bytes) and compares against the hash recorded at commit time.
+A missing file, a missing row, or content that no longer matches its
+recorded hash is a hard error that refuses the run, not a warning. This
+is what makes tamper evidence real rather than decorative: a threshold
+edited after results are visible, without a new commit, is caught on
+the next load.
+
+## Checkpoints
+
+A `Checkpoint` gates progress at track granularity, mirroring the
+existing per-tool-call approval mechanism at a coarser grain. Two modes
+exist: `Interactive`, the default, which blocks and prompts; and
+`AutoApprove`, an explicit opt-in for unattended runs. Per the third
+design principle there is no third mode. Each checkpoint records what
+the human was shown and what they decided, so a track's history
+captures not only what was tried but what was asked and how it was
+answered.
 
 # The Four Capabilities
 
-Each capability is a standalone `zorp-agent` subcommand. A "full loop"
-is the four of them chained together with a human checkpoint between
-each step, not a separate mode, just what happens when someone runs
-all four in sequence. This framing follows directly from how the
-harness is actually used: someone validating a single idea, or running
-one investigation, without wanting to commit to the full loop, is at
-least as common a case as someone who wants all four, and forcing
-everything through one pipeline would serve the full-loop case at the
-expense of the much more common partial one.
+Each capability is a standalone subcommand. A full loop is simply all
+four run in sequence with a checkpoint between each; it is not a
+separate mode. This follows from observed use: validating a single
+question, or running one investigation, without committing to the whole
+loop is at least as common as wanting all four, and routing everything
+through one pipeline would serve the rarer case at the expense of the
+common one.
 
-![The four capabilities as a checkpointed pipeline. Each stage also
-runs standalone; validate and deliver additionally require an MCP tool
-to be configured before they will
-run.](figures/pipeline.png){width=95%}
+![The four capabilities and the checkpoints between them. Each
+capability also runs alone. validate and deliver additionally require a
+tool to be configured before they will run at
+all.](figures/pipeline.png){width=100%}
 
-**validate** takes a question, searches for evidence using whichever
-MCP tools are configured, and scores redundancy and feasibility with
-required citations before checkpointing. It fails fast, before doing
-any uncited scoring, if no MCP tool with search capability is
-configured (any `mcp__`-prefixed tool satisfies this gate), a
-deliberate choice to refuse running with no evidence rather than produce
-an unsupported score.
+**validate** searches for evidence through whatever MCP tools are
+configured and scores redundancy and feasibility, each score requiring
+a citation. If no search-capable tool is configured it fails
+immediately rather than scoring anything, on the principle that a
+feasibility judgment with no evidence behind it is worse than no
+judgment.
 
-**investigate** gathers evidence through staged, pre-registered
-attempts. Each invocation runs one attempt against a CLI-supplied metric
-name and kill threshold; every attempt is recorded in the run record,
-not just the best one, and a human checkpoint decides whether to kill
-the track or keep going after each attempt. Recording every attempt,
-including the ones that did not pan out, is what makes the record
-useful as evidence later, rather than a highlight reel.
+**investigate** runs one pre-registered attempt per invocation against
+the committed metric and threshold. Every attempt enters the record,
+and a checkpoint decides whether to continue or kill the track.
 
-**co-write** drafts the artifact directly from the track's recorded
-evidence: validate's verdict, if one exists, and every metric
-investigate recorded, handed to the agent as structured data with
-instructions to cite only those figures. It writes directly to
-`draft.md`. Critically, a human remains the author of record:
-co-write drafts, it does not finalize, and rejecting its checkpoint does
-not kill the track, since a draft that needs another pass is not a
-failed investigation.
+**co-write** drafts from the record alone. It is handed validate's
+verdict, if one exists, and every metric investigate stored, as
+structured data, with instructions to cite only those figures, and it
+writes to `draft.md`. The human remains the author of record: co-write
+drafts and does not finalize. Rejecting its checkpoint does not kill
+the track, since a draft needing another pass is not a failed
+investigation.
 
-**deliver** takes the finished `draft.md` and matches it against real
-venues. Scoped to academic venue-matching for its first version, it
-requires a huiban-prefixed MCP tool (huiban is a live conference and
-journal database) to be configured, gated the same way validate's
-search-tool requirement is gated, and writes a ranked shortlist to
-`venues.md` for a human to review. Like co-write, rejecting deliver's
-checkpoint does not kill the track.
+**deliver** matches the finished draft against real venues. Scoped to
+academic venue-matching in this version, it requires a configured
+venue-database tool, gated exactly as validate's search requirement is,
+and writes a ranked shortlist for human review.
 
-Two of the four, validate and deliver, have a hard external
-dependency on an MCP tool being configured; investigate and co-write do
-not, since they work entirely from the track's own recorded evidence.
+Two of the four, validate and deliver, have a hard external dependency
+on a configured tool. investigate and co-write do not, since they work
+entirely from the track's own record.
 
-# Implementation Status
+# Implementation and Status
 
-As of 2026-08-13, all four capabilities are built and tested, sitting
-on a `zorp-track` foundation that is itself built and tested. Table 1
-and Figure 3 report test counts per crate at default features (summing
-to 538, the same figure `cargo test --workspace` reports directly), plus
-`cargo test -p zorp-agent --features research` (445, which exercises
-validate, investigate, co-write, and deliver, including integration
-tests that spin up a stub MCP server over stdio to verify the tool-gate
-and round-trip logic end to end).
+All four capabilities and the foundation beneath them are built and
+tested. Table 1 and Figure 3 report per-crate test counts at default
+features, which sum to the 538 that `cargo test --workspace` reports
+directly, alongside the research-feature run that exercises the four
+capabilities including integration tests that stand up a stub MCP
+server over stdio to verify tool-gating and round-trip behavior.
 
-![Passing test counts by crate and feature set, from an actual
-`cargo test` run on 2026-08-13, not aspirational
-figures.](figures/testing.png){width=80%}
+![Passing tests by crate and feature set, from a `cargo test` run at
+the commit described in Table 1.](figures/testing.png){width=100%}
 
 | Crate / feature set | Passing tests | Lines of Rust |
-|---|---:|---:|
-| `zorp` (core, `src/`) | 24 | 460 |
+|:---|---:|---:|
+| `zorp` (core) | 24 | 460 |
 | `zorp-mcp` | 23 | 887 |
 | `zorp-eval` | 41 | 2,095 |
 | `zorp-track` | 69 | 2,623 |
-| `zorp-agent` (default features) | 381 | 18,602 |
+| `zorp-agent` (default) | 381 | 18,602 |
 | top-level integration tests | n/a | 298 |
 | **Total** (`cargo test --workspace`) | **538** | **24,965** |
-| `zorp-agent` (`--features research`) only | 445\* | n/a |
+| `zorp-agent` (`--features research`) | 445\* | n/a |
 
-: Test and line counts as of 2026-08-13, HEAD `fd07e81`. \*The 445
-figure is a separate `cargo test -p zorp-agent --features research`
-invocation (validate/investigate/co-write/deliver plus their
-integration tests); it is not additive with the 538 total above, since
-both runs share most of `zorp-agent`'s default test suite.
+: Test and line counts at commit `fd07e81`, 2026-08-13. \*A separate
+invocation covering the four capabilities and their integration tests.
+It is not additive with the 538 above, since the two runs share most of
+`zorp-agent`'s default suite.
 
-The repository has had 98 commits since its first commit on 2026-08-08,
-meaning the entire base harness fork, the `zorp-track` foundation, and
-all four capabilities described in this paper were built in under a
-week, a pace consistent with pre-alpha status and a reason to read
-every claim in this paper as a design and status report, not a
-mature-system retrospective.
+The tests cover the failure modes the design turns on, not only the
+success paths: a `prereg.md` whose hash no longer matches, a checkpoint
+reached with no terminal and no approval flag, a capability invoked
+with its required tool absent, and an index rebuilt from
+pre-registration files after the database is deleted.
+
+The repository holds 98 commits since its first on 2026-08-08. The
+entire fork, foundation, and four capabilities were built in under a
+week, which is a reason to read this as a design and status report
+rather than a mature-system retrospective.
 
 # Discussion
 
-**What is genuinely built.** Every claim in Sections 3 through 5 is
-backed by code and tests that exist in the repository as of this
-writing, not a roadmap. The tamper-evidence mechanism, the checkpoint
-pattern, and the four capabilities' tool-gating logic are all covered
-by tests that exercise the actual failure modes (a corrupted hash, a
-non-interactive checkpoint with no `AutoApprove`, a missing MCP tool),
-not just the happy path.
+**What the tests establish, and what they do not.** A passing suite
+demonstrates that the mechanisms behave as specified: that tampering is
+detected, that gates refuse rather than degrade, that the record
+survives losing its index. It says nothing about whether the resulting
+investigations are good. These are different claims, and conflating
+them is the specific failure this paper is trying not to commit.
 
-**What is explicitly not claimed.** This paper does not report a
-comparative evaluation against AI-Scientist-v2, Catalyst, or any other
-system, and it does not report outcome quality for validate's
-feasibility scores, investigate's evidence, or co-write's drafts on any
-real investigation. A test suite passing demonstrates that the
-mechanism behaves as designed; it says nothing about whether the
-mechanism produces good investigations. That comparison needs a shared
-task set and a way to judge output quality that does not just reward
-confident-sounding prose, and building that fairly is future work, not
-something to gesture at with fabricated numbers.
+**Cost of the position.** Requiring a human at each checkpoint bounds
+throughput in a way a fully autonomous pipeline is not bounded. We
+consider this the correct trade for the target use, since an artifact
+nobody will attach their name to has no value regardless of how quickly
+it was produced. It is nevertheless a real cost, and it makes zorp a
+poor fit for work where volume matters more than defensibility.
 
-**Where the design constrains itself on purpose.** A few decisions in
-this design trade capability for restraint deliberately: no hard
-experiment budget (unlike Catalyst's 150-line/10-minute cap), because a
-budget tuned for one system's narrow validation experiments would be
-arbitrary for zorp's broader scope; only one track actively worked at a
-time per session, with true concurrent execution across tracks left for
-later; and no Hypermemory integration yet, so memory stays local to
-each track's own stores. None of these are technical limitations so
-much as scope discipline: each is a real feature deferred rather than
-quietly dropped.
+**Deliberate restraint.** Several capabilities are deferred rather than
+dropped: no hard experiment budget, since a cap tuned to one system's
+narrow experiments would be arbitrary here; one active track per
+session, with concurrent execution left for later; and no cross-track
+memory, so memory stays local to each track's stores.
 
-# Future Work
+# Limitations and Future Work
 
-The nearest-term addition to this paper itself, rather than to zorp, is
-the comparative evaluation described above: a shared task set run
-through zorp's full loop and through at least AI-Scientist-v2, judged on
-both process (is the evidence trail complete and tamper-evident) and
-outcome (is the resulting artifact good), reported honestly including
-where zorp loses. Beyond that, concurrent multi-track execution,
-Hypermemory integration for cross-track memory, and LanceDB's actual
-producers and consumers (literature embeddings for validate, figures
-for co-write, venue-scope embeddings for deliver) are the next pieces of
-the foundation to build out, each already scoped in the corresponding
-design spec but not yet implemented.
+The paper's central omission is a comparative evaluation, and we would
+rather name its requirements than approximate it. Such a study needs a
+shared task set of questions with knowable answers, a protocol run
+identically through zorp's full loop and through at least the AI
+Scientist [@yamada2025aiscientistv2], and judgment on two axes that
+must be scored separately: process, meaning whether the evidence trail is
+complete and tamper-evident, and outcome, meaning whether the artifact
+is any good. The second axis is where this is hard, because the obvious
+proxies reward confident prose, which is the failure mode under
+examination. Building that fixture honestly, and reporting it including
+where zorp loses, is the next piece of work on this paper.
+
+Two further limits are worth stating. The tamper-evidence guarantee is
+scoped to the pre-registration file and its hash; it establishes that
+the committed threshold was not altered after the fact, not that the
+evidence gathered under it was collected competently. And the
+guarantee inherits git's trust model: a user who rewrites history can
+defeat it, which makes this a defense against quiet drift rather than
+against a determined adversary.
+
+On the system itself, the LanceDB store is provisioned but unused,
+concurrent multi-track execution is unimplemented, and deliver's
+matching is scoped to academic venues although nothing in the design
+requires that.
 
 # Conclusion
 
-zorp is a harness for evidence-based investigation built around a
-specific bet: that decomposing the problem into four standalone
-capabilities, each usable alone and chained only through explicit human
-checkpoints, serves how research and technical decisions actually get
-made better than one autonomous pipeline that produces a finished
-document and asks a human to review it afterward. The bet is not yet
-validated empirically, and this paper says so plainly. What it reports
-instead is a working system: a tamper-evident record of what was tried,
-a checkpoint mechanism with no silent defaults, and four capabilities,
-each backed by real tests, that a person can pick up individually
-without committing to the whole loop.
+zorp is built on a bet: that decomposing investigation into standalone,
+human-checkpointed capabilities over a tamper-evident record serves how
+research and technical decisions actually get made better than one
+autonomous pipeline that produces a finished document and asks a human
+to review it afterward. The bet is not yet validated empirically, and
+this paper does not pretend otherwise. What it reports is a working
+system, honestly bounded: a record that keeps every attempt, a
+falsification threshold that cannot be quietly moved, decision points
+with no silent defaults, and four capabilities that a person can pick
+up one at a time without committing to the whole loop.
 
 # Availability
 
 zorp is open source under the MIT license. The repository, including
-this paper's Markdown source and the scripts used to generate its
-figures from real repository state, is at
-`github.com/aviskaar/zorp`.
+this paper's source and the scripts that generate its figures from
+repository state, is at
+[github.com/aviskaar/zorp](https://github.com/aviskaar/zorp) [@zorp].

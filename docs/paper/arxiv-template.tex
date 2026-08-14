@@ -1,0 +1,143 @@
+\documentclass[10pt]{article}
+
+% ---------------------------------------------------------------------------
+% arXiv preprint style for the zorp systems paper.
+% Single column, Times (newtx), NeurIPS-derived preprint look: the standard
+% "arXiv preprint" presentation. Used as a pandoc template; build with
+% `make paper` (see README.md), not by editing the generated .tex.
+% ---------------------------------------------------------------------------
+
+\usepackage[letterpaper,left=1.5in,right=1.5in,top=1.25in,bottom=1.25in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{newtxtext,newtxmath}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{calc}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+% zorp brand colors, from zorp-landing/src/styles/tokens.css
+\definecolor{zorpblue}{HTML}{1450F5}
+\definecolor{zorpnavy}{HTML}{12182B}
+\definecolor{zorpmuted}{HTML}{5B6478}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=zorpnavy,
+  citecolor=zorpblue,
+  urlcolor=zorpblue,
+  pdftitle={$title-meta$},
+  pdfauthor={$author-meta$}
+}
+
+\bibliographystyle{plainnat}
+\setcitestyle{numbers,square,comma}
+
+% --- running head ----------------------------------------------------------
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{zorpmuted}%
+  \leaders\hrule height \headrulewidth\hfill}}
+\fancyhead[L]{\footnotesize\color{zorpmuted}\scshape $runninghead$}
+\fancyhead[R]{\footnotesize\color{zorpmuted}\scshape A Preprint}
+\fancyfoot[C]{\thepage}
+
+\fancypagestyle{firstpage}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0pt}%
+  \fancyfoot[C]{\thepage}%
+}
+
+% --- headings --------------------------------------------------------------
+\titleformat{\section}{\normalfont\large\bfseries\color{zorpnavy}}
+  {\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries\color{zorpnavy}}
+  {\thesubsection}{0.7em}{}
+\titlespacing*{\section}{0pt}{1.6ex plus .8ex minus .2ex}{1.0ex plus .2ex}
+\titlespacing*{\subsection}{0pt}{1.4ex plus .6ex minus .2ex}{0.8ex plus .2ex}
+
+% --- captions --------------------------------------------------------------
+\captionsetup{
+  font=small,
+  labelfont={bf,color=zorpnavy},
+  labelsep=colon,
+  width=0.92\textwidth,
+  justification=justified
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+\linespread{1.04}
+
+% pandoc scaffolding: macros pandoc's writer emits and expects a template
+% to define (\pandocbounded scales an image to fit the text block).
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\providecommand{\passthrough}[1]{#1}
+\makeatletter
+\newsavebox\pandoc@box
+\newcommand*\pandocbounded[1]{%
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempb{\linewidth}{\wd\pandoc@box}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi%
+  \ifdim\@tempa\p@<\p@\scalebox{\@tempa}{\usebox\pandoc@box}%
+  \else\usebox{\pandoc@box}%
+  \fi%
+}
+\makeatother
+\setlength{\emergencystretch}{3em}
+$if(highlighting-macros)$
+$highlighting-macros$
+$endif$
+
+% ---------------------------------------------------------------------------
+\begin{document}
+
+\thispagestyle{firstpage}
+
+\begin{center}
+  \includegraphics[height=1.15cm]{figures/logo.png}\\[0.9em]
+  {\LARGE\bfseries\color{zorpnavy} $title$\par}
+  \vspace{0.9em}
+  {\large $author$\par}
+  \vspace{0.35em}
+  {\small\color{zorpmuted} $date$\par}
+\end{center}
+
+\vspace{0.6em}
+
+\begin{center}
+\begin{minipage}{0.86\textwidth}
+  \rule{\textwidth}{0.6pt}
+  \vspace{0.15em}
+  {\centering\small\textbf{Abstract}\par}
+  \vspace{-0.3em}
+  \small
+  $abstract$
+  \vspace{0.15em}
+  \rule{\textwidth}{0.6pt}
+\end{minipage}
+\end{center}
+
+\vspace{1.0em}
+
+$body$
+
+$if(bibliography)$
+\bibliography{$for(bibliography)$$bibliography$$sep$,$endfor$}
+$endif$
+
+\end{document}

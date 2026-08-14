@@ -12,3 +12,12 @@ scratchpad/
 
 # Local-only reference material (not redistributed — see NOTICE.md)
 /reference/
+
+# LaTeX intermediates from the paper build (docs/paper/Makefile cleans
+# these itself; this covers interrupted builds). The PDF is committed.
+docs/paper/*.aux
+docs/paper/*.log
+docs/paper/*.out
+docs/paper/*.bbl
+docs/paper/*.blg
+docs/paper/zorp-paper.tex
