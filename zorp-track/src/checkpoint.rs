@@ -77,7 +77,7 @@ impl Store {
         prompt: &str,
     ) -> Result<bool, TrackError> {
         let approved = mode.decide(prompt);
-        let id = format!("{track_id}-{kind}-{}", now_millis());
+        let id = format!("{track_id}-{kind}-{}-{}", now_millis(), crate::id::next_seq());
         let now = now_millis();
         self.conn.execute(
             "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
@@ -176,6 +176,26 @@ mod tests {
             .unwrap();
         assert_eq!(status, "approved");
         assert_eq!(prompt, "is this novel?");
+    }
+
+    #[test]
+    fn checkpoints_recorded_in_the_same_millisecond_do_not_collide() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let mode = CheckpointMode::AutoApprove;
+        for _ in 0..50 {
+            store.record_checkpoint("t1", "validate", &mode, "proceed?").unwrap();
+        }
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE track_id = ?",
+                duckdb::params!["t1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 50);
     }
 
     #[test]

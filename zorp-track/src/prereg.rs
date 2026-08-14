@@ -91,6 +91,20 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, TrackError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The prereg.md file's (mtime in millis, length in bytes), used only as
+/// a change-detection fast path by `verify_all_prereg_integrity`, never
+/// as integrity evidence on its own.
+pub(crate) fn file_stamp(path: &Path) -> Option<(i64, i64)> {
+    let meta = fs::metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as i64)?;
+    Some((mtime_ms, meta.len() as i64))
+}
+
 /// Insert a preregistration row into the database. This is the single
 /// authoritative place where the preregistration INSERT statement is defined.
 pub(crate) fn insert_preregistration_row(
@@ -105,10 +119,14 @@ pub(crate) fn insert_preregistration_row(
     committed_at: i64,
 ) -> Result<(), TrackError> {
     let id = format!("{track_id}-prereg");
+    let (file_mtime_ms, file_len) = match file_stamp(file_path) {
+        Some((m, l)) => (Some(m), Some(l)),
+        None => (None, None),
+    };
     store.conn.execute(
         "INSERT INTO preregistrations \
-         (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at, file_mtime_ms, file_len) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         duckdb::params![
             id,
             track_id,
@@ -118,7 +136,9 @@ pub(crate) fn insert_preregistration_row(
             file_path.to_string_lossy().to_string(),
             file_hash,
             git_commit_hash,
-            committed_at
+            committed_at,
+            file_mtime_ms,
+            file_len
         ],
     )?;
     Ok(())
@@ -237,16 +257,63 @@ pub fn get_preregistration(store: &Store, track_id: &str) -> Result<Option<Prere
     Ok(row)
 }
 
-/// Verify that the `preregistrations` row for `track_id` matches the
-/// `prereg.md` file on disk: the file must exist, and its current
-/// SHA-256 must match what was recorded at commit time.
-pub fn verify_prereg_integrity(store: &Store, track_id: &str) -> Result<(), TrackError> {
-    let (file_path, file_hash): (String, String) = store
+/// The columns `full_verify_row` needs, read either one row at a time
+/// (`verify_prereg_integrity`) or all at once
+/// (`verify_all_prereg_integrity`).
+pub(crate) struct PreregIntegrityRow {
+    pub(crate) track_id: String,
+    pub(crate) file_path: String,
+    pub(crate) file_hash: String,
+    pub(crate) file_mtime_ms: Option<i64>,
+    pub(crate) file_len: Option<i64>,
+}
+
+/// The full integrity check for one preregistration row: the file must
+/// exist and its current SHA-256 must match what was recorded at commit
+/// time. On success, the row's cached (mtime, len) is refreshed so the
+/// next `verify_all_prereg_integrity` can skip re-hashing an unchanged
+/// file.
+pub(crate) fn full_verify_row(store: &Store, row: &PreregIntegrityRow) -> Result<(), TrackError> {
+    let path = Path::new(&row.file_path);
+    if !path.exists() {
+        return Err(TrackError::IntegrityMismatch {
+            track_id: row.track_id.clone(),
+            detail: format!("prereg.md missing at {}", row.file_path),
+        });
+    }
+    let current_content = fs::read(path)?;
+    let current_hash = sha256_hex(&current_content);
+    if current_hash != row.file_hash {
+        return Err(TrackError::IntegrityMismatch {
+            track_id: row.track_id.clone(),
+            detail: "prereg.md content does not match the hash recorded at commit time".to_string(),
+        });
+    }
+
+    if let Some((mtime_ms, len)) = file_stamp(path) {
+        store.conn.execute(
+            "UPDATE preregistrations SET file_mtime_ms = ?, file_len = ? WHERE track_id = ?",
+            duckdb::params![mtime_ms, len, row.track_id],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn get_integrity_row(store: &Store, track_id: &str) -> Result<PreregIntegrityRow, TrackError> {
+    store
         .conn
         .query_row(
-            "SELECT file_path, file_hash FROM preregistrations WHERE track_id = ?",
+            "SELECT track_id, file_path, file_hash, file_mtime_ms, file_len FROM preregistrations WHERE track_id = ?",
             duckdb::params![track_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| {
+                Ok(PreregIntegrityRow {
+                    track_id: r.get(0)?,
+                    file_path: r.get(1)?,
+                    file_hash: r.get(2)?,
+                    file_mtime_ms: r.get(3)?,
+                    file_len: r.get(4)?,
+                })
+            },
         )
         .map_err(|e| match e {
             duckdb::Error::QueryReturnedNoRows => TrackError::IntegrityMismatch {
@@ -254,24 +321,15 @@ pub fn verify_prereg_integrity(store: &Store, track_id: &str) -> Result<(), Trac
                 detail: "no preregistration row found".to_string(),
             },
             other => TrackError::from(other),
-        })?;
+        })
+}
 
-    let path = Path::new(&file_path);
-    if !path.exists() {
-        return Err(TrackError::IntegrityMismatch {
-            track_id: track_id.to_string(),
-            detail: format!("prereg.md missing at {file_path}"),
-        });
-    }
-    let current_content = fs::read(path)?;
-    let current_hash = sha256_hex(&current_content);
-    if current_hash != file_hash {
-        return Err(TrackError::IntegrityMismatch {
-            track_id: track_id.to_string(),
-            detail: "prereg.md content does not match the hash recorded at commit time".to_string(),
-        });
-    }
-    Ok(())
+/// Verify that the `preregistrations` row for `track_id` matches the
+/// `prereg.md` file on disk: the file must exist, and its current
+/// SHA-256 must match what was recorded at commit time.
+pub fn verify_prereg_integrity(store: &Store, track_id: &str) -> Result<(), TrackError> {
+    let row = get_integrity_row(store, track_id)?;
+    full_verify_row(store, &row)
 }
 
 #[cfg(test)]

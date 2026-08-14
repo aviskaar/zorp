@@ -236,17 +236,36 @@ impl Store {
     /// surfaced). Returns `TrackError::IntegrityMismatch` on the first
     /// mismatch found in either direction.
     pub fn verify_all_prereg_integrity(&self, tracks_dir: &Path) -> Result<(), TrackError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT track_id FROM preregistrations")?;
-        let track_ids: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
+        let mut stmt = self.conn.prepare(
+            "SELECT track_id, file_path, file_hash, file_mtime_ms, file_len FROM preregistrations",
+        )?;
+        let rows: Vec<crate::prereg::PreregIntegrityRow> = stmt
+            .query_map([], |r| {
+                Ok(crate::prereg::PreregIntegrityRow {
+                    track_id: r.get(0)?,
+                    file_path: r.get(1)?,
+                    file_hash: r.get(2)?,
+                    file_mtime_ms: r.get(3)?,
+                    file_len: r.get(4)?,
+                })
+            })?
             .collect::<Result<_, _>>()?;
         drop(stmt);
 
-        for track_id in &track_ids {
-            crate::prereg::verify_prereg_integrity(self, track_id)?;
+        for row in &rows {
+            // Fast path: an unchanged (mtime, len) means the file was not
+            // touched since the last full check, so skip re-reading and
+            // re-hashing it. This is only a change detector; any change,
+            // or a row with no cached stamp yet, falls through to the
+            // full check.
+            if let Some(stamp) = crate::prereg::file_stamp(Path::new(&row.file_path)) {
+                if row.file_mtime_ms == Some(stamp.0) && row.file_len == Some(stamp.1) {
+                    continue;
+                }
+            }
+            crate::prereg::full_verify_row(self, row)?;
         }
+        let track_ids: Vec<&str> = rows.iter().map(|r| r.track_id.as_str()).collect();
 
         let Ok(entries) = std::fs::read_dir(tracks_dir) else {
             return Ok(());
@@ -263,7 +282,7 @@ impl Store {
             let Some(track_id) = track_dir.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if !track_ids.iter().any(|t| t == track_id) {
+            if !track_ids.iter().any(|t| *t == track_id) {
                 return Err(TrackError::IntegrityMismatch {
                     track_id: track_id.to_string(),
                     detail: format!(

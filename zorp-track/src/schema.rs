@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS preregistrations (
     file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL,
     git_commit_hash TEXT,
-    committed_at BIGINT NOT NULL
+    committed_at BIGINT NOT NULL,
+    file_mtime_ms BIGINT,
+    file_len BIGINT
 );
 CREATE TABLE IF NOT EXISTS experiments (
     id TEXT PRIMARY KEY,
@@ -55,4 +57,11 @@ CREATE TABLE IF NOT EXISTS validations (
     feasibility_citations TEXT NOT NULL,
     verdict TEXT NOT NULL,
     created_at BIGINT NOT NULL
-);";
+);
+ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_mtime_ms BIGINT;
+ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_len BIGINT;
+CREATE INDEX IF NOT EXISTS idx_preregistrations_track_id ON preregistrations(track_id);
+CREATE INDEX IF NOT EXISTS idx_experiments_track_id ON experiments(track_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_experiment_id ON metrics(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_track_id ON checkpoints(track_id);
+CREATE INDEX IF NOT EXISTS idx_validations_track_id ON validations(track_id);";

@@ -1,6 +1,17 @@
 use chrono::Utc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_SLUG_CHARS: usize = 60;
+
+/// Process-wide counter appended to timestamp-based row ids so two
+/// inserts landing in the same millisecond still get distinct ids
+/// instead of colliding on a primary key. Shared by checkpoints,
+/// experiments, metrics, and validations.
+static NEXT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn next_seq() -> u64 {
+    NEXT_SEQ.fetch_add(1, Ordering::SeqCst)
+}
 
 /// Generate a date-prefixed, lowercase, hyphenated slug from hypothesis
 /// text, e.g. "Adaptive Memory Consolidation!" becomes
