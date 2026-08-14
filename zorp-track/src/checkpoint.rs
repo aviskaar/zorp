@@ -77,7 +77,7 @@ impl Store {
         prompt: &str,
     ) -> Result<bool, TrackError> {
         let approved = mode.decide(prompt);
-        let id = format!("{track_id}-{kind}-{}", now_millis());
+        let id = format!("{track_id}-{kind}-{}-{}", now_millis(), crate::id::next_seq());
         let now = now_millis();
         self.conn.execute(
             "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
@@ -94,6 +94,33 @@ impl Store {
             ],
         )?;
         Ok(approved)
+    }
+
+    /// Record a non-optional kill and set the track's status to Killed.
+    /// Unlike `record_checkpoint`, no `CheckpointMode` is consulted:
+    /// this is for enforcement (a pre-registered kill threshold breach),
+    /// which AutoApprove must not be able to skip. The reason is
+    /// persisted as a checkpoints row of the given `kind` with status
+    /// "enforced-kill" so the run record shows what killed the track.
+    pub fn record_enforced_kill(&self, track_id: &str, kind: &str, reason: &str) -> Result<(), TrackError> {
+        let id = format!("{track_id}-{kind}-{}-{}", now_millis(), crate::id::next_seq());
+        let now = now_millis();
+        self.conn.execute(
+            "INSERT INTO checkpoints (id, track_id, kind, status, prompt_shown, decision_notes, created_at, resolved_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                id,
+                track_id,
+                kind,
+                "enforced-kill",
+                reason,
+                Option::<String>::None,
+                now,
+                now
+            ],
+        )?;
+        self.set_track_status(track_id, crate::track::TrackStatus::Killed)?;
+        Ok(())
     }
 
     /// Read back the `resolved_at` of the most recent checkpoint of
@@ -176,6 +203,50 @@ mod tests {
             .unwrap();
         assert_eq!(status, "approved");
         assert_eq!(prompt, "is this novel?");
+    }
+
+    #[test]
+    fn record_enforced_kill_persists_the_reason_and_kills_the_track() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+
+        store
+            .record_enforced_kill("t1", "investigate-threshold", "latency_ms = 150 went above threshold 100")
+            .unwrap();
+
+        assert_eq!(store.get_track("t1").unwrap().status, crate::track::TrackStatus::Killed);
+        let (status, reason): (String, String) = store
+            .conn
+            .query_row(
+                "SELECT status, prompt_shown FROM checkpoints WHERE track_id = ? AND kind = ?",
+                duckdb::params!["t1", "investigate-threshold"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "enforced-kill");
+        assert!(reason.contains("latency_ms"));
+        assert!(reason.contains("100"));
+    }
+
+    #[test]
+    fn checkpoints_recorded_in_the_same_millisecond_do_not_collide() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let mode = CheckpointMode::AutoApprove;
+        for _ in 0..50 {
+            store.record_checkpoint("t1", "validate", &mode, "proceed?").unwrap();
+        }
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE track_id = ?",
+                duckdb::params!["t1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 50);
     }
 
     #[test]

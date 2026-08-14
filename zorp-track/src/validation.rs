@@ -1,7 +1,6 @@
 use crate::track::Store;
 use crate::TrackError;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_millis() -> i64 {
@@ -10,11 +9,6 @@ fn now_millis() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-
-/// Process-wide counter mixed into `record_validation`'s id so two calls
-/// landing in the same millisecond (plausible on fast retries or in tests)
-/// still get distinct ids, rather than colliding on the primary key.
-static VALIDATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
@@ -59,8 +53,7 @@ impl Store {
         verdict: &str,
     ) -> Result<Validation, TrackError> {
         let created_at = now_millis();
-        let seq = VALIDATION_SEQ.fetch_add(1, Ordering::SeqCst);
-        let id = format!("{track_id}-validation-{created_at}-{seq}");
+        let id = format!("{track_id}-validation-{created_at}-{}", crate::id::next_seq());
         let redundancy_json = citations_to_json(redundancy_citations);
         let feasibility_json = citations_to_json(feasibility_citations);
         self.conn.execute(

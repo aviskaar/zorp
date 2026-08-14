@@ -11,15 +11,10 @@ use std::fmt::Write as _;
 
 /// Collect every metric recorded across all of `track_id`'s experiments,
 /// as `(experiment_id, metric_key, MetricValue)` triples, in experiment
-/// order then metric order.
+/// order then metric order. One joined query, not one query per
+/// experiment.
 fn all_metrics(project: &Project, track_id: &str) -> Result<Vec<(String, String, MetricValue)>, TrackError> {
-    let mut out = Vec::new();
-    for experiment in project.store.experiments_for(track_id)? {
-        for (key, value) in project.store.metrics_for(&experiment.id)? {
-            out.push((experiment.id.clone(), key, value));
-        }
-    }
-    Ok(out)
+    project.store.metrics_for_track(track_id)
 }
 
 fn format_metric_value(value: &MetricValue) -> String {

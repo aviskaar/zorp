@@ -137,6 +137,12 @@ enum Command {
         metric_name: Option<String>,
         #[arg(long = "kill-threshold")]
         kill_threshold: Option<f64>,
+        /// Which side of the kill threshold kills the track:
+        /// lower-is-better kills when the metric goes above it,
+        /// higher-is-better when it goes below. Required with
+        /// --kill-threshold.
+        #[arg(long = "threshold-direction")]
+        threshold_direction: Option<String>,
     },
     /// Draft an artifact from a track's recorded evidence.
     #[cfg(feature = "research")]
@@ -174,8 +180,8 @@ fn main() {
         #[cfg(feature = "research")]
         Some(Command::Validate { question }) => validate(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
-        Some(Command::Investigate { question, metric_name, kill_threshold }) => {
-            investigate(&question, metric_name, kill_threshold, cli.yes, &overrides)
+        Some(Command::Investigate { question, metric_name, kill_threshold, threshold_direction }) => {
+            investigate(&question, metric_name, kill_threshold, threshold_direction, cli.yes, &overrides)
         }
         #[cfg(feature = "research")]
         Some(Command::CoWrite { question }) => co_write(&question, cli.yes, &overrides),
@@ -832,6 +838,7 @@ fn investigate(
     question: &str,
     metric_name: Option<String>,
     kill_threshold: Option<f64>,
+    threshold_direction: Option<String>,
     auto_approve: bool,
     overrides: &Overrides,
 ) {
@@ -920,14 +927,21 @@ fn investigate(
         }
     };
 
-    let prereg_params = match (metric_name.as_deref(), kill_threshold) {
-        (Some(name), Some(threshold)) => Some(zorp_agent::investigate::PreregParams {
-            metric_name: name,
-            kill_threshold: threshold,
-        }),
-        (None, None) => None,
+    let prereg_params = match (metric_name.as_deref(), kill_threshold, threshold_direction.as_deref()) {
+        (Some(name), Some(threshold), Some(direction)) => {
+            let Some(direction) = zorp_track::prereg::ThresholdDirection::parse(direction) else {
+                eprintln!("zorp-agent: --threshold-direction must be lower-is-better or higher-is-better");
+                std::process::exit(2);
+            };
+            Some(zorp_agent::investigate::PreregParams {
+                metric_name: name,
+                kill_threshold: threshold,
+                threshold_direction: direction,
+            })
+        }
+        (None, None, None) => None,
         _ => {
-            eprintln!("zorp-agent: --metric-name and --kill-threshold must be given together");
+            eprintln!("zorp-agent: --metric-name, --kill-threshold, and --threshold-direction must be given together");
             std::process::exit(2);
         }
     };

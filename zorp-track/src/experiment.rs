@@ -74,7 +74,10 @@ impl Store {
         // DuckDB FOREIGN KEY constraint: fail loudly on a typo'd or
         // stale track_id instead of silently creating an orphan row.
         self.get_track(track_id)?;
-        let id = format!("{track_id}-exp-{}", now_millis());
+        // The sequence is zero-padded because `experiments_for` orders by
+        // id: without padding, seq 10 would sort before seq 9 within the
+        // same millisecond.
+        let id = format!("{track_id}-exp-{}-{:06}", now_millis(), crate::id::next_seq());
         self.conn.execute(
             "INSERT INTO experiments (id, track_id, prereg_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, NULL, NULL)",
             duckdb::params![id, track_id, prereg_id, ExperimentStatus::Planned.as_str()],
@@ -111,21 +114,19 @@ impl Store {
 
     pub fn record_metric(&self, experiment_id: &str, key: &str, value: MetricValue) -> Result<(), TrackError> {
         self.assert_experiment_exists(experiment_id)?;
-        let seq: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM metrics WHERE experiment_id = ?",
-            duckdb::params![experiment_id],
-            |r| r.get(0),
-        )?;
-        let metric_id = format!("{experiment_id}-{key}-{}", now_millis());
+        let metric_id = format!("{experiment_id}-{key}-{}-{:06}", now_millis(), crate::id::next_seq());
         let (num, text, boolean) = match &value {
             MetricValue::Number(n) => (Some(*n), None, None),
             MetricValue::Text(s) => (None, Some(s.clone()), None),
             MetricValue::Bool(b) => (None, None, Some(*b)),
         };
+        // seq is computed inside the INSERT itself: a separate
+        // SELECT COUNT(*) per insert is O(n^2) over an experiment's
+        // metrics and can race to a duplicate seq.
         self.conn.execute(
             "INSERT INTO metrics (id, experiment_id, metric_key, value_type, value_number, value_string, value_bool, recorded_at, seq) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            duckdb::params![metric_id, experiment_id, key, value.type_str(), num, text, boolean, now_millis(), seq],
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(seq), -1) + 1 FROM metrics WHERE experiment_id = ?",
+            duckdb::params![metric_id, experiment_id, key, value.type_str(), num, text, boolean, now_millis(), experiment_id],
         )?;
         Ok(())
     }
@@ -146,6 +147,34 @@ impl Store {
                 _ => MetricValue::Text(r.get(3)?),
             };
             Ok((key, value))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Every metric recorded across all of `track_id`'s experiments, as
+    /// `(experiment_id, metric_key, MetricValue)` triples, in experiment
+    /// order (by id, matching `experiments_for`) then metric order (by
+    /// seq). One join instead of one `metrics_for` query per experiment.
+    pub fn metrics_for_track(&self, track_id: &str) -> Result<Vec<(String, String, MetricValue)>, TrackError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.experiment_id, m.metric_key, m.value_type, m.value_number, m.value_string, m.value_bool \
+             FROM metrics m JOIN experiments e ON m.experiment_id = e.id \
+             WHERE e.track_id = ? ORDER BY m.experiment_id, m.seq",
+        )?;
+        let rows = stmt.query_map(duckdb::params![track_id], |r| {
+            let experiment_id: String = r.get(0)?;
+            let key: String = r.get(1)?;
+            let value_type: String = r.get(2)?;
+            let value = match value_type.as_str() {
+                "number" => MetricValue::Number(r.get(3)?),
+                "bool" => MetricValue::Bool(r.get(5)?),
+                _ => MetricValue::Text(r.get(4)?),
+            };
+            Ok((experiment_id, key, value))
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -319,6 +348,47 @@ mod tests {
         assert_ne!(found[0].id, b.id);
 
         assert!(store.experiments_for("nope").unwrap().is_empty());
+    }
+
+    #[test]
+    fn experiments_created_in_the_same_millisecond_do_not_collide() {
+        // Ids used to embed only a millisecond timestamp, so two
+        // create_experiment calls in the same millisecond violated the
+        // primary key. A tight loop reliably lands several calls in one
+        // millisecond.
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        for _ in 0..50 {
+            store.create_experiment("t1", "t1-prereg").unwrap();
+        }
+        assert_eq!(store.experiments_for("t1").unwrap().len(), 50);
+    }
+
+    #[test]
+    fn metrics_for_track_joins_across_experiments_in_order() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        store.create_track("t2", "other").unwrap();
+        let a = store.create_experiment("t1", "t1-prereg").unwrap();
+        let b = store.create_experiment("t1", "t1-prereg").unwrap();
+        let other = store.create_experiment("t2", "t2-prereg").unwrap();
+        store.record_metric(&a.id, "m1", MetricValue::Number(1.0)).unwrap();
+        store.record_metric(&b.id, "m2", MetricValue::Number(2.0)).unwrap();
+        store.record_metric(&a.id, "m3", MetricValue::Number(3.0)).unwrap();
+        store.record_metric(&other.id, "mx", MetricValue::Number(9.0)).unwrap();
+
+        let all = store.metrics_for_track("t1").unwrap();
+        assert_eq!(
+            all,
+            vec![
+                (a.id.clone(), "m1".to_string(), MetricValue::Number(1.0)),
+                (a.id.clone(), "m3".to_string(), MetricValue::Number(3.0)),
+                (b.id.clone(), "m2".to_string(), MetricValue::Number(2.0)),
+            ]
+        );
+        assert!(store.metrics_for_track("nope").unwrap().is_empty());
     }
 
     #[test]

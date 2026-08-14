@@ -7,7 +7,7 @@ pub use result::{parse_attempt_result, AttemptResult, ParseError};
 use crate::agent::{Agent, Outcome};
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::experiment::{ExperimentStatus, MetricValue};
-use zorp_track::prereg::{get_preregistration, write_prereg};
+use zorp_track::prereg::{get_preregistration, write_prereg, ThresholdDirection};
 use zorp_track::track::TrackStatus;
 use zorp_track::Project;
 
@@ -28,6 +28,7 @@ Hypothesis: ";
 pub struct PreregParams<'a> {
     pub metric_name: &'a str,
     pub kill_threshold: f64,
+    pub threshold_direction: ThresholdDirection,
 }
 
 /// Run one investigate attempt for `track_id`. On the first call for a
@@ -37,7 +38,9 @@ pub struct PreregParams<'a> {
 /// the recorded prereg exactly. Returns whether the post-attempt
 /// checkpoint was approved (mirrors `validate::run`'s `Result<bool, _>`
 /// shape); a rejected *prereg* checkpoint also returns `Ok(false)`, with
-/// no attempt run.
+/// no attempt run. A recorded metric that breaches the pre-registered
+/// kill threshold kills the track and returns `Ok(false)` without
+/// consulting the checkpoint mode at all; auto-approve cannot skip it.
 pub fn run(
     agent: &mut Agent,
     project: &Project,
@@ -76,9 +79,19 @@ pub fn run(
                     provided: params.kill_threshold.to_string(),
                 });
             }
+            if existing.threshold_direction != Some(params.threshold_direction) {
+                return Err(InvestigateError::PreregMismatch {
+                    field: "threshold-direction",
+                    recorded: existing
+                        .threshold_direction
+                        .map(|d| d.as_str().to_string())
+                        .unwrap_or_else(|| "none (legacy pre-registration)".to_string()),
+                    provided: params.threshold_direction.as_str().to_string(),
+                });
+            }
             existing
         }
-        (None, None) => return Err(InvestigateError::PreregRequired { missing: "metric-name and --kill-threshold" }),
+        (None, None) => return Err(InvestigateError::PreregRequired { missing: "metric-name, --kill-threshold, and --threshold-direction" }),
         (None, Some(params)) => {
             let track_dir = project.track_dir(track_id);
             let written = write_prereg(
@@ -88,10 +101,14 @@ pub fn run(
                 hypothesis,
                 params.metric_name,
                 params.kill_threshold,
+                params.threshold_direction,
             )?;
             let prereg_prompt = format!(
-                "investigate: pre-register metric '{}' with kill threshold {}. Hypothesis: {}\nProceed to run the first attempt?",
-                written.metric_name, written.kill_threshold, hypothesis
+                "investigate: pre-register metric '{}' with kill threshold {} ({}). Hypothesis: {}\nProceed to run the first attempt?",
+                written.metric_name,
+                written.kill_threshold,
+                params.threshold_direction.as_str(),
+                hypothesis
             );
             let approved = project.store.record_checkpoint(track_id, "investigate-prereg", checkpoint_mode, &prereg_prompt)?;
             if !approved {
@@ -145,6 +162,40 @@ pub fn run(
 
     project.store.record_metric(&experiment.id, &prereg.metric_name, MetricValue::Number(attempt.metric_value))?;
     project.store.set_experiment_status(&experiment.id, ExperimentStatus::Completed)?;
+
+    // Enforce the pre-registered kill threshold. This is not a
+    // checkpoint: a breach kills the track unconditionally, so
+    // AutoApprove (--yes) cannot wave it through. Only a legacy
+    // pre-registration with no recorded direction escapes enforcement,
+    // and loudly, because guessing a direction could kill a healthy
+    // track or spare a doomed one.
+    match prereg.threshold_direction {
+        Some(direction) if direction.breached(attempt.metric_value, prereg.kill_threshold) => {
+            let over_or_under = match direction {
+                ThresholdDirection::LowerIsBetter => "above",
+                ThresholdDirection::HigherIsBetter => "below",
+            };
+            let reason = format!(
+                "kill threshold breached: metric '{}' = {} went {} threshold {} ({})",
+                prereg.metric_name,
+                attempt.metric_value,
+                over_or_under,
+                prereg.kill_threshold,
+                direction.as_str()
+            );
+            project.store.record_enforced_kill(track_id, "investigate-threshold", &reason)?;
+            eprintln!("zorp-agent: {reason}; track killed");
+            return Ok(false);
+        }
+        Some(_) => {}
+        None => {
+            eprintln!(
+                "zorp-agent: WARNING: pre-registration for track '{track_id}' records no threshold direction; \
+                 kill threshold {} is NOT being enforced for this attempt",
+                prereg.kill_threshold
+            );
+        }
+    }
 
     let prompt = format!(
         "investigate: {} = {} (kill threshold {}). {}\nHypothesis: {}\nKeep this track alive?",
@@ -244,7 +295,7 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
             &mode,
         )
         .unwrap();
@@ -254,7 +305,7 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 50.0 }),
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 50.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
             &mode,
         )
         .unwrap_err();
@@ -274,7 +325,7 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
             &mode,
         )
         .unwrap();
@@ -303,7 +354,7 @@ mod tests {
             &project,
             "t1",
             "does caching help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
             &mode,
         )
         .unwrap();
@@ -313,7 +364,7 @@ mod tests {
             &project,
             "t1",
             "does sharding help",
-            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0 }),
+            Some(PreregParams { metric_name: "latency_ms", kill_threshold: 100.0, threshold_direction: ThresholdDirection::LowerIsBetter }),
             &mode,
         )
         .unwrap_err();

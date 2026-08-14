@@ -59,6 +59,11 @@ pub fn run(
 
     let result = parse_validation_result(&text)?;
 
+    // The vector write is an optional enrichment behind zorp-agent's
+    // `library` feature (which enables zorp-track's LanceDB store).
+    // Citations always land in the DuckDB validations row below either
+    // way, so skipping this loses nothing co-write reads.
+    #[cfg(feature = "library")]
     for citation in result.redundancy_citations.iter().chain(result.feasibility_citations.iter()) {
         let embedding = crate::embed_texts(&[citation.text.clone()])
             .map_err(ValidateError::Embedding)?
@@ -66,7 +71,7 @@ pub fn run(
             .next()
             .ok_or_else(|| ValidateError::Embedding("no embedding returned".to_string()))?;
         project
-            .library
+            .library()?
             .insert_source(track_id, "validate-source", &citation.text, &citation.source, &embedding)?;
     }
 
