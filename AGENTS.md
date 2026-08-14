@@ -47,11 +47,21 @@ resulting artifact, deliver it in the right form.
   scope specs. Check there before assuming what zorp's capabilities are
   called or what they cover; both have changed at least once already.
 - `cargo build --workspace` and `cargo test --workspace` before considering
-  Rust changes done.
+  Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
+  run `cargo fmt --all` before committing.
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` explicitly whenever
-  research-feature code changes.
+  research-feature code changes. CI covers it nightly and on pull
+  requests that touch the research stack, but that is a backstop, not a
+  substitute for running it locally.
+- The LanceDB vector library is behind a non-default `library` feature
+  on both `zorp-track` and `zorp-agent`. `research` does not enable it.
+  Leave it off unless you are working on retrieval; it pulls in the
+  whole arrow tree.
+- `Cargo.lock` is committed and CI builds `--locked`. Shared dependency
+  versions live in `[workspace.dependencies]` in the root `Cargo.toml`,
+  not in the member manifests. MSRV is 1.82.
 
 ## Writing style
 

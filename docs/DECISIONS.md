@@ -7,6 +7,126 @@ exist, live in `docs/superpowers/specs/` and are linked from here.
 
 ---
 
+## 2026-08-14: kill thresholds carry a direction, and are enforced
+
+**Decision:** a pre-registration now records a threshold direction
+(`lower-is-better` or `higher-is-better`) alongside the metric and the
+number, and `investigate` compares each recorded attempt against it. A
+breach kills the track. `--threshold-direction` is required whenever a
+threshold is set, the direction lives in `prereg.md` (so the existing
+SHA-256 hash and git commit cover it), and it has its own column in the
+`preregistrations` table.
+
+**Why:** the threshold was only ever formatted into a prompt string and
+never compared to anything, so a track that badly missed its own
+threshold stayed Active. That is the one guarantee the whole product
+rests on. A bare number could not be enforced even in principle, since
+nothing said which side of it was failure.
+
+**What it rules out:** guessing. A breach is exempt from
+`AutoApprove`/`--yes`, because auto-approving the one decision that
+exists to stop a run defeats the point. A legacy pre-registration with
+no recorded direction is skipped with a loud warning rather than
+enforced against an assumed direction, since guessing wrong would kill
+healthy tracks.
+
+---
+
+## 2026-08-14: git is the root of trust for pre-registration integrity
+
+**Decision:** rebuilding the evidence store from `prereg.md` files no
+longer trusts the files on disk. The rebuild hashes the committed git
+blob and compares it against the working tree; a mismatch is an
+integrity error rather than a fresh row. A file with no commit behind it
+is marked unverified instead of being presented as equivalent to a
+committed one. `verify_prereg_integrity` now also checks the recorded
+`git_commit_hash`, which was previously written but never read.
+
+**Why:** the recovery path recomputed the hash from whatever was on disk
+and stored that as authoritative, so deleting the DuckDB row or
+corrupting one byte of the store turned a tampered pre-registration into
+a verified one. The tamper-evidence guarantee was defeated by the
+recovery path meant to protect it. Two existing tests asserted this
+behavior as correct and were rewritten.
+
+---
+
+## 2026-08-14: the vector library is opt-in, not part of research
+
+**Decision:** LanceDB moves behind a non-default `library` feature in
+`zorp-track`, with a matching opt-in feature in `zorp-agent` that
+`research` deliberately does not enable. `Project::library` opens
+lazily, and `validate` skips the embed-and-insert step when the feature
+is off.
+
+**Why:** it was a write-only sink. `validate` wrote cited sources into
+it, nothing ever read them back, and the citations `co-write` actually
+uses come from the DuckDB `validations` columns. It cost roughly 390 of
+`zorp-track`'s dependencies (the whole arrow and datafusion tree) for no
+behavior. It stays available rather than deleted, because a retrieval
+story is a plausible future.
+
+---
+
+## 2026-08-14: measurement code fails loudly instead of guessing
+
+**Decision:** `zorp-eval` gained three honest non-result states rather
+than folding unevaluable runs into pass or fail. An unreadable trace
+records `trace_unavailable` and skips contract evaluation entirely,
+malformed lines inside a valid trace are skipped and counted in a new
+`runs.trace_malformed_lines` column, and ordering predicates over
+seq-less events report `unevaluable`. Unknown predicate ids are a
+load-time hard error. The unimplemented LLM grader and the `eval`
+subcommand now return not-implemented errors instead of reporting
+success.
+
+**Why:** every one of these paths previously produced a confident,
+recorded result from evidence that was never actually evaluated. A
+truncated final trace line became "all contracts failed"; a typo in a
+contract id became a permanent violation or a silent pass. For a harness
+whose only purpose is trustworthy measurement, a fabricated result is
+worse than a missing one.
+
+---
+
+## 2026-08-14: command policy analyzes substitutions and redirect targets
+
+**Decision:** the run_command denylist now recurses into `$(...)`,
+`<(...)`, and `>(...)` bodies the same way it already did for `sh -c`
+payloads, tokenizes redirect operators as distinct tokens and checks
+their targets, and denies destructive `rm` whose targets escape the
+repository root. Unbalanced substitution syntax fails closed. `>
+/dev/null` is now explicitly allowed, where the old substring check
+denied it.
+
+**Why:** `$` was an ordinary word character to the tokenizer, so
+`echo $(sudo rm -rf /)` parsed as a call to `echo`, resolved to Ask, and
+ran under `--yes`. The redirect check matched four literal spellings and
+missed `> ~/.ssh/authorized_keys`. The root-rm guard matched only a bare
+`/`, so `rm -rf /*` passed. These were holes in an otherwise careful
+fail-closed design, not a missing design.
+
+---
+
+## 2026-08-14: CI covers the research stack, and the lockfile is committed
+
+**Decision:** `Cargo.lock` is tracked and CI builds with `--locked`. The
+research stack (`zorp-track` plus `zorp-agent --features research`) gets
+its own job, running nightly and on pull requests that touch it, while
+the per-PR fast path still excludes `zorp-track`. Added a macOS matrix
+leg and a `cargo fmt --check` gate. `panic = "abort"` is gone from the
+release profile.
+
+**Why:** an entire crate and a feature-gated surface could stop
+compiling while main stayed green, which is exactly what "excluded from
+CI" means over time. An untracked lockfile made builds
+non-reproducible and degraded cache hits. `panic = "abort"` silently
+disabled the `catch_unwind` guard around subagent execution in every
+release build, so a subagent panic killed the whole process in
+production while passing in tests.
+
+---
+
 ## 2026-08-13: paper rebuilt as a real arXiv preprint, with a bibliography
 
 **Decision:** the paper is now built through a proper LaTeX toolchain

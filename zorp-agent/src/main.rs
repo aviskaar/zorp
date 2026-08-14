@@ -1541,7 +1541,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                         Outcome::Cancelled => out.notice("(cancelled)"),
                                         Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
                                         Outcome::Blocked => out.notice(
-                                            "(stopped: actions denied — use /approve to allow this session)",
+                                            "(stopped: actions denied, use /approve to allow this session)",
                                         ),
                                         Outcome::Error(e) => out.notice(&format!("(error: {e})")),
                                     }
@@ -1920,7 +1920,7 @@ fn handle_chat_command(
                     Outcome::Cancelled => out.notice("(cancelled)"),
                     Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
                     Outcome::Blocked => {
-                        out.notice("(stopped: actions denied — use /approve to allow this session)")
+                        out.notice("(stopped: actions denied, use /approve to allow this session)")
                     }
                     Outcome::Error(e) => out.notice(&format!("(error: {e})")),
                 }
@@ -1948,7 +1948,7 @@ fn run_and_render(agent: &mut Agent, text: &str, out: &mut dyn Renderer) {
         Outcome::Cancelled => out.notice("(cancelled)"),
         Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
         Outcome::Blocked => {
-            out.notice("(stopped: actions denied — use /approve to allow this session)")
+            out.notice("(stopped: actions denied, use /approve to allow this session)")
         }
         Outcome::Error(e) => out.notice(&format!("(error: {e})")),
     }

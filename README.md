@@ -102,14 +102,15 @@ cd zorp
 cargo build --workspace --exclude zorp-track
 ```
 
-> `zorp-track` (the research foundation) bundles DuckDB and pulls in
-> LanceDB/Arrow/DataFusion, which take 20-30 minutes to compile from
-> scratch on a cold cache. The command above skips it, which is enough
-> for the core `zorp` and `zorp-agent` binaries below. Drop
-> `--exclude zorp-track` (plain `cargo build --workspace`, or
-> `cargo build --workspace --features research` for `zorp-agent`) only
-> once, if you need the `validate`/`investigate`/`co-write`/`deliver`
-> capabilities — budget time for that first build.
+> `zorp-track` (the research foundation) bundles DuckDB, which compiles
+> from source and takes a while on a cold cache. The command above skips
+> it, which is enough for the core `zorp` and `zorp-agent` binaries
+> below. Drop `--exclude zorp-track` (plain `cargo build --workspace`,
+> or `cargo build --workspace --features research` for `zorp-agent`)
+> once you need the `validate`/`investigate`/`co-write`/`deliver`
+> capabilities, and budget time for that first build. The LanceDB vector
+> library is behind a non-default `library` feature, so the Arrow and
+> DataFusion tree is not built unless you ask for it.
 
 Run the core transport directly:
 
@@ -127,9 +128,8 @@ cargo run -p zorp-agent -- "<task>"
 ```
 
 `./install.sh` builds release binaries and installs `zorp` and
-`zorp-agent` to `~/.local/bin`. It builds the full workspace (including
-`zorp-track`), so expect the same 20-30 minute cold-build cost noted
-above on first run.
+`zorp-agent` to `~/.local/bin`. It builds only those two crates, so it
+skips the `zorp-track` cold-build cost noted above.
 
 ### Using validate, investigate, co-write, deliver
 
