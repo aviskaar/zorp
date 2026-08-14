@@ -97,8 +97,9 @@ pub fn render_assistant_text(text: &str, markdown: bool) -> String {
         return text.to_string();
     }
 
+    static SKIN: std::sync::OnceLock<termimad::MadSkin> = std::sync::OnceLock::new();
     let preprocessed = preprocess_mermaid_blocks(text);
-    let skin = termimad::MadSkin::default();
+    let skin = SKIN.get_or_init(termimad::MadSkin::default);
     skin.term_text(&preprocessed).to_string()
 }
 

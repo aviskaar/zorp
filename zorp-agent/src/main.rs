@@ -247,7 +247,8 @@ fn is_image_extension(path: &Path) -> bool {
 /// Parse `@image <path>` or `@img <path>` references from text.
 /// Returns (cleaned_text, vec of (image_data, mime_type)).
 fn extract_image_refs(text: &str, cwd: &Path) -> (String, Vec<(Vec<u8>, String)>) {
-    let re = regex::Regex::new(r"@(?:image|img)\s+(\S+)").unwrap();
+    static IMAGE_REF: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = IMAGE_REF.get_or_init(|| regex::Regex::new(r"@(?:image|img)\s+(\S+)").unwrap());
     let mut images = Vec::new();
     let cleaned = re.replace_all(text, |caps: &regex::Captures| {
         let raw_path = &caps[1];
@@ -571,6 +572,8 @@ fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, St
 
     if model_name.is_empty() && base_url.contains("localhost:11434") {
         let tags_url = base_url.replace("/v1", "/api/tags");
+        // Plain GET; the zorp core only exposes POST-a-JSON-body helpers
+        // (zorp_raw), so this one call keeps a direct ureq dependency.
         if let Ok(res) = ureq::get(&tags_url).call() {
             if let Ok(json) = res.into_json::<OllamaTagsResponse>() {
                 if !json.models.is_empty() {

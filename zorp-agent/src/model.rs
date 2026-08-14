@@ -1,5 +1,7 @@
 use crate::BoxErr;
 use serde_json::{json, Value};
+use std::borrow::Cow;
+use std::sync::OnceLock;
 
 /// A single part of a message's content.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,6 +15,25 @@ pub enum ContentPart {
     },
 }
 
+/// Lazily-populated serialization caches for one message. Messages are
+/// immutable once pushed to the transcript, so each provider body shape and
+/// each image's base64 encoding is computed once and reused every turn.
+/// Cleared via `Message::invalidate_body_cache` when a message is rewritten
+/// (history elision). Equality ignores the cache: two messages with the same
+/// content compare equal whether or not either has been serialized.
+#[derive(Clone, Debug, Default)]
+pub struct BodyCache {
+    pub(crate) openai: OnceLock<Value>,
+    pub(crate) anthropic: OnceLock<Value>,
+    pub(crate) images: OnceLock<Vec<String>>,
+}
+
+impl PartialEq for BodyCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
 /// A single chat message in the running transcript.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Message {
@@ -21,6 +42,7 @@ pub struct Message {
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub reasoning_content: Option<String>,
+    pub(crate) body_cache: BodyCache,
 }
 
 impl Message {
@@ -31,6 +53,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
@@ -53,6 +76,7 @@ impl Message {
             tool_calls,
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
@@ -63,6 +87,7 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
@@ -73,19 +98,56 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         }
     }
 
-    /// Concatenate all text parts into a single string.
-    pub fn text(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|p| match p {
-                ContentPart::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("")
+    /// Concatenate all text parts. Borrows when the message has zero or one
+    /// text part, which is every message in practice.
+    pub fn text(&self) -> Cow<'_, str> {
+        let mut texts = self.content.iter().filter_map(|p| match p {
+            ContentPart::Text(t) => Some(t.as_str()),
+            _ => None,
+        });
+        let Some(first) = texts.next() else {
+            return Cow::Borrowed("");
+        };
+        match texts.next() {
+            None => Cow::Borrowed(first),
+            Some(second) => {
+                let mut joined = String::with_capacity(first.len() + second.len());
+                joined.push_str(first);
+                joined.push_str(second);
+                for t in texts {
+                    joined.push_str(t);
+                }
+                Cow::Owned(joined)
+            }
+        }
+    }
+
+    /// Base64 encodings of this message's image parts, in part order. Encoded
+    /// once and shared by every provider body builder.
+    pub(crate) fn image_b64(&self) -> &[String] {
+        self.body_cache.images.get_or_init(|| {
+            use base64::Engine;
+            self.content
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Image { data, .. } => {
+                        Some(base64::engine::general_purpose::STANDARD.encode(data))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    /// Drop every cached serialization. Must be called whenever a message's
+    /// content is rewritten after it may have been serialized (history
+    /// elision).
+    pub(crate) fn invalidate_body_cache(&mut self) {
+        self.body_cache = BodyCache::default();
     }
 
     /// Whether this message contains any image parts.
@@ -339,26 +401,36 @@ pub fn parse_assistant_completion(resp: &Value) -> Result<ModelCompletion, BoxEr
     })
 }
 
-/// Serialize the transcript into an OpenAI-compatible request body.
+/// Serialize the transcript into an OpenAI-compatible request body. Each
+/// message's JSON is cached on the message after its first serialization, so
+/// only newly-appended messages are built on later turns.
 pub fn messages_to_body(model: &str, messages: &[Message]) -> Value {
     let msgs: Vec<Value> = messages.iter().map(message_to_json).collect();
     json!({"model": model, "messages": msgs})
 }
 
 fn message_to_json(m: &Message) -> Value {
-    use base64::Engine;
+    m.body_cache
+        .openai
+        .get_or_init(|| build_message_json(m))
+        .clone()
+}
 
+fn build_message_json(m: &Message) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), json!(m.role));
 
     if m.has_images() {
+        let encoded = m.image_b64();
+        let mut image_idx = 0;
         let blocks: Vec<Value> = m
             .content
             .iter()
             .map(|part| match part {
                 ContentPart::Text(t) => json!({"type": "text", "text": t}),
-                ContentPart::Image { data, mime_type } => {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+                ContentPart::Image { mime_type, .. } => {
+                    let b64 = &encoded[image_idx];
+                    image_idx += 1;
                     json!({
                         "type": "image_url",
                         "image_url": {
@@ -374,7 +446,7 @@ fn message_to_json(m: &Message) -> Value {
         let content = if let Some(reasoning) = &m.reasoning_content {
             format!("<think>\n{}\n</think>\n{}", reasoning, text)
         } else {
-            text
+            text.into_owned()
         };
         obj.insert("content".into(), json!(content));
     }
@@ -1256,6 +1328,40 @@ mod tests {
     }
 
     #[test]
+    fn message_body_cache_matches_fresh_serialization() {
+        let make = || {
+            vec![
+                Message::system("s"),
+                Message::user_multimodal(vec![
+                    ContentPart::Text("look".into()),
+                    ContentPart::Image {
+                        data: vec![1, 2, 3, 4],
+                        mime_type: "image/png".into(),
+                    },
+                ]),
+                Message::assistant_with_calls(
+                    "",
+                    vec![ToolCall {
+                        id: "c1".into(),
+                        name: "t".into(),
+                        arguments: json!({"a": 1}),
+                    }],
+                ),
+                Message::tool_result("c1", "result"),
+            ]
+        };
+        let cached = make();
+        let first = messages_to_body("m", &cached);
+        // Every message is now cached, including its image encoding.
+        assert!(cached.iter().all(|m| m.body_cache.openai.get().is_some()));
+        assert!(cached[1].body_cache.images.get().is_some());
+        // A second pass over the cache and a fresh, cache-free serialization
+        // both produce byte-identical bodies.
+        assert_eq!(first, messages_to_body("m", &cached));
+        assert_eq!(first, messages_to_body("m", &make()));
+    }
+
+    #[test]
     fn messages_to_body_shape() {
         let body = messages_to_body("m", &[Message::system("s"), Message::user("u")]);
         assert_eq!(body["model"], "m");
@@ -1409,6 +1515,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         };
         assert_eq!(m.text(), "hello world");
     }
@@ -1427,6 +1534,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         };
         assert_eq!(m.text(), "describe this: ");
         assert!(m.has_images());
@@ -1468,6 +1576,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            body_cache: BodyCache::default(),
         };
         let json = super::message_to_json(&m);
         let content = json["content"].as_array().expect("should be array");
