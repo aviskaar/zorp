@@ -1,6 +1,7 @@
-//! zorp-mcp — MCP client library for zorp-agent.
+//! zorp-mcp: MCP client library for zorp-agent.
 //!
-//! Exposes a fully synchronous API; tokio is hidden inside via `Runtime::block_on`.
+//! Exposes a fully synchronous API built on blocking std::process pipes
+//! and blocking HTTP (ureq). No async runtime is involved.
 
 pub mod config;
 pub mod error;

@@ -1,5 +1,5 @@
 use crate::error::McpError;
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{id_matches, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::Transport;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -51,8 +51,19 @@ impl Transport for StdioTransport {
             }
             let resp: JsonRpcResponse = serde_json::from_str(line.trim())
                 .map_err(|e| McpError::Protocol(format!("bad JSON-RPC: {e}")))?;
-            if resp.id == Some(target_id) { return Ok(resp); }
+            if id_matches(resp.id.as_ref(), &target_id) { return Ok(resp); }
         }
+    }
+
+    fn send_notification(&mut self, notif: JsonRpcNotification) -> Result<(), McpError> {
+        let mut encoded = serde_json::to_string(&notif)
+            .map_err(|e| McpError::Protocol(format!("serialize notification: {e}")))?;
+        encoded.push('\n');
+        self.stdin.write_all(encoded.as_bytes())
+            .map_err(|e| McpError::Transport(format!("stdin write: {e}")))?;
+        self.stdin.flush()
+            .map_err(|e| McpError::Transport(format!("stdin flush: {e}")))?;
+        Ok(())
     }
 }
 

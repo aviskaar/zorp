@@ -1,7 +1,7 @@
-//! Legacy standalone SSE transport — deprecated since MCP spec March 2025.
+//! Legacy standalone SSE transport, deprecated since MCP spec March 2025.
 //! Compat-only: new servers should use Streamable HTTP.
 use crate::error::McpError;
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::Transport;
 use std::collections::HashMap;
 
@@ -50,6 +50,22 @@ impl Transport for SseTransport {
             
         let text = response.into_string().map_err(|e| McpError::Transport(format!("read body: {e}")))?;
         serde_json::from_str(&text).map_err(|e| McpError::Protocol(format!("bad JSON-RPC: {e}")))
+    }
+
+    fn send_notification(&mut self, notif: JsonRpcNotification) -> Result<(), McpError> {
+        let body = serde_json::to_string(&notif)
+            .map_err(|e| McpError::Protocol(format!("serialize notification: {e}")))?;
+        let post_url = self.post_url();
+        let mut request = self.agent.post(&post_url)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json, text/event-stream");
+        for (k, v) in &self.headers {
+            request = request.set(k, v);
+        }
+        // No response body expected for a notification.
+        request.send_string(&body)
+            .map_err(|e| McpError::Transport(format!("legacy SSE POST failed: {e}")))?;
+        Ok(())
     }
 }
 
