@@ -6,6 +6,44 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Which way the pre-registered metric is supposed to move, and
+/// therefore which side of the kill threshold kills the track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThresholdDirection {
+    /// Lower metric values are better (latency, error rate); the track
+    /// is killed when the metric goes above the threshold.
+    LowerIsBetter,
+    /// Higher metric values are better (accuracy, throughput); the
+    /// track is killed when the metric goes below the threshold.
+    HigherIsBetter,
+}
+
+impl ThresholdDirection {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThresholdDirection::LowerIsBetter => "lower-is-better",
+            ThresholdDirection::HigherIsBetter => "higher-is-better",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "lower-is-better" => Some(ThresholdDirection::LowerIsBetter),
+            "higher-is-better" => Some(ThresholdDirection::HigherIsBetter),
+            _ => None,
+        }
+    }
+
+    /// True when `value` crosses the kill threshold in the killing
+    /// direction. Landing exactly on the threshold is not a breach.
+    pub fn breached(&self, value: f64, threshold: f64) -> bool {
+        match self {
+            ThresholdDirection::LowerIsBetter => value > threshold,
+            ThresholdDirection::HigherIsBetter => value < threshold,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preregistration {
     pub id: String,
@@ -13,6 +51,9 @@ pub struct Preregistration {
     pub hypothesis_snapshot: String,
     pub metric_name: String,
     pub kill_threshold: f64,
+    /// `None` only on rows rebuilt from a legacy prereg.md written
+    /// before directions existed; new registrations always record one.
+    pub threshold_direction: Option<ThresholdDirection>,
     pub file_path: PathBuf,
     pub file_hash: String,
     pub git_commit_hash: Option<String>,
@@ -32,22 +73,35 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn render_prereg_md(track_id: &str, hypothesis: &str, metric_name: &str, kill_threshold: f64) -> String {
+fn render_prereg_md(
+    track_id: &str,
+    hypothesis: &str,
+    metric_name: &str,
+    kill_threshold: f64,
+    direction: ThresholdDirection,
+) -> String {
     format!(
         "# Pre-registration: {track_id}\n\n\
          Hypothesis: {hypothesis}\n\
          Metric: {metric_name}\n\
-         Kill threshold: {kill_threshold}\n"
+         Kill threshold: {kill_threshold}\n\
+         Threshold direction: {}\n",
+        direction.as_str()
     )
 }
 
 /// Parse a `prereg.md` written by `render_prereg_md` back into its
 /// fields. Used both to verify integrity and, in Task 6, to rebuild the
-/// DuckDB index from files alone.
-pub(crate) fn parse_prereg_md(content: &str) -> Result<(String, String, f64), TrackError> {
+/// DuckDB index from files alone. The direction is `None` for legacy
+/// files written before directions existed; the other fields are
+/// required.
+pub(crate) fn parse_prereg_md(
+    content: &str,
+) -> Result<(String, String, f64, Option<ThresholdDirection>), TrackError> {
     let mut hypothesis = None;
     let mut metric_name = None;
     let mut kill_threshold = None;
+    let mut direction = None;
     for line in content.lines() {
         if let Some(v) = line.strip_prefix("Hypothesis: ") {
             hypothesis = Some(v.to_string());
@@ -55,10 +109,12 @@ pub(crate) fn parse_prereg_md(content: &str) -> Result<(String, String, f64), Tr
             metric_name = Some(v.to_string());
         } else if let Some(v) = line.strip_prefix("Kill threshold: ") {
             kill_threshold = v.parse::<f64>().ok();
+        } else if let Some(v) = line.strip_prefix("Threshold direction: ") {
+            direction = ThresholdDirection::parse(v.trim());
         }
     }
     match (hypothesis, metric_name, kill_threshold) {
-        (Some(h), Some(m), Some(k)) => Ok((h, m, k)),
+        (Some(h), Some(m), Some(k)) => Ok((h, m, k, direction)),
         _ => Err(TrackError::Io(
             "prereg.md missing a required field".to_string(),
         )),
@@ -113,6 +169,7 @@ pub(crate) fn insert_preregistration_row(
     hypothesis: &str,
     metric_name: &str,
     kill_threshold: f64,
+    threshold_direction: Option<ThresholdDirection>,
     file_path: &Path,
     file_hash: &str,
     git_commit_hash: Option<&str>,
@@ -125,14 +182,15 @@ pub(crate) fn insert_preregistration_row(
     };
     store.conn.execute(
         "INSERT INTO preregistrations \
-         (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at, file_mtime_ms, file_len) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, track_id, hypothesis_snapshot, metric_name, kill_threshold, threshold_direction, file_path, file_hash, git_commit_hash, committed_at, file_mtime_ms, file_len) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         duckdb::params![
             id,
             track_id,
             hypothesis,
             metric_name,
             kill_threshold,
+            threshold_direction.map(|d| d.as_str()),
             file_path.to_string_lossy().to_string(),
             file_hash,
             git_commit_hash,
@@ -161,6 +219,7 @@ pub fn write_prereg(
     hypothesis: &str,
     metric_name: &str,
     kill_threshold: f64,
+    threshold_direction: ThresholdDirection,
 ) -> Result<Preregistration, TrackError> {
     let already_registered: bool = store
         .conn
@@ -179,7 +238,7 @@ pub fn write_prereg(
 
     fs::create_dir_all(track_dir)?;
     let file_path = track_dir.join("prereg.md");
-    let content = render_prereg_md(track_id, hypothesis, metric_name, kill_threshold);
+    let content = render_prereg_md(track_id, hypothesis, metric_name, kill_threshold, threshold_direction);
     fs::write(&file_path, &content)?;
     let file_hash = sha256_hex(content.as_bytes());
 
@@ -208,6 +267,7 @@ pub fn write_prereg(
         hypothesis,
         metric_name,
         kill_threshold,
+        Some(threshold_direction),
         &file_path,
         &file_hash,
         git_commit_hash.as_deref(),
@@ -220,6 +280,7 @@ pub fn write_prereg(
         hypothesis_snapshot: hypothesis.to_string(),
         metric_name: metric_name.to_string(),
         kill_threshold,
+        threshold_direction: Some(threshold_direction),
         file_path,
         file_hash,
         git_commit_hash,
@@ -235,21 +296,23 @@ pub fn get_preregistration(store: &Store, track_id: &str) -> Result<Option<Prere
     let row = store
         .conn
         .query_row(
-            "SELECT id, track_id, hypothesis_snapshot, metric_name, kill_threshold, file_path, file_hash, git_commit_hash, committed_at \
+            "SELECT id, track_id, hypothesis_snapshot, metric_name, kill_threshold, threshold_direction, file_path, file_hash, git_commit_hash, committed_at \
              FROM preregistrations WHERE track_id = ?",
             duckdb::params![track_id],
             |r| {
-                let file_path: String = r.get(5)?;
+                let direction: Option<String> = r.get(5)?;
+                let file_path: String = r.get(6)?;
                 Ok(Preregistration {
                     id: r.get(0)?,
                     track_id: r.get(1)?,
                     hypothesis_snapshot: r.get(2)?,
                     metric_name: r.get(3)?,
                     kill_threshold: r.get(4)?,
+                    threshold_direction: direction.as_deref().and_then(ThresholdDirection::parse),
                     file_path: PathBuf::from(file_path),
-                    file_hash: r.get(6)?,
-                    git_commit_hash: r.get(7)?,
-                    committed_at: r.get(8)?,
+                    file_hash: r.get(7)?,
+                    git_commit_hash: r.get(8)?,
+                    committed_at: r.get(9)?,
                 })
             },
         )
@@ -412,7 +475,7 @@ mod tests {
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
 
-        let prereg = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0).unwrap();
+        let prereg = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0, ThresholdDirection::LowerIsBetter).unwrap();
         assert!(prereg.git_commit_hash.is_some());
         assert!(prereg.file_path.exists());
 
@@ -426,7 +489,7 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
 
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
         assert_eq!(prereg.git_commit_hash, None);
         assert!(verify_prereg_integrity(&store, "t1").is_ok());
     }
@@ -437,7 +500,7 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
 
         fs::write(&prereg.file_path, "tampered content").unwrap();
 
@@ -452,7 +515,7 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
 
         // Tamper with the file, rewrite history to cover it, and update
         // the row's stored hash to match, the way an attacker with disk
@@ -481,7 +544,7 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+        let prereg = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
 
         fs::remove_file(&prereg.file_path).unwrap();
 
@@ -506,26 +569,47 @@ mod tests {
         store.create_track("t1", "hyp").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
 
-        let first = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9).unwrap();
+        let first = write_prereg(&store, &track_dir, "t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter).unwrap();
 
-        let err = write_prereg(&store, &track_dir, "t1", "different hypothesis", "other_metric", 0.5)
+        let err = write_prereg(&store, &track_dir, "t1", "different hypothesis", "other_metric", 0.5, ThresholdDirection::LowerIsBetter)
             .unwrap_err();
         assert!(matches!(err, TrackError::AlreadyRegistered { track_id } if track_id == "t1"));
 
         // The first registration must be untouched: the file on disk
         // still matches what the first call wrote and recorded.
         let content = fs::read_to_string(&first.file_path).unwrap();
-        assert_eq!(content, render_prereg_md("t1", "hyp", "accuracy", 0.9));
+        assert_eq!(content, render_prereg_md("t1", "hyp", "accuracy", 0.9, ThresholdDirection::LowerIsBetter));
         assert!(verify_prereg_integrity(&store, "t1").is_ok());
     }
 
     #[test]
     fn parse_prereg_md_round_trips_render_prereg_md() {
-        let content = render_prereg_md("t1", "does caching help", "latency_ms", 42.5);
-        let (hypothesis, metric, threshold) = parse_prereg_md(&content).unwrap();
+        let content = render_prereg_md("t1", "does caching help", "latency_ms", 42.5, ThresholdDirection::HigherIsBetter);
+        let (hypothesis, metric, threshold, direction) = parse_prereg_md(&content).unwrap();
         assert_eq!(hypothesis, "does caching help");
         assert_eq!(metric, "latency_ms");
         assert_eq!(threshold, 42.5);
+        assert_eq!(direction, Some(ThresholdDirection::HigherIsBetter));
+    }
+
+    #[test]
+    fn parse_prereg_md_without_a_direction_line_is_legacy_not_an_error() {
+        let content = "# Pre-registration: t1\n\nHypothesis: h\nMetric: m\nKill threshold: 1\n";
+        let (_, _, _, direction) = parse_prereg_md(content).unwrap();
+        assert_eq!(direction, None);
+    }
+
+    #[test]
+    fn breached_respects_the_direction() {
+        let lower = ThresholdDirection::LowerIsBetter;
+        assert!(lower.breached(101.0, 100.0));
+        assert!(!lower.breached(100.0, 100.0));
+        assert!(!lower.breached(99.0, 100.0));
+
+        let higher = ThresholdDirection::HigherIsBetter;
+        assert!(higher.breached(0.4, 0.5));
+        assert!(!higher.breached(0.5, 0.5));
+        assert!(!higher.breached(0.6, 0.5));
     }
 
     #[test]
@@ -543,7 +627,7 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = dir.path().join("tracks").join("t1");
-        let written = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0).unwrap();
+        let written = write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0, ThresholdDirection::LowerIsBetter).unwrap();
 
         let read_back = get_preregistration(&store, "t1").unwrap().unwrap();
         assert_eq!(read_back, written);

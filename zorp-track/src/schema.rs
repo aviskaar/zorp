@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS preregistrations (
     hypothesis_snapshot TEXT NOT NULL,
     metric_name TEXT NOT NULL,
     kill_threshold DOUBLE NOT NULL,
+    threshold_direction TEXT,
     file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL,
     git_commit_hash TEXT,
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS validations (
     verdict TEXT NOT NULL,
     created_at BIGINT NOT NULL
 );
+ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS threshold_direction TEXT;
 ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_mtime_ms BIGINT;
 ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_len BIGINT;
 CREATE INDEX IF NOT EXISTS idx_preregistrations_track_id ON preregistrations(track_id);

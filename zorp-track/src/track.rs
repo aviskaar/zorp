@@ -189,7 +189,8 @@ impl Store {
             }
 
             let content = std::fs::read_to_string(&prereg_path)?;
-            let (hypothesis, metric_name, kill_threshold) = crate::prereg::parse_prereg_md(&content)?;
+            let (hypothesis, metric_name, kill_threshold, threshold_direction) =
+                crate::prereg::parse_prereg_md(&content)?;
             let file_hash = crate::prereg::sha256_hex(content.as_bytes());
             let git_commit_hash = std::process::Command::new("git")
                 .arg("-C")
@@ -247,6 +248,7 @@ impl Store {
                 &hypothesis,
                 &metric_name,
                 kill_threshold,
+                threshold_direction,
                 &prereg_path,
                 &stored_hash,
                 git_commit_hash.as_deref(),
@@ -436,7 +438,7 @@ mod tests {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
             let track_dir = tracks_dir.join("t1");
-            crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0).unwrap();
+            crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
         }
 
         std::fs::remove_file(&db_path).unwrap();
@@ -469,7 +471,7 @@ mod tests {
         {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
-            crate::prereg::write_prereg(&store, &tracks_dir.join("t1"), "t1", "does caching help", "latency_ms", 100.0).unwrap();
+            crate::prereg::write_prereg(&store, &tracks_dir.join("t1"), "t1", "does caching help", "latency_ms", 100.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
         }
 
         std::fs::remove_file(&db_path).unwrap();
@@ -491,7 +493,7 @@ mod tests {
         {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
-            crate::prereg::write_prereg(&store, &tracks_dir.join("t1"), "t1", "does caching help", "latency_ms", 100.0).unwrap();
+            crate::prereg::write_prereg(&store, &tracks_dir.join("t1"), "t1", "does caching help", "latency_ms", 100.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
         }
 
         // Tamper with the committed file, then destroy the DuckDB store.
@@ -519,7 +521,7 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.create_track("t1", "already here").unwrap();
         let track_dir = tracks_dir.join("t1");
-        crate::prereg::write_prereg(&store, &track_dir, "t1", "already here", "m", 1.0).unwrap();
+        crate::prereg::write_prereg(&store, &track_dir, "t1", "already here", "m", 1.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
 
         let rebuilt = store.rebuild_from_prereg_files(&tracks_dir).unwrap();
         assert_eq!(rebuilt, 0);
@@ -541,7 +543,7 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = tracks_dir.join("t1");
-        crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "m", 1.0).unwrap();
+        crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "m", 1.0, crate::prereg::ThresholdDirection::LowerIsBetter).unwrap();
 
         assert!(store.verify_all_prereg_integrity(&tracks_dir).is_ok());
     }

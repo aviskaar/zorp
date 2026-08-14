@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use tempfile::tempdir;
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::experiment::{ExperimentStatus, MetricValue};
-use zorp_track::prereg::{verify_prereg_integrity, write_prereg};
+use zorp_track::prereg::{verify_prereg_integrity, write_prereg, ThresholdDirection};
 use zorp_track::track::TrackStatus;
 use zorp_track::{Project, TrackError};
 
@@ -31,7 +31,7 @@ fn full_track_lifecycle() {
     let track_id = "2026-08-09-does-caching-help";
     project.store.create_track(track_id, "does caching help").unwrap();
     let track_dir = project.track_dir(track_id);
-    write_prereg(&project.store, &track_dir, track_id, "does caching help", "latency_ms", 100.0).unwrap();
+    write_prereg(&project.store, &track_dir, track_id, "does caching help", "latency_ms", 100.0, ThresholdDirection::LowerIsBetter).unwrap();
     assert!(verify_prereg_integrity(&project.store, track_id).is_ok());
     assert!(track_dir.join("prereg.md").exists());
 
@@ -77,7 +77,7 @@ fn rebuilds_from_prereg_files_if_duckdb_file_is_deleted() {
         let project = Project::open(dir.path()).unwrap();
         project.store.create_track(track_id, "rebuild test").unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "rebuild test", "m", 1.0).unwrap();
+        write_prereg(&project.store, &track_dir, track_id, "rebuild test", "m", 1.0, ThresholdDirection::LowerIsBetter).unwrap();
     }
 
     std::fs::remove_file(dir.path().join(".zorp/zorp.duckdb")).unwrap();
@@ -133,7 +133,7 @@ fn project_open_refuses_to_rebuild_from_a_tampered_prereg_md() {
         let project = Project::open(dir.path()).unwrap();
         project.store.create_track(track_id, "tamper test").unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "tamper test", "m", 1.0).unwrap();
+        write_prereg(&project.store, &track_dir, track_id, "tamper test", "m", 1.0, ThresholdDirection::LowerIsBetter).unwrap();
     }
 
     // Tamper with the committed prereg.md, then delete the DuckDB store.
@@ -160,7 +160,7 @@ fn project_open_recovers_from_a_corrupted_duckdb_file() {
         let project = Project::open(dir.path()).unwrap();
         project.store.create_track(track_id, "corruption test").unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "corruption test", "m", 1.0).unwrap();
+        write_prereg(&project.store, &track_dir, track_id, "corruption test", "m", 1.0, ThresholdDirection::LowerIsBetter).unwrap();
     }
 
     // Corrupt the DuckDB file so a fresh Store::open on it fails outright.
@@ -240,7 +240,7 @@ fn project_open_does_not_quarantine_a_healthy_db_locked_by_another_process() {
         let project = Project::open(dir.path()).unwrap();
         project.store.create_track(track_id, "lock test").unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "lock test", "m", 1.0).unwrap();
+        write_prereg(&project.store, &track_dir, track_id, "lock test", "m", 1.0, ThresholdDirection::LowerIsBetter).unwrap();
     }
     let db_path = dir.path().join(".zorp/zorp.duckdb");
     let original_contents = std::fs::read(&db_path).unwrap();
