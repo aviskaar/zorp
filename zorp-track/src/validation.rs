@@ -53,16 +53,14 @@ impl Store {
         verdict: &str,
     ) -> Result<Validation, TrackError> {
         let created_at = now_millis();
-        let id = format!(
-            "{track_id}-validation-{created_at}-{}",
-            crate::id::next_seq()
-        );
+        let seq = crate::id::next_seq();
+        let id = format!("{track_id}-validation-{created_at}-{seq}");
         let redundancy_json = citations_to_json(redundancy_citations);
         let feasibility_json = citations_to_json(feasibility_citations);
         self.conn.execute(
             "INSERT INTO validations \
-             (id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at, seq) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             duckdb::params![
                 id,
                 track_id,
@@ -71,7 +69,8 @@ impl Store {
                 feasibility_score,
                 feasibility_json,
                 verdict,
-                created_at
+                created_at,
+                seq as i64
             ],
         )?;
         Ok(Validation {
@@ -88,12 +87,15 @@ impl Store {
 
     /// The most recent validation recorded for `track_id`. A track may have
     /// more than one row (validate can be retried), so this returns the
-    /// latest by `created_at`, not an arbitrary one.
+    /// latest by insert order, not an arbitrary one. `created_at` alone is
+    /// not enough: it is milliseconds, and two retries in the same
+    /// millisecond tie, so `seq` decides. Rows written before `seq`
+    /// existed have NULL there and sort last within their millisecond.
     pub fn get_validation(&self, track_id: &str) -> Result<Validation, TrackError> {
         self.conn
             .query_row(
                 "SELECT id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at \
-                 FROM validations WHERE track_id = ? ORDER BY created_at DESC LIMIT 1",
+                 FROM validations WHERE track_id = ? ORDER BY created_at DESC, seq DESC NULLS LAST LIMIT 1",
                 duckdb::params![track_id],
                 |r| {
                     let redundancy_raw: String = r.get(3)?;

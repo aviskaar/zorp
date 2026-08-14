@@ -126,11 +126,6 @@ impl Project {
     pub fn track_dir(&self, track_id: &str) -> PathBuf {
         self.root.join("tracks").join(track_id)
     }
-
-    #[cfg(test)]
-    pub(crate) fn root_for_test(&self) -> &Path {
-        &self.root
-    }
 }
 
 #[cfg(test)]

@@ -59,6 +59,10 @@ CREATE TABLE IF NOT EXISTS validations (
     verdict TEXT NOT NULL,
     created_at BIGINT NOT NULL
 );
+-- Monotonic insert order for validations. created_at is milliseconds,
+-- so two validations recorded in the same millisecond tie and give no
+-- ordering; seq breaks the tie, the same way metrics already do.
+ALTER TABLE validations ADD COLUMN IF NOT EXISTS seq BIGINT;
 ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS threshold_direction TEXT;
 ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_mtime_ms BIGINT;
 ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_len BIGINT;
