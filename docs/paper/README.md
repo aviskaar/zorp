@@ -19,6 +19,13 @@ Needs `pandoc`, a TeX distribution with `newtx` (TeX Live works), and
 pandoc, pdflatex, bibtex, pdflatex, pdflatex cycle and removes its own
 intermediates; only `zorp-paper.pdf` is left behind.
 
+`ghostscript` is an optional last step: pdfTeX emits a PDF 1.5 with object
+streams, which GitHub's inline PDF viewer renders inconsistently, so the
+build downconverts to a linearized PDF 1.4 with all fonts embedded, the most
+broadly compatible form. If `gs` is not installed the step is skipped and the
+plain pdflatex output is used, which still opens fine in a normal PDF reader
+but may error in GitHub's viewer.
+
 ## Layout
 
 | File | What it is |
