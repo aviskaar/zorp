@@ -11,12 +11,30 @@ serde_json = "1"
 
 [workspace]
 members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track"]
-# Future companion members (own specs): "zorp-mcp"
 
-# Optimize the release binary for size — fitting for "the smallest harness."
+# Optimize the release binary for size, fitting for "the smallest harness."
+# panic stays at the default (unwind): zorp-agent catches subagent panics
+# with catch_unwind, and panic = "abort" would silently disable that guard
+# in release builds. The unwind tables cost a few KB.
 [profile.release]
 opt-level = "z"     # optimize for size
 lto = true          # link-time optimization across crates
 codegen-units = 1   # better optimization, smaller output
-panic = "abort"     # drop unwinding tables
 strip = true        # strip symbols
+
+# The size profile is wrong for the analytic research stack: "z" pessimizes
+# the DuckDB and Arrow hot paths the research feature exists for, and is the
+# most expensive knob in the whole build when applied to zorp-track.
+[profile.release.package.zorp-track]
+opt-level = 2
+
+# Compile the bundled C database engines optimized even in dev/test builds.
+# They compile once, cache well, and unoptimized DuckDB dominates test time.
+[profile.dev.package.libduckdb-sys]
+opt-level = 2
+[profile.dev.package.duckdb]
+opt-level = 2
+[profile.dev.package.libsqlite3-sys]
+opt-level = 2
+[profile.dev.package.rusqlite]
+opt-level = 2

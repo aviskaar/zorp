@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly full-workspace run so zorp-track and the research feature
+    # cannot rot unnoticed between research-touching pull requests.
+    - cron: "17 6 * * *"
 
 env:
   CARGO_INCREMENTAL: 0
@@ -11,6 +15,37 @@ env:
 
 jobs:
   build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is a first-class target: the agent uses crossterm, libc, and
+        # OwnedFd, and install.sh targets macOS shells.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # zorp-track pulls in duckdb (bundled: compiles DuckDB's C++
+      # amalgamation from source), which dominates cold-build time on shared
+      # runners. It is excluded here so the per-PR path stays fast; the
+      # research job below covers it.
+      - name: Test workspace (excluding zorp-track)
+        run: cargo test --workspace --exclude zorp-track --locked
+
+  research:
+    # Full build of zorp-track and the research-feature surface of
+    # zorp-agent. Runs nightly, and on pull requests that touch the
+    # research stack.
+    if: github.event_name == 'schedule' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,17 +53,57 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # zorp-track pulls in duckdb (bundled — compiles DuckDB's C++ amalgamation
-      # from source) and lancedb (Arrow + DataFusion transitively). That single
-      # crate dominates cold-build time on shared runners. It's excluded here so
-      # CI stays fast; the research feature (which depends on zorp-track) is
-      # covered by `cargo test -p zorp-agent --features research`, required
-      # locally before considering research-feature changes done (see CLAUDE.md).
-      - name: Test workspace (excluding zorp-track)
-        run: cargo test --workspace --exclude zorp-track
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Test zorp-track
+        run: cargo test -p zorp-track --locked
+
+      - name: Test zorp-agent (research feature)
+        run: cargo test -p zorp-agent --features research --locked
+
+  research-pr:
+    # Same coverage for pull requests, gated on paths so unrelated PRs
+    # stay cheap.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect research-stack changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            research:
+              - 'zorp-track/**'
+              - 'zorp-agent/src/validate/**'
+              - 'zorp-agent/src/investigate/**'
+              - 'zorp-agent/src/co_write/**'
+              - 'zorp-agent/src/deliver/**'
+              - 'zorp-agent/Cargo.toml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+
+      - name: Install Rust
+        if: steps.filter.outputs.research == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: steps.filter.outputs.research == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        if: steps.filter.outputs.research == 'true'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Test zorp-track
+        if: steps.filter.outputs.research == 'true'
+        run: cargo test -p zorp-track --locked
+
+      - name: Test zorp-agent (research feature)
+        if: steps.filter.outputs.research == 'true'
+        run: cargo test -p zorp-agent --features research --locked
