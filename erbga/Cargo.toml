@@ -1,0 +1,16 @@
+[package]
+name        = "erbga"
+version     = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Efficient Reduced-Bias Genetic Algorithm for graph community detection."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependencies, deliberately. The RNG is in-crate because the benchmark
+# suite is a regression test against published numbers, so the sequence has
+# to stay stable across platforms and releases, which `rand`'s StdRng does
+# not promise.
+[dependencies]

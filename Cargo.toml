@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 workspace = true
 
 [workspace]
-members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track"]
+members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track", "erbga"]
 
 [workspace.package]
 edition = "2021"
@@ -61,6 +61,12 @@ strip = true        # strip symbols
 # most expensive knob in the whole build when applied to zorp-track.
 [profile.release.package.zorp-track]
 opt-level = 2
+
+# Same reasoning for erbga: it is a compute-bound genetic algorithm whose
+# benchmark reproduces published numbers under a time budget, so optimizing
+# it for size would be measuring the wrong thing.
+[profile.release.package.erbga]
+opt-level = 3
 
 # Compile the bundled C database engines optimized even in dev/test builds.
 # They compile once, cache well, and unoptimized DuckDB dominates test time.
