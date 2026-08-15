@@ -91,9 +91,10 @@ impl Policy {
     /// Attach the sandbox repo root so denylist path checks can allow
     /// absolute targets that stay inside it. Canonicalized once here to
     /// match `Sandbox::new`; all later checks are lexical string analysis.
-    /// Not yet wired at the agent construction site, so production policies
-    /// run without a root and deny all absolute destructive targets.
-    #[allow(dead_code)]
+    /// `build_policy` calls this for every policy it constructs, so in
+    /// production an absolute target under the root is approval-gated
+    /// rather than denied. A policy built without a root, as in some
+    /// tests, denies every absolute destructive or redirect target.
     pub fn with_repo_root(mut self, root: impl Into<PathBuf>) -> Policy {
         let root = root.into();
         self.repo_root = Some(root.canonicalize().unwrap_or(root));
