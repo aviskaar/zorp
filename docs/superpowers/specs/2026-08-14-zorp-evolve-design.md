@@ -1,488 +1,839 @@
-# evolve: population search over a question graph
+# evolve: population search over question framings
 
 **Date:** 2026-08-14
-**Status:** approved, not built
+**Status:** NOT APPROVED. Under revision after two rounds of adversarial
+review. Do not implement from this document.
+
+Read "Where this stands" immediately below before reading anything else.
+Several sections of this spec are known to be wrong, and they are left in
+place deliberately so the findings against them have something to point
+at.
+
+## Where this stands
+
+Two rounds of adversarial review, eight independent reviewers. The
+measurement discipline in this document survived both rounds and is
+worth keeping. The search layer did not survive either round, and the
+second round showed the first rewrite moved the flaw rather than removing
+it.
+
+**What survived, confirmed by reviewers on both rounds:**
+
+- Never selecting on the pre-registered metric, because breeding a
+  population to maximize a metric and then reporting that metric is
+  biased upward twice over, and pre-registration does not cover it.
+- The confirmatory stage: `n` independent passes, threshold on the mean
+  rather than the best, nulls counted as non-passing rather than exempt.
+  Reviewers on both rounds tried to game it and could not, given a fixed
+  evidence set.
+- Refusing to call framing diversity corroboration, because islands
+  share one model and agreement then carries almost no evidential weight.
+- Track death on a quorum rather than unanimity.
+- Rejecting memo hit rate as a termination signal, since it reduces to
+  `1 / (1 + g)` and measures graph growth rather than discovery.
+
+**What did not survive, and why a third patch is not the answer:**
+
+1. **There is no free inner search.** This document prices structural
+   operators as "free" meaning free of evidence runs, then the Cost
+   section reads that as free outright and concludes a large population
+   over many generations "costs nothing beyond CPU", while the epoch loop
+   claims "No model calls". Those cannot all hold. Variation is
+   model-proposed, so either the search performs no variation and
+   converges in one iteration, or it costs `I * P * G * E` model calls
+   that appear in no cost model. Without free variation, a genetic
+   algorithm over framings has no reason to exist.
+
+2. **The framing score is maximized by a blob.** CPM's objective is
+   extensive, not normalized. `H*` is monotone non-decreasing under edge
+   addition, and edge reweight is priced free, so the search adds edges
+   until the graph is complete, where one undifferentiated block beats a
+   real decomposition by more than 6x and scores maximum on the other two
+   terms simultaneously. Modularity is normalized and comparable across
+   graphs; CPM is not. Swapping one for the other to fix the resolution
+   limit inherited a comparability assumption that does not hold.
+
+3. **Two of the three score terms are identically 1.0.** `Grounding` is
+   satisfied by construction, since the genome mandates a stated reason
+   on every pair and `reuse_floor` makes its second clause unreachable.
+   `Evidential independence` is Jaccard over memo rows, but a partition
+   is vertex-disjoint and each sub-question owns its row, so components
+   can never share one. This is the same defect as the first draft's
+   `Coverage` term, reintroduced under two new names, with the same
+   stated cause (gathering precedes evolution) preserved unchanged.
+
+4. **Free operators still select which evidence is reported.** The
+   confirmatory stage runs over the winning partition's evidence, and
+   `drop` is free and raises two of the three terms. So a search that
+   never touches the metric still decides which already-paid-for evidence
+   reaches the reported number, which is the exact failure this document's
+   Purpose section says it exists to prevent.
+
+5. **The resolution-limit argument is quantitatively wrong.** The
+   threshold `sqrt(2m)` bounds total degree, not internal edges; the
+   internal-edge form is `sqrt(m/2)`. Karate's optimal communities hold
+   {6, 7, 21, 23} internal edges, not the "15 to 20" claimed here, and
+   the smallest is below the corrected threshold rather than comfortably
+   above it. On a question graph the conclusion inverts: the limit binds
+   for tree-like lines and not for denser ones. CPM may still be the
+   right choice, but the sole stated justification for it is wrong in all
+   three of its numbers.
+
+**Recommendation.** The evolutionary search should be dropped or reduced
+to something much smaller, and the measurement discipline kept. At the
+scale a question graph actually occupies, an exact clique-partitioning
+ILP solves the partition to proven optimality in about 0.2 seconds at
+`V = 20`, so a genetic algorithm is not needed for the cut, and there is
+no cheap search over framings to justify one there either. What is worth
+building is the confirmatory measurement machinery on top of ordinary
+`investigate` runs.
+
+The full findings from both rounds are recorded at the end of this
+document under "Review record".
+
+---
+
+The design below is the second draft, preserved as written. The first
+draft searched over cuts of a fixed question graph and selected on the
+pre-registered metric; what changed between drafts is recorded under
+"What review changed".
 
 ## Purpose
 
 A fifth capability alongside validate, investigate, co-write, and
-deliver. Where `investigate` runs one attempt against a pre-registered
-metric, `evolve` runs a population of competing decompositions of the
-same question, eliminates the weak ones, and breeds the survivors.
+deliver.
 
-The point is not speed. The point is that a defensible answer needs
-independent lines of evidence that converge, and a single attempt cannot
-produce that no matter how good it is. A population can, but only if
-selection is built so the population does not inbreed. Most of this spec
-is about that constraint.
+`investigate` runs one attempt at answering a question. `evolve` does
+something different and narrower: it searches for a **good way to
+decompose** the question into independent lines of inquiry, then
+measures the answer once, carefully, on the decomposition it found.
 
-The search core is an adaptation of ERBGA, published as Rao, Janikow,
-Bhatia, and Climer, "Efficient Reduced-Bias Genetic Algorithm (ERBGA)
-for Generic Community Detection Objectives", MWAIS 2018 Proceedings 32,
-and in the longer thesis of the same name. zorp's author is that work's
-first author, so this is building on prior work of our own, not
-vendoring someone else's.
+The distinction is the whole design. `evolve` does not search for an
+answer.
 
-Read `docs/superpowers/specs/2026-08-09-zorp-investigate-design.md`
-first. `evolve` reuses its pre-registration discipline and writes into
-the same experiment and metric tables.
+## What evolve does not do, and why
+
+**It never selects on the pre-registered metric.**
+
+If you breed a population to maximize a metric and then report that
+metric, the number is biased upward by construction. Every decomposition
+that surfaces inconvenient evidence scores worse, dies, and does not
+breed, so within a few generations the population consists precisely of
+the framings that avoid the problem. The disconfirming evidence remains
+in the record, paid for, and reaches nothing.
+
+Pre-registration does not protect against this. Pre-registration stops
+you from moving the test after seeing the data. It does nothing about
+selecting, from many observations, the one that best clears a fixed
+test. Those are different failure modes, and only the first is covered
+by committing a threshold in advance.
+
+There is a second, independent bias in the same direction. Any metric
+produced by a model synthesizing evidence is a noisy estimator. The
+maximum of `N` draws from a noisy estimator exceeds the truth by roughly
+`sigma * sqrt(2 * ln N)`. A search that reports its best evaluation is
+reporting that maximum.
+
+So the pre-registered metric appears **nowhere** in selection, at any
+tier, in any generation. It is measured once per island, after the
+search has finished, under the confirmatory protocol below.
 
 ## The core idea
 
 A question decomposes into sub-questions, and sub-questions bear on each
-other. Model that as a **question graph**: vertices are candidate
-sub-questions, and an edge (a, b) means evidence for a and evidence for
-b should be reasoned about together.
+other. Model that as a **question graph**: vertices are sub-questions,
+and a weighted edge (a, b) records how strongly evidence for a and
+evidence for b must be reasoned about together.
 
-Cutting edges splits the graph into connected components. Each component
-is an **independent line of inquiry**. A good cut produces lines that
-are internally coherent and mutually independent, which is exactly what
-modularity measures. It is also exactly the evidence structure that
-makes an answer defensible: independent lines that agree are
-corroboration, whereas one line counted twice is not.
+Partitioning that graph yields **independent lines of inquiry**. Lines
+that are internally coherent and mutually separable are what a
+defensible answer needs, because independent lines that agree carry
+weight and one line counted twice does not.
 
-So the search is over cuts of a question graph, and ERBGA is a search
-over cuts of a graph. The two are the same problem.
+The critical design question is where to spend compute. The partition of
+a 20-vertex graph is a small problem with good deterministic solvers.
+The **graph itself** is where all the uncertainty lives: it is invented
+by a model, it is never observed, and a wrong edge silently manufactures
+or destroys an entire line of inquiry.
 
-## Why ERBGA's representation, specifically
-
-Two properties matter here, and both come from the representation
-choice rather than from the algorithm around it.
-
-**No redundancy.** The obvious encoding, a list of sub-questions grouped
-into lines, has n! encodings of the same decomposition because the order
-is arbitrary. That is the k! blowup ERBGA was built to remove. Encoding
-the decomposition as the **set of removed edges** gives each
-decomposition exactly one representation.
-
-**The vertex set is invariant.** A chromosome is a bit string over
-edges, so every chromosome in every generation on every island asks the
-same sub-questions. Only the grouping varies. That is what makes this
-affordable, and it is the whole reason the approach works at all:
-
-- Gathering evidence for a sub-question costs a tool-using agent run.
-  It is paid **once**, globally, and memoized. Total evidence cost is
-  bounded by the number of vertices, not by population times
-  generations times islands.
-- Evaluating a cut costs nothing but arithmetic over evidence that
-  already exists.
-
-The representation chosen to kill redundancy is also the one that makes
-memoization maximally effective, because it holds the expensive
-dimension fixed and varies only the cheap one. Population size and
-generation count stop being budget questions.
-
-**No prior knowledge of the number of lines.** ERBGA needs no cluster
-count up front, and neither does this. You do not know in advance how
-many independent lines of evidence a question has.
+So the population searches over **framings**, and the partition of any
+given framing is solved directly rather than evolved.
 
 ## Where this lives
 
-Two crates, so the search core can be tested without a model in the
-loop:
+Three crates, so each layer can be tested without the one above it:
 
-- **`erbga`**, a new workspace member. The pure genetic algorithm over
-  an undirected graph, with a pluggable objective. Knows nothing about
-  questions, evidence, agents, or zorp. Its correctness is established
-  against published community detection benchmarks.
-- **`zorp-agent/src/evolve/`**, the integration: question graph
-  construction, the memo table, evidence gathering, epoch control,
-  checkpoints, and the `zorp-agent evolve` subcommand. Behind the
-  existing `research` feature, and additionally requiring the `library`
-  feature, since the memo table is LanceDB.
-
-This follows the rule in `CLAUDE.md` that new zorp-specific capabilities
-live in new crates or clearly named modules rather than inside inherited
-harness code.
+- **`erbga`**, a new workspace member. A question-agnostic genetic
+  algorithm over graphs with a pluggable objective, implementing the
+  representation and operators of Rao, Janikow, Bhatia, and Climer,
+  "Efficient Reduced-Bias Genetic Algorithm (ERBGA) for Generic
+  Community Detection Objectives", MWAIS 2018. Used here as the
+  partition solver for framings too large to solve directly, and
+  validated independently against that paper's benchmarks. zorp's author
+  is that work's first author.
+- **`partition`**, a small module inside `erbga`. The deterministic
+  partition solver used at question-graph scale, plus the objective
+  functions. Separate from the GA because at realistic sizes the GA is
+  not the right tool.
+- **`zorp-agent/src/evolve/`**, the integration: framing construction
+  and mutation, the memo table, evidence gathering, epoch control, the
+  confirmatory stage, checkpoints, and the `zorp-agent evolve`
+  subcommand.
 
 **Open naming question.** `evolve` is named after its mechanism, while
-the other four capabilities are named after their purpose. It is used
-throughout this spec as a placeholder and can be renamed before
-implementation without changing anything else here.
+the other four capabilities are named after their purpose. It is a
+placeholder and can be renamed without changing anything else here.
 
-## The chromosome
+## The framing genome
 
-Two gene arrays.
+An individual is a **framing**, not a bit string.
 
-**Edge genes.** One bit per edge in the island's question graph, 1 = the
-edge is removed. Edges are identified and ordered exactly as in ERBGA:
-a unique id per edge, a sorted `EdgeList`, and an inverse mapping back
-to endpoints. The connected components induced by the surviving edges
-are the lines of inquiry.
-
-**Method genes.** One gene per vertex, naming how that sub-question's
-evidence is gathered. Method is a real gene rather than a label because
-the memo table is keyed on `(sub_question, method)` pairs, so two
-methods on one sub-question are two separate pieces of evidence. This is
-what lets the population surface method sensitivity instead of hiding
-it.
+- **Sub-questions.** A set of natural-language questions, each with a
+  gathering **method** drawn from a fixed, closed enum declared in the
+  pre-registration. Method is part of the genome because the memo table
+  is keyed on `(sub_question, method)`, so two methods on one
+  sub-question are two separate pieces of evidence.
+- **Relations.** A weighted "bears on" score in `[0, 1]` for each
+  ordered pair the framing model considered, plus a stated reason. An
+  edge exists where the score meets the pre-registered threshold `tau`.
+  The **full weighted matrix is recorded**, not just the thresholded
+  graph, so `tau` is auditable after the fact and a different threshold
+  can be replayed against the same framing.
+- **Cross-cutting premises.** Sub-questions the framing model marks as
+  bearing on everything, for example "is the underlying data reliable".
+  These are **excluded from the partition** and attached to every
+  component as a shared premise. A universally relevant sub-question is
+  not a line of inquiry, it is a precondition of all of them, and left
+  in the graph it is a maximum-degree vertex that prevents the graph
+  from separating at all.
 
 ## Operators
 
-Adapted from ERBGA. Cost is what distinguishes them, and cost is the
-only thing that constrains the search.
+Variation is model-proposed and structural. Selection and scoring are
+deterministic code.
 
 | Operator | Cost | Behavior |
 |---|---|---|
-| Uniform crossover | free | A random list of crossover points, single genes exchanged at those points only, applied to both gene arrays |
-| Edge mutation | free | Flip a bit. Regroups existing evidence |
-| Gene Repair | free | Reattach cut edges around high-degree vertices |
-| Elitism | free | The best fraction carries forward unaltered |
-| Tournament selection | free | A pool is drawn at random, the best two breed |
-| Method mutation | **one evidence run** | Creates a new `(sub_question, method)` memo entry |
-| Vertex mutation | **one evidence run** | The variation model proposes a new sub-question, growing the graph |
+| Edge reweight | free | Adjust a "bears on" score. Changes the graph without new evidence |
+| Edge add or drop | free | Only meaningful via reweight across `tau`; recorded as its own operator for auditability |
+| Sub-question split | **one evidence run** | One sub-question becomes two more specific ones |
+| Sub-question merge | free | Two become one. Evidence for both is retained and both memo rows attach to the merged vertex |
+| Sub-question add | **one evidence run** | A genuinely new question |
+| Sub-question drop | free | Removes a vertex. Its memo row is retained, not deleted |
+| Method change | **one evidence run** | New `(sub_question, method)` memo entry |
+| Recombination | free, plus evidence for any imported sub-question not already gathered | Merge two parents' sub-question sets and average their relation matrices, with conflicts resolved toward the higher-scoring parent |
 
-**Uniform crossover** matters for the reason ERBGA gives: sub-questions
-are not linearly ordered, so adjacency in the bit string is an artifact
-of how `EdgeList` was sorted, not a real relationship. Single point
-crossover would impose structure that does not exist.
+Only four operators cost anything, and all four are the same thing:
+asking a question nobody has asked yet. That is the budget, and it is
+capped per epoch (see Cost).
 
-**Gene Repair** translates directly and gains a clear meaning. In ERBGA
-it addresses dense networks that stay connected despite heavy edge
-removal, by reattaching edges incident to high-degree vertices, on the
-reasoning that a high-degree vertex has far more intra-cluster than
-inter-cluster edges. Here, degree is the number of other sub-questions
-that bear on a given one. A hub sub-question is foundational, many
-things depend on it, and cutting its edges is usually an artifact of
-random cutting rather than a real epistemic boundary. Repairing those
-cuts keeps foundational sub-questions attached to what depends on them.
+Note what is absent. There is no Gene Repair, no crossover over bit
+strings, and no mutation over cut bits. Those belong to the cut search,
+which no longer exists at this layer.
 
-Without it, a densely coupled question, where everything bears on
-everything, collapses into one undifferentiated line of inquiry. That is
-the failure mode ERBGA reports on its denser datasets, and it is
-precisely the kind of question zorp exists to handle.
+## Scoring a framing
 
-## Two-tier fitness
+Deterministic, in Rust, with no model in the loop.
 
-An evidence-free fitness evaluation is still an LLM call if the metric
-is a judgment. At ERBGA-scale parameters that is millions of calls, so
-fitness splits in two.
+**Step 1: partition the framing.** Solve for the best partition under
+the pre-registered objective. Below a stated vertex count, verify the
+solver by exhaustive enumeration over connected partitions; above it,
+run the deterministic solver from multiple fixed starts; above the size
+where that is affordable, fall back to `erbga`.
 
-**Inner tier, cheap and deterministic.** A structural proxy computed in
-Rust, drives the full genetic search at ERBGA-scale parameters. Because
-the proxy is pre-registered, it is a named and versioned function rather
-than an informal notion. v1 ships exactly one, `modularity-coverage-v1`,
-a weighted sum of three terms over the cut:
+**Step 2: score the framing** on three terms, each of which measures
+something the design actually needs:
 
-- **Modularity** of the question graph under the cut, the same measure
-  ERBGA optimizes. High when lines are internally dense and mutually
-  sparse.
-- **Coverage**, the fraction of vertices in the cut that have a memo
-  entry for their method gene. Penalizes cuts leaning on evidence
-  nobody has gathered.
-- **Balance**, penalizing cuts that strand most vertices in one giant
-  line, which is the collapse mode Gene Repair exists to fight.
+- **Separation**, the objective value of the best partition. This says
+  the framing carves into coherent, separable lines.
+- **Evidential independence**, the complement of source overlap between
+  components. Each component reports the set of memo row ids its
+  sub-questions rest on, and overlap is Jaccard over those sets. This is
+  the term that means what "independent lines" is supposed to mean.
+  Structural separation does not imply evidential independence, and
+  without this term nothing in the system measures the difference.
+- **Grounding**, the fraction of sub-questions whose relation scores
+  carry a stated reason and whose evidence was gathered rather than
+  reused below a stated similarity. Penalizes framings that assert
+  structure the model did not justify.
 
-Its weights are part of the named version, so changing them produces a
-different proxy name and a different pre-registration rather than a
-silent retune. **The proxy can never kill anything.** It ranks
-candidates, nothing more.
+**A framing whose component source-overlap exceeds a pre-registered
+ceiling is invalid, not merely low-scoring.** Components resting on the
+same evidence are not independent lines regardless of how cleanly the
+graph separates, and a design that sells corroboration must refuse to
+call them independent.
 
-**Outer tier, expensive.** At each epoch boundary the pre-registered
-metric is evaluated on elites and island bests only, by synthesizing the
-already-gathered evidence for that cut. This is the only fitness that
-decides whether anything lives or dies, and each evaluation is written
-as an ordinary row in the existing `experiments` and `metrics` tables.
+### The objective, and why not plain modularity
 
-The surrogate risk is real and is accepted deliberately: the proxy may
-rank cuts differently than the true metric would. It is bounded by the
-proxy having no authority. A cut the proxy loves still has to survive
-the pre-registered metric to matter.
+The partition objective is the **Constant Potts Model** with a
+pre-registered resolution `gamma`.
 
-## Selection
+Modularity is the obvious choice and it is wrong here, for a reason that
+is specific to scale rather than to the analogy. Modularity cannot
+resolve communities holding fewer than about `sqrt(2m)` internal edges.
+On Karate, `m = 78`, the threshold is about 12.5, and the optimal
+communities carry 15 to 20 internal edges, so the limit does not bind.
+On a realistic question graph of 20 sub-questions and 40 relations, the
+threshold is about 8.9, while a line of inquiry of four sub-questions
+holds at most six internal edges. Every line of inquiry a question
+decomposition would want to find sits below the limit. Modularity would
+systematically merge exactly the distinctions this capability exists to
+draw, and it would impose a size-dependent cap on the number of lines,
+which is precisely the freedom the representation is supposed to buy.
 
-Tournament selection as in ERBGA, over fitness penalized by similarity
-to survivors already selected in that generation. Each additional
-survivor must be both good and different.
+CPM has no resolution limit. `gamma` sets the density scale at which a
+group counts as a line, so it is derived from the target line size and
+pre-registered, because it directly controls how many lines you get.
 
-Convergence is the goal in optimization and a failure mode here. Eight
-survivors that agree because they share a decomposition and a source
-are not eight confirmations, but they look like eight confirmations,
-which is worse than one honest attempt.
+`erbga`'s pluggable-objective design is what makes this substitution
+possible, and it is the contribution of that work most load-bearing
+here. Modularity remains available in `erbga` for reproducing the
+paper's benchmarks.
 
-The diversity coefficient is pre-registered, so it cannot be tuned after
-someone sees which survivors it produced. At zero it degrades to plain
-tournament selection, so ERBGA's original behavior stays reachable and
-stays on the record.
+## The confirmatory stage
 
-## Islands
+After the search terminates, and only then:
 
-Each island evolves independently and **builds its own question graph**
-from a separate framing pass.
+1. Take each island's highest-scoring valid framing and its partition.
+2. Run **`n` independent synthesis passes** over that partition's
+   evidence, `n` pre-registered, each producing a `metric_value` under
+   the pre-registered metric.
+3. Report the **mean and spread** for that island. The threshold is
+   applied to the mean, never to the best pass.
+4. Record every pass individually, with its full prompt, model id,
+   temperature, seed, and raw completion.
 
-In ERBGA, islands guard against an unlucky initial population. Here they
-do that and something more important. The question graph is constructed
-by a model, so the search is only as good as the graph, and a single
-graph is a single point of failure that ERBGA does not have, since ERBGA
-is handed a real network. Per-island graphs turn framing variance into
-diversity instead.
+A synthesis pass may return `{"metric_value": null, "reason": "..."}`
+when the evidence does not support a single number. This is a recorded
+result, not a parse failure, and it counts as **non-passing**. Evidence
+that genuinely conflicts is more likely to produce hedged output than
+evidence that agrees, so treating unquantifiable results as exempt would
+systematically excuse the runs most likely to be refutations.
 
-The payoff is the strongest evidence structure this system can produce:
-independently framed investigations, run independently, converging on
-the same answer.
+The output of `evolve` is a distribution and its dissent. It is not a
+number.
 
-The cost is reduced memo sharing, since islands share evidence only
-where their framings propose the same sub-question. Semantic lookup
-recovers most of it. Two islands asking "p99 latency of the Kafka read
-path" and "how slow is the tail on current Kafka reads" resolve to the
-same memo entry despite the different wording.
+## Islands and framing diversity
 
-## The memo table
+Islands evolve independently, each starting from its own framing pass.
 
-The dynamic programming layer. Sub-questions are subproblems, evidence
-is the memoized result, and the population collectively explores the
-space while paying for each subproblem once.
+**This is framing diversity. It is not corroboration, and the spec says
+so wherever the result is reported.** All islands share one model, one
+prompt scaffold, one tool set, and one memo table. Agreement between
+them carries almost no evidential weight against a bias the model
+itself holds, because such a bias produces agreement whether the claim
+is true or false. Islands vary the stage least likely to carry the
+model's bias, while evidence interpretation and synthesis, where bias
+actually lives, is fully shared.
+
+Calling that corroboration would manufacture exactly the false
+confidence this product exists to prevent. Every checkpoint, artifact,
+and generated summary states the shared generative source explicitly.
+
+Real independence requires diversifying the generator, which is
+achievable because `ZORP_BASE_URL` is already per-config, so islands
+could run different models or providers. That is out of scope for v1 and
+is the single most valuable extension.
+
+## The memo table and evidence provenance
+
+Sub-questions are subproblems and evidence is the memoized result, so
+the population pays for each distinct question once.
 
 - **Keyed** on `(sub_question, method)`.
-- **Stored** in LanceDB, which is why this capability needs the
-  `library` feature that `research` deliberately leaves off.
-- **Looked up semantically**, with a similarity floor deciding hit
-  versus miss, because a natural-language key would almost never match
-  exactly.
+- **Looked up semantically**, since a natural-language key would rarely
+  match exactly.
+- **Two separate thresholds.** A high `reuse_floor` decides whether an
+  existing entry actually answers the question being asked. A separate
+  `novelty_floor` decides whether a proposed sub-question counts as new.
+  These jobs pull in opposite directions and a single threshold cannot
+  serve both.
 - **Read and written only by the controller.** Workers never touch it.
+- **Every hit records** the floor, the similarity score, the originating
+  sub-question, and the epoch, so reuse is auditable.
 
-A hit is not free of risk. A similarity floor set too low reuses
-evidence that does not actually answer the sub-question being asked, and
-the failure is silent. The floor is therefore recorded with every hit,
-along with the similarity score and the originating sub-question, so any
-reuse can be audited after the fact.
+**Memo reuse and evidential independence are the same dial.** Every
+cross-island hit is a unit of shared evidence, which is cost saved and
+independence lost. The design resolves this rather than claiming both:
 
-Entries carry the epoch they were gathered in. Staleness rules are not
-specified here beyond that; the recorded epoch is enough to add them
-later without a migration.
+- Within an island, reuse is unrestricted.
+- **Across islands, reuse is forbidden for evidence feeding the
+  confirmatory stage.** Islands pay separately for the evidence their
+  reported result rests on. This is why island count is small, 3 to 5,
+  rather than the 5 to 25 of the source work.
+- Across islands, reuse is permitted for evidence feeding search-time
+  scoring only, where it affects ranking but not any reported claim.
+
+Every evidence record carries the set of islands that consumed it, so
+convergence backed by shared sources is distinguishable from
+convergence backed by separate ones.
+
+## Cost
+
+Stated honestly, since the first draft's bound was wrong.
+
+```
+evidence_runs = I * M * V_0 * (1 + g)^E
+```
+
+for `I` islands, `M` methods in the closed enum, `V_0` initial
+sub-questions per island, per-epoch fractional growth `g`, and `E`
+epochs. Cross-island dedup does not reduce it for confirmatory evidence,
+by the rule above.
+
+What genuinely drops out is **population size and generation count**.
+Framing scoring is deterministic arithmetic over evidence that already
+exists, so a large population searched for many generations costs
+nothing beyond CPU. That asymmetry is the reason this approach is
+affordable at all, and it is the one part of the first draft's cost
+argument that survived review.
+
+What does not drop out is islands, methods, and epochs. To keep the
+product bounded:
+
+- `M` is a **closed enum** fixed in the pre-registration.
+- New `(sub_question, method)` pairs per epoch are **capped** by a
+  pre-registered constant.
+- `I` is small and pre-registered.
+
+Confirmatory cost is `I * n` synthesis passes, once per run.
 
 ## Controller and workers
 
-**The controller is code, not an agent.** Every decision that ends
-something runs deterministically in Rust: memo lookup, proxy
-computation, the similarity penalty, tournament selection, threshold
-enforcement, and termination. If you cannot replay why a candidate died,
-the defensibility claim is theatre.
+**The controller is code.** Framing scoring, partition solving, source
+overlap, selection, the confirmatory comparison, and termination are all
+deterministic Rust. The model is used for framing construction, for the
+mutation and recombination operators, and for confirmatory synthesis.
 
-The model is used at exactly three points, all of them generative rather
-than judgmental: constructing an island's question graph, proposing a
-new sub-question during vertex mutation, and synthesizing evidence at
-the outer fitness tier. Every output of those three is recorded as data.
+Confirmatory synthesis is a model output that determines the reported
+result, so it is not deterministic and the spec does not pretend
+otherwise. Replayability is bought instead by recording the full prompt,
+model id, temperature, seed, and raw completion for every pass, and by
+requiring `n > 1` passes with reported spread.
 
-**Workers gather evidence and nothing else.** They are subagents from
-the existing `SubagentPool` in `zorp-agent/src/tools/subagent.rs`, which
-already provides per-worker progress, status, and a `CancelToken`, and
-`running_count` for capping concurrency.
+**Every random draw in the system takes a recorded seed**, at the run
+level and the island level, without which none of the above is
+replayable.
 
-Workers get no store handle. DuckDB takes an exclusive file lock, which
-`zorp-track` already knows about and tests for in
-`zorp-track/src/project.rs`, so a single writer is a hard constraint
-rather than a stylistic preference. The controller resolves memo hits on
-a worker's behalf and injects them into its prompt, so a worker receives
-a sub-question, a method, and the relevant known evidence, and returns a
-structured result. This keeps workers stateless, parallel, and killable.
+**Workers gather evidence and nothing else.** They receive a
+sub-question, a method, and the memo hits the controller resolved on
+their behalf, and return a structured result. They hold no store handle.
+
+The existing `SubagentPool` is **not** sufficient, and the first draft
+was wrong to treat it as the execution substrate. What exists at
+`zorp-agent/src/tools/subagent.rs` is a handle registry plus a
+`Tool`-shaped spawner: `SubagentPool` never spawns, `running_count` only
+counts, and `SpawnSubagent::run` **returns an error** at
+`MAX_CONCURRENT_SUBAGENTS = 8` rather than queueing. What must be built
+is listed under Prerequisites.
 
 ## The epoch loop
 
-An **epoch** is one round of expensive work. The cheap genetic search
-runs to convergence inside it, unattended.
+An **epoch** is one round of expensive work. The framing search runs to
+convergence inside it, unattended and free.
 
-1. **Frame.** Each island builds its question graph, on the first epoch
-   only.
-2. **Gather.** Every vertex without a memo entry for its method gets a
-   worker run. This is the expensive step.
-3. **Evolve.** The full genetic search runs per island against the
-   structural proxy: initialize, then repeat tournament selection,
-   uniform crossover, mutation, Gene Repair, and elitism for the
-   configured number of generations. No model calls, no evidence
-   gathering.
-4. **Score.** The pre-registered metric is evaluated on elites and
-   island bests. Each evaluation is recorded as an experiment with a
-   metric.
-5. **Checkpoint.** One prompt per epoch.
-6. **Grow.** Vertex and method mutation propose new sub-questions and
-   new methods for the next epoch, which is the only thing that makes
-   the next epoch cost anything.
+1. **Frame.** On the first epoch, each island builds its own question
+   graph, emitting per-pair "bears on" scores with reasons and marking
+   cross-cutting premises.
+2. **Gather.** Every `(sub_question, method)` pair without a memo entry
+   gets a worker run, subject to the per-epoch cap. This is the only
+   expensive step.
+3. **Search.** Each island evolves its framing population against the
+   deterministic score. No model calls, no evidence gathering, no
+   pre-registered metric.
+4. **Checkpoint.** One prompt per epoch.
+5. **Grow.** Mutation and recombination propose the next epoch's
+   framings, including the sub-question splits, additions, and method
+   changes that make the next epoch cost anything.
+
+After the final epoch, the confirmatory stage runs once.
 
 ## Termination
 
-**Evidence exhaustion.** The run stops when the memo hit rate crosses a
-pre-registered saturation ceiling, meaning the population keeps
-proposing sub-questions that are already answered and has stopped
-discovering anything. This measures the thing that actually matters,
-new evidence, rather than a proxy for it, and it correlates with cost
-without imposing the hard budget cap that a prior decision rejected.
+**Primary: marginal improvement per evidence run.** The run stops when
+additional evidence stops improving the best framing score by more than
+a pre-registered amount per evidence run. This measures what the search
+is actually for.
 
-**Backstop:** the best pre-registered metric across islands failing to
-improve for a configured number of epochs.
+**Gate: a run may only terminate on convergence if the population has
+not collapsed.** A collapsed population also stops improving, and the
+two are indistinguishable from the improvement signal alone. A run that
+converges with diversity below the floor terminates as **Inconclusive**,
+which is a result, not a pass.
+
+**Backstops:** a pre-registered maximum epoch count and a pre-registered
+maximum total evidence runs.
+
+Memo hit rate is **recorded and reported but not used to terminate.**
+It reduces algebraically to `1 / (1 + g)` where `g` is graph growth, so
+under constant absolute growth it crosses any ceiling within a fixed
+number of epochs regardless of what the search finds, and under
+proportional growth it is constant forever and fires at epoch one or
+never. It measures the denominator, not discovery.
 
 ## Pre-registration
 
-`evolve` extends `investigate`'s pre-registration. The rule for what
-belongs there:
+The rule from the first draft, "pre-register anything that could bias
+which answer wins, merely record anything that only affects how hard you
+searched," does not survive. When the reported result depends on a
+search, search effort **is** answer selection. Island count changes the
+quorum. Mutation rates determine which sub-questions are ever asked.
+The stopping rule is optional stopping.
 
-**Pre-register anything that could bias which answer wins. Merely record
-anything that only affects how hard you searched.**
+**So everything that is an input to the run is pre-registered.** There
+is no recorded-only tier. Over-registering costs nothing, because a
+value can always be widened in the next run, on the record.
 
-Pre-registered, written into `prereg.md` and covered by the existing
-SHA-256 hash and git commit:
+Written into `prereg.md` and covered by the existing SHA-256 hash and
+git commit:
 
-- Metric name, threshold, and threshold direction, as today.
-- The diversity coefficient.
-- The saturation ceiling.
-- Which structural proxy is used, by name and version. Swapping proxies
-  after seeing results is p-hacking, so it is committed up front.
-- The memo similarity floor. This one belongs here rather than with the
-  recorded parameters, because a floor set low enough reuses evidence
-  that does not answer the sub-question being asked, and that changes
-  which answer wins rather than how hard the search worked.
-
-Recorded in the run record but not pre-registered: population size,
-generation count, island count, mutation rates, elitism rate, Gene
-Repair parameters, and the stagnation backstop length. These change how
-thoroughly the space is searched, not which answer is favored.
+- Metric name, threshold, and direction, as today.
+- The partition objective and its resolution `gamma`.
+- The relation threshold `tau`.
+- The closed method enum.
+- The framing score's three term weights.
+- The source-overlap validity ceiling.
+- `reuse_floor` and `novelty_floor`.
+- Confirmatory `n`.
+- The breach quorum.
+- Island count, population size, generation count, mutation and
+  recombination rates, per-epoch evidence cap, termination parameters,
+  diversity floor.
+- All RNG seeds.
 
 ## Elimination and track death
 
-The existing rule is that a threshold breach kills the track and is
-exempt from `AutoApprove`. Under a population that rule has to split,
-because individuals breaching a threshold is elimination working
-correctly, not a failure signal. Left unsplit, a single run would stop
-for a human dozens of times and then kill the thing it was
-investigating.
+Individuals are not eliminated on the pre-registered metric, because the
+metric is never evaluated during the search. Framings die by scoring
+poorly on the deterministic framing score, or by being invalid on the
+source-overlap ceiling. Both reasons are recorded.
 
-- **An individual breaching dies.** Recorded with its reason. No human
-  involved. This is the elimination step.
-- **The track dies** when every island's best breaches at an epoch
-  boundary. The `AutoApprove` exemption attaches here and only here,
-  which preserves the intent of the original decision rather than
-  firing it thousands of times.
+**The track dies** when the fraction of islands whose confirmatory
+**mean** breaches the threshold exceeds a pre-registered
+`breach_quorum`. Unanimity is not acceptable: with 24 of 25 islands
+refuting and one passing, a unanimity rule keeps the track Active and
+propagates only the winner, which is exactly the failure the 2026-08-14
+kill-threshold decision was written to eliminate.
+
+Every island's confirmatory mean is recorded and surfaced, whether or
+not it breaches, so a one-of-five survival is visible rather than hidden
+behind a maximum.
+
+The `AutoApprove` exemption attaches to track death, matching the
+existing decision.
 
 ## Checkpoints
 
-One checkpoint per epoch, showing island bests, where islands agree and
-disagree, best-so-far against the pre-registered threshold, memo hit
-rate, vertex count growth, and cost so far.
+One checkpoint per epoch, showing each island's best framing, its
+partition, its component source-overlap, the best score and its trend,
+new sub-questions asked this epoch, memo hit rate, cumulative evidence
+runs, and cost.
 
-Cross-island disagreement is presented as a finding rather than as
-noise. Two independently framed investigations reaching different
-answers is information about the question, and it is exactly what
-`co-write` is specced to surface.
+Cross-island divergence is computed **structurally**, over recorded
+numbers, not by a model judging agreement. During the search it is the
+distance between island partitions; at the confirmatory stage it is the
+spread of island means. This keeps the controller free of a judgmental
+model call.
 
-Interrupts fire before an epoch boundary on:
-
-- Cross-island divergence past a floor.
-- A configured fraction of budget consumed.
-- Population collapse, meaning diversity below a floor on every island.
+Interrupts fire on population collapse, on the per-epoch evidence cap
+being hit, and on the total evidence backstop approaching.
 
 ## What co-write gets
 
-Nothing in `co-write` changes. Each outer-tier evaluation is an ordinary
-experiment with an ordinary metric, so `co-write` reads the output as it
-reads `investigate`'s.
+The first draft claimed "nothing in co-write changes." That is true and
+useless: `co_write/mod.rs` emits one flat line per metric with an opaque
+experiment id, and the schema has no column that can express which
+island, epoch, or framing a row came from. Given hundreds of rows it
+would receive undifferentiated scalar soup and could not distinguish
+five islands agreeing from one island measured five times.
 
-What it gains is the thing its own spec asks for and has never had:
-recorded conflicting evidence. "Evidence that conflicts with the draft's
-conclusion must be surfaced, not silently dropped" has been difficult to
-honor when a track holds a handful of attempts that never disagreed
-because they were never independent. A population of independently
-framed islands produces disagreement structure as a normal output.
+Worse, co-write's grounding guarantee was designed for a handful of
+unselected attempts. Under a search it would silently become "only the
+winners reach the model."
+
+So `evolve` requires changes to storage and to co-write, listed under
+Prerequisites. What co-write must receive is: every island's
+confirmatory distribution, the framing and partition each rests on,
+component source-overlap, and the explicitly labelled dissenting and
+indeterminate results. Conflicting evidence it is required to surface
+has to be handed to it as data, not left to be inferred from a list of
+floats.
+
+## Prerequisites
+
+These are not integration work. They are missing substrate, and the
+first draft assumed all four existed.
+
+1. **A LanceDB read path.** `zorp-track`'s `Library` exposes exactly
+   `open`, `table_names`, and `insert_source`, with private fields and
+   no query API of any kind. The memo table needs a new table, a keyed
+   insert carrying method, epoch, score, and origin, and a nearest
+   neighbour query returning distances. This is new `zorp-track` public
+   API. Note that embedding goes through `zorp-agent::embed_texts`,
+   a blocking HTTP call, so lookups must be resolved once per epoch into
+   a dense in-memory structure rather than queried inside any loop.
+2. **Schema columns.** `experiments` carries no island, epoch, or role.
+   Add them, with the `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` idiom
+   already used in `schema.rs`, plus a record for confirmatory passes
+   that stores the substantive claim text and not only a float.
+3. **Worker dispatch.** A Rust-callable entry point that does not go
+   through the `Tool` trait, a bounded queue that waits rather than
+   erroring at the cap, a configurable cap, and a structured worker
+   result contract with a parser.
+4. **Cost accounting.** The spec's checkpoint shows cost and its
+   backstop counts evidence runs. Neither exists anywhere in the
+   codebase today.
+
+A fifth item is a decision rather than code: `write_prereg` returns
+`AlreadyRegistered` if any prereg row exists, and the row id is
+hardcoded to one per track, so `evolve` cannot currently pre-register on
+a track that has already run `investigate`. Either `evolve` requires a
+fresh track, or prereg gains a version marker and a superseding row.
+Adding fields to `prereg.md` does not break verification of existing
+files, since hashing is over raw bytes and the parser tolerates unknown
+and missing lines.
 
 ## Error handling
 
-- Track status is already `Killed`: refuse before building anything, as
-  `investigate` does.
-- No prereg exists and the required flags were not given, or a prereg
-  exists and the flags contradict it: same two errors `investigate`
-  already has, extended to cover the new pre-registered fields.
-- Question graph construction returns an unusable graph, meaning fewer
-  than two vertices or no edges: that island fails and is recorded as
-  failed. The run continues if any island survives, and fails if none
-  do.
-- A worker returns an unparseable result: that `(sub_question, method)`
-  gets no memo entry, and chromosomes depending on it score as having
-  missing evidence rather than failing the run.
-- A worker is cancelled or times out: same as unparseable. The
-  `CancelToken` path already exists.
-- The outer metric evaluation fails to parse: that experiment is marked
-  `Failed`, matching `investigate`, and the candidate does not count
-  toward track death, since a failed measurement is not a breach.
+- Track already `Killed`: refuse before building anything.
+- A framing with fewer than a pre-registered minimum number of
+  sub-questions, or no relations above `tau`: that island fails and is
+  recorded as failed. The run continues if any island survives.
+- A framing whose component source-overlap exceeds the ceiling: invalid,
+  recorded with its overlap, not scored.
+- A worker returns an unparseable result: no memo entry for that pair,
+  recorded as a gather failure. Repeated gather failure on one
+  sub-question is surfaced at the checkpoint as a finding, since a
+  question whose evidence resists gathering is informative, not
+  defective.
+- A confirmatory pass fails to parse: recorded as non-passing, counted
+  in the quorum.
 - Every island fails: a distinct error, not a silent empty result.
 
 ## Testing
 
-**The search core, without a model.** `erbga` is validated against the
-published benchmarks before it is ever pointed at a question. Targets
-are ERBGA's own reported results rather than the literature best:
-modularity of about 0.420 on Zachary's Karate Club and about 0.465 on
-the Dolphin social network. If those do not reproduce, the search engine
-is broken, and that is established with zero model calls.
+**The partition solver, without a model.** Below the stated vertex
+count, exhaustive enumeration over connected partitions establishes the
+true optimum, and the solver must find it. This is a real correctness
+proof at question-graph scale and needs no benchmark data at all.
 
-The paper and the thesis disagree on two parameter values, and the
-benchmark test depends on resolving them:
+**`erbga`, against all four of the source's benchmarks**, including the
+two it failed. Expected values from thesis Table 3:
+
+| Network | E/V | BKR | ERBGA |
+|---|---|---|---|
+| Karate | 2.3 | 0.420 | 0.420 |
+| Dolphin | 2.6 | 0.529 | 0.445 |
+| Political Books | 4.2 | 0.527 | 0.256 |
+| Football | 5.3 | 0.605 | 0.073 |
+
+Gating only on the two that succeeded would be selecting the benchmark
+after seeing which ones the method passes, which is the same move the
+pre-registration section forbids. Reproducing 0.073 on Football is a
+**stronger** correctness signal than reproducing 0.420 on Karate,
+because far fewer wrong implementations produce it.
+
+The gate must specify island count, generation count, time budget, RNG
+seed, and a tolerance, because the source's results are stochastic:
+4 of 25 islands reached 0.420 on Karate and the rest landed near 0.397,
+so a five-island run of a correct implementation fails roughly 42% of
+the time. The source's numbers come from runs capped at 48 hours, which
+is not a CI budget, so the gate reproduces the protocol at reduced scale
+with a stated tolerance and the full-scale run stays manual.
+
+Three paper-versus-thesis discrepancies must be resolved before these
+are treated as targets:
 
 | Parameter | Paper | Thesis |
 |---|---|---|
 | Random Population Rate | 0.25 | 0.85 |
 | Tournament pool size | 3 | 7 |
+| Dolphin result | 0.465 | 0.445 |
 
-Both need confirming against the original implementation before the
-benchmark numbers can be treated as a regression target.
+The thesis text supports the high population rate ("tweaking the Random
+Population Rate to be closer to 1 resulted in the improvement in the
+quality of the initial set of chromosomes"), which suggests 0.25 is a
+paper typo. Resolve by running both and reporting both.
 
-**Operators.** Property tests: uniform crossover preserves gene array
-length, edge mutation flips exactly the bits it claims to, Gene Repair
-only ever reattaches edges and never cuts them, elitism never lowers the
-best proxy score between generations, and a decomposition round-trips
-through the `EdgeList` mapping unchanged.
+**Representation, without going through an objective.** ERBGA removes
+the `k!` label-permutation redundancy of label-based encodings, which is
+true and worth testing directly. It does **not** give each partition a
+unique encoding: on a triangle, removing nothing and removing one edge
+both leave a single component, and in general the collapse factor is at
+least `2^(|E| - |V| + c)`. Test the true claim, that distinct partitions
+never share an encoding, and separately measure and report the
+genotype-to-phenotype collapse ratio per graph.
 
-**Representation.** The redundancy claim is testable directly:
-generating distinct cuts must never produce two chromosomes that induce
-the same partition of vertices.
+**Framing operators.** Property tests: merge followed by split
+round-trips the sub-question set, recombination never invents a
+sub-question absent from both parents, dropping a vertex never deletes
+its memo row, and cross-cutting premises never appear in any component.
 
-**Memo table.** Unit tests over hit and miss around the similarity
-floor, and a test that a hit records its score and originating
-sub-question so reuse is auditable.
+**Source overlap.** Unit tests that two components resting on the same
+memo row are detected, and that a framing exceeding the ceiling is
+rejected rather than scored.
 
-**Integration.** A stub model, following `validate_integration.rs`, over
-a small fixed question graph with a scripted worker result per
-sub-question. Covers a full epoch, elimination of an individual on a
-breach, track survival when only some islands breach, track death when
-all island bests breach, and the `AutoApprove` exemption applying only
-to track death.
+**Confirmatory stage.** Stub-model integration tests covering: `n`
+passes recorded individually, threshold applied to the mean and not the
+best, a `null` metric counted as non-passing, quorum reached and not
+reached, and `AutoApprove` bypassed only on track death.
 
 ## Implementation order
 
-This is larger than the other four capability specs and should not be
-planned as one undifferentiated block. The dependency order is also the
-risk order, so each stage de-risks the next:
+Each stage is independently useful and de-risks the next.
 
-1. **`erbga` crate, no zorp integration.** Representation, operators,
-   islands, tournament, elitism, Gene Repair, pluggable objective.
-   Done when the Karate Club and Dolphin benchmarks reproduce.
-2. **Question graph and memo table.** Graph construction, semantic
-   lookup, and the audit record for hits. Testable with a stub model.
-3. **Epoch loop and the outer tier.** Worker dispatch, metric
-   evaluation, storage into the existing experiment tables.
-4. **Checkpoints, interrupts, and elimination semantics.** Last,
-   because it is the layer that most needs the ones below it to be
-   trustworthy first.
+1. **`erbga` and the partition solver, no zorp integration.** Done when
+   the exhaustive-enumeration check passes at question scale and all
+   four benchmark values reproduce within tolerance.
+2. **Prerequisites.** The LanceDB read path, schema columns, worker
+   dispatch, cost accounting. Boring, and nothing above works without
+   it.
+3. **Framing search.** Genome, operators, scoring, source overlap.
+   Testable with a stub model.
+4. **Epoch loop and gathering.**
+5. **Confirmatory stage, quorum, checkpoints.** Last, because it is the
+   layer that most needs the ones below it to be trustworthy.
 
-Stage 1 is the one that can fail on its own terms and is worth
-completing before committing to the rest.
+Stage 1 can fail on its own terms and is worth completing before
+committing to the rest.
 
 ## Out of scope
 
-- **Cross-island migration.** ERBGA's own future work names it, and it
-  is harder here: chromosomes are bit strings over an island's own edge
-  set, so under per-island graphs they are not portable between islands
-  at all. It needs its own design.
-- **Evolving the proxy.** The proxy is pre-registered specifically so it
-  cannot move during a run.
-- **Prioritized or biased initialization.** ERBGA's future work suggests
-  biasing the initial population to improve early breakup. Worth doing,
-  not v1.
-- **Roulette selection alongside tournament**, also from ERBGA's future
-  work, and noted there as possibly reducing diversity, which is the
-  thing this design most needs to protect.
-- **Replacing `investigate`.** `evolve` is a fifth capability, not a
-  replacement. One attempt against one metric remains the right tool
-  when the question is not worth a population.
-- **ERBGA's memory work.** The 3D bit array and the 85% memory
-  reduction solve a problem this system does not have. The bottleneck
-  here is model calls, not RAM, and a straightforward representation is
-  preferred over a packed one until profiling says otherwise.
+- **Per-island model diversity.** The only change that would let a
+  corroboration claim survive, and the most valuable extension. Out of
+  v1 because it needs per-island provider configuration and cost
+  accounting.
+- **Cross-island migration.** Framings are portable in principle, unlike
+  the first draft's bit strings, but migration reintroduces exactly the
+  shared-source problem the island reuse rule exists to prevent.
+- **Evolving the objective, `gamma`, or `tau`.** All pre-registered
+  precisely so they cannot move during a run.
+- **Replacing `investigate`.** One attempt against one metric remains
+  right when a question is not worth a search.
+- **ERBGA's 3D cuboid memory layout.** Deferred. Bit packing itself is
+  not: `Chromosome` is opaque with `get`, `set`, `flip`, and
+  `count_ones`, so operators never see the backing store and the cuboid
+  stays a one-file change. Packing is justified by memory traffic in the
+  GA's hot loop, not by the thesis's 85% figure, which measures a
+  different comparison (one bit per edge against one integer per vertex)
+  and is banked by adopting the edge representation at all.
+
+## What review changed
+
+Four adversarial reviews attacked the first draft on cost, epistemics,
+fidelity to the source work, and fit with the codebase. The findings
+that forced the rewrite:
+
+- **Selecting on the pre-registered metric turned the threshold into a
+  breeding objective.** Fixed by removing the metric from selection
+  entirely and adding the confirmatory stage.
+- **The compute was pointed at the wrong half.** The first draft spent
+  roughly 1.25M evaluations per island perfecting the cut of a graph
+  produced by one model call and never revisited, with no operator able
+  to change a relation between existing sub-questions. Fixed by
+  inverting: evolve framings, solve cuts.
+- **Modularity cannot resolve communities at question-graph scale.**
+  The resolution limit does not bind on Karate and binds on every
+  realistic question graph. Fixed by using CPM with pre-registered
+  `gamma`.
+- **The corroboration claim was false.** Islands share one model, and
+  the first draft terminated on memo saturation, which is the moment
+  inter-island independence is lowest. Fixed by renaming to framing
+  diversity, forbidding cross-island reuse for confirmatory evidence,
+  measuring source overlap, and changing the termination signal.
+- **Track death by unanimity voided the guarantee it was meant to
+  preserve.** Fixed with a pre-registered quorum.
+- **`Coverage` in the first draft's proxy was identically 1.0**
+  throughout the search, since gathering precedes evolution and
+  crossover cannot invent an ungathered pair. Removed.
+- **The vertex set was not invariant** across islands or epochs, so the
+  cost bound was wrong and elites had no defined migration across a
+  chromosome length change. Dissolved by the inversion.
+- **Gene Repair's own results refute the dense-graph claim.** ERBGA
+  accuracy degrades monotonically with density across all four
+  benchmarks with Gene Repair enabled. The operator is gone from this
+  layer, and no dense-question claim is made.
+- **Four pieces of assumed substrate do not exist.** Now Prerequisites.
+
+## Review record
+
+Eight adversarial reviewers across two rounds, each given one lens and
+told to refute rather than review. Findings not already covered above,
+kept because they will apply to whatever replaces this design.
+
+### Confirmed against the codebase
+
+- `zorp-track`'s `Library` exposes exactly `open`, `table_names`, and
+  `insert_source`, with private fields. There is **no read path of any
+  kind**, so the memo table's storage layer is unbuilt, not merely
+  unintegrated.
+- `experiments` carries no island, epoch, or role column, and
+  `co_write/mod.rs` emits one flat line per metric with an opaque id. So
+  "nothing in co-write changes" is true and useless: it would receive
+  undifferentiated scalars and could not tell five islands agreeing from
+  one island measured five times.
+- `SubagentPool` never spawns. `running_count` only counts, and
+  `SpawnSubagent::run` **returns an error** at
+  `MAX_CONCURRENT_SUBAGENTS = 8` rather than queueing. Worker dispatch
+  must be built, not reused.
+- `TrackStatus::from_str` has a catch-all `_ => Active`, so the
+  `Inconclusive` status this spec invents would round-trip as **Active**.
+  `ExperimentStatus::from_str` has the identical `_ => Planned` bug. For
+  a product whose pitch is that a non-result must not look like a live
+  result, that default is the worst possible one, and it is worth fixing
+  regardless of what happens to this design.
+- `write_prereg` returns `AlreadyRegistered` if any prereg row exists and
+  the row id is hardcoded to one per track, so `evolve` could not
+  pre-register on a track that already ran `investigate`. Adding fields
+  to `prereg.md` does not break verification of existing files (hashing
+  is over raw bytes, the parser tolerates unknown lines), but there is no
+  writer that can emit them.
+- Neither `temperature` nor `seed` exists anywhere in the model layer, so
+  the per-pass replayability this spec requires is unimplementable as
+  written. Anthropic has no seed parameter at all, so replay is
+  provider-conditional and must not be claimed uniformly.
+- `MetricValue` has no null variant, and both readers end in a catch-all
+  that would error on one, so a recorded non-result becomes a read
+  failure.
+- No cost accounting exists in any form, so two of three interrupt
+  triggers and one checkpoint field are unimplementable.
+
+### Methodological findings that outlive this design
+
+- **The winner's curse is attenuated, not eliminated, by removing the
+  metric from selection.** Selecting `argmax S` over `N` framings and
+  then measuring `M` imports bias proportional to `corr(S, M)`. But a
+  framing score uncorrelated with answer quality is a useless search
+  objective, so the design cannot claim both that the search improves the
+  answer and that the reported number is unbiased.
+- **The confirmatory spread measures synthesis jitter only.** The `n`
+  passes share evidence, partition, prompt, and model, so evidence bias
+  and model bias are constant across them. Larger `n` tightens the
+  interval around the wrong centre. It should be named "synthesis spread"
+  and stated as a lower bound on total uncertainty.
+- **A per-epoch checkpoint is a human optional-stopping channel** that no
+  pre-registered parameter can cover. Either the checkpoint is
+  informational with no reject path, or a rejected run must be marked
+  Abandoned and disclosed in every later artifact on that track.
+- **Cross-cutting premises are a common cause.** Lines that share a
+  premise are jointly wrong if it is wrong, which is the exact failure
+  corroboration is meant to rule out. Any design that removes the
+  coupling vertices and then measures independence on the residue is
+  overclaiming.
+- **Source overlap must be measured over source identifiers**, not memo
+  rows. Two components citing the same three papers have row-overlap zero
+  and source-overlap one. The worker result contract needs a citation
+  field for this to be computable at all.
+
+### Empirical results from Stage 1
+
+Building `erbga` produced two facts relevant to any successor design.
+
+Its accuracy against best-known degrades with graph density: 100% on
+Karate, 99% on Dolphin, 95% on Political Books, 63% on Football. A dense
+question graph, where everything bears on everything, is the hard case
+for this family of method.
+
+An exact clique-partitioning ILP solves modularity to proven optimality
+in about 0.2 seconds at `V = 20` and about 5 seconds at `V = 50`. At the
+scale a question graph occupies, the partition is not a search problem.
