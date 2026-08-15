@@ -5,6 +5,11 @@ building zorp. Newest entries at the top. Each entry is short: what was
 decided, why, and what it ruled out. Full design writeups, when they
 exist, live in `docs/superpowers/specs/` and are linked from here.
 
+Entries are never rewritten or deleted. When a later decision reverses an
+earlier one, the earlier entry gets a **Superseded by** line pointing
+forward and is otherwise left as it was written, so the record shows what
+was believed at the time and not only what survived.
+
 ---
 
 ## 2026-08-15: evolve's search layer is not approved, its measurement discipline is
@@ -48,6 +53,12 @@ whose "Where this stands" and "Review record" sections carry the detail.
 ---
 
 ## 2026-08-14: a fifth capability, evolve, searches question framings and never selects on the metric
+
+**Superseded by** the 2026-08-15 entry above, one day later. Nothing
+below was built. The search layer described here is not approved and the
+spec it points at is marked NOT APPROVED. `erbga` did ship, on its own
+terms and wired to nothing. The rest of this entry is left as written,
+because the findings against it need something to point at.
 
 **Decision:** zorp gains `evolve`. It searches for a good way to
 **decompose** a question, not for an answer. A population of framings
