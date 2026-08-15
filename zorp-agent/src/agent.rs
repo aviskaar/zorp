@@ -167,6 +167,14 @@ const DENIAL_STREAK_LIMIT: usize = 3;
 /// trip the repeat guard and end a run early.
 const REPEAT_STREAK_LIMIT: usize = 3;
 
+/// Total bytes of tool-result content the transcript may accumulate before
+/// the oldest tool-result bodies are elided. Generous on purpose: below this
+/// threshold the transcript is sent verbatim, exactly as before.
+const TOOL_RESULT_HISTORY_BUDGET_BYTES: usize = 512 * 1024;
+
+/// Marker prefix left in place of an elided tool-result body.
+const ELIDED_MARKER_PREFIX: &str = "[tool result elided:";
+
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
@@ -241,7 +249,11 @@ impl Agent {
     pub fn config(&self) -> AgentConfig {
         AgentConfig {
             model: self.model.clone(),
-            base_system_prompt: self.messages.first().map(|m| m.text()).unwrap_or_default(),
+            base_system_prompt: self
+                .messages
+                .first()
+                .map(|m| m.text().into_owned())
+                .unwrap_or_default(),
             max_steps: self.max_steps,
             repo_root: self.cx.repo_root.clone(),
             cancel: self.cancel.clone(),
@@ -338,6 +350,19 @@ impl Agent {
         }
     }
 
+    /// Build and emit one trace event, but only when tracing is enabled. The
+    /// closure keeps identity clones and sequence bumps off the hot path when
+    /// no trace file is configured.
+    fn trace(&mut self, build: impl FnOnce(u64, TraceIdentity) -> TraceEvent) {
+        if self.trace_file.is_none() {
+            return;
+        }
+        let seq = self.next_seq();
+        let identity = self.trace_identity.clone();
+        let event = build(seq, identity);
+        self.emit_trace_event(event);
+    }
+
     /// Attach a recorder for session persistence.
     pub fn with_recorder(mut self, recorder: Box<dyn RunRecorder>) -> Self {
         self.recorder = Some(recorder);
@@ -412,13 +437,6 @@ impl Agent {
         }
         let allow = |name: &str| enabled.is_none_or(|list| list.iter().any(|n| n == name));
 
-        // Only temporary for this branch; invoke_subagent has been replaced with spawn_subagent in subagent.rs
-        // Wait, no! We replaced InvokeSubagent with SpawnSubagent struct earlier, but the plan
-        // assumes InvokeSubagent was NOT touched!
-        // Task 5 said: "Change `InvokeSubagent`... wait, in docs it said 'Change `InvokeSubagent` to `SpawnSubagent`? No, Task 5 step 4 says:
-        // "Add to `zorp-agent/src/tools/subagent.rs`: pub struct SpawnSubagent { ... }"
-        // OH! I completely missed that InvokeSubagent was supposed to stay! I replaced it!
-        // Let's just restore the code that registers SpawnSubagent for now and fix it later if needed.
         let pool = crate::tools::subagent::SubagentPool::new();
         if allow("spawn_subagent") {
             self.registry
@@ -490,9 +508,7 @@ impl Agent {
         #[cfg(feature = "otel")]
         let _guard = span.enter();
 
-        let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::RunStart {
+        self.trace(|seq, identity| TraceEvent::RunStart {
             seq,
             allowed_paths: allowed_paths_from_env(),
             identity,
@@ -514,9 +530,7 @@ impl Agent {
         #[cfg(feature = "otel")]
         let _guard = span.enter();
 
-        let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::RunStart {
+        self.trace(|seq, identity| TraceEvent::RunStart {
             seq,
             allowed_paths: allowed_paths_from_env(),
             identity,
@@ -551,6 +565,47 @@ impl Agent {
         }
     }
 
+    /// Keep the transcript's accumulated tool-result bytes under a budget by
+    /// replacing the oldest tool-result bodies with a short elision marker.
+    /// Tool results of the most recent assistant turn are never elided, and
+    /// below the budget the transcript is untouched.
+    fn enforce_history_budget(&mut self) {
+        self.enforce_history_budget_with(TOOL_RESULT_HISTORY_BUDGET_BYTES);
+    }
+
+    fn enforce_history_budget_with(&mut self, budget: usize) {
+        let mut total: usize = self
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| m.text().len())
+            .sum();
+        if total <= budget {
+            return;
+        }
+        // Tool results after the most recent assistant message belong to the
+        // current turn and are never elided.
+        let last_assistant = self
+            .messages
+            .iter()
+            .rposition(|m| m.role == "assistant")
+            .unwrap_or(0);
+        for i in 0..last_assistant {
+            if total <= budget {
+                break;
+            }
+            let m = &mut self.messages[i];
+            if m.role != "tool" || m.text().starts_with(ELIDED_MARKER_PREFIX) {
+                continue;
+            }
+            let body_len = m.text().len();
+            let marker = format!("{ELIDED_MARKER_PREFIX} {body_len} bytes]");
+            total = total - body_len + marker.len();
+            m.content = vec![ContentPart::Text(marker)];
+            m.invalidate_body_cache();
+        }
+    }
+
     fn run_loop(&mut self) -> Outcome {
         let schemas = self.registry.schemas();
         let mut step = 0;
@@ -560,6 +615,7 @@ impl Agent {
         let mut denial_streak = 0usize;
         let outcome = loop {
             self.sync();
+            self.enforce_history_budget();
             if step >= self.max_steps {
                 break Outcome::StepLimit;
             }
@@ -568,11 +624,8 @@ impl Agent {
             }
 
             #[cfg(feature = "otel")]
-            let step_span = tracing::span!(
-                tracing::Level::INFO,
-                "agent_step",
-                zorp.step_number = step
-            );
+            let step_span =
+                tracing::span!(tracing::Level::INFO, "agent_step", zorp.step_number = step);
             #[cfg(feature = "otel")]
             let _step_guard = step_span.enter();
 
@@ -588,9 +641,7 @@ impl Agent {
             let completion = match completed {
                 Ok(completion) => completion,
                 Err(e) => {
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::InfrastructureError {
+                    self.trace(|seq, identity| TraceEvent::InfrastructureError {
                         seq,
                         message: e.to_string(),
                         identity,
@@ -602,9 +653,7 @@ impl Agent {
             let telemetry = completion.telemetry;
 
             let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
-            let seq = self.next_seq();
-            let identity = self.trace_identity.clone();
-            self.emit_trace_event(TraceEvent::Turn {
+            self.trace(|seq, identity| TraceEvent::Turn {
                 seq,
                 tokens_used: usage,
                 duration_ms: duration,
@@ -624,20 +673,17 @@ impl Agent {
                     .is_some_and(|verifier| !verifier.is_empty())
                     && !self.cx.changes().is_empty()
                 {
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::VerifierStart { seq, identity });
+                    self.trace(|seq, identity| TraceEvent::VerifierStart { seq, identity });
 
                     let report = self.verifier.as_ref().unwrap().run(&self.cx);
                     for r in &report.results {
                         self.renderer.verify(&r.command, r.passed);
                     }
 
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::VerifierResult {
+                    let passed = report.all_passed();
+                    self.trace(|seq, identity| TraceEvent::VerifierResult {
                         seq,
-                        passed: report.all_passed(),
+                        passed,
                         identity,
                     });
 
@@ -662,15 +708,11 @@ impl Agent {
                         continue;
                     }
                 }
-                {
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::AssistantClaim {
-                        seq,
-                        content_length: msg.content.len(),
-                        identity,
-                    });
-                }
+                self.trace(|seq, identity| TraceEvent::AssistantClaim {
+                    seq,
+                    content_length: msg.content.len(),
+                    identity,
+                });
                 break Outcome::Complete(msg.content);
             }
             let mut stop: Option<Outcome> = None;
@@ -695,47 +737,56 @@ impl Agent {
                 #[cfg(feature = "otel")]
                 let _tool_guard = tool_span.enter();
 
-                {
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::ToolCall {
-                        seq,
-                        tool_name: call.name.clone(),
-                        identity,
-                    });
-                }
+                self.trace(|seq, identity| TraceEvent::ToolCall {
+                    seq,
+                    tool_name: call.name.clone(),
+                    identity,
+                });
 
-                let out = match self.policy.decide(call) {
-                    Decision::Allow => self.registry.dispatch(call, &mut self.cx),
-                    Decision::Ask if self.approval.allows(call) => {
-                        self.registry.dispatch(call, &mut self.cx)
-                    }
-                    Decision::Ask => ToolOutput::new("denied: approval required", "denied"),
-                    Decision::Deny(reason) => {
-                        ToolOutput::new(format!("denied: {reason}"), "denied")
+                let out = if let Some((error, raw)) = call.malformed_arguments() {
+                    // The provider sent an argument string that was not valid
+                    // JSON. Surface the parse error to the model instead of
+                    // dispatching the tool with garbage arguments.
+                    ToolOutput::new(
+                        format!(
+                            "error: tool call arguments were not valid JSON ({error}); \
+                             raw arguments: {raw}"
+                        ),
+                        "error",
+                    )
+                } else {
+                    match self.policy.decide(call) {
+                        Decision::Allow => self.registry.dispatch(call, &mut self.cx),
+                        Decision::Ask if self.approval.allows(call) => {
+                            self.registry.dispatch(call, &mut self.cx)
+                        }
+                        Decision::Ask => ToolOutput::new("denied: approval required", "denied"),
+                        Decision::Deny(reason) => {
+                            ToolOutput::new(format!("denied: {reason}"), "denied")
+                        }
                     }
                 };
                 if self.cancel.load(Ordering::SeqCst) {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
-                {
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::ToolResult {
-                        seq,
-                        tool_name: call.name.clone(),
-                        success: out.summary != "denied",
-                        identity,
-                    });
-                }
+                let succeeded =
+                    !matches!(out.summary.as_str(), "denied" | "error" | "unknown tool");
+                self.trace(|seq, identity| TraceEvent::ToolResult {
+                    seq,
+                    tool_name: call.name.clone(),
+                    success: succeeded,
+                    identity,
+                });
                 while self.trace_emitted_changes < self.cx.changes().len() {
-                    let change = self.cx.changes()[self.trace_emitted_changes].clone();
-                    let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::Mutation {
+                    if self.trace_file.is_none() {
+                        self.trace_emitted_changes = self.cx.changes().len();
+                        break;
+                    }
+                    let path = self.cx.changes()[self.trace_emitted_changes].path.clone();
+                    self.trace(|seq, identity| TraceEvent::Mutation {
                         seq,
-                        path: change.path,
+                        path,
                         identity,
                     });
                     self.trace_emitted_changes += 1;
@@ -794,16 +845,12 @@ impl Agent {
             Outcome::Blocked => "blocked",
             Outcome::Error(_) => "error",
         };
-        let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::Termination {
+        self.trace(|seq, identity| TraceEvent::Termination {
             seq,
             reason: reason.to_string(),
             identity,
         });
-        let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::RunEnd { seq, identity });
+        self.trace(|seq, identity| TraceEvent::RunEnd { seq, identity });
         outcome
     }
 }
@@ -1308,6 +1355,86 @@ mod tests {
             }));
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         assert!(!ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn malformed_tool_arguments_are_reported_not_dispatched() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let call = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "read_file".into(),
+                arguments: json!({
+                    (crate::model::MALFORMED_ARGS_KEY): "{oops",
+                    (crate::model::MALFORMED_ARGS_ERROR_KEY): "expected value at line 1",
+                }),
+            }],
+            finish_reason: "tool_calls".into(),
+            reasoning_content: None,
+        };
+        let mut a =
+            agent(Scripted::new(vec![call, text("done")])).register(Box::new(RecordingNamed {
+                name: "read_file",
+                ran: ran.clone(),
+            }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a tool must not run on malformed arguments"
+        );
+        let tool_msg = a.messages.iter().find(|m| m.role == "tool").unwrap();
+        assert!(tool_msg.text().contains("not valid JSON"));
+        assert!(tool_msg.text().contains("{oops"));
+        assert!(tool_msg.text().contains("expected value at line 1"));
+    }
+
+    #[test]
+    fn history_budget_elides_oldest_tool_results_only() {
+        let mut a = agent(Scripted::new(vec![]));
+        a.messages.push(Message::user("task"));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c1", "x".repeat(100)));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c2", "y".repeat(100)));
+
+        a.enforce_history_budget_with(150);
+
+        assert_eq!(a.messages[3].text(), "[tool result elided: 100 bytes]");
+        // The most recent turn's tool result is never elided.
+        assert_eq!(a.messages[5].text(), "y".repeat(100));
+    }
+
+    #[test]
+    fn history_budget_leaves_transcript_alone_below_threshold() {
+        let mut a = agent(Scripted::new(vec![]));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c1", "x".repeat(100)));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+
+        a.enforce_history_budget_with(1_000);
+
+        assert_eq!(a.messages[2].text(), "x".repeat(100));
+    }
+
+    #[test]
+    fn history_budget_elision_invalidates_the_serialization_cache() {
+        let mut a = agent(Scripted::new(vec![]));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c1", "z".repeat(100)));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+
+        let before = crate::model::messages_to_body("m", &a.messages);
+        a.enforce_history_budget_with(10);
+        let after = crate::model::messages_to_body("m", &a.messages);
+
+        assert_ne!(before, after);
+        assert_eq!(
+            after["messages"][2]["content"],
+            "[tool result elided: 100 bytes]"
+        );
+        // Repeated serialization of the elided transcript is stable.
+        assert_eq!(after, crate::model::messages_to_body("m", &a.messages));
     }
 
     #[test]

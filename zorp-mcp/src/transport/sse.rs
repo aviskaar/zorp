@@ -1,7 +1,7 @@
-//! Legacy standalone SSE transport — deprecated since MCP spec March 2025.
+//! Legacy standalone SSE transport, deprecated since MCP spec March 2025.
 //! Compat-only: new servers should use Streamable HTTP.
 use crate::error::McpError;
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::Transport;
 use std::collections::HashMap;
 
@@ -17,39 +17,65 @@ impl SseTransport {
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(call_timeout_secs))
             .build();
-            
-        SseTransport { 
-            base_url, 
-            headers, 
+
+        SseTransport {
+            base_url,
+            headers,
             post_endpoint: None,
             agent,
         }
     }
-    
+
     fn post_url(&self) -> String {
-        self.post_endpoint.clone()
+        self.post_endpoint
+            .clone()
             .unwrap_or_else(|| format!("{}/messages", self.base_url.trim_end_matches('/')))
     }
 }
 
 impl Transport for SseTransport {
     fn send(&mut self, req: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let body = serde_json::to_string(&req).map_err(|e| McpError::Protocol(format!("serialize: {e}")))?;
-        
+        let body = serde_json::to_string(&req)
+            .map_err(|e| McpError::Protocol(format!("serialize: {e}")))?;
+
         let post_url = self.post_url();
-        let mut request = self.agent.post(&post_url)
+        let mut request = self
+            .agent
+            .post(&post_url)
             .set("Content-Type", "application/json")
             .set("Accept", "application/json, text/event-stream");
-            
-        for (k, v) in &self.headers { 
-            request = request.set(k, v); 
+
+        for (k, v) in &self.headers {
+            request = request.set(k, v);
         }
-        
-        let response = request.send_string(&body)
+
+        let response = request
+            .send_string(&body)
             .map_err(|e| McpError::Transport(format!("legacy SSE POST failed: {e}")))?;
-            
-        let text = response.into_string().map_err(|e| McpError::Transport(format!("read body: {e}")))?;
+
+        let text = response
+            .into_string()
+            .map_err(|e| McpError::Transport(format!("read body: {e}")))?;
         serde_json::from_str(&text).map_err(|e| McpError::Protocol(format!("bad JSON-RPC: {e}")))
+    }
+
+    fn send_notification(&mut self, notif: JsonRpcNotification) -> Result<(), McpError> {
+        let body = serde_json::to_string(&notif)
+            .map_err(|e| McpError::Protocol(format!("serialize notification: {e}")))?;
+        let post_url = self.post_url();
+        let mut request = self
+            .agent
+            .post(&post_url)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json, text/event-stream");
+        for (k, v) in &self.headers {
+            request = request.set(k, v);
+        }
+        // No response body expected for a notification.
+        request
+            .send_string(&body)
+            .map_err(|e| McpError::Transport(format!("legacy SSE POST failed: {e}")))?;
+        Ok(())
     }
 }
 

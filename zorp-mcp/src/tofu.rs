@@ -22,24 +22,45 @@ pub fn server_config_hash(cfg: &ServerConfig) -> String {
     );
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
-    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
-pub struct McpTofuStore { path: PathBuf, hashes: BTreeSet<String> }
+pub struct McpTofuStore {
+    path: PathBuf,
+    hashes: BTreeSet<String>,
+}
 
 impl McpTofuStore {
     pub fn open_at(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
         let hashes = std::fs::read_to_string(&path)
-            .map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+            .map(|t| {
+                t.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default();
         McpTofuStore { path, hashes }
     }
-    pub fn is_trusted(&self, cfg: &ServerConfig) -> bool { self.hashes.contains(&server_config_hash(cfg)) }
+    pub fn is_trusted(&self, cfg: &ServerConfig) -> bool {
+        self.hashes.contains(&server_config_hash(cfg))
+    }
     pub fn trust(&mut self, cfg: &ServerConfig) {
         let hash = server_config_hash(cfg);
-        if !self.hashes.insert(hash) { return; }
-        if let Some(p) = self.path.parent() { if !p.as_os_str().is_empty() { let _ = std::fs::create_dir_all(p); } }
+        if !self.hashes.insert(hash) {
+            return;
+        }
+        if let Some(p) = self.path.parent() {
+            if !p.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(p);
+            }
+        }
         let body = self.hashes.iter().cloned().collect::<Vec<_>>().join("\n");
         let _ = std::fs::write(&self.path, format!("{body}\n"));
     }
@@ -52,7 +73,17 @@ mod tests {
     use std::collections::HashMap;
 
     fn sample() -> ServerConfig {
-        ServerConfig { name: "test".into(), transport: TransportKind::Stdio, command: Some("npx".into()), args: vec![], env: HashMap::new(), url: None, headers: HashMap::new(), trust: TrustLevel::Sandbox, timeout_secs: None }
+        ServerConfig {
+            name: "test".into(),
+            transport: TransportKind::Stdio,
+            command: Some("npx".into()),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            trust: TrustLevel::Sandbox,
+            timeout_secs: None,
+        }
     }
 
     #[test]

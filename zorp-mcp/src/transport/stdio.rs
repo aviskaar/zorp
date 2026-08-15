@@ -1,5 +1,5 @@
 use crate::error::McpError;
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{id_matches, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::Transport;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -13,18 +13,32 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     pub fn spawn(
-        command: &str, args: &[String], env: &HashMap<String, String>, _connect_timeout_secs: u64,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        _connect_timeout_secs: u64,
     ) -> Result<Self, McpError> {
         let mut child = Command::new(command)
-            .args(args).envs(env)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+            .args(args)
+            .envs(env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| McpError::Connect(format!("failed to spawn '{command}': {e}")))?;
-        let stdin = child.stdin.take()
+        let stdin = child
+            .stdin
+            .take()
             .ok_or_else(|| McpError::Connect("could not open stdin pipe".into()))?;
-        let stdout_raw = child.stdout.take()
+        let stdout_raw = child
+            .stdout
+            .take()
             .ok_or_else(|| McpError::Connect("could not open stdout pipe".into()))?;
-        Ok(StdioTransport { _child: child, stdin, stdout: BufReader::new(stdout_raw) })
+        Ok(StdioTransport {
+            _child: child,
+            stdin,
+            stdout: BufReader::new(stdout_raw),
+        })
     }
 
     pub fn encode_request(req: &JsonRpcRequest) -> String {
@@ -37,22 +51,40 @@ impl StdioTransport {
 impl Transport for StdioTransport {
     fn send(&mut self, req: JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
         let encoded = Self::encode_request(&req);
-        self.stdin.write_all(encoded.as_bytes())
+        self.stdin
+            .write_all(encoded.as_bytes())
             .map_err(|e| McpError::Transport(format!("stdin write: {e}")))?;
-        self.stdin.flush()
+        self.stdin
+            .flush()
             .map_err(|e| McpError::Transport(format!("stdin flush: {e}")))?;
         let target_id = req.id;
         loop {
             let mut line = String::new();
-            self.stdout.read_line(&mut line)
+            self.stdout
+                .read_line(&mut line)
                 .map_err(|e| McpError::Transport(format!("stdout read: {e}")))?;
             if line.is_empty() {
                 return Err(McpError::Transport("server closed stdout".into()));
             }
             let resp: JsonRpcResponse = serde_json::from_str(line.trim())
                 .map_err(|e| McpError::Protocol(format!("bad JSON-RPC: {e}")))?;
-            if resp.id == Some(target_id) { return Ok(resp); }
+            if id_matches(resp.id.as_ref(), &target_id) {
+                return Ok(resp);
+            }
         }
+    }
+
+    fn send_notification(&mut self, notif: JsonRpcNotification) -> Result<(), McpError> {
+        let mut encoded = serde_json::to_string(&notif)
+            .map_err(|e| McpError::Protocol(format!("serialize notification: {e}")))?;
+        encoded.push('\n');
+        self.stdin
+            .write_all(encoded.as_bytes())
+            .map_err(|e| McpError::Transport(format!("stdin write: {e}")))?;
+        self.stdin
+            .flush()
+            .map_err(|e| McpError::Transport(format!("stdin flush: {e}")))?;
+        Ok(())
     }
 }
 

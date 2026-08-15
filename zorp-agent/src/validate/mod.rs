@@ -25,8 +25,24 @@ End your answer with a single fenced JSON block, exactly this shape:\n\
 ```\n\n\
 Question: ";
 
+/// Whether any connected MCP tool can actually search or fetch. The
+/// bare `mcp__` prefix is not enough: it matches every MCP tool of any
+/// kind, so a server that cannot search at all would pass the gate and
+/// validate would score a question with no evidence behind it.
+fn name_can_search(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return false;
+    };
+    let rest = rest.to_ascii_lowercase();
+    [
+        "search", "fetch", "query", "browse", "find", "lookup", "retrieve",
+    ]
+    .iter()
+    .any(|verb| rest.contains(verb))
+}
+
 fn has_search_tool(agent: &Agent) -> bool {
-    agent.tool_names().iter().any(|n| n.starts_with("mcp__"))
+    agent.tool_names().iter().any(|n| name_can_search(n))
 }
 
 /// Run validate for an already-created track: search, score, embed
@@ -49,25 +65,42 @@ pub fn run(
         Outcome::Complete(text) => text,
         Outcome::StepLimit => return Err(ValidateError::AgentOutcome("StepLimit".to_string())),
         Outcome::VerificationFailed { attempts } => {
-            return Err(ValidateError::AgentOutcome(format!("VerificationFailed after {attempts} attempts")))
+            return Err(ValidateError::AgentOutcome(format!(
+                "VerificationFailed after {attempts} attempts"
+            )))
         }
         Outcome::Cancelled => return Err(ValidateError::AgentOutcome("Cancelled".to_string())),
-        Outcome::RepeatedAction => return Err(ValidateError::AgentOutcome("RepeatedAction".to_string())),
+        Outcome::RepeatedAction => {
+            return Err(ValidateError::AgentOutcome("RepeatedAction".to_string()))
+        }
         Outcome::Blocked => return Err(ValidateError::AgentOutcome("Blocked".to_string())),
         Outcome::Error(e) => return Err(ValidateError::AgentOutcome(format!("Error: {e}"))),
     };
 
     let result = parse_validation_result(&text)?;
 
-    for citation in result.redundancy_citations.iter().chain(result.feasibility_citations.iter()) {
+    // The vector write is an optional enrichment behind zorp-agent's
+    // `library` feature (which enables zorp-track's LanceDB store).
+    // Citations always land in the DuckDB validations row below either
+    // way, so skipping this loses nothing co-write reads.
+    #[cfg(feature = "library")]
+    for citation in result
+        .redundancy_citations
+        .iter()
+        .chain(result.feasibility_citations.iter())
+    {
         let embedding = crate::embed_texts(&[citation.text.clone()])
             .map_err(ValidateError::Embedding)?
             .into_iter()
             .next()
             .ok_or_else(|| ValidateError::Embedding("no embedding returned".to_string()))?;
-        project
-            .library
-            .insert_source(track_id, "validate-source", &citation.text, &citation.source, &embedding)?;
+        project.library()?.insert_source(
+            track_id,
+            "validate-source",
+            &citation.text,
+            &citation.source,
+            &embedding,
+        )?;
     }
 
     project.store.record_validation(
@@ -83,9 +116,14 @@ pub fn run(
         "validate: redundancy {:.0}/100, feasibility {:.0}/100. {}\nProceed to investigate?",
         result.redundancy_score, result.feasibility_score, result.verdict
     );
-    let approved = project.store.record_checkpoint(track_id, "validate", checkpoint_mode, &prompt)?;
+    let approved =
+        project
+            .store
+            .record_checkpoint(track_id, "validate", checkpoint_mode, &prompt)?;
     if !approved {
-        project.store.set_track_status(track_id, zorp_track::track::TrackStatus::Killed)?;
+        project
+            .store
+            .set_track_status(track_id, zorp_track::track::TrackStatus::Killed)?;
     }
 
     Ok(approved)
@@ -106,7 +144,11 @@ mod tests {
     }
 
     impl Model for StubModel {
-        fn complete(&self, _messages: &[Message], _tools: &[serde_json::Value]) -> Result<AssistantMessage, BoxErr> {
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[serde_json::Value],
+        ) -> Result<AssistantMessage, BoxErr> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(AssistantMessage {
                 content: self.response.clone(),
@@ -117,7 +159,10 @@ mod tests {
         }
 
         fn clone_box(&self) -> Box<dyn Model> {
-            Box::new(StubModel { response: self.response.clone(), calls: self.calls.clone() })
+            Box::new(StubModel {
+                response: self.response.clone(),
+                calls: self.calls.clone(),
+            })
         }
     }
 
@@ -128,7 +173,10 @@ mod tests {
     #[test]
     fn no_search_tool_errors_before_calling_the_model() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let model = StubModel { response: well_formed_response(), calls: calls.clone() };
+        let model = StubModel {
+            response: well_formed_response(),
+            calls: calls.clone(),
+        };
         let mut agent = Agent::new(
             Box::new(model),
             "system",
@@ -142,11 +190,37 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
         assert!(matches!(err, ValidateError::NoSearchTool));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn only_search_capable_mcp_tools_satisfy_the_gate() {
+        for name in [
+            "mcp__brave-search__brave_web_search",
+            "mcp__fetch__fetch",
+            "mcp__db__query_rows",
+            "mcp__docs__lookup",
+        ] {
+            assert!(name_can_search(name), "{name} should satisfy the gate");
+        }
+        // An MCP server with no search surface must not pass just
+        // because it speaks MCP, and local built-ins never do.
+        for name in [
+            "mcp__huiban__get_conference",
+            "mcp__filesystem__write_file",
+            "mcp__time__get_current_time",
+            "run_command",
+            "read_file",
+        ] {
+            assert!(!name_can_search(name), "{name} should not satisfy the gate");
+        }
     }
 }

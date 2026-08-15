@@ -508,7 +508,7 @@ fn image_flag_includes_image_in_request() {
     let body = request
         .recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();
-    
+
     assert!(body.contains("what is this"));
     assert!(body.contains("data:image/png;base64,"));
 }

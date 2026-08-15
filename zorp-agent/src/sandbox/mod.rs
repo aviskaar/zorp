@@ -1,16 +1,25 @@
+// Process supervision needs raw syscalls: setpgid in pre_exec so the
+// child leads its own process group, and waitid/killpg to reap it and
+// its descendants. There is no safe std equivalent, so the workspace
+// unsafe_code lint is turned off for this module only.
+#![allow(unsafe_code)]
+
 #[cfg(not(unix))]
 compile_error!("zorp-agent M4 requires a Unix target");
 
+mod capture;
+
 use crate::tools::ToolError;
-use std::collections::{HashSet, VecDeque};
-use std::io::{self, Read};
+use capture::{capture_stream, render_capture};
+use std::collections::HashSet;
+use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,6 +35,10 @@ pub struct Sandbox {
     timeout: Duration,
     output_cap: usize,
     reader_finalize_delay: Duration,
+    /// Secret snapshot, taken lazily on the first `run` and reused for the
+    /// sandbox's lifetime. Per instance rather than process-wide so tests
+    /// that mutate the environment before building a sandbox stay honest.
+    secrets: OnceLock<Arc<Vec<Vec<u8>>>>,
 }
 
 #[derive(Debug)]
@@ -61,6 +74,7 @@ impl Sandbox {
             timeout: Duration::from_secs(120),
             output_cap: 32 * 1024,
             reader_finalize_delay: Duration::ZERO,
+            secrets: OnceLock::new(),
         }
     }
 
@@ -83,7 +97,10 @@ impl Sandbox {
     }
 
     pub fn run(&self, command: &str) -> Result<CommandOutput, ToolError> {
-        let secrets = Arc::new(secret_values());
+        let secrets = self
+            .secrets
+            .get_or_init(|| Arc::new(secret_values()))
+            .clone();
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(command)
@@ -288,203 +305,9 @@ fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-#[derive(Debug)]
-struct BoundedCapture {
-    head: Vec<u8>,
-    tail: VecDeque<u8>,
-    total: usize,
-    cap: usize,
-}
-
-impl BoundedCapture {
-    fn new(cap: usize) -> Self {
-        Self {
-            head: Vec::with_capacity(cap / 2),
-            tail: VecDeque::with_capacity(cap - cap / 2),
-            total: 0,
-            cap,
-        }
-    }
-
-    fn push(&mut self, bytes: &[u8]) {
-        let head_cap = self.cap / 2;
-        let tail_cap = self.cap - head_cap;
-        self.total = self.total.saturating_add(bytes.len());
-        let mut bytes = bytes;
-        if self.head.len() < head_cap {
-            let take = (head_cap - self.head.len()).min(bytes.len());
-            self.head.extend_from_slice(&bytes[..take]);
-            bytes = &bytes[take..];
-        }
-        for byte in bytes {
-            if tail_cap == 0 {
-                continue;
-            }
-            if self.tail.len() == tail_cap {
-                self.tail.pop_front();
-            }
-            self.tail.push_back(*byte);
-        }
-    }
-
-    fn retained_len(&self) -> usize {
-        self.head.len() + self.tail.len()
-    }
-
-    fn omitted(&self) -> usize {
-        self.total.saturating_sub(self.retained_len())
-    }
-
-    #[cfg(test)]
-    fn retained_bytes(&self) -> Vec<u8> {
-        self.head
-            .iter()
-            .copied()
-            .chain(self.tail.iter().copied())
-            .collect()
-    }
-}
-
-fn capture_stream(
-    mut reader: impl Read,
-    cap: usize,
-    secrets: Arc<Vec<Vec<u8>>>,
-    eof: Arc<AtomicBool>,
-    finalize_delay: Duration,
-) -> io::Result<BoundedCapture> {
-    let mut capture = BoundedCapture::new(cap);
-    let mut pending = Vec::new();
-    let overlap = secrets
-        .iter()
-        .map(Vec::len)
-        .max()
-        .unwrap_or(1)
-        .saturating_sub(1);
-    let mut buffer = [0u8; 4096];
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            eof.store(true, Ordering::SeqCst);
-            if !finalize_delay.is_zero() {
-                thread::sleep(finalize_delay);
-            }
-            let process_len = pending.len();
-            redact_pending(&mut pending, process_len, &secrets, &mut capture);
-            break;
-        }
-        pending.extend_from_slice(&buffer[..count]);
-        let process_len = pending.len().saturating_sub(overlap);
-        redact_pending(&mut pending, process_len, &secrets, &mut capture);
-    }
-    Ok(capture)
-}
-
-fn redact_pending(
-    pending: &mut Vec<u8>,
-    process_len: usize,
-    secrets: &[Vec<u8>],
-    capture: &mut BoundedCapture,
-) {
-    let mut position = 0;
-    while position < process_len {
-        if let Some(secret) = secrets
-            .iter()
-            .find(|secret| pending[position..].starts_with(secret))
-        {
-            capture.push(b"[REDACTED]");
-            position += secret.len();
-        } else {
-            capture.push(&pending[position..position + 1]);
-            position += 1;
-        }
-    }
-    pending.drain(..position);
-}
-
-fn render_capture(capture: &BoundedCapture, cap: usize) -> String {
-    if capture.omitted() == 0 {
-        let bytes: Vec<u8> = capture
-            .head
-            .iter()
-            .copied()
-            .chain(capture.tail.iter().copied())
-            .collect();
-        return cap_output_head_tail(&String::from_utf8_lossy(&bytes), cap);
-    }
-    let head = decode_truncated_head(&capture.head);
-    let tail_bytes: Vec<u8> = capture.tail.iter().copied().collect();
-    let tail = decode_truncated_tail(&tail_bytes);
-    cap_separate_head_tail(&head, &tail, capture.omitted(), cap)
-}
-
-fn cap_output_head_tail(text: &str, cap: usize) -> String {
-    if text.len() <= cap {
-        return text.to_string();
-    }
-    let half = cap / 2;
-    let head_end = nearest_char_boundary(text, half);
-    let tail_start = next_char_boundary(text, text.len() - (cap - half));
-    cap_separate_head_tail(
-        &text[..head_end],
-        &text[tail_start..],
-        tail_start - head_end,
-        cap,
-    )
-}
-
-fn cap_separate_head_tail(head: &str, tail: &str, omitted: usize, cap: usize) -> String {
-    if cap < "truncated".len() {
-        return head[..nearest_char_boundary(head, cap)].to_string();
-    }
-    let marker = format!("\n[… {omitted} bytes truncated …]\n");
-    let marker = if marker.len() <= cap {
-        marker
-    } else {
-        "truncated".into()
-    };
-    let payload_cap = cap.saturating_sub(marker.len());
-    let head_end = nearest_char_boundary(head, (payload_cap / 2).min(head.len()));
-    let tail_bytes = (payload_cap - payload_cap / 2).min(tail.len());
-    let tail_start = next_char_boundary(tail, tail.len() - tail_bytes);
-    format!("{}{}{}", &head[..head_end], marker, &tail[tail_start..])
-}
-
-fn decode_truncated_head(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_string(),
-        Err(error) if error.error_len().is_none() => {
-            String::from_utf8_lossy(&bytes[..error.valid_up_to()]).into_owned()
-        }
-        Err(_) => String::from_utf8_lossy(bytes).into_owned(),
-    }
-}
-
-fn decode_truncated_tail(bytes: &[u8]) -> String {
-    for start in 0..bytes.len().min(4) {
-        if let Ok(text) = std::str::from_utf8(&bytes[start..]) {
-            return text.to_string();
-        }
-    }
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-fn nearest_char_boundary(text: &str, at: usize) -> usize {
-    (0..=at.min(text.len()))
-        .rev()
-        .find(|index| text.is_char_boundary(*index))
-        .unwrap_or(0)
-}
-
-fn next_char_boundary(text: &str, at: usize) -> usize {
-    (at.min(text.len())..=text.len())
-        .find(|index| text.is_char_boundary(*index))
-        .unwrap_or(text.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use std::os::unix::ffi::OsStringExt;
     use std::sync::Mutex;
     use std::thread;
@@ -492,29 +315,6 @@ mod tests {
     // Environment mutation is process-global, so every test that changes it
     // holds this lock for the mutation's full lifetime.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn streaming_redaction_retains_bounded_output_and_cross_chunk_secrets() {
-        let mut input = vec![b'x'; 4095];
-        input.extend_from_slice(b"cross-boundary-secret");
-        input.extend(std::iter::repeat_n(b'y', 4096));
-        let expected_redacted_len =
-            input.len() - b"cross-boundary-secret".len() + b"[REDACTED]".len();
-        let secrets = Arc::new(vec![b"cross-boundary-secret".to_vec()]);
-        let eof = Arc::new(AtomicBool::new(false));
-
-        let capture =
-            capture_stream(Cursor::new(input), 64, secrets, eof.clone(), Duration::ZERO).unwrap();
-
-        assert!(eof.load(Ordering::SeqCst));
-        assert!(capture.retained_len() <= 64);
-        assert!(capture.omitted() > 0);
-        assert_eq!(capture.total, expected_redacted_len);
-        assert!(!capture
-            .retained_bytes()
-            .windows(21)
-            .any(|w| w == b"cross-boundary-secret"));
-    }
 
     #[test]
     fn observes_child_exit_without_reaping_it() {
@@ -653,6 +453,23 @@ mod tests {
         assert!(!out.stdout.contains("m4-secret-value"));
         assert!(out.stdout.contains("[REDACTED]"));
         assert!(out.stdout.contains("truncated"));
+    }
+
+    #[test]
+    fn reuses_the_secret_snapshot_across_runs_on_one_sandbox() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvVarGuard::set("ZORP_TEST_SECRET_TOKEN", "reused-secret");
+        let sandbox = Sandbox::new(dir.path().to_path_buf(), cancel_token());
+
+        let first = sandbox.run("printf reused-secret").unwrap();
+        assert_eq!(first.stdout, "[REDACTED]");
+
+        // The variable is gone from the environment now, but the sandbox
+        // keeps its first snapshot and still redacts the value.
+        std::env::remove_var("ZORP_TEST_SECRET_TOKEN");
+        let second = sandbox.run("printf reused-secret").unwrap();
+        assert_eq!(second.stdout, "[REDACTED]");
     }
 
     #[test]

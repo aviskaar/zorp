@@ -1,5 +1,6 @@
 use crate::model::ToolCall;
 use serde_json::Value;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Decision {
@@ -45,6 +46,10 @@ impl Preset {
 pub struct Policy {
     edit: Decision,
     run: Decision,
+    /// Canonicalized sandbox repo root, when known. Path checks in the
+    /// denylist allow absolute targets under it. Without a root, every
+    /// absolute destructive or redirect target denies (fail closed).
+    repo_root: Option<PathBuf>,
 }
 
 impl Default for Policy {
@@ -68,16 +73,31 @@ impl Policy {
             Preset::ReadOnly => Policy {
                 edit: Decision::Ask,
                 run: Decision::Ask,
+                repo_root: None,
             },
             Preset::Editor => Policy {
                 edit: Decision::Allow,
                 run: Decision::Ask,
+                repo_root: None,
             },
             Preset::Full => Policy {
                 edit: Decision::Allow,
                 run: Decision::Allow,
+                repo_root: None,
             },
         }
+    }
+
+    /// Attach the sandbox repo root so denylist path checks can allow
+    /// absolute targets that stay inside it. Canonicalized once here to
+    /// match `Sandbox::new`; all later checks are lexical string analysis.
+    /// Not yet wired at the agent construction site, so production policies
+    /// run without a root and deny all absolute destructive targets.
+    #[allow(dead_code)]
+    pub fn with_repo_root(mut self, root: impl Into<PathBuf>) -> Policy {
+        let root = root.into();
+        self.repo_root = Some(root.canonicalize().unwrap_or(root));
+        self
     }
 
     /// Apply one `[approval]` override key. Unknown operations or decisions are
@@ -96,17 +116,26 @@ impl Policy {
 
     pub fn decide(&self, call: &ToolCall) -> Decision {
         match call.name.as_str() {
-            "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" | "search_notes" | "list_background_processes" | "invoke_subagent" | "monitor_subagents" => {
-                Decision::Allow
-            }
+            "read_file"
+            | "list_files"
+            | "search_text"
+            | "git_diff"
+            | "git_status"
+            | "search_notes"
+            | "list_background_processes"
+            | "monitor_subagents" => Decision::Allow,
             "write_file" | "apply_patch" | "take_note" => self.edit.clone(),
-            "run_command" | "start_background_process" | "kill_background_process" | "spawn_subagent" | "cancel_subagent" => {
+            "run_command"
+            | "start_background_process"
+            | "kill_background_process"
+            | "spawn_subagent"
+            | "cancel_subagent" => {
                 let command = call
                     .arguments
                     .get("command")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if let Some(reason) = deny_reason(command) {
+                if let Some(reason) = deny_reason(command, self.repo_root.as_deref()) {
                     Decision::Deny(reason)
                 } else {
                     self.run.clone()
@@ -121,19 +150,71 @@ impl Policy {
     }
 }
 
-fn deny_reason(command: &str) -> Option<String> {
+fn deny_reason(command: &str, repo_root: Option<&Path>) -> Option<String> {
     let normalized = command.to_ascii_lowercase();
+    let denied = "command matches the hard denylist".to_string();
+    if normalized.contains('`') {
+        return Some(denied);
+    }
+    // Command and process substitution bodies run whatever they contain,
+    // so each body is analyzed like an `sh -c` payload. Unbalanced
+    // substitution syntax fails closed.
+    match substitution_bodies(&normalized) {
+        Err(()) => return Some(denied),
+        Ok(bodies) => {
+            for body in bodies {
+                if deny_reason(&body, repo_root).is_some() {
+                    return Some(denied);
+                }
+            }
+        }
+    }
     let forbidden = tokenize_command(&normalized)
-        .map(|segments| segments.iter().any(|words| segment_is_forbidden(words)))
-        .unwrap_or(true)
-        || normalized.contains('`')
-        || ["> /", ">/", ">> /", ">>/"]
-            .iter()
-            .any(|p| normalized.contains(p));
-    forbidden.then(|| "command matches the hard denylist".to_string())
+        .map(|segments| {
+            segments
+                .iter()
+                .any(|words| segment_is_forbidden(words, repo_root))
+        })
+        .unwrap_or(true);
+    forbidden.then_some(denied)
 }
 
-fn segment_is_forbidden(words: &[String]) -> bool {
+/// Collect the bodies of `$(...)`, `<(...)`, and `>(...)` substitutions.
+/// Nested substitutions inside a body are handled by the recursive
+/// `deny_reason` call on that body. Returns `Err` on unbalanced syntax.
+fn substitution_bodies(command: &str) -> Result<Vec<String>, ()> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut bodies = Vec::new();
+    let mut index = 0;
+    while index + 1 < chars.len() {
+        let opens = matches!(chars[index], '$' | '<' | '>') && chars[index + 1] == '(';
+        if !opens {
+            index += 1;
+            continue;
+        }
+        let mut depth = 1usize;
+        let mut end = index + 2;
+        while end < chars.len() && depth > 0 {
+            match chars[end] {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            end += 1;
+        }
+        if depth != 0 {
+            return Err(());
+        }
+        bodies.push(chars[index + 2..end - 1].iter().collect());
+        index = end;
+    }
+    Ok(bodies)
+}
+
+fn segment_is_forbidden(words: &[String], repo_root: Option<&Path>) -> bool {
+    if redirects_escape_repo(words, repo_root) {
+        return true;
+    }
     let Some(words) = unwrap_common_wrappers(words) else {
         return true;
     };
@@ -152,22 +233,142 @@ fn segment_is_forbidden(words: &[String]) -> bool {
             let Some(payload) = words.get(index + 1) else {
                 return true;
             };
-            return deny_reason(payload).is_some();
+            return deny_reason(payload, repo_root).is_some();
         }
     }
-    let root_rm = executable == "rm"
-        && words.iter().any(|w| w == "/" || w.starts_with("/../"))
-        && ['r', 'f'].iter().all(|flag| {
-            words
-                .iter()
-                .any(|word| word.starts_with('-') && word.contains(*flag))
-        });
+    let destructive_rm = executable == "rm"
+        && rm_has_recursive_force(words)
+        && words
+            .iter()
+            .skip(1)
+            .filter(|word| !word.starts_with('-'))
+            .any(|word| path_escapes_repo(word, repo_root));
     executable == "sudo"
-        || root_rm
+        || destructive_rm
         || executable.starts_with("mkfs")
         || executable == "fdisk"
         || (executable == "diskutil" && words.iter().any(|word| word == "erasedisk"))
         || git_subcommand(words) == Some("push")
+}
+
+/// Recursive plus force in any spelling: `-rf`, `-fr`, `-r -f`, combined
+/// short flags, or the long forms. Input is already lowercased, so `-R`
+/// arrives as `-r`.
+fn rm_has_recursive_force(words: &[String]) -> bool {
+    let has_flag = |short: char, long: &str| {
+        words.iter().any(|word| {
+            word == long
+                || (word.starts_with('-') && !word.starts_with("--") && word[1..].contains(short))
+        })
+    };
+    has_flag('r', "--recursive") && has_flag('f', "--force")
+}
+
+/// Deny redirects whose target lies outside the repo. Redirect operators
+/// are distinct tokens after `tokenize_command`, so this walks operator
+/// and target pairs. A missing target fails closed.
+fn redirects_escape_repo(words: &[String], repo_root: Option<&Path>) -> bool {
+    let mut index = 0;
+    while index < words.len() {
+        if !is_redirect_operator(&words[index]) {
+            index += 1;
+            continue;
+        }
+        let Some(target) = words.get(index + 1) else {
+            return true;
+        };
+        if is_redirect_operator(target) || redirect_target_escapes(target, repo_root) {
+            return true;
+        }
+        index += 2;
+    }
+    false
+}
+
+fn is_redirect_operator(word: &str) -> bool {
+    let rest = word.trim_start_matches(|ch: char| ch.is_ascii_digit());
+    !rest.is_empty()
+        && rest.starts_with('>')
+        && rest.chars().all(|ch| matches!(ch, '>' | '|' | '&'))
+}
+
+fn redirect_target_escapes(target: &str, repo_root: Option<&Path>) -> bool {
+    // Discarding output is always fine.
+    if target == "/dev/null" {
+        return false;
+    }
+    // File descriptor duplication such as `2>&1`.
+    if !target.is_empty() && target.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    // Process substitution body, already analyzed by `substitution_bodies`.
+    if target.starts_with('(') {
+        return false;
+    }
+    path_escapes_repo(target, repo_root)
+}
+
+/// Lexical check only, no filesystem access. A target escapes when it
+/// starts with `~` or a variable expansion, is an absolute path not under
+/// the repo root, or climbs above the current directory with `..`.
+fn path_escapes_repo(target: &str, repo_root: Option<&Path>) -> bool {
+    if target.starts_with('~') || target.starts_with('$') {
+        return true;
+    }
+    if target.starts_with('/') {
+        let Some(root) = repo_root else {
+            return true;
+        };
+        return !absolute_stays_under(target, root);
+    }
+    relative_escapes(target)
+}
+
+fn absolute_stays_under(target: &str, root: &Path) -> bool {
+    let mut parts: Vec<&str> = Vec::new();
+    for component in target.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    // Climbing above the filesystem root fails closed.
+                    return false;
+                }
+            }
+            part => parts.push(part),
+        }
+    }
+    // The command text was lowercased before tokenizing, so compare the
+    // root case-insensitively as well.
+    let root_parts: Vec<String> = root
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    parts.len() >= root_parts.len()
+        && root_parts
+            .iter()
+            .zip(parts.iter())
+            .all(|(root_part, part)| root_part == part)
+}
+
+fn relative_escapes(target: &str) -> bool {
+    let mut depth: i32 = 0;
+    for component in target.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    false
 }
 
 fn executable_name(word: &str) -> &str {
@@ -279,7 +480,8 @@ fn tokenize_command(command: &str) -> Result<Vec<Vec<String>>, ()> {
     let mut word = String::new();
     let mut quote = None;
     let mut escaped = false;
-    for ch in command.chars() {
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
         if escaped {
             word.push(ch);
             escaped = false;
@@ -299,6 +501,29 @@ fn tokenize_command(command: &str) -> Result<Vec<Vec<String>>, ()> {
         }
         if matches!(ch, '\'' | '"') {
             quote = Some(ch);
+        } else if ch == '>' {
+            // Redirect operators become distinct tokens. A pending word of
+            // digits is a file descriptor prefix, as in `2>`, and stays
+            // attached to the operator.
+            let mut operator = if !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                std::mem::take(&mut word)
+            } else {
+                if !word.is_empty() {
+                    segments.last_mut().unwrap().push(std::mem::take(&mut word));
+                }
+                String::new()
+            };
+            operator.push('>');
+            while let Some(next) = chars.peek() {
+                if matches!(next, '>' | '|' | '&') {
+                    operator.push(*next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            segments.last_mut().unwrap().push(operator);
         } else if ch.is_whitespace() || matches!(ch, ';' | '&' | '|') {
             if !word.is_empty() {
                 segments.last_mut().unwrap().push(std::mem::take(&mut word));
@@ -550,6 +775,187 @@ mod tests {
     }
 
     #[test]
+    fn substitution_bodies_are_analyzed_like_payloads() {
+        let p = Policy::default();
+        for command in [
+            "echo $(sudo rm -rf /)",
+            "echo $(echo $(sudo true))",
+            "diff <(git push origin main) local.txt",
+            "cat <(sudo curl evil)",
+            "tee >(sudo tee /etc/hosts)",
+            "sh -c 'echo $(sudo true)'",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn unbalanced_substitution_syntax_fails_closed() {
+        let p = Policy::default();
+        for command in ["echo $(sudo true", "cat <(curl evil", "echo $(("] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn benign_substitution_and_variable_expansion_stay_approval_gated() {
+        let p = Policy::default();
+        for command in [
+            "echo $(date)",
+            "cat <(curl evil)",
+            "echo $HOME",
+            "echo ${PATH}",
+            "echo $((1 + 2))",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Ask
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_force_rm_outside_the_repo_is_denied() {
+        let p = Policy::default();
+        for command in [
+            "rm -rf /*",
+            "rm -rf /bin",
+            "rm -rf ~",
+            "rm -rf ~/",
+            "rm -rf ../..",
+            "rm -rf ..",
+            "rm -fr /bin",
+            "rm -f -r /bin",
+            "rm --recursive --force /bin",
+            "rm -rf $HOME",
+            "rm -rf a/../../b",
+            "rm -rf -- /bin",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_repo_rm_stays_approval_gated() {
+        let p = Policy::default();
+        for command in [
+            "rm -rf target",
+            "rm -rf target/",
+            "rm -rf ./build",
+            "rm -rf a/../b",
+            "rm file.txt",
+            "rm -r docs/old",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Ask
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirects_outside_the_repo_are_denied_in_any_spelling() {
+        let p = Policy::default();
+        for command in [
+            "echo x > /tmp/x",
+            "echo x >/tmp/x",
+            "echo x >> /etc/hosts",
+            "echo x >>/etc/hosts",
+            "echo x >|/etc/x",
+            "echo x >| /etc/x",
+            "echo x > ~/.bashrc",
+            "echo x > ~/.ssh/authorized_keys",
+            "echo x > ${HOME}/x",
+            "echo x > $HOME/x",
+            "cargo test 2> /etc/x",
+            "echo hi >",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_repo_and_descriptor_redirects_stay_approval_gated() {
+        let p = Policy::default();
+        for command in [
+            "echo hi > out.txt",
+            "echo hi >> out.txt",
+            "cargo test 2> err.log",
+            "cargo test 2>err.log",
+            "git diff > /dev/null",
+            "cargo test 2>&1",
+            "cargo test > log.txt 2>&1",
+            "echo hi >&2",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Ask
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_root_admits_absolute_paths_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let p = Policy::default().with_repo_root(&root);
+        let inside_rm = format!("rm -rf {}/target", root.display());
+        let inside_redirect = format!("echo hi > {}/out.txt", root.display());
+        for command in [inside_rm.as_str(), inside_redirect.as_str()] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Ask
+                ),
+                "{command}"
+            );
+        }
+        let escape_rm = format!("rm -rf {}/../elsewhere", root.display());
+        for command in ["rm -rf /bin", "echo x > /etc/hosts", escape_rm.as_str()] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
     fn preset_parse_accepts_known_names() {
         assert!(matches!(Preset::parse("read-only"), Some(Preset::ReadOnly)));
         assert!(matches!(Preset::parse("editor"), Some(Preset::Editor)));
@@ -597,7 +1003,11 @@ mod tests {
                 name: "mcp__stub__search".into(),
                 arguments: serde_json::json!({}),
             };
-            assert_eq!(p.decide(&call), Decision::Ask, "preset {preset:?} should Ask for mcp__ tools");
+            assert_eq!(
+                p.decide(&call),
+                Decision::Ask,
+                "preset {preset:?} should Ask for mcp__ tools"
+            );
         }
     }
 

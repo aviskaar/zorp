@@ -12,10 +12,13 @@ CREATE TABLE IF NOT EXISTS preregistrations (
     hypothesis_snapshot TEXT NOT NULL,
     metric_name TEXT NOT NULL,
     kill_threshold DOUBLE NOT NULL,
+    threshold_direction TEXT,
     file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL,
     git_commit_hash TEXT,
-    committed_at BIGINT NOT NULL
+    committed_at BIGINT NOT NULL,
+    file_mtime_ms BIGINT,
+    file_len BIGINT
 );
 CREATE TABLE IF NOT EXISTS experiments (
     id TEXT PRIMARY KEY,
@@ -55,4 +58,20 @@ CREATE TABLE IF NOT EXISTS validations (
     feasibility_citations TEXT NOT NULL,
     verdict TEXT NOT NULL,
     created_at BIGINT NOT NULL
-);";
+);
+-- Monotonic insert order within a track. created_at is milliseconds, so
+-- two rows written in the same millisecond tie and give no ordering;
+-- seq breaks the tie, the same way metrics already do. Both are derived
+-- from the table itself on insert, not from a process-local counter, so
+-- the order survives a restart. Rows written before these columns
+-- existed hold NULL and sort last within their millisecond.
+ALTER TABLE validations ADD COLUMN IF NOT EXISTS seq BIGINT;
+ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS seq BIGINT;
+ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS threshold_direction TEXT;
+ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_mtime_ms BIGINT;
+ALTER TABLE preregistrations ADD COLUMN IF NOT EXISTS file_len BIGINT;
+CREATE INDEX IF NOT EXISTS idx_preregistrations_track_id ON preregistrations(track_id);
+CREATE INDEX IF NOT EXISTS idx_experiments_track_id ON experiments(track_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_experiment_id ON metrics(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_track_id ON checkpoints(track_id);
+CREATE INDEX IF NOT EXISTS idx_validations_track_id ON validations(track_id);";

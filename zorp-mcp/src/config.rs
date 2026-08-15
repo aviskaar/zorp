@@ -5,33 +5,50 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TransportKind { Stdio, StreamableHttp, Sse }
+pub enum TransportKind {
+    Stdio,
+    StreamableHttp,
+    Sse,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TrustLevel { Sandbox, Trusted }
+pub enum TrustLevel {
+    Sandbox,
+    Trusted,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
     pub name: String,
     pub transport: TransportKind,
     pub command: Option<String>,
-    #[serde(default)] pub args: Vec<String>,
-    #[serde(default)] pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
     pub url: Option<String>,
-    #[serde(default)] pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     pub trust: TrustLevel,
     pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct McpConfig { pub servers: Vec<ServerConfig> }
+pub struct McpConfig {
+    pub servers: Vec<ServerConfig>,
+}
 
 #[derive(Deserialize)]
-struct McpConfigToml { #[serde(default, rename = "server")] servers: Vec<ServerConfig> }
+struct McpConfigToml {
+    #[serde(default, rename = "server")]
+    servers: Vec<ServerConfig>,
+}
 
 impl McpConfig {
-    pub fn empty() -> Self { McpConfig { servers: vec![] } }
+    pub fn empty() -> Self {
+        McpConfig { servers: vec![] }
+    }
 
     pub fn from_toml_str(s: &str) -> Result<Self, McpError> {
         let t: McpConfigToml = toml::from_str(s).map_err(|e| McpError::Config(e.to_string()))?;
@@ -66,7 +83,9 @@ impl McpConfig {
         Ok(McpConfig { servers })
     }
 
-    pub fn from_env() -> Result<Self, McpError> { Self::from_env_var("ZORP_MCP_SERVERS") }
+    pub fn from_env() -> Result<Self, McpError> {
+        Self::from_env_var("ZORP_MCP_SERVERS")
+    }
 
     pub fn merged(mut file: McpConfig, env: McpConfig, cli: McpConfig) -> McpConfig {
         file.merge_from(env);
@@ -112,7 +131,10 @@ timeout_secs = 60
         let cfg = McpConfig::from_toml_str(SAMPLE).unwrap();
         let gh = &cfg.servers[1];
         assert!(matches!(gh.transport, TransportKind::StreamableHttp));
-        assert_eq!(gh.url.as_deref(), Some("https://api.githubcopilot.com/mcp/"));
+        assert_eq!(
+            gh.url.as_deref(),
+            Some("https://api.githubcopilot.com/mcp/")
+        );
         assert!(matches!(gh.trust, TrustLevel::Trusted));
         assert_eq!(gh.timeout_secs, Some(60));
     }
@@ -123,7 +145,10 @@ timeout_secs = 60
     }
     #[test]
     fn from_env_var_parses_json_array() {
-        std::env::set_var("ZORP_MCP_TEST_ABC", r#"[{"name":"mem","transport":"stdio","command":"npx","args":["-y","server-memory"],"trust":"sandbox"}]"#);
+        std::env::set_var(
+            "ZORP_MCP_TEST_ABC",
+            r#"[{"name":"mem","transport":"stdio","command":"npx","args":["-y","server-memory"],"trust":"sandbox"}]"#,
+        );
         let cfg = McpConfig::from_env_var("ZORP_MCP_TEST_ABC").unwrap();
         assert_eq!(cfg.servers.len(), 1);
         assert_eq!(cfg.servers[0].name, "mem");
@@ -131,8 +156,14 @@ timeout_secs = 60
     }
     #[test]
     fn merged_env_overrides_file_by_name() {
-        let file = McpConfig::from_toml_str("[[server]]\nname=\"fs\"\ntransport=\"stdio\"\ncommand=\"npx\"\ntrust=\"sandbox\"\n").unwrap();
-        let env  = McpConfig::from_toml_str("[[server]]\nname=\"fs\"\ntransport=\"stdio\"\ncommand=\"uvx\"\ntrust=\"trusted\"\n").unwrap();
+        let file = McpConfig::from_toml_str(
+            "[[server]]\nname=\"fs\"\ntransport=\"stdio\"\ncommand=\"npx\"\ntrust=\"sandbox\"\n",
+        )
+        .unwrap();
+        let env = McpConfig::from_toml_str(
+            "[[server]]\nname=\"fs\"\ntransport=\"stdio\"\ncommand=\"uvx\"\ntrust=\"trusted\"\n",
+        )
+        .unwrap();
         let merged = McpConfig::merged(file, env, McpConfig::empty());
         assert_eq!(merged.servers.len(), 1);
         assert_eq!(merged.servers[0].command.as_deref(), Some("uvx"));

@@ -1,7 +1,6 @@
 use crate::track::Store;
 use crate::TrackError;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_millis() -> i64 {
@@ -10,11 +9,6 @@ fn now_millis() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
-
-/// Process-wide counter mixed into `record_validation`'s id so two calls
-/// landing in the same millisecond (plausible on fast retries or in tests)
-/// still get distinct ids, rather than colliding on the primary key.
-static VALIDATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
@@ -59,14 +53,19 @@ impl Store {
         verdict: &str,
     ) -> Result<Validation, TrackError> {
         let created_at = now_millis();
-        let seq = VALIDATION_SEQ.fetch_add(1, Ordering::SeqCst);
-        let id = format!("{track_id}-validation-{created_at}-{seq}");
+        // next_seq only keeps the primary key unique when two inserts
+        // land in the same millisecond. Ordering uses the seq column
+        // below, which is derived from the table itself.
+        let id = format!(
+            "{track_id}-validation-{created_at}-{}",
+            crate::id::next_seq()
+        );
         let redundancy_json = citations_to_json(redundancy_citations);
         let feasibility_json = citations_to_json(feasibility_citations);
         self.conn.execute(
             "INSERT INTO validations \
-             (id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at, seq) \
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(seq), -1) + 1 FROM validations WHERE track_id = ?",
             duckdb::params![
                 id,
                 track_id,
@@ -75,7 +74,8 @@ impl Store {
                 feasibility_score,
                 feasibility_json,
                 verdict,
-                created_at
+                created_at,
+                track_id
             ],
         )?;
         Ok(Validation {
@@ -92,12 +92,15 @@ impl Store {
 
     /// The most recent validation recorded for `track_id`. A track may have
     /// more than one row (validate can be retried), so this returns the
-    /// latest by `created_at`, not an arbitrary one.
+    /// latest by insert order, not an arbitrary one. `created_at` alone is
+    /// not enough: it is milliseconds, and two retries in the same
+    /// millisecond tie, so `seq` decides. Rows written before `seq`
+    /// existed have NULL there and sort last within their millisecond.
     pub fn get_validation(&self, track_id: &str) -> Result<Validation, TrackError> {
         self.conn
             .query_row(
                 "SELECT id, track_id, redundancy_score, redundancy_citations, feasibility_score, feasibility_citations, verdict, created_at \
-                 FROM validations WHERE track_id = ? ORDER BY created_at DESC LIMIT 1",
+                 FROM validations WHERE track_id = ? ORDER BY created_at DESC, seq DESC NULLS LAST LIMIT 1",
                 duckdb::params![track_id],
                 |r| {
                     let redundancy_raw: String = r.get(3)?;
@@ -130,7 +133,10 @@ mod tests {
     use tempfile::tempdir;
 
     fn citation(text: &str, source: &str) -> Citation {
-        Citation { text: text.to_string(), source: source.to_string() }
+        Citation {
+            text: text.to_string(),
+            source: source.to_string(),
+        }
     }
 
     #[test]
@@ -140,7 +146,10 @@ mod tests {
         store.create_track("t1", "does caching help").unwrap();
 
         let red = vec![citation("no prior benchmark found", "search result 1")];
-        let feas = vec![citation("a benchmark harness already exists", "repo README")];
+        let feas = vec![citation(
+            "a benchmark harness already exists",
+            "repo README",
+        )];
         let recorded = store
             .record_validation("t1", 20.0, &red, 85.0, &feas, "worth investigating")
             .unwrap();
@@ -162,9 +171,19 @@ mod tests {
             .record_validation("t1", 10.0, &first_red, 0.0, &[], "inconclusive, retrying")
             .unwrap();
 
-        let second_red = vec![citation("second pass, found a prior benchmark", "search result 2")];
+        let second_red = vec![citation(
+            "second pass, found a prior benchmark",
+            "search result 2",
+        )];
         let second = store
-            .record_validation("t1", 40.0, &second_red, 90.0, &[citation("tooling exists", "readme")], "worth investigating")
+            .record_validation(
+                "t1",
+                40.0,
+                &second_red,
+                90.0,
+                &[citation("tooling exists", "readme")],
+                "worth investigating",
+            )
             .unwrap();
 
         let fetched = store.get_validation("t1").unwrap();
@@ -179,7 +198,13 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
         let err = store.get_validation("t1").unwrap_err();
-        assert!(matches!(err, TrackError::NotFound { kind: "validation", .. }));
+        assert!(matches!(
+            err,
+            TrackError::NotFound {
+                kind: "validation",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -187,9 +212,28 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("t1", "hyp").unwrap();
-        store.record_validation("t1", 0.0, &[], 0.0, &[], "no evidence found").unwrap();
+        store
+            .record_validation("t1", 0.0, &[], 0.0, &[], "no evidence found")
+            .unwrap();
         let fetched = store.get_validation("t1").unwrap();
         assert!(fetched.redundancy_citations.is_empty());
         assert!(fetched.feasibility_citations.is_empty());
+    }
+
+    #[test]
+    fn the_last_validation_written_wins_even_in_one_millisecond() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        // No sleeps: these land in the same millisecond, where created_at
+        // gives no ordering at all.
+        for i in 0..12 {
+            store
+                .record_validation("t1", i as f64, &[], 0.0, &[], &format!("pass {i}"))
+                .unwrap();
+        }
+        let latest = store.get_validation("t1").unwrap();
+        assert_eq!(latest.verdict, "pass 11");
+        assert_eq!(latest.redundancy_score, 11.0);
     }
 }

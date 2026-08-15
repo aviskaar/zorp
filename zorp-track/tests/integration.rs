@@ -1,17 +1,32 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::experiment::{ExperimentStatus, MetricValue};
-use zorp_track::prereg::{verify_prereg_integrity, write_prereg};
+use zorp_track::prereg::{verify_prereg_integrity, write_prereg, ThresholdDirection};
 use zorp_track::track::TrackStatus;
 use zorp_track::{Project, TrackError};
 
 fn init_git_repo(dir: &Path) {
-    std::process::Command::new("git").arg("-C").arg(dir).args(["init", "-q"]).output().unwrap();
-    std::process::Command::new("git").arg("-C").arg(dir).args(["config", "user.email", "test@example.com"]).output().unwrap();
-    std::process::Command::new("git").arg("-C").arg(dir).args(["config", "user.name", "Test"]).output().unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.email", "test@example.com"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.name", "Test"])
+        .output()
+        .unwrap();
 }
 
 #[test]
@@ -25,13 +40,29 @@ fn full_track_lifecycle() {
     let gitignore = std::fs::read_to_string(dir.path().join(".zorp/.gitignore")).unwrap();
     assert!(gitignore.contains("zorp.duckdb"));
     assert!(gitignore.contains("lancedb/"));
-    assert_eq!(project.library.table_names().unwrap(), vec!["library".to_string()]);
+    #[cfg(feature = "library")]
+    assert_eq!(
+        project.library().unwrap().table_names().unwrap(),
+        vec!["library".to_string()]
+    );
 
     // Create a track and pre-register it.
     let track_id = "2026-08-09-does-caching-help";
-    project.store.create_track(track_id, "does caching help").unwrap();
+    project
+        .store
+        .create_track(track_id, "does caching help")
+        .unwrap();
     let track_dir = project.track_dir(track_id);
-    write_prereg(&project.store, &track_dir, track_id, "does caching help", "latency_ms", 100.0).unwrap();
+    write_prereg(
+        &project.store,
+        &track_dir,
+        track_id,
+        "does caching help",
+        "latency_ms",
+        100.0,
+        ThresholdDirection::LowerIsBetter,
+    )
+    .unwrap();
     assert!(verify_prereg_integrity(&project.store, track_id).is_ok());
     assert!(track_dir.join("prereg.md").exists());
 
@@ -39,20 +70,46 @@ fn full_track_lifecycle() {
     let mode = CheckpointMode::terminal(true).unwrap();
     let approved = project
         .store
-        .record_checkpoint(track_id, "experiment", &mode, "proceed with this experiment?")
+        .record_checkpoint(
+            track_id,
+            "experiment",
+            &mode,
+            "proceed with this experiment?",
+        )
         .unwrap();
     assert!(approved);
 
     // Run an experiment and record typed metrics.
-    let exp = project.store.create_experiment(track_id, &format!("{track_id}-prereg")).unwrap();
-    project.store.set_experiment_status(&exp.id, ExperimentStatus::Running).unwrap();
-    project.store.record_metric(&exp.id, "latency_ms", MetricValue::Number(87.3)).unwrap();
-    project.store.set_experiment_status(&exp.id, ExperimentStatus::Completed).unwrap();
+    let exp = project
+        .store
+        .create_experiment(track_id, &format!("{track_id}-prereg"))
+        .unwrap();
+    project
+        .store
+        .set_experiment_status(&exp.id, ExperimentStatus::Running)
+        .unwrap();
+    project
+        .store
+        .record_metric(&exp.id, "latency_ms", MetricValue::Number(87.3))
+        .unwrap();
+    project
+        .store
+        .set_experiment_status(&exp.id, ExperimentStatus::Completed)
+        .unwrap();
     let metrics = project.store.metrics_for(&exp.id).unwrap();
-    assert_eq!(metrics, vec![("latency_ms".to_string(), MetricValue::Number(87.3))]);
+    assert_eq!(
+        metrics,
+        vec![("latency_ms".to_string(), MetricValue::Number(87.3))]
+    );
 
-    project.store.set_track_status(track_id, TrackStatus::Completed).unwrap();
-    assert_eq!(project.store.get_track(track_id).unwrap().status, TrackStatus::Completed);
+    project
+        .store
+        .set_track_status(track_id, TrackStatus::Completed)
+        .unwrap();
+    assert_eq!(
+        project.store.get_track(track_id).unwrap().status,
+        TrackStatus::Completed
+    );
 }
 
 #[test]
@@ -65,7 +122,10 @@ fn reopening_a_project_does_not_lose_data() {
         project.store.create_track(track_id, "reopen test").unwrap();
     }
     let project = Project::open(dir.path()).unwrap();
-    assert_eq!(project.store.get_track(track_id).unwrap().hypothesis, "reopen test");
+    assert_eq!(
+        project.store.get_track(track_id).unwrap().hypothesis,
+        "reopen test"
+    );
 }
 
 #[test]
@@ -75,9 +135,21 @@ fn rebuilds_from_prereg_files_if_duckdb_file_is_deleted() {
     let track_id = "2026-08-09-rebuild-test";
     {
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track(track_id, "rebuild test").unwrap();
+        project
+            .store
+            .create_track(track_id, "rebuild test")
+            .unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "rebuild test", "m", 1.0).unwrap();
+        write_prereg(
+            &project.store,
+            &track_dir,
+            track_id,
+            "rebuild test",
+            "m",
+            1.0,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
     }
 
     std::fs::remove_file(dir.path().join(".zorp/zorp.duckdb")).unwrap();
@@ -125,15 +197,63 @@ fn prereg_md_added_after_the_db_already_exists_is_indexed_on_next_open() {
 }
 
 #[test]
+fn project_open_refuses_to_rebuild_from_a_tampered_prereg_md() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let track_id = "2026-08-14-tamper-test";
+    {
+        let project = Project::open(dir.path()).unwrap();
+        project.store.create_track(track_id, "tamper test").unwrap();
+        let track_dir = project.track_dir(track_id);
+        write_prereg(
+            &project.store,
+            &track_dir,
+            track_id,
+            "tamper test",
+            "m",
+            1.0,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
+    }
+
+    // Tamper with the committed prereg.md, then delete the DuckDB store.
+    // The rebuild on the next open must compare the file against its
+    // committed blob and refuse, not re-bless the tampered file.
+    let track_dir = dir.path().join(".zorp/tracks").join(track_id);
+    std::fs::write(
+        track_dir.join("prereg.md"),
+        format!("# Pre-registration: {track_id}\n\nHypothesis: tamper test\nMetric: m\nKill threshold: 999999\n"),
+    )
+    .unwrap();
+    std::fs::remove_file(dir.path().join(".zorp/zorp.duckdb")).unwrap();
+
+    let result = Project::open(dir.path());
+    assert!(matches!(result, Err(TrackError::IntegrityMismatch { .. })));
+}
+
+#[test]
 fn project_open_recovers_from_a_corrupted_duckdb_file() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());
     let track_id = "2026-08-09-corruption-test";
     {
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track(track_id, "corruption test").unwrap();
+        project
+            .store
+            .create_track(track_id, "corruption test")
+            .unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "corruption test", "m", 1.0).unwrap();
+        write_prereg(
+            &project.store,
+            &track_dir,
+            track_id,
+            "corruption test",
+            "m",
+            1.0,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
     }
 
     // Corrupt the DuckDB file so a fresh Store::open on it fails outright.
@@ -155,7 +275,10 @@ fn project_open_recovers_from_a_corrupted_duckdb_file() {
         .unwrap()
         .flatten()
         .any(|e| e.file_name().to_string_lossy().contains("corrupted"));
-    assert!(quarantined_exists, "expected a quarantined copy of the corrupted db file");
+    assert!(
+        quarantined_exists,
+        "expected a quarantined copy of the corrupted db file"
+    );
 }
 
 #[test]
@@ -170,7 +293,10 @@ fn project_open_self_heals_a_track_with_a_half_written_preregistration() {
         // preregistrations row is ever inserted for it. This mirrors
         // `write_prereg` writing the file and then failing (e.g. a
         // failing git commit) before it can insert the row.
-        project.store.create_track(track_id, "orphan prereg test").unwrap();
+        project
+            .store
+            .create_track(track_id, "orphan prereg test")
+            .unwrap();
         let track_dir = project.track_dir(track_id);
         std::fs::create_dir_all(&track_dir).unwrap();
         std::fs::write(
@@ -213,7 +339,16 @@ fn project_open_does_not_quarantine_a_healthy_db_locked_by_another_process() {
         let project = Project::open(dir.path()).unwrap();
         project.store.create_track(track_id, "lock test").unwrap();
         let track_dir = project.track_dir(track_id);
-        write_prereg(&project.store, &track_dir, track_id, "lock test", "m", 1.0).unwrap();
+        write_prereg(
+            &project.store,
+            &track_dir,
+            track_id,
+            "lock test",
+            "m",
+            1.0,
+            ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
     }
     let db_path = dir.path().join(".zorp/zorp.duckdb");
     let original_contents = std::fs::read(&db_path).unwrap();
@@ -229,13 +364,20 @@ fn project_open_does_not_quarantine_a_healthy_db_locked_by_another_process() {
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
-    assert_eq!(line.trim(), "locked", "helper process did not report holding the lock");
+    assert_eq!(
+        line.trim(),
+        "locked",
+        "helper process did not report holding the lock"
+    );
 
     // A concurrent Project::open must fail (DuckDB genuinely cannot
     // open a second connection to a locked file) but must not quarantine
     // the file: the error is a lock error, not corruption.
     let result = Project::open(dir.path());
-    assert!(result.is_err(), "expected Project::open to fail while the db file is locked");
+    assert!(
+        result.is_err(),
+        "expected Project::open to fail while the db file is locked"
+    );
 
     // Release the lock by closing the helper's stdin, which lets it exit.
     drop(child.stdin.take());
@@ -243,15 +385,24 @@ fn project_open_does_not_quarantine_a_healthy_db_locked_by_another_process() {
 
     // The original db file must be untouched: same path, same bytes,
     // and no quarantined copy left behind.
-    assert!(db_path.exists(), "the original zorp.duckdb must still exist at its original path");
+    assert!(
+        db_path.exists(),
+        "the original zorp.duckdb must still exist at its original path"
+    );
     let contents_after = std::fs::read(&db_path).unwrap();
-    assert_eq!(contents_after, original_contents, "the original zorp.duckdb must not have been rewritten");
+    assert_eq!(
+        contents_after, original_contents,
+        "the original zorp.duckdb must not have been rewritten"
+    );
     let zorp_dir = dir.path().join(".zorp");
     let quarantined_exists = std::fs::read_dir(&zorp_dir)
         .unwrap()
         .flatten()
         .any(|e| e.file_name().to_string_lossy().contains("corrupted"));
-    assert!(!quarantined_exists, "a lock error must never quarantine the db file");
+    assert!(
+        !quarantined_exists,
+        "a lock error must never quarantine the db file"
+    );
 
     // And a subsequent open, once the lock is released, must see the
     // original data intact.
@@ -266,7 +417,10 @@ fn checkpoint_hard_error_still_applies_inside_a_real_project() {
     init_git_repo(dir.path());
     let project = Project::open(dir.path()).unwrap();
     let track_id = "2026-08-09-checkpoint-hard-error-test";
-    project.store.create_track(track_id, "checkpoint hard error test").unwrap();
+    project
+        .store
+        .create_track(track_id, "checkpoint hard error test")
+        .unwrap();
 
     // No auto-approve, and cargo test's stdin is never an interactive
     // terminal, so this must be a hard error even with a real project

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -e
 
-# Build the workspace binaries in release mode
-echo "Cleaning the cargo workspace..."
-cargo clean
-echo "Building the zorp workspace binaries..."
-cargo build --release --workspace
+# Build only the two binaries that get installed. Building the whole
+# workspace would also compile zorp-track (bundled DuckDB) and zorp-eval,
+# neither of which is installed, and a cargo clean here would throw away
+# the entire build cache and turn every install into a from-scratch build.
+echo "Building the zorp binaries..."
+if [ -f Cargo.lock ]; then
+    cargo build --release --locked -p zorp -p zorp-agent
+else
+    cargo build --release -p zorp -p zorp-agent
+fi
 
 # Define the target installation directory
 # We'll use ~/.local/bin as it's a standard user-level bin directory
@@ -14,9 +19,11 @@ INSTALL_DIR="$HOME/.local/bin"
 echo "Creating $INSTALL_DIR if it doesn't exist..."
 mkdir -p "$INSTALL_DIR"
 
-echo "Copying binaries to $INSTALL_DIR..."
-cp target/release/zorp "$INSTALL_DIR/"
-cp target/release/zorp-agent "$INSTALL_DIR/"
+# install(1) replaces the file atomically, which avoids ETXTBSY when
+# upgrading over a binary that is currently running.
+echo "Installing binaries to $INSTALL_DIR..."
+install -m 755 target/release/zorp "$INSTALL_DIR/"
+install -m 755 target/release/zorp-agent "$INSTALL_DIR/"
 
 echo "Successfully installed 'zorp' and 'zorp-agent' to $INSTALL_DIR!"
 

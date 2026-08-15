@@ -1,17 +1,22 @@
+// Background process handling needs setpgid in pre_exec and killpg to
+// take the whole group down. Same reasoning as sandbox/mod.rs: no safe
+// std equivalent, so the lint is off for this module only.
+#![allow(unsafe_code)]
+
 pub mod fs;
 pub mod git;
+pub mod notes;
 pub mod patch;
 pub mod search;
 pub mod shell;
 pub mod subagent;
-pub mod notes;
 
 use crate::model::ToolCall;
 use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::process::Child;
 use std::path::PathBuf;
+use std::process::Child;
 
 pub struct ToolOutput {
     pub content: String,
@@ -175,9 +180,12 @@ impl Context {
             }
         }
 
-        let child = cmd.spawn().map_err(|e| ToolError::new(format!("spawn: {e}")))?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| ToolError::new(format!("spawn: {e}")))?;
         let pid = child.id();
-        self.background_processes.insert(pid, (command.to_string(), child));
+        self.background_processes
+            .insert(pid, (command.to_string(), child));
         Ok(pid)
     }
 
@@ -191,29 +199,28 @@ impl Context {
             let _ = child.wait();
             Ok(())
         } else {
-            Err(ToolError::new(format!("No background process found with PID {pid}")))
+            Err(ToolError::new(format!(
+                "No background process found with PID {pid}"
+            )))
         }
     }
 
-    
     pub fn background_process_count(&mut self) -> usize {
-        self.background_processes.retain(|_, (_, child)| {
-            matches!(child.try_wait(), Ok(None))
-        });
+        self.background_processes
+            .retain(|_, (_, child)| matches!(child.try_wait(), Ok(None)));
         self.background_processes.len()
     }
 
     pub fn list_background_processes(&mut self) -> String {
         let mut alive = Vec::new();
-        self.background_processes.retain(|&pid, (cmd, child)| {
-            match child.try_wait() {
+        self.background_processes
+            .retain(|&pid, (cmd, child)| match child.try_wait() {
                 Ok(None) => {
                     alive.push(format!("PID {pid}: {cmd}"));
                     true
                 }
                 _ => false,
-            }
-        });
+            });
         if alive.is_empty() {
             "No background processes running.".to_string()
         } else {

@@ -1,8 +1,8 @@
 use crate::agent::{Agent, AgentConfig, Outcome, RunRecorder};
 use crate::model::Message;
-use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult, FileChange};
-use serde_json::{json, Value};
 use crate::sandbox::CancelToken;
+use crate::tools::{Context, FileChange, Tool, ToolError, ToolOutput, ToolResult};
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,6 @@ const SUBAGENT_DIRECTIVE: &str = "You are a subagent delegated a single, bounded
 Work autonomously: there is no user to ask for clarification, so pick the most direct tool for the goal \
 and act on it rather than re-checking the same state repeatedly. Stop as soon as you have completed the \
 task or concluded it cannot be completed, and report back concisely.";
-
 
 pub const MAX_CONCURRENT_SUBAGENTS: usize = 8;
 const PROGRESS_CAP: usize = 50;
@@ -76,7 +75,10 @@ impl RunRecorder for ProgressRecorder {
         match m.role.as_str() {
             "assistant" => {
                 for call in &m.tool_calls {
-                    push_progress(&self.buf, format!("called {}({})", call.name, call.arguments));
+                    push_progress(
+                        &self.buf,
+                        format!("called {}({})", call.name, call.arguments),
+                    );
                 }
                 if m.tool_calls.is_empty() && !m.text().is_empty() {
                     let snippet: String = m.text().chars().take(160).collect();
@@ -159,7 +161,11 @@ impl SubagentPool {
     }
 
     pub fn get(&self, id: u32) -> Option<SubagentSnapshot> {
-        self.handles.lock().unwrap().get(&id).map(SubagentSnapshot::from)
+        self.handles
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(SubagentSnapshot::from)
     }
 
     pub fn all(&self) -> Vec<SubagentSnapshot> {
@@ -258,7 +264,10 @@ spawn_subagent. Pass an id to check one; omit it to list all spawned this sessio
             None => {
                 let all = self.pool.all();
                 if all.is_empty() {
-                    return Ok(ToolOutput::new("no subagents have been spawned yet", "no subagents"));
+                    return Ok(ToolOutput::new(
+                        "no subagents have been spawned yet",
+                        "no subagents",
+                    ));
                 }
                 let lines: Vec<String> = all.iter().map(render_summary_line).collect();
                 Ok(ToolOutput::new(lines.join("\n"), "subagent list"))
@@ -363,14 +372,17 @@ Returns an ID immediately; use monitor_subagents to check progress and cancel_su
             .get("prompt")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("missing \"prompt\" parameter"))?;
-        
+
         let role = args
             .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("Subagent");
-        
+
         let system_prompt = if role != "Subagent" {
-            format!("{}\n\nYou are acting as a specialized subagent: {}", self.config.base_system_prompt, role)
+            format!(
+                "{}\n\nYou are acting as a specialized subagent: {}",
+                self.config.base_system_prompt, role
+            )
         } else {
             self.config.base_system_prompt.clone()
         };
@@ -382,35 +394,37 @@ Returns an ID immediately; use monitor_subagents to check progress and cancel_su
             self.config.repo_root.clone(),
             self.config.cancel.clone(),
             self.config.approval.clone(),
-        ).register_builtins();
-        
+        )
+        .register_builtins();
+
         subagent = subagent.register(Box::new(self.clone()));
-        
+
         match subagent.run(prompt) {
-            Outcome::Complete(result) => {
-                Ok(ToolOutput::new(
-                    format!("Subagent completed successfully:\n{}", result),
-                    "subagent finished"
-                ))
-            }
-            Outcome::StepLimit => {
-                Ok(ToolOutput::new("Subagent stopped: Step limit reached", "step limit"))
-            }
-            Outcome::VerificationFailed { attempts } => {
-                Ok(ToolOutput::new(format!("Subagent stopped: Verification failed after {} attempts", attempts), "verification failed"))
-            }
-            Outcome::Cancelled => {
-                Ok(ToolOutput::new("Subagent was cancelled", "cancelled"))
-            }
-            Outcome::RepeatedAction => {
-                Ok(ToolOutput::new("Subagent stopped: Repeated action detected", "repeated action"))
-            }
-            Outcome::Blocked => {
-                Ok(ToolOutput::new("Subagent stopped: Blocked by policy or approval", "blocked"))
-            }
-            Outcome::Error(e) => {
-                Err(ToolError::new(format!("Subagent error: {}", e)))
-            }
+            Outcome::Complete(result) => Ok(ToolOutput::new(
+                format!("Subagent completed successfully:\n{}", result),
+                "subagent finished",
+            )),
+            Outcome::StepLimit => Ok(ToolOutput::new(
+                "Subagent stopped: Step limit reached",
+                "step limit",
+            )),
+            Outcome::VerificationFailed { attempts } => Ok(ToolOutput::new(
+                format!(
+                    "Subagent stopped: Verification failed after {} attempts",
+                    attempts
+                ),
+                "verification failed",
+            )),
+            Outcome::Cancelled => Ok(ToolOutput::new("Subagent was cancelled", "cancelled")),
+            Outcome::RepeatedAction => Ok(ToolOutput::new(
+                "Subagent stopped: Repeated action detected",
+                "repeated action",
+            )),
+            Outcome::Blocked => Ok(ToolOutput::new(
+                "Subagent stopped: Blocked by policy or approval",
+                "blocked",
+            )),
+            Outcome::Error(e) => Err(ToolError::new(format!("Subagent error: {}", e))),
         }
     }
 }
@@ -487,22 +501,30 @@ cancel one with cancel_subagent or wait for one to finish first"
 
         let child_cancel: CancelToken = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (id, progress, _status) =
-            self.pool.allocate(role.clone(), prompt.clone(), child_cancel.clone());
+            self.pool
+                .allocate(role.clone(), prompt.clone(), child_cancel.clone());
 
         {
             let parent_cancel = self.config.cancel.clone();
             let watch_cancel = child_cancel.clone();
             std::thread::spawn(move || {
-                while !parent_cancel.load(Ordering::SeqCst) && !watch_cancel.load(Ordering::SeqCst) {
+                while !parent_cancel.load(Ordering::SeqCst) && !watch_cancel.load(Ordering::SeqCst)
+                {
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 watch_cancel.store(true, Ordering::SeqCst);
             });
         }
 
-        let mut system_prompt = format!("{}\n\n{}", SUBAGENT_DIRECTIVE, self.config.base_system_prompt);
+        let mut system_prompt = format!(
+            "{}\n\n{}",
+            SUBAGENT_DIRECTIVE, self.config.base_system_prompt
+        );
         if role != "Subagent" {
-            system_prompt.push_str(&format!("\n\nYou are acting as a specialized subagent: {}", role));
+            system_prompt.push_str(&format!(
+                "\n\nYou are acting as a specialized subagent: {}",
+                role
+            ));
         }
 
         let model = self.config.model.clone();
@@ -513,16 +535,25 @@ cancel one with cancel_subagent or wait for one to finish first"
         let config = self.config.clone();
 
         std::thread::spawn(move || {
-            let mut subagent = Agent::new(model, system_prompt, max_steps, repo_root, child_cancel, approval)
-                .register_builtins()
-                .with_recorder(Box::new(ProgressRecorder { buf: progress }))
-                .with_renderer(Box::new(crate::render::NullRenderer));
+            let mut subagent = Agent::new(
+                model,
+                system_prompt,
+                max_steps,
+                repo_root,
+                child_cancel,
+                approval,
+            )
+            .register_builtins()
+            .with_recorder(Box::new(ProgressRecorder { buf: progress }))
+            .with_renderer(Box::new(crate::render::NullRenderer));
             subagent = subagent.register(Box::new(InvokeSubagent::new(config.clone())));
-            subagent = subagent.register(Box::new(SpawnSubagent::new(config.clone(), pool.clone())));
+            subagent =
+                subagent.register(Box::new(SpawnSubagent::new(config.clone(), pool.clone())));
             subagent = subagent.register(Box::new(MonitorSubagents::new(pool.clone())));
             subagent = subagent.register(Box::new(CancelSubagent::new(pool.clone())));
 
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subagent.run(&prompt)));
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| subagent.run(&prompt)));
             let final_status = match result {
                 Ok(Outcome::Complete(text)) => RunStatus::Complete(text),
                 Ok(Outcome::Cancelled) => RunStatus::Cancelled,
@@ -532,7 +563,9 @@ cancel one with cancel_subagent or wait for one to finish first"
                 Ok(Outcome::RepeatedAction) => {
                     RunStatus::Failed("stuck repeating the same tool call".to_string())
                 }
-                Ok(Outcome::Blocked) => RunStatus::Failed("blocked by policy or approval".to_string()),
+                Ok(Outcome::Blocked) => {
+                    RunStatus::Failed("blocked by policy or approval".to_string())
+                }
                 Ok(Outcome::VerificationFailed { attempts }) => {
                     RunStatus::Failed(format!("verification failed after {attempts} attempts"))
                 }
@@ -542,7 +575,10 @@ cancel one with cancel_subagent or wait for one to finish first"
             pool.set_status(id, final_status);
         });
 
-        Ok(ToolOutput::new(format!("spawned subagent #{id}"), "subagent spawned"))
+        Ok(ToolOutput::new(
+            format!("spawned subagent #{id}"),
+            "subagent spawned",
+        ))
     }
 }
 
@@ -744,7 +780,8 @@ mod tests {
             tools: &[Value],
             _options: &crate::reasoning::CompletionOptions,
         ) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
-            self.complete(messages, tools).map(crate::model::ModelCompletion::from)
+            self.complete(messages, tools)
+                .map(crate::model::ModelCompletion::from)
         }
     }
 
@@ -787,7 +824,8 @@ mod tests {
             tools: &[Value],
             _options: &crate::reasoning::CompletionOptions,
         ) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
-            self.complete(messages, tools).map(crate::model::ModelCompletion::from)
+            self.complete(messages, tools)
+                .map(crate::model::ModelCompletion::from)
         }
     }
 
@@ -842,8 +880,11 @@ mod tests {
         let pool = SubagentPool::new();
 
         let child_cancel: CancelToken = Arc::new(AtomicBool::new(false));
-        let (id, progress, _status) =
-            pool.allocate("Subagent".into(), "count forever".into(), child_cancel.clone());
+        let (id, progress, _status) = pool.allocate(
+            "Subagent".into(),
+            "count forever".into(),
+            child_cancel.clone(),
+        );
         let pool_for_thread = pool.clone();
         thread::spawn(move || {
             let mut subagent = Agent::new(
@@ -950,8 +991,22 @@ mod tests {
         let tool_b = SpawnSubagent::new(config_b, pool.clone());
         let out_b = tool_b.run(&json!({"prompt": "task b"}), &mut cx).unwrap();
 
-        let id_a: u32 = out_a.content.rsplit('#').next().unwrap().trim().parse().unwrap();
-        let id_b: u32 = out_b.content.rsplit('#').next().unwrap().trim().parse().unwrap();
+        let id_a: u32 = out_a
+            .content
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let id_b: u32 = out_b
+            .content
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         assert_ne!(id_a, id_b);
 
         let snap_a = wait_until_finished(&pool, id_a);

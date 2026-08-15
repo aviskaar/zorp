@@ -8,7 +8,10 @@ use zorp_track::track::TrackStatus;
 use zorp_track::Project;
 
 fn has_huiban_tool(agent: &Agent) -> bool {
-    agent.tool_names().iter().any(|n| n.starts_with("mcp__huiban__"))
+    agent
+        .tool_names()
+        .iter()
+        .any(|n| n.starts_with("mcp__huiban__"))
 }
 
 fn build_task_prompt(hypothesis: &str, draft: &str) -> String {
@@ -68,10 +71,14 @@ pub fn run(
         Outcome::Complete(text) => text,
         Outcome::StepLimit => return Err(DeliverError::AgentOutcome("StepLimit".to_string())),
         Outcome::VerificationFailed { attempts } => {
-            return Err(DeliverError::AgentOutcome(format!("VerificationFailed after {attempts} attempts")))
+            return Err(DeliverError::AgentOutcome(format!(
+                "VerificationFailed after {attempts} attempts"
+            )))
         }
         Outcome::Cancelled => return Err(DeliverError::AgentOutcome("Cancelled".to_string())),
-        Outcome::RepeatedAction => return Err(DeliverError::AgentOutcome("RepeatedAction".to_string())),
+        Outcome::RepeatedAction => {
+            return Err(DeliverError::AgentOutcome("RepeatedAction".to_string()))
+        }
         Outcome::Blocked => return Err(DeliverError::AgentOutcome("Blocked".to_string())),
         Outcome::Error(e) => return Err(DeliverError::AgentOutcome(format!("Error: {e}"))),
     };
@@ -86,7 +93,10 @@ pub fn run(
         venues_path.display(),
         candidate_count(&shortlist)
     );
-    let approved = project.store.record_checkpoint(track_id, "deliver", checkpoint_mode, &prompt)?;
+    let approved =
+        project
+            .store
+            .record_checkpoint(track_id, "deliver", checkpoint_mode, &prompt)?;
 
     Ok(approved)
 }
@@ -106,7 +116,11 @@ mod tests {
     }
 
     impl Model for StubModel {
-        fn complete(&self, _messages: &[Message], _tools: &[serde_json::Value]) -> Result<AssistantMessage, BoxErr> {
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[serde_json::Value],
+        ) -> Result<AssistantMessage, BoxErr> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(AssistantMessage {
                 content: self.response.clone(),
@@ -117,13 +131,19 @@ mod tests {
         }
 
         fn clone_box(&self) -> Box<dyn Model> {
-            Box::new(StubModel { response: self.response.clone(), calls: self.calls.clone() })
+            Box::new(StubModel {
+                response: self.response.clone(),
+                calls: self.calls.clone(),
+            })
         }
     }
 
     fn build_agent(response: &str) -> Agent {
         let calls = Arc::new(AtomicUsize::new(0));
-        let model = StubModel { response: response.to_string(), calls };
+        let model = StubModel {
+            response: response.to_string(),
+            calls,
+        };
         Agent::new(
             Box::new(model),
             "system",
@@ -136,7 +156,10 @@ mod tests {
     }
 
     fn track_with_draft(project: &Project, track_id: &str) {
-        project.store.create_track(track_id, "does caching help").unwrap();
+        project
+            .store
+            .create_track(track_id, "does caching help")
+            .unwrap();
         let track_dir = project.track_dir(track_id);
         std::fs::create_dir_all(&track_dir).unwrap();
         std::fs::write(track_dir.join("draft.md"), "# Draft\n\nLatency improved.").unwrap();
@@ -148,7 +171,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
         track_with_draft(&project, "t1");
-        project.store.set_track_status("t1", TrackStatus::Killed).unwrap();
+        project
+            .store
+            .set_track_status("t1", TrackStatus::Killed)
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
@@ -160,7 +186,10 @@ mod tests {
         let mut agent = build_agent("a shortlist");
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
@@ -179,7 +208,11 @@ mod tests {
         fn schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
-        fn run(&self, _args: &serde_json::Value, _cx: &mut crate::tools::Context) -> crate::tools::ToolResult {
+        fn run(
+            &self,
+            _args: &serde_json::Value,
+            _cx: &mut crate::tools::Context,
+        ) -> crate::tools::ToolResult {
             Ok(crate::tools::ToolOutput::new("no venues", "no venues"))
         }
     }
@@ -206,13 +239,25 @@ mod tests {
         let project = Project::open(dir.path()).unwrap();
         track_with_draft(&project, "t1");
         let captured = Arc::new(Mutex::new(None));
-        let mode = CheckpointMode::Interactive(Arc::new(CapturingDecider { prompt: captured.clone() }));
+        let mode = CheckpointMode::Interactive(Arc::new(CapturingDecider {
+            prompt: captured.clone(),
+        }));
 
         run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
 
-        let prompt = captured.lock().unwrap().clone().expect("decider should have been asked");
-        assert!(prompt.contains("(3 candidates)"), "prompt should report 3 candidates, got: {prompt}");
-        assert!(!prompt.contains("11"), "prompt should not report the raw line count, got: {prompt}");
+        let prompt = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("decider should have been asked");
+        assert!(
+            prompt.contains("(3 candidates)"),
+            "prompt should report 3 candidates, got: {prompt}"
+        );
+        assert!(
+            !prompt.contains("11"),
+            "prompt should not report the raw line count, got: {prompt}"
+        );
     }
 
     #[test]
@@ -220,14 +265,20 @@ mod tests {
         let mut agent = build_agent("a shortlist");
         let dir = tempdir().unwrap();
         let project = Project::open(dir.path()).unwrap();
-        project.store.create_track("t1", "does caching help").unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
         // A directory where draft.md should be: reading it fails with
         // something other than NotFound.
         std::fs::create_dir_all(project.track_dir("t1").join("draft.md")).unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
         let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
-        assert!(matches!(err, DeliverError::Io(_)), "expected Io, got {err:?}");
+        assert!(
+            matches!(err, DeliverError::Io(_)),
+            "expected Io, got {err:?}"
+        );
     }
 
     #[test]

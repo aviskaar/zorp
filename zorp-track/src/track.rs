@@ -157,8 +157,9 @@ impl Store {
 
     /// Re-derive `tracks` and `preregistrations` rows by reading every
     /// `<tracks_dir>/<id>/prereg.md` on disk. Used to recover after
-    /// `zorp.duckdb` is lost or deleted, since the files are the source
-    /// of truth. Also self-heals a half-written pre-registration: if
+    /// `zorp.duckdb` is lost or deleted; the files, checked against
+    /// their git-committed content, are the source of truth. Also
+    /// self-heals a half-written pre-registration: if
     /// `write_prereg` wrote `prereg.md` to disk but failed before
     /// inserting the `preregistrations` row (e.g. the git commit step
     /// failed), a `tracks` row may already exist but the
@@ -188,7 +189,8 @@ impl Store {
             }
 
             let content = std::fs::read_to_string(&prereg_path)?;
-            let (hypothesis, metric_name, kill_threshold) = crate::prereg::parse_prereg_md(&content)?;
+            let (hypothesis, metric_name, kill_threshold, threshold_direction) =
+                crate::prereg::parse_prereg_md(&content)?;
             let file_hash = crate::prereg::sha256_hex(content.as_bytes());
             let git_commit_hash = std::process::Command::new("git")
                 .arg("-C")
@@ -199,6 +201,37 @@ impl Store {
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .filter(|s| !s.is_empty());
+
+            // Git is the root of trust on rebuild. Re-blessing whatever
+            // is on disk would let anyone launder a tampered prereg.md
+            // by deleting or corrupting the DuckDB store: the committed
+            // blob must hash to the same value as the working tree file
+            // before its hash is stored as authoritative. A file with no
+            // commit backing it gets a distinct unverified marker
+            // instead of being presented as equivalent to a committed
+            // one.
+            let stored_hash = match git_commit_hash.as_deref() {
+                Some(commit) => {
+                    let blob_hash = crate::prereg::git_blob_hash(&track_dir, commit).ok_or_else(|| {
+                        TrackError::IntegrityMismatch {
+                            track_id: track_id.to_string(),
+                            detail: format!(
+                                "prereg.md could not be read from its last git commit {commit} during rebuild"
+                            ),
+                        }
+                    })?;
+                    if blob_hash != file_hash {
+                        return Err(TrackError::IntegrityMismatch {
+                            track_id: track_id.to_string(),
+                            detail: format!(
+                                "prereg.md on disk does not match its last git-committed content ({commit}); refusing to rebuild from the tampered file"
+                            ),
+                        });
+                    }
+                    file_hash
+                }
+                None => format!("{}{file_hash}", crate::prereg::UNVERIFIED_HASH_PREFIX),
+            };
 
             if self.get_track(track_id).is_err() {
                 self.create_track(track_id, &hypothesis)?;
@@ -215,8 +248,9 @@ impl Store {
                 &hypothesis,
                 &metric_name,
                 kill_threshold,
+                threshold_direction,
                 &prereg_path,
-                &file_hash,
+                &stored_hash,
                 git_commit_hash.as_deref(),
                 committed_at_ms,
             )?;
@@ -236,17 +270,37 @@ impl Store {
     /// surfaced). Returns `TrackError::IntegrityMismatch` on the first
     /// mismatch found in either direction.
     pub fn verify_all_prereg_integrity(&self, tracks_dir: &Path) -> Result<(), TrackError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT DISTINCT track_id FROM preregistrations")?;
-        let track_ids: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
+        let mut stmt = self.conn.prepare(
+            "SELECT track_id, file_path, file_hash, git_commit_hash, file_mtime_ms, file_len FROM preregistrations",
+        )?;
+        let rows: Vec<crate::prereg::PreregIntegrityRow> = stmt
+            .query_map([], |r| {
+                Ok(crate::prereg::PreregIntegrityRow {
+                    track_id: r.get(0)?,
+                    file_path: r.get(1)?,
+                    file_hash: r.get(2)?,
+                    git_commit_hash: r.get(3)?,
+                    file_mtime_ms: r.get(4)?,
+                    file_len: r.get(5)?,
+                })
+            })?
             .collect::<Result<_, _>>()?;
         drop(stmt);
 
-        for track_id in &track_ids {
-            crate::prereg::verify_prereg_integrity(self, track_id)?;
+        for row in &rows {
+            // Fast path: an unchanged (mtime, len) means the file was not
+            // touched since the last full check, so skip re-reading and
+            // re-hashing it. This is only a change detector; any change,
+            // or a row with no cached stamp yet, falls through to the
+            // full check.
+            if let Some(stamp) = crate::prereg::file_stamp(Path::new(&row.file_path)) {
+                if row.file_mtime_ms == Some(stamp.0) && row.file_len == Some(stamp.1) {
+                    continue;
+                }
+            }
+            crate::prereg::full_verify_row(self, row)?;
         }
+        let track_ids: Vec<&str> = rows.iter().map(|r| r.track_id.as_str()).collect();
 
         let Ok(entries) = std::fs::read_dir(tracks_dir) else {
             return Ok(());
@@ -263,7 +317,7 @@ impl Store {
             let Some(track_id) = track_dir.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if !track_ids.iter().any(|t| t == track_id) {
+            if !track_ids.iter().any(|t| *t == track_id) {
                 return Err(TrackError::IntegrityMismatch {
                     track_id: track_id.to_string(),
                     detail: format!(
@@ -337,7 +391,12 @@ mod tests {
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
         store.create_track("b", "second").unwrap();
         store.create_track("a", "first").unwrap();
-        let ids: Vec<String> = store.list_tracks().unwrap().into_iter().map(|t| t.id).collect();
+        let ids: Vec<String> = store
+            .list_tracks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
         assert_eq!(ids, vec!["a", "b"]);
     }
 
@@ -365,8 +424,31 @@ mod tests {
     fn set_status_on_missing_track_errors() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
-        let err = store.set_track_status("nope", TrackStatus::Killed).unwrap_err();
+        let err = store
+            .set_track_status("nope", TrackStatus::Killed)
+            .unwrap_err();
         assert!(matches!(err, TrackError::NotFound { kind: "track", .. }));
+    }
+
+    fn init_git_repo(dir: &Path) {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.email", "test@example.com"])
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
     }
 
     #[test]
@@ -378,7 +460,16 @@ mod tests {
             let store = Store::open(&db_path).unwrap();
             store.create_track("t1", "does caching help").unwrap();
             let track_dir = tracks_dir.join("t1");
-            crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "latency_ms", 100.0).unwrap();
+            crate::prereg::write_prereg(
+                &store,
+                &track_dir,
+                "t1",
+                "does caching help",
+                "latency_ms",
+                100.0,
+                crate::prereg::ThresholdDirection::LowerIsBetter,
+            )
+            .unwrap();
         }
 
         std::fs::remove_file(&db_path).unwrap();
@@ -390,6 +481,100 @@ mod tests {
         let recovered = fresh_store.get_track("t1").unwrap();
         assert_eq!(recovered.hypothesis, "does caching help");
         assert!(crate::prereg::verify_prereg_integrity(&fresh_store, "t1").is_ok());
+
+        // No git repo here, so the rebuilt hash cannot be verified
+        // against a committed blob: it must carry the unverified marker
+        // rather than posing as a committed, tamper-evident hash.
+        let prereg = crate::prereg::get_preregistration(&fresh_store, "t1")
+            .unwrap()
+            .unwrap();
+        assert!(
+            prereg
+                .file_hash
+                .starts_with(crate::prereg::UNVERIFIED_HASH_PREFIX),
+            "expected an unverified marker, got: {}",
+            prereg.file_hash
+        );
+    }
+
+    #[test]
+    fn rebuild_verifies_a_committed_prereg_and_stores_a_plain_hash() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let db_path = dir.path().join("zorp.duckdb");
+        let tracks_dir = dir.path().join("tracks");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.create_track("t1", "does caching help").unwrap();
+            crate::prereg::write_prereg(
+                &store,
+                &tracks_dir.join("t1"),
+                "t1",
+                "does caching help",
+                "latency_ms",
+                100.0,
+                crate::prereg::ThresholdDirection::LowerIsBetter,
+            )
+            .unwrap();
+        }
+
+        std::fs::remove_file(&db_path).unwrap();
+
+        let fresh_store = Store::open(&db_path).unwrap();
+        assert_eq!(
+            fresh_store.rebuild_from_prereg_files(&tracks_dir).unwrap(),
+            1
+        );
+        assert!(crate::prereg::verify_prereg_integrity(&fresh_store, "t1").is_ok());
+        let prereg = crate::prereg::get_preregistration(&fresh_store, "t1")
+            .unwrap()
+            .unwrap();
+        assert!(prereg.git_commit_hash.is_some());
+        assert!(!prereg
+            .file_hash
+            .starts_with(crate::prereg::UNVERIFIED_HASH_PREFIX));
+    }
+
+    #[test]
+    fn rebuild_refuses_a_prereg_md_tampered_after_its_commit() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let db_path = dir.path().join("zorp.duckdb");
+        let tracks_dir = dir.path().join("tracks");
+        {
+            let store = Store::open(&db_path).unwrap();
+            store.create_track("t1", "does caching help").unwrap();
+            crate::prereg::write_prereg(
+                &store,
+                &tracks_dir.join("t1"),
+                "t1",
+                "does caching help",
+                "latency_ms",
+                100.0,
+                crate::prereg::ThresholdDirection::LowerIsBetter,
+            )
+            .unwrap();
+        }
+
+        // Tamper with the committed file, then destroy the DuckDB store.
+        // A rebuild must compare the file against its committed blob and
+        // refuse, not re-bless the tampered file as authoritative.
+        std::fs::write(
+            tracks_dir.join("t1").join("prereg.md"),
+            "# Pre-registration: t1\n\nHypothesis: does caching help\nMetric: latency_ms\nKill threshold: 999999\n",
+        )
+        .unwrap();
+        std::fs::remove_file(&db_path).unwrap();
+
+        let fresh_store = Store::open(&db_path).unwrap();
+        let err = fresh_store
+            .rebuild_from_prereg_files(&tracks_dir)
+            .unwrap_err();
+        assert!(matches!(err, TrackError::IntegrityMismatch { .. }));
+        // The tampered track must not have been inserted.
+        assert!(crate::prereg::get_preregistration(&fresh_store, "t1")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -400,7 +585,16 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.create_track("t1", "already here").unwrap();
         let track_dir = tracks_dir.join("t1");
-        crate::prereg::write_prereg(&store, &track_dir, "t1", "already here", "m", 1.0).unwrap();
+        crate::prereg::write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "already here",
+            "m",
+            1.0,
+            crate::prereg::ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         let rebuilt = store.rebuild_from_prereg_files(&tracks_dir).unwrap();
         assert_eq!(rebuilt, 0);
@@ -410,7 +604,9 @@ mod tests {
     fn rebuild_on_empty_tracks_dir_is_a_no_op() {
         let dir = tempdir().unwrap();
         let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
-        let rebuilt = store.rebuild_from_prereg_files(&dir.path().join("tracks")).unwrap();
+        let rebuilt = store
+            .rebuild_from_prereg_files(&dir.path().join("tracks"))
+            .unwrap();
         assert_eq!(rebuilt, 0);
     }
 
@@ -422,7 +618,16 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.create_track("t1", "does caching help").unwrap();
         let track_dir = tracks_dir.join("t1");
-        crate::prereg::write_prereg(&store, &track_dir, "t1", "does caching help", "m", 1.0).unwrap();
+        crate::prereg::write_prereg(
+            &store,
+            &track_dir,
+            "t1",
+            "does caching help",
+            "m",
+            1.0,
+            crate::prereg::ThresholdDirection::LowerIsBetter,
+        )
+        .unwrap();
 
         assert!(store.verify_all_prereg_integrity(&tracks_dir).is_ok());
     }

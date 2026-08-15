@@ -116,7 +116,8 @@ pub fn anthropic_thinking_budget(mode: ReasoningMode) -> Option<u64> {
 pub fn apply_anthropic_thinking(body: &mut Value, mode: Option<ReasoningMode>) -> Option<Value> {
     let budget = anthropic_thinking_budget(mode?)?;
     let payload = json!({"type": "enabled", "budget_tokens": budget});
-    body.as_object_mut()?.insert("thinking".to_string(), payload.clone());
+    body.as_object_mut()?
+        .insert("thinking".to_string(), payload.clone());
     Some(json!({"thinking": payload}))
 }
 
@@ -173,9 +174,15 @@ mod tests {
     #[test]
     fn anthropic_budget_ladder_covers_every_mode() {
         assert_eq!(anthropic_thinking_budget(ReasoningMode::None), None);
-        assert_eq!(anthropic_thinking_budget(ReasoningMode::Minimal), Some(1024));
+        assert_eq!(
+            anthropic_thinking_budget(ReasoningMode::Minimal),
+            Some(1024)
+        );
         assert_eq!(anthropic_thinking_budget(ReasoningMode::Low), Some(4000));
-        assert_eq!(anthropic_thinking_budget(ReasoningMode::Medium), Some(10000));
+        assert_eq!(
+            anthropic_thinking_budget(ReasoningMode::Medium),
+            Some(10000)
+        );
         assert_eq!(anthropic_thinking_budget(ReasoningMode::High), Some(24000));
         assert_eq!(anthropic_thinking_budget(ReasoningMode::XHigh), Some(32000));
     }
@@ -190,7 +197,10 @@ mod tests {
             body["thinking"],
             json!({"type": "enabled", "budget_tokens": 24000})
         );
-        assert_eq!(payload, json!({"thinking": {"type": "enabled", "budget_tokens": 24000}}));
+        assert_eq!(
+            payload,
+            json!({"thinking": {"type": "enabled", "budget_tokens": 24000}})
+        );
     }
 
     #[test]

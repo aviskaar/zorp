@@ -1,7 +1,6 @@
-use async_trait::async_trait;
-use std::path::PathBuf;
-use tokio::process::Command;
 use crate::config::TelemetryThresholds;
+use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(Clone)]
 pub struct Transcript {
@@ -15,35 +14,36 @@ pub struct EvalContext {
     pub transcript: Option<Transcript>,
 }
 
+#[derive(Debug)]
 pub struct GraderResult {
     pub passed: bool,
     pub reason: String,
 }
 
-#[async_trait]
 pub trait Grader: Send + Sync {
-    async fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult>;
+    fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult>;
 }
 
 pub struct ScriptGrader {
     pub command: String,
 }
 
-#[async_trait]
 impl Grader for ScriptGrader {
-    async fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+    fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
         let trimmed = self.command.trim();
         if trimmed.is_empty() {
-            return Ok(GraderResult { passed: false, reason: "Empty command".to_string() });
+            return Ok(GraderResult {
+                passed: false,
+                reason: "Empty command".to_string(),
+            });
         }
-        
+
         let output_result = Command::new("sh")
             .arg("-c")
             .arg(trimmed)
             .current_dir(&ctx.workspace_path)
-            .output()
-            .await;
-            
+            .output();
+
         match output_result {
             Ok(output) => {
                 let passed = output.status.success();
@@ -52,12 +52,10 @@ impl Grader for ScriptGrader {
                     reason: format!("Exit code: {}", output.status),
                 })
             }
-            Err(e) => {
-                Ok(GraderResult {
-                    passed: false,
-                    reason: format!("Failed to execute command: {}", e),
-                })
-            }
+            Err(e) => Ok(GraderResult {
+                passed: false,
+                reason: format!("Failed to execute command: {}", e),
+            }),
         }
     }
 }
@@ -66,26 +64,37 @@ pub struct TelemetryGrader {
     pub thresholds: TelemetryThresholds,
 }
 
-#[async_trait]
 impl Grader for TelemetryGrader {
-    async fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+    fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
         let Some(transcript) = &ctx.transcript else {
-            return Ok(GraderResult { passed: false, reason: "No transcript found".to_string() });
+            return Ok(GraderResult {
+                passed: false,
+                reason: "No transcript found".to_string(),
+            });
         };
-        
+
         if let Some(max_turns) = self.thresholds.max_turns {
             if transcript.turns > max_turns {
-                return Ok(GraderResult { passed: false, reason: format!("Exceeded max turns {} > {}", transcript.turns, max_turns) });
+                return Ok(GraderResult {
+                    passed: false,
+                    reason: format!("Exceeded max turns {} > {}", transcript.turns, max_turns),
+                });
             }
         }
-        
+
         if let Some(max_tokens) = self.thresholds.max_tokens {
             if transcript.tokens > max_tokens {
-                return Ok(GraderResult { passed: false, reason: format!("Exceeded max tokens {} > {}", transcript.tokens, max_tokens) });
+                return Ok(GraderResult {
+                    passed: false,
+                    reason: format!("Exceeded max tokens {} > {}", transcript.tokens, max_tokens),
+                });
             }
         }
-        
-        Ok(GraderResult { passed: true, reason: "Under thresholds".to_string() })
+
+        Ok(GraderResult {
+            passed: true,
+            reason: "Under thresholds".to_string(),
+        })
     }
 }
 
@@ -94,12 +103,16 @@ pub struct LlmRubricGrader {
     pub api_url: String,
 }
 
-#[async_trait]
 impl Grader for LlmRubricGrader {
-    async fn evaluate(&self, _ctx: &EvalContext) -> anyhow::Result<GraderResult> {
-        // In full implementation, make reqwest call to `api_url`
-        // For the plan scope, we verify the structure works.
-        Ok(GraderResult { passed: true, reason: "LLM graded PASS".to_string() })
+    fn evaluate(&self, _ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+        // No LLM call exists yet. Returning a fabricated pass here would
+        // silently corrupt eval results, so fail loudly instead.
+        anyhow::bail!(
+            "LlmRubricGrader is not implemented: refusing to fabricate a grading result \
+             (rubric: {:?}, api_url: {:?})",
+            self.rubric,
+            self.api_url
+        )
     }
 }
 
@@ -107,119 +120,170 @@ impl Grader for LlmRubricGrader {
 mod tests {
     use super::*;
     use std::fs;
-    
-    #[tokio::test]
-    async fn test_script_grader() {
+
+    #[test]
+    fn test_script_grader() {
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("verify.sh");
         fs::write(&script_path, "#!/bin/sh\nexit 0").unwrap();
-        
-        let grader = ScriptGrader { command: "sh verify.sh".to_string() };
-        let ctx = EvalContext { workspace_path: dir.path().to_path_buf(), transcript: None };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+
+        let grader = ScriptGrader {
+            command: "sh verify.sh".to_string(),
+        };
+        let ctx = EvalContext {
+            workspace_path: dir.path().to_path_buf(),
+            transcript: None,
+        };
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(result.passed);
     }
 
-    #[tokio::test]
-    async fn test_script_grader_nonzero_exit() {
+    #[test]
+    fn test_script_grader_nonzero_exit() {
         let dir = tempfile::tempdir().unwrap();
-        let grader = ScriptGrader { command: "false".to_string() };
-        let ctx = EvalContext { workspace_path: dir.path().to_path_buf(), transcript: None };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+        let grader = ScriptGrader {
+            command: "false".to_string(),
+        };
+        let ctx = EvalContext {
+            workspace_path: dir.path().to_path_buf(),
+            transcript: None,
+        };
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(!result.passed);
         assert!(result.reason.contains("Exit code:"));
     }
-    
-    #[tokio::test]
-    async fn test_script_grader_empty_command() {
+
+    #[test]
+    fn test_script_grader_empty_command() {
         let dir = tempfile::tempdir().unwrap();
-        let grader = ScriptGrader { command: "   ".to_string() };
-        let ctx = EvalContext { workspace_path: dir.path().to_path_buf(), transcript: None };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+        let grader = ScriptGrader {
+            command: "   ".to_string(),
+        };
+        let ctx = EvalContext {
+            workspace_path: dir.path().to_path_buf(),
+            transcript: None,
+        };
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(!result.passed);
         assert_eq!(result.reason, "Empty command");
     }
 
-    #[tokio::test]
-    async fn test_script_grader_failed_to_spawn() {
-        let grader = ScriptGrader { command: "echo hello".to_string() };
-        let ctx = EvalContext { workspace_path: PathBuf::from("/dir_that_does_not_exist_zorp_test"), transcript: None };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+    #[test]
+    fn test_script_grader_failed_to_spawn() {
+        let grader = ScriptGrader {
+            command: "echo hello".to_string(),
+        };
+        let ctx = EvalContext {
+            workspace_path: PathBuf::from("/dir_that_does_not_exist_zorp_test"),
+            transcript: None,
+        };
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(!result.passed);
         assert!(result.reason.contains("Failed to execute command:"));
     }
 
-    #[tokio::test]
-    async fn test_telemetry_grader_no_transcript() {
+    #[test]
+    fn test_telemetry_grader_no_transcript() {
         let grader = TelemetryGrader {
-            thresholds: TelemetryThresholds { max_turns: Some(10), max_tokens: None },
+            thresholds: TelemetryThresholds {
+                max_turns: Some(10),
+                max_tokens: None,
+            },
         };
-        let ctx = EvalContext { workspace_path: PathBuf::new(), transcript: None };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+        let ctx = EvalContext {
+            workspace_path: PathBuf::new(),
+            transcript: None,
+        };
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(!result.passed);
         assert_eq!(result.reason, "No transcript found");
     }
 
-    #[tokio::test]
-    async fn test_telemetry_grader_pass() {
+    #[test]
+    fn test_telemetry_grader_pass() {
         let grader = TelemetryGrader {
-            thresholds: TelemetryThresholds { max_turns: Some(10), max_tokens: Some(1000) },
+            thresholds: TelemetryThresholds {
+                max_turns: Some(10),
+                max_tokens: Some(1000),
+            },
         };
         let ctx = EvalContext {
             workspace_path: PathBuf::new(),
-            transcript: Some(Transcript { turns: 5, tokens: 500, latency_ms: 100 }),
+            transcript: Some(Transcript {
+                turns: 5,
+                tokens: 500,
+                latency_ms: 100,
+            }),
         };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(result.passed);
         assert_eq!(result.reason, "Under thresholds");
     }
 
-    #[tokio::test]
-    async fn test_telemetry_grader_exceeds_turns() {
+    #[test]
+    fn test_telemetry_grader_exceeds_turns() {
         let grader = TelemetryGrader {
-            thresholds: TelemetryThresholds { max_turns: Some(5), max_tokens: None },
+            thresholds: TelemetryThresholds {
+                max_turns: Some(5),
+                max_tokens: None,
+            },
         };
         let ctx = EvalContext {
             workspace_path: PathBuf::new(),
-            transcript: Some(Transcript { turns: 6, tokens: 500, latency_ms: 100 }),
+            transcript: Some(Transcript {
+                turns: 6,
+                tokens: 500,
+                latency_ms: 100,
+            }),
         };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(!result.passed);
         assert!(result.reason.contains("Exceeded max turns 6 > 5"));
     }
 
-    #[tokio::test]
-    async fn test_telemetry_grader_exceeds_tokens() {
+    #[test]
+    fn test_telemetry_grader_exceeds_tokens() {
         let grader = TelemetryGrader {
-            thresholds: TelemetryThresholds { max_turns: None, max_tokens: Some(1000) },
+            thresholds: TelemetryThresholds {
+                max_turns: None,
+                max_tokens: Some(1000),
+            },
         };
         let ctx = EvalContext {
             workspace_path: PathBuf::new(),
-            transcript: Some(Transcript { turns: 5, tokens: 1001, latency_ms: 100 }),
+            transcript: Some(Transcript {
+                turns: 5,
+                tokens: 1001,
+                latency_ms: 100,
+            }),
         };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
+
+        let result = grader.evaluate(&ctx).unwrap();
         assert!(!result.passed);
         assert!(result.reason.contains("Exceeded max tokens 1001 > 1000"));
     }
 
-    #[tokio::test]
-    async fn test_llm_rubric_grader() {
+    #[test]
+    fn test_llm_rubric_grader_is_not_implemented() {
         let grader = LlmRubricGrader {
             rubric: "Be polite".to_string(),
             api_url: "http://example.com/api".to_string(),
         };
-        let ctx = EvalContext { workspace_path: PathBuf::new(), transcript: None };
-        
-        let result = grader.evaluate(&ctx).await.unwrap();
-        assert!(result.passed);
-        assert_eq!(result.reason, "LLM graded PASS");
+        let ctx = EvalContext {
+            workspace_path: PathBuf::new(),
+            transcript: None,
+        };
+
+        // It must not fabricate a pass. A loud error is the only honest
+        // result until a real LLM call exists.
+        let err = grader.evaluate(&ctx).unwrap_err().to_string();
+        assert!(err.contains("not implemented"), "unexpected error: {err}");
     }
 }

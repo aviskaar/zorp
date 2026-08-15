@@ -44,10 +44,13 @@ graders:
 telemetry_thresholds:
   max_turns: 10
 "#;
-        let config: EvalConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: EvalConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.id, "tb_01");
         assert_eq!(config.suite, "regression");
-        assert_eq!(config.telemetry_thresholds.as_ref().unwrap().max_turns, Some(10));
+        assert_eq!(
+            config.telemetry_thresholds.as_ref().unwrap().max_turns,
+            Some(10)
+        );
         assert_eq!(
             config.graders,
             vec![

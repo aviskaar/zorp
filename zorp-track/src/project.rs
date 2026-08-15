@@ -1,3 +1,4 @@
+#[cfg(feature = "library")]
 use crate::library::Library;
 use crate::track::Store;
 use crate::TrackError;
@@ -69,13 +70,15 @@ fn open_store_recovering_from_corruption(db_path: &Path) -> Result<Store, TrackE
 }
 
 /// The single entry point for a project's `.zorp/` directory: opens (or
-/// creates) the DuckDB run record, the LanceDB library, and a
-/// `.gitignore` covering the two regenerable stores while leaving
-/// `tracks/*/prereg.md` tracked.
+/// creates) the DuckDB run record and a `.gitignore` covering the
+/// regenerable stores while leaving `tracks/*/prereg.md` tracked. The
+/// LanceDB library (behind the `library` feature) is opened lazily on
+/// first use via `Project::library`, so nothing touches it otherwise.
 pub struct Project {
     root: PathBuf,
     pub store: Store,
-    pub library: Library,
+    #[cfg(feature = "library")]
+    library: std::cell::OnceCell<Library>,
 }
 
 impl Project {
@@ -99,20 +102,29 @@ impl Project {
         store.rebuild_from_prereg_files(&tracks_dir)?;
         store.verify_all_prereg_integrity(&tracks_dir)?;
 
-        let library = Library::open(&zorp_dir.join("lancedb"))?;
+        Ok(Project {
+            root: zorp_dir,
+            store,
+            #[cfg(feature = "library")]
+            library: std::cell::OnceCell::new(),
+        })
+    }
 
-        Ok(Project { root: zorp_dir, store, library })
+    /// The LanceDB library for this project, opened (and created on
+    /// disk) only on the first call.
+    #[cfg(feature = "library")]
+    pub fn library(&self) -> Result<&Library, TrackError> {
+        if self.library.get().is_none() {
+            let opened = Library::open(&self.root.join("lancedb"))?;
+            let _ = self.library.set(opened);
+        }
+        Ok(self.library.get().expect("library cell was just filled"))
     }
 
     /// The directory a track's `prereg.md` and future capability
     /// artifacts live in: `.zorp/tracks/<track_id>/`.
     pub fn track_dir(&self, track_id: &str) -> PathBuf {
         self.root.join("tracks").join(track_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn root_for_test(&self) -> &Path {
-        &self.root
     }
 }
 
@@ -165,7 +177,10 @@ mod tests {
         let track = project.store.get_track("t1").unwrap();
         assert_eq!(track.hypothesis, "does caching help");
         assert!(crate::prereg::verify_prereg_integrity(&project.store, "t1").is_ok());
-        assert!(project.store.verify_all_prereg_integrity(&tracks_dir).is_ok());
+        assert!(project
+            .store
+            .verify_all_prereg_integrity(&tracks_dir)
+            .is_ok());
 
         // Reopening again must also succeed (idempotent, not just a
         // one-time repair).
@@ -224,8 +239,8 @@ mod tests {
     }
 
     #[test]
-    fn is_lock_error_does_not_classify_a_corruption_message_with_lock_in_the_path_as_a_lock_error(
-    ) {
+    fn is_lock_error_does_not_classify_a_corruption_message_with_lock_in_the_path_as_a_lock_error()
+    {
         // A project directory whose path happens to contain the
         // substring "lock" (e.g. a repo named `blockchain/` or
         // `unlock-utils/`) embeds that substring in the error message

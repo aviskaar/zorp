@@ -15,13 +15,20 @@ pub enum McpError {
 impl fmt::Display for McpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            McpError::Connect(msg)    => write!(f, "mcp connect error: {msg}"),
-            McpError::Protocol(msg)   => write!(f, "mcp protocol error: {msg}"),
-            McpError::Transport(msg)  => write!(f, "mcp transport error: {msg}"),
-            McpError::ToolNotFound { server, name } => write!(f, "mcp tool not found: {server}/{name}"),
-            McpError::ServerError { code, message } => write!(f, "mcp server error {code}: {message}"),
-            McpError::Timeout { server, elapsed_secs } => write!(f, "mcp timeout after {elapsed_secs}s on server '{server}'"),
-            McpError::Config(msg)     => write!(f, "mcp config error: {msg}"),
+            McpError::Connect(msg) => write!(f, "mcp connect error: {msg}"),
+            McpError::Protocol(msg) => write!(f, "mcp protocol error: {msg}"),
+            McpError::Transport(msg) => write!(f, "mcp transport error: {msg}"),
+            McpError::ToolNotFound { server, name } => {
+                write!(f, "mcp tool not found: {server}/{name}")
+            }
+            McpError::ServerError { code, message } => {
+                write!(f, "mcp server error {code}: {message}")
+            }
+            McpError::Timeout {
+                server,
+                elapsed_secs,
+            } => write!(f, "mcp timeout after {elapsed_secs}s on server '{server}'"),
+            McpError::Config(msg) => write!(f, "mcp config error: {msg}"),
         }
     }
 }
@@ -39,13 +46,19 @@ mod tests {
     }
     #[test]
     fn display_tool_not_found() {
-        let e = McpError::ToolNotFound { server: "fs".into(), name: "read".into() };
+        let e = McpError::ToolNotFound {
+            server: "fs".into(),
+            name: "read".into(),
+        };
         assert!(e.to_string().contains("fs"));
         assert!(e.to_string().contains("read"));
     }
     #[test]
     fn display_timeout() {
-        let e = McpError::Timeout { server: "s".into(), elapsed_secs: 30 };
+        let e = McpError::Timeout {
+            server: "s".into(),
+            elapsed_secs: 30,
+        };
         assert!(e.to_string().contains("30"));
     }
 }

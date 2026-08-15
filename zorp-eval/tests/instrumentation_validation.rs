@@ -1,6 +1,6 @@
-use zorp_eval::{contracts, snapshot};
 use std::path::PathBuf;
 use std::process::Command;
+use zorp_eval::{contracts, snapshot};
 
 fn agent_binary() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -9,16 +9,23 @@ fn agent_binary() -> PathBuf {
     path
 }
 
+// This test drives a real zorp-agent run and needs a release build of the
+// agent plus working model credentials. It is ignored by default and must
+// be run explicitly:
+//
+//     cargo build --release -p zorp-agent
+//     cargo test -p zorp-eval --test instrumentation_validation -- --ignored
+//
+// When run, any missing prerequisite is a hard failure, not a silent pass.
 #[test]
+#[ignore = "requires a release zorp-agent build and model credentials; run explicitly with --ignored"]
 fn instrumentation_validation_gate() {
     let agent = agent_binary();
-    if !agent.exists() {
-        eprintln!(
-            "SKIP: {} not built. Run `cargo build --release -p zorp-agent` first.",
-            agent.display()
-        );
-        return;
-    }
+    assert!(
+        agent.exists(),
+        "{} not built. Run `cargo build --release -p zorp-agent` first.",
+        agent.display()
+    );
 
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("notes.txt"), "hello").unwrap();
@@ -40,18 +47,17 @@ fn instrumentation_validation_gate() {
         .env("ZORP_REPETITION", "0")
         .env("ZORP_REASONING_MODE", "high")
         .env("ZORP_MODEL", "qwen3.6:35b-mlx")
-        .status();
+        .status()
+        .expect("could not spawn zorp-agent");
 
-    let Ok(status) = status else {
-        eprintln!("SKIP: could not spawn zorp-agent (likely missing model credentials).");
-        return;
-    };
-    if !status.success() {
-        eprintln!("SKIP: zorp-agent exited non-zero (likely missing model credentials).");
-        return;
-    }
+    assert!(
+        status.success(),
+        "zorp-agent exited non-zero (check model credentials): {status}"
+    );
 
-    let events = contracts::load_trace(&trace_path).unwrap();
+    let trace = contracts::load_trace(&trace_path).unwrap();
+    assert_eq!(trace.malformed_lines, 0, "trace contains malformed lines");
+    let events = &trace.events;
     let has = |t: &str| {
         events
             .iter()
@@ -65,5 +71,8 @@ fn instrumentation_validation_gate() {
 
     snapshot::restore(&backup.path().join("snap"), workspace.path()).unwrap();
     let after_hash = snapshot::snapshot_hash(workspace.path()).unwrap();
-    assert_eq!(before_hash, after_hash, "snapshot restore did not reproduce identical hash");
+    assert_eq!(
+        before_hash, after_hash,
+        "snapshot restore did not reproduce identical hash"
+    );
 }

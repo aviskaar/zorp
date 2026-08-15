@@ -30,21 +30,30 @@ fn main() {
         };
         let id = req.get("id").cloned().unwrap_or(Value::Null);
         match req.get("method").and_then(|m| m.as_str()) {
-            Some("initialize") => respond(&id, json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "serverInfo": { "name": "stub-search", "version": "0.1.0" }
-            })),
-            Some("tools/list") => respond(&id, json!({
-                "tools": [{
-                    "name": "search",
-                    "description": "search the web",
-                    "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } } }
-                }]
-            })),
-            Some("tools/call") => respond(&id, json!({
-                "content": [{ "type": "text", "text": "Stub result: no prior work found on this exact question. A relevant benchmarking tool already exists in the target repo." }]
-            })),
+            Some("initialize") => respond(
+                &id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "serverInfo": { "name": "stub-search", "version": "0.1.0" }
+                }),
+            ),
+            Some("tools/list") => respond(
+                &id,
+                json!({
+                    "tools": [{
+                        "name": "search",
+                        "description": "search the web",
+                        "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } } }
+                    }]
+                }),
+            ),
+            Some("tools/call") => respond(
+                &id,
+                json!({
+                    "content": [{ "type": "text", "text": "Stub result: no prior work found on this exact question. A relevant benchmarking tool already exists in the target repo." }]
+                }),
+            ),
             _ => {}
         }
     }

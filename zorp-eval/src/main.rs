@@ -2,15 +2,16 @@ use clap::Parser;
 use zorp_eval::runner;
 mod cli;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
     match args.command {
         cli::Command::Eval { suite } => {
-            println!("Running suite: {suite}");
-            let db_path = std::path::Path::new("evals/results/telemetry.db");
-            runner::init_db(db_path)?;
-            println!("Database initialized.");
+            // No grader pipeline is wired up yet. Exiting successfully here
+            // would look like a completed eval that never ran, so refuse.
+            anyhow::bail!(
+                "the eval subcommand is not implemented yet: no graders were run for suite '{suite}'. \
+                 Use the compat subcommand to run a contract-based experiment."
+            );
         }
         cli::Command::Compat {
             manifest,
@@ -19,7 +20,10 @@ async fn main() -> anyhow::Result<()> {
             agent_binary,
         } => {
             runner::run_suite(&manifest, &tasks_dir, &db, &agent_binary)?;
-            println!("Compatibility experiment complete. Results in {}", db.display());
+            println!(
+                "Compatibility experiment complete. Results in {}",
+                db.display()
+            );
         }
     }
     Ok(())

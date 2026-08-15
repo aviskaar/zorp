@@ -54,7 +54,10 @@ mod tests {
 
     #[test]
     fn display_not_found() {
-        let e = TrackError::NotFound { kind: "track", id: "t1".into() };
+        let e = TrackError::NotFound {
+            kind: "track",
+            id: "t1".into(),
+        };
         assert!(e.to_string().contains("track"));
         assert!(e.to_string().contains("t1"));
     }
@@ -71,7 +74,9 @@ mod tests {
 
     #[test]
     fn display_checkpoint_blocked() {
-        let e = TrackError::CheckpointBlocked { kind: "validate".into() };
+        let e = TrackError::CheckpointBlocked {
+            kind: "validate".into(),
+        };
         assert!(e.to_string().contains("validate"));
         assert!(e.to_string().contains("AutoApprove"));
     }

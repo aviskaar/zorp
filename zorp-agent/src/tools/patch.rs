@@ -352,16 +352,17 @@ let x = 2;
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("src")).unwrap();
         // Write the file with CRLF endings.
-        fs::write(
-            dir.path().join("src/a.rs"),
-            "let x = 1;\r\nlet y = 2;\r\n",
-        )
-        .unwrap();
+        fs::write(dir.path().join("src/a.rs"), "let x = 1;\r\nlet y = 2;\r\n").unwrap();
         let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         // Patch text uses plain LF (as is typical from the model).
-        let patch = "------ src/a.rs\n<<<<<<< SEARCH\nlet x = 1;\n=======\nlet x = 42;\n>>>>>>> REPLACE";
+        let patch =
+            "------ src/a.rs\n<<<<<<< SEARCH\nlet x = 1;\n=======\nlet x = 42;\n>>>>>>> REPLACE";
         let out = ApplyPatch.run(&json!({"patch": patch}), &mut cx).unwrap();
-        assert!(out.content.contains("applied"), "patch did not apply: {}", out.content);
+        assert!(
+            out.content.contains("applied"),
+            "patch did not apply: {}",
+            out.content
+        );
         let result = fs::read_to_string(dir.path().join("src/a.rs")).unwrap();
         // The file must keep CRLF endings and must not contain \r\r\n.
         assert!(
@@ -388,7 +389,11 @@ let x = 2;
         // Patch blocks already contain \r\n inside them (simulating a Windows-pasted patch).
         let patch = "------ src/b.rs\n<<<<<<< SEARCH\nfn foo() {\r\n    let x = 1;\r\n}\n=======\nfn foo() {\r\n    let x = 99;\r\n}\n>>>>>>> REPLACE";
         let out = ApplyPatch.run(&json!({"patch": patch}), &mut cx).unwrap();
-        assert!(out.content.contains("applied"), "patch did not apply: {}", out.content);
+        assert!(
+            out.content.contains("applied"),
+            "patch did not apply: {}",
+            out.content
+        );
         let result = fs::read_to_string(dir.path().join("src/b.rs")).unwrap();
         // Must not have double CRLF.
         assert!(
