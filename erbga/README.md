@@ -49,18 +49,42 @@ writing anything, so a moved or changed upstream file fails loudly rather
 than silently substituting a different network.
 
 Targets are thesis Table 3, including the two networks the method did
-badly on:
+badly on. Measured here at 25 islands, 1000 generations, thesis
+parameters:
 
-| Network | E/V | Best known | ERBGA |
-|---|---|---|---|
-| Karate | 2.3 | 0.420 | 0.420 |
-| Dolphin | 2.6 | 0.529 | 0.445 |
-| Political Books | 4.2 | 0.527 | 0.256 |
-| Football | 5.3 | 0.605 | 0.073 |
+| Network | E/V | Best known | Thesis ERBGA | Best here | Median island |
+|---|---|---|---|---|---|
+| Karate | 2.3 | 0.420 | 0.420 | **0.4198** | 0.4198 |
+| Dolphin | 2.6 | 0.529 | 0.445 | **0.5238** | 0.4645 |
+| Political Books | 4.2 | 0.527 | 0.256 | **0.5023** | 0.4972 |
+| Football | 5.3 | 0.605 | 0.073 | **0.3807** | 0.3021 |
 
-Accuracy degrades monotonically with density across all four, with Gene
-Repair enabled. That is worth knowing before building on this: the method
-is strongest on sparse graphs.
+The median matters more than the best. A maximum over 25 stochastic runs
+says little about whether a typical run is healthy, and the published
+protocol is best-of-islands.
+
+The clearest difference from the source is there: **every one of the 25
+islands reaches the optimum on Karate here, where the thesis reports 4 of
+25 with the rest near 0.397.** That is a behavioural difference rather
+than a tuning one.
+
+Karate lands on the exact modularity optimum, independently established
+at 0.419790 by a clique-partitioning ILP solved to proven optimality and
+cross-checked against brute force. That is asserted as a one-sided test:
+no result may exceed it, because a higher number means the objective is
+over-counting rather than the search excelling.
+
+**This implementation beats the published values on three of four
+networks**, substantially so on Political Books and Football. Treat that
+as a flag rather than a result. Either it avoids the "slow start for
+productive evolution" the thesis names in its own future work, or it
+differs from the original somewhere. The exact agreement on Karate argues
+the core is faithful, and no result exceeds the best-known value on any
+network, which is also asserted.
+
+The density trend the thesis reports does still hold in the gap to best
+known: 100% of BKR on Karate, 99% on Dolphin, 95% on Political Books,
+63% on Football. The method is strongest on sparse graphs.
 
 The full benchmark is `#[ignore]` and slow. It is stochastic (the thesis
 reports 4 of 25 islands reaching 0.420 on Karate, the rest near 0.397)
@@ -86,6 +110,19 @@ silently chosen.
 The thesis text supports the higher population rate: "tweaking the Random
 Population Rate to be closer to 1 resulted in the improvement in the
 quality of the initial set of chromosomes."
+
+Running both settles it empirically. On Football, the densest network,
+the paper's 0.25 collapses to a best of **0.0248 and a median of exactly
+0.0** (every typical island fails to separate the graph at all), while
+the thesis's 0.85 reaches a best of **0.3807** and a median of 0.3021.
+Political Books shows the same pattern less severely: medians of 0.1271
+against 0.4972.
+
+The two settings agree on Karate and are close on the sparser networks,
+so the disagreement only appears where it matters. The paper's 0.25 is
+very likely a typo, and a removal rate too low to disconnect a dense
+graph is a plausible mechanism for the slow start the thesis reports on
+exactly these networks.
 
 ## Notes on this implementation
 

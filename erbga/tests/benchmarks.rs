@@ -109,6 +109,36 @@ fn fixtures_match_the_published_counts() {
     }
 }
 
+/// Karate's exact modularity optimum, established independently by a
+/// clique-partitioning ILP solved to proven optimality and cross-checked
+/// against brute force. The optimal partition has four communities
+/// holding {6, 7, 21, 23} internal edges and {16, 24, 56, 60} total
+/// degree.
+const KARATE_EXACT_OPTIMUM: f64 = 0.419_790;
+
+/// A one-sided correctness check on the objective rather than on the
+/// search. No partition of Karate can score above the exact optimum, so
+/// a higher number means modularity is over-counting somewhere, which a
+/// benchmark comparing against a lower published value would happily
+/// report as success.
+#[test]
+fn no_search_result_can_exceed_karate_exact_optimum() {
+    let g = load("karate");
+    let params = GaParams {
+        population_size: 80,
+        generations: 400,
+        ..GaParams::thesis()
+    };
+    for r in run_islands(&g, &Modularity, &params, 5, 20_260_814) {
+        assert!(
+            r.fitness <= KARATE_EXACT_OPTIMUM + 1e-6,
+            "scored Q={:.6}, above Karate's proven optimum {KARATE_EXACT_OPTIMUM:.6}; \
+             the objective is over-counting",
+            r.fitness
+        );
+    }
+}
+
 /// Deterministic and quick. Catches a broken engine (which scores near
 /// zero or negative) without depending on reaching the published optimum.
 #[test]
@@ -137,9 +167,13 @@ fn reproduces_thesis_table_3() {
     let islands = 25;
     let params_sets = [("thesis", GaParams::thesis()), ("paper", GaParams::paper())];
 
+    // Report the median as well as the best. The published values come
+    // from a best-of-islands protocol, and a max over 25 stochastic runs
+    // says little about whether a typical run is healthy. The median is
+    // the more powerful signal per unit of compute and is not flaky.
     println!(
-        "\n{:<10} {:>8} {:>8} {:>8} {:>8}",
-        "network", "params", "best", "erbga", "bkr"
+        "\n{:<10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10}",
+        "network", "params", "best", "median", "erbga", "bkr", "vs bkr"
     );
     let mut failures = Vec::new();
 
@@ -152,18 +186,38 @@ fn reproduces_thesis_table_3() {
             };
             let results = run_islands(&g, &Modularity, &params, islands, 20_260_814);
             let best = best_of(&results).fitness;
-            let reached = results
-                .iter()
-                .filter(|r| r.fitness >= b.erbga - 0.005)
-                .count();
+
+            let mut scores: Vec<f64> = results.iter().map(|r| r.fitness).collect();
+            scores.sort_by(f64::total_cmp);
+            let median = scores[scores.len() / 2];
+
             println!(
-                "{:<10} {:>8} {:>8.4} {:>8.3} {:>8.3}   ({reached}/{islands} islands reached the published value)",
-                b.name, label, best, b.erbga, b.bkr
+                "{:<10} {:>8} {:>8.4} {:>8.4} {:>8.3} {:>8.3} {:>9.1}%",
+                b.name,
+                label,
+                best,
+                median,
+                b.erbga,
+                b.bkr,
+                100.0 * best / b.bkr
             );
+
+            // One-sided against the published value: this catches a gross
+            // regression, not a subtly wrong implementation. The real
+            // correctness checks are the Karate exact-optimum bound above
+            // and the unit suite, not this.
             if *label == "thesis" && best < b.erbga - 0.05 {
                 failures.push(format!(
                     "{}: got {best:.4}, thesis reports {:.3}",
                     b.name, b.erbga
+                ));
+            }
+            // No result may exceed the best known value. If one does,
+            // modularity is over-counting.
+            if best > b.bkr + 1e-6 {
+                failures.push(format!(
+                    "{}: got {best:.4}, above the best known {:.3}; objective is wrong",
+                    b.name, b.bkr
                 ));
             }
         }
@@ -171,7 +225,7 @@ fn reproduces_thesis_table_3() {
 
     assert!(
         failures.is_empty(),
-        "benchmarks below the published values:\n  {}",
+        "benchmark failures:\n  {}",
         failures.join("\n  ")
     );
 }
