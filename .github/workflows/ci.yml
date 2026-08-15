@@ -53,8 +53,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # `shared-key` is load bearing, do not remove it. By default
+      # rust-cache puts the job name in the cache key, which would make
+      # this job's cache and `research-pr`'s two different entries. A pull
+      # request can only restore caches from its own ref and from main, so
+      # `research-pr` would look on main for a key only it ever writes,
+      # miss every time, and rebuild DuckDB from source for 35 minutes.
+      # This job is the one that runs on main, so it is the one that fills
+      # the shared entry.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: research-stack
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -92,9 +102,20 @@ jobs:
         if: steps.filter.outputs.research == 'true'
         uses: dtolnay/rust-toolchain@stable
 
+      # Restore the entry the `research` job filled on main, and never
+      # write one. See the note on that job for why the key is shared. A
+      # pull request's own cache is visible only to that pull request, so
+      # saving here bought nothing except 3.2 GB of the repository's 10 GB
+      # cache budget, evicting the main entry every other pull request
+      # depends on.
       - name: Cache cargo
         if: steps.filter.outputs.research == 'true'
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: research-stack
+          # Quoted: this is a string input, and an unquoted YAML boolean
+          # here is the kind of thing that reads as working and does not.
+          save-if: "false"
 
       - name: Install protoc
         if: steps.filter.outputs.research == 'true'
