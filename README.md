@@ -83,6 +83,7 @@ record, and deliver matches the finished draft against real venues.
 ├── zorp-mcp/            # MCP client/server integration
 ├── zorp-track/          # research foundation: tracks, evidence records, pre-registration, checkpoints
 ├── zorp-eval/           # deterministic evaluation harness
+├── erbga/               # standalone genetic algorithm for graph community detection (no zorp deps)
 ├── evals/               # eval suites (smoke tests, Terminal-Bench, Harbor adapter)
 ├── examples/            # usage examples (e.g. OpenTelemetry tracing)
 ├── docs/

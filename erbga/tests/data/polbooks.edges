@@ -1,4 +1,8 @@
 # polbooks: 105 vertices, 441 edges. 0-indexed, one 'u v' per line.
+#
+# Books about US politics, via M. E. J. Newman's network data
+# collection. Compiled by V. Krebs, unpublished.
+# See NOTICE.md.
 105 441
 0 1
 0 17

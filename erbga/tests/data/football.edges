@@ -1,4 +1,9 @@
 # football: 115 vertices, 613 edges. 0-indexed, one 'u v' per line.
+#
+# US college football games, Fall 2000, via M. E. J. Newman's network
+# data collection. M. Girvan and M. E. J. Newman, "Community structure
+# in social and biological networks", PNAS 99, 7821-7826 (2002).
+# See NOTICE.md.
 115 613
 0 1
 0 7

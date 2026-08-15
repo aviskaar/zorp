@@ -3,6 +3,10 @@
 Counts are verified against Table 2 of the ERBGA thesis before anything is
 written, so a moved or changed upstream file fails loudly instead of
 silently producing a different benchmark.
+
+These are other people's datasets, redistributed in this repo. Each output
+file carries its attribution in its own header, written from CREDITS below,
+so regenerating never silently drops it. NOTICE.md carries the same list.
 """
 
 import io
@@ -21,6 +25,33 @@ SPECS = [
     ("polbooks", "http://websites.umich.edu/~mejn/netdata/polbooks.zip", 105, 441),
     ("football", "http://websites.umich.edu/~mejn/netdata/football.zip", 115, 613),
 ]
+
+# Attribution, written into each output file. The three fetched from
+# Newman's collection ask that the original work be cited, not the
+# collection. Keep in sync with NOTICE.md.
+CREDITS = {
+    "karate": [
+        "Zachary's karate club, from the copy bundled with networkx.",
+        'W. W. Zachary, "An information flow model for conflict and fission',
+        'in small groups", Journal of Anthropological Research 33, 452-473',
+        "(1977).",
+    ],
+    "dolphins": [
+        "The Doubtful Sound dolphin social network, via M. E. J. Newman's",
+        "network data collection. D. Lusseau, K. Schneider, O. J. Boisseau,",
+        "P. Haase, E. Slooten, and S. M. Dawson, Behavioral Ecology and",
+        "Sociobiology 54, 396-405 (2003).",
+    ],
+    "polbooks": [
+        "Books about US politics, via M. E. J. Newman's network data",
+        "collection. Compiled by V. Krebs, unpublished.",
+    ],
+    "football": [
+        "US college football games, Fall 2000, via M. E. J. Newman's network",
+        'data collection. M. Girvan and M. E. J. Newman, "Community structure',
+        'in social and biological networks", PNAS 99, 7821-7826 (2002).',
+    ],
+}
 
 
 def load(url):
@@ -54,6 +85,10 @@ def main():
         )
         with open(os.path.join(OUT, f"{name}.edges"), "w") as f:
             f.write(f"# {name}: {n} vertices, {m} edges. 0-indexed, one 'u v' per line.\n")
+            f.write("#\n")
+            for line in CREDITS[name]:
+                f.write(f"# {line}\n")
+            f.write("# See NOTICE.md.\n")
             f.write(f"{n} {m}\n")
             for u, v in edges:
                 f.write(f"{u} {v}\n")

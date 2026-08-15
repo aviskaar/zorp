@@ -48,6 +48,10 @@ verifies vertex and edge counts against Table 2 of the thesis before
 writing anything, so a moved or changed upstream file fails loudly rather
 than silently substituting a different network.
 
+The four networks are other people's data, committed here so the
+benchmark runs without a network fetch. Each file carries its attribution
+in its own header, and `NOTICE.md` at the repo root lists all four.
+
 Targets are thesis Table 3, including the two networks the method did
 badly on. Measured here at 25 islands, 1000 generations, thesis
 parameters:

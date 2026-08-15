@@ -11,8 +11,10 @@ when either changes.
 
 A Rust workspace, forked from [quecto](https://github.com/adityak74/quecto)
 (MIT) and renamed. Crates and binaries are `zorp`, `zorp-agent`,
-`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`. Env vars use
-the `ZORP_` prefix. It's being extended into a harness for evidence-based
+`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`. `erbga` is a
+sixth workspace member and ships no binary; see the bullet below. Env
+vars use the `ZORP_` prefix. It's being extended into a harness for
+evidence-based
 investigation: validate a question, investigate it, co-write the
 resulting artifact, deliver it in the right form.
 
@@ -31,6 +33,16 @@ resulting artifact, deliver it in the right form.
 - New, zorp-specific capabilities should be clearly separated from
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
+- `erbga/` is neither inherited harness code nor a zorp capability, so
+  neither of the two bullets above applies to it. It is a standalone,
+  zero-dependency implementation of published prior work (Rao, Janikow,
+  Bhatia, Climer, MWAIS 2018): a genetic algorithm for graph community
+  detection, validated against that work's four benchmarks. It knows
+  nothing about zorp and nothing depends on it. It came out of a design
+  that was then rejected (`docs/DECISIONS.md`, 2026-08-15) and is kept
+  on its own terms as a validated artifact. Don't wire it into the
+  research stack without a decision that says to, and don't delete it as
+  dead code.
 - `reference/` is gitignored, local-only material (e.g. AI-Scientist-v2)
   used for design inspiration. Never copy code from it into tracked files;
   its license doesn't permit redistribution under zorp's terms. Read it
