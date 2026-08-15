@@ -5,6 +5,101 @@ building zorp. Newest entries at the top. Each entry is short: what was
 decided, why, and what it ruled out. Full design writeups, when they
 exist, live in `docs/superpowers/specs/` and are linked from here.
 
+Entries are never rewritten or deleted. When a later decision reverses an
+earlier one, the earlier entry gets a **Superseded by** line pointing
+forward and is otherwise left as it was written, so the record shows what
+was believed at the time and not only what survived.
+
+---
+
+## 2026-08-15: evolve's search layer is not approved, its measurement discipline is
+
+**Decision:** the `evolve` spec is marked NOT APPROVED and nothing is
+built from it. Two rounds of adversarial review, eight reviewers, found
+the search layer unsound both times, and the second round showed the
+first rewrite had moved the flaw rather than removed it. `erbga` ships on
+its own terms as a validated implementation of prior work, off any
+critical path.
+
+**Why:** three findings compose into one conclusion. There is no free
+inner search, because variation is model-proposed, so the affordability
+argument the whole design rests on is false. The framing score is
+maximized by an undifferentiated blob, because CPM's objective is
+extensive and edge addition was priced free. And two of its three score
+terms are identically 1.0 by construction, which is the same defect as
+the draft before it under new names. At `V = 20` an exact
+clique-partitioning ILP solves the partition to proven optimality in
+about 0.2 seconds, so the cut was never the hard part; the framing is,
+and there is no cheap search over framings either.
+
+**What survives, and should be built on ordinary `investigate` runs:**
+never selecting on the pre-registered metric (breeding toward a metric
+and then reporting it is biased upward twice, and pre-registration does
+not cover selecting the observation that best clears a fixed test); the
+confirmatory stage of `n` passes with the threshold on the mean and nulls
+counted as non-passing; refusing to call framing diversity corroboration
+when all lines share one model; quorum rather than unanimity for track
+death.
+
+**Bugs found in shipped code, worth fixing regardless:**
+`TrackStatus::from_str` and `ExperimentStatus::from_str` both have
+catch-all arms that silently coerce an unknown status to `Active` and
+`Planned`. For a product that must not let a non-result look like a live
+result, that is the worst possible default.
+
+**Full writeup:** `docs/superpowers/specs/2026-08-14-zorp-evolve-design.md`,
+whose "Where this stands" and "Review record" sections carry the detail.
+
+---
+
+## 2026-08-14: a fifth capability, evolve, searches question framings and never selects on the metric
+
+**Superseded by** the 2026-08-15 entry above, one day later. Nothing
+below was built. The search layer described here is not approved and the
+spec it points at is marked NOT APPROVED. `erbga` did ship, on its own
+terms and wired to nothing. The rest of this entry is left as written,
+because the findings against it need something to point at.
+
+**Decision:** zorp gains `evolve`. It searches for a good way to
+**decompose** a question, not for an answer. A population of framings
+(sub-questions, a weighted "bears on" relation, marked cross-cutting
+premises) evolves against a deterministic structural score, and the
+partition of any given framing is solved directly rather than evolved.
+The pre-registered metric appears nowhere in selection; it is measured
+once per island after the search, over n independent synthesis passes,
+with the threshold applied to the mean. Output is a distribution and its
+dissent, not a number. Ships as an `erbga` crate (the algorithm of Rao,
+Janikow, Bhatia, Climer, MWAIS 2018, zorp's author's prior work, used as
+the partition solver for large framings and validated against that
+paper's benchmarks) plus `zorp-agent/src/evolve/`.
+
+**Why:** breeding a population to maximize a metric and then reporting
+that metric is biased upward twice over. Framings that surface
+inconvenient evidence score worse and stop breeding, and the maximum of
+N noisy evaluations exceeds the truth by about sigma*sqrt(2 ln N).
+Pre-registration does not cover this: it stops you moving the test after
+seeing data, not selecting the observation that best clears a fixed
+test. Separately, the uncertainty in this problem lives in the graph,
+which a model invents and which was never revisited, not in the cut,
+which is a small solvable problem. So the compute moved to the framings.
+
+**What it rules out:** modularity as the objective, since its resolution
+limit does not bind on the source's benchmarks but binds on every
+realistic question graph, so CPM with a pre-registered gamma is used
+instead. Corroboration as a claim, since all islands share one model;
+the property is renamed framing diversity, cross-island evidence reuse
+is forbidden for anything feeding a reported result, and component
+source overlap is measured rather than assumed. Track death by
+unanimity, replaced with a pre-registered quorum. A recorded-only
+parameter tier, since when the result depends on a search, search effort
+is answer selection, so every input is pre-registered. Also gone: Gene
+Repair at this layer (the source's own results show accuracy degrading
+monotonically with density with it enabled), and the claim that
+evidence cost is bounded by vertex count.
+
+**Full writeup:** `docs/superpowers/specs/2026-08-14-zorp-evolve-design.md`,
+whose closing section records what four adversarial reviews changed.
+
 ---
 
 ## 2026-08-14: stdio MCP reads get a deadline, and unadvertised features are not probed
