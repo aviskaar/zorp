@@ -7,6 +7,48 @@ exist, live in `docs/superpowers/specs/` and are linked from here.
 
 ---
 
+## 2026-08-14: a fifth capability, evolve, searches cuts of a question graph
+
+**Decision:** zorp gains `evolve`, a population search that competes many
+decompositions of one question instead of running a single attempt. A
+question graph has sub-questions as vertices and "these bear on each
+other" as edges; a chromosome is a bit string over the edges, and the
+connected components left after removal are the independent lines of
+inquiry. The search core is ERBGA (Rao, Janikow, Bhatia, Climer, MWAIS
+2018), zorp's author's own prior work, adapted from community detection.
+It ships as a new `erbga` crate holding the question-agnostic algorithm
+plus `zorp-agent/src/evolve/` for the integration, behind `research` and
+`library`.
+
+**Why:** a defensible answer needs independent lines of evidence that
+converge, and one attempt cannot produce that. ERBGA's edge-removal
+representation is what makes a population affordable: because a
+chromosome varies only the cut, the vertex set is invariant across every
+chromosome, generation, and island, so evidence gathering is per-vertex,
+memoized, and bounded by vertex count rather than by population times
+generations. The representation chosen to remove k! redundancy turns out
+to be the one that makes memoization maximally effective. Fitness is
+two-tier as a result: a cheap structural proxy drives the inner search
+and can never kill anything, while the pre-registered metric is
+evaluated only on elites and alone decides kill or keep.
+
+**What it rules out:** convergence as a goal. Survivors that agree
+because they share a decomposition are not corroboration but look like
+it, so selection penalizes similarity, the coefficient is
+pre-registered, and each island builds its own question graph.
+Threshold-breach semantics split: an individual breaching dies silently
+because that is elimination working, while the track dies only when
+every island's best breaches, and the `AutoApprove` exemption attaches
+to track death alone rather than firing thousands of times. Also ruled
+out: letting the proxy kill anything, cross-island migration in v1
+(chromosomes are not portable between islands with different graphs),
+and ERBGA's memory work, which solves a problem this system does not
+have.
+
+**Full writeup:** `docs/superpowers/specs/2026-08-14-zorp-evolve-design.md`
+
+---
+
 ## 2026-08-14: stdio MCP reads get a deadline, and unadvertised features are not probed
 
 **Decision:** `StdioTransport` reads its child's stdout on a helper
