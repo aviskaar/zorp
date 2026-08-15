@@ -512,3 +512,67 @@ fn image_flag_includes_image_in_request() {
     assert!(body.contains("what is this"));
     assert!(body.contains("data:image/png;base64,"));
 }
+
+/// A global flag before a subcommand must still reach the subcommand.
+/// It used to be swallowed by the trailing task positional, so
+/// `zorp-agent --yes undo` silently ran the *model* on the task text
+/// "undo" instead of undoing anything, printed whatever the model said,
+/// and exited 0. Auto-approval made that worse, not better.
+#[test]
+fn a_global_flag_before_a_subcommand_does_not_turn_it_into_a_task() {
+    let dir = tempfile::tempdir().unwrap();
+    // If the subcommand is swallowed, the run reaches the model and
+    // prints "MODEL WAS CALLED". Reaching the model at all is failure.
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"MODEL WAS CALLED"},"finish_reason":"stop"}]}"#,
+    );
+    for sub in ["undo", "diff"] {
+        let out = Command::new(bin())
+            .arg("--yes")
+            .arg(sub)
+            .env("ZORP_BASE_URL", &base)
+            .env("ZORP_MODEL", "m")
+            .env("ZORP_STATE_DB", dir.path().join("s.db"))
+            .env_remove("ZORP_API_KEY")
+            .env_remove("ZORP_SYSTEM")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("MODEL WAS CALLED"),
+            "`--yes {sub}` was routed to the model as a task; stdout: {stdout}"
+        );
+    }
+}
+
+/// The bare-task path must survive the fix, including a task whose
+/// first word happens to be a subcommand name once `--` is used.
+#[test]
+fn bare_tasks_still_reach_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ANSWERED"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .arg("--yes")
+        .arg("--")
+        .arg("diff")
+        .arg("these")
+        .arg("files")
+        .env("ZORP_BASE_URL", &base)
+        .env("ZORP_MODEL", "m")
+        .env("ZORP_STATE_DB", dir.path().join("s.db"))
+        .env_remove("ZORP_API_KEY")
+        .env_remove("ZORP_SYSTEM")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("ANSWERED"),
+        "an explicit `--` task should still run: {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

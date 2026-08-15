@@ -11,6 +11,9 @@ pub struct McpServer {
     pub trust: TrustLevel,
     transport: Box<dyn Transport>,
     id_counter: u64,
+    /// What `initialize` reported the server can do. `None` means the
+    /// server sent no capabilities block at all.
+    capabilities: Option<serde_json::Value>,
 }
 
 impl McpServer {
@@ -22,6 +25,7 @@ impl McpServer {
                     McpError::Config(format!("server '{}': stdio requires `command`", cfg.name))
                 })?;
                 Box::new(StdioTransport::spawn(
+                    &cfg.name,
                     cmd,
                     &cfg.args,
                     &cfg.env,
@@ -59,7 +63,18 @@ impl McpServer {
             trust: cfg.trust.clone(),
             transport,
             id_counter: 1,
+            capabilities: None,
         })
+    }
+
+    /// Whether the server declared the `prompts` capability. A server
+    /// that sent no capabilities block at all gets the benefit of the
+    /// doubt, since we cannot tell "no prompts" from "did not say".
+    fn advertises_prompts(&self) -> bool {
+        match &self.capabilities {
+            Some(caps) => caps.get("prompts").is_some(),
+            None => true,
+        }
     }
 
     pub(crate) fn next_id(&mut self) -> u64 {
@@ -93,6 +108,14 @@ impl McpServer {
                 message: err.message,
             });
         }
+        // Remember what the server said it can do, so we do not probe
+        // features it never claimed. Absent entirely means "server did
+        // not tell us", and we fall back to asking.
+        self.capabilities = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("capabilities"))
+            .cloned();
         // The spec requires this notification after a successful initialize.
         // SDK-based servers gate tools/list on it.
         self.transport
@@ -174,6 +197,12 @@ impl McpServer {
     }
 
     pub fn list_prompt_names(&mut self) -> Result<Vec<String>, McpError> {
+        // Asking a server for a feature it never advertised is at best a
+        // wasted round trip and at worst a hang, since a server under no
+        // obligation to implement the method may simply not answer.
+        if !self.advertises_prompts() {
+            return Ok(Vec::new());
+        }
         let id = self.next_id();
         let resp = self.send_request(JsonRpcRequest::new(id, "prompts/list", None))?;
         if let Some(err) = resp.error {
@@ -351,7 +380,60 @@ mod tests {
             trust: TrustLevel::Sandbox,
             transport: Box::new(MockTransport { state }),
             id_counter: 1,
+            capabilities: None,
         }
+    }
+
+    #[test]
+    fn prompts_are_not_requested_from_a_server_that_does_not_offer_them() {
+        // The mock advertises `"capabilities": {}`, so prompts/list must
+        // never go out. Probing it is a wasted round trip against a
+        // compliant server and an outright hang against one that answers
+        // unsupported methods with silence.
+        let state = Arc::new(Mutex::new(MockState {
+            tool_pages: vec![json!({"tools": []})],
+            ..Default::default()
+        }));
+        let mut srv = mock_server(state.clone());
+        srv.initialize().unwrap();
+        assert!(srv.list_prompt_names().unwrap().is_empty());
+        let st = state.lock().unwrap();
+        assert!(
+            !st.sent.iter().any(|(m, _)| m == "prompts/list"),
+            "prompts/list was sent anyway: {:?}",
+            st.sent
+        );
+    }
+
+    #[test]
+    fn prompts_are_requested_when_the_server_advertises_them() {
+        let state = Arc::new(Mutex::new(MockState {
+            tool_pages: vec![json!({"tools": []})],
+            ..Default::default()
+        }));
+        let mut srv = mock_server(state.clone());
+        srv.initialize().unwrap();
+        // Pretend initialize reported prompts support.
+        srv.capabilities = Some(json!({"prompts": {}}));
+        // The mock has no prompts/list handler, so this errors rather
+        // than returning names; the point is that the request goes out.
+        let _ = srv.list_prompt_names();
+        let st = state.lock().unwrap();
+        assert!(st.sent.iter().any(|(m, _)| m == "prompts/list"));
+    }
+
+    #[test]
+    fn a_server_that_reports_no_capabilities_at_all_is_still_probed() {
+        // `None` means the server never told us, which is different from
+        // telling us it has no prompts. Fall back to asking.
+        let state = Arc::new(Mutex::new(MockState {
+            tool_pages: vec![json!({"tools": []})],
+            ..Default::default()
+        }));
+        let mut srv = mock_server(state.clone());
+        let _ = srv.list_prompt_names();
+        let st = state.lock().unwrap();
+        assert!(st.sent.iter().any(|(m, _)| m == "prompts/list"));
     }
 
     #[test]

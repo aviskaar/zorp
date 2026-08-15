@@ -58,7 +58,7 @@ const DEFAULT_SYSTEM: &str =
 
 #[derive(Parser)]
 #[command(version)]
-#[command(args_conflicts_with_subcommands = true)]
+#[command(subcommand_precedence_over_arg = true)]
 struct Cli {
     /// Approve trusted prompts without asking.
     #[arg(long, global = true)]
