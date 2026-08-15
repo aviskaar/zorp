@@ -30,13 +30,20 @@ impl ExperimentStatus {
         }
     }
 
-    fn from_str(s: &str) -> Self {
+    /// `None` for anything this enum does not name.
+    ///
+    /// Deliberately not a catch-all, for the same reason as
+    /// `TrackStatus::parse`. This used to fall back to `Planned`, so an
+    /// unrecognized status made a failed or killed experiment read back
+    /// as one that had not run yet.
+    fn parse(s: &str) -> Option<Self> {
         match s {
-            "running" => ExperimentStatus::Running,
-            "completed" => ExperimentStatus::Completed,
-            "failed" => ExperimentStatus::Failed,
-            "killed" => ExperimentStatus::Killed,
-            _ => ExperimentStatus::Planned,
+            "planned" => Some(ExperimentStatus::Planned),
+            "running" => Some(ExperimentStatus::Running),
+            "completed" => Some(ExperimentStatus::Completed),
+            "failed" => Some(ExperimentStatus::Failed),
+            "killed" => Some(ExperimentStatus::Killed),
+            _ => None,
         }
     }
 }
@@ -227,12 +234,14 @@ impl Store {
             "SELECT id, track_id, prereg_id, status, started_at, completed_at FROM experiments WHERE track_id = ? ORDER BY id",
         )?;
         let rows = stmt.query_map(duckdb::params![track_id], |r| {
-            let status: String = r.get(3)?;
+            let raw: String = r.get(3)?;
+            let status = ExperimentStatus::parse(&raw)
+                .ok_or_else(|| crate::track::unknown_status("experiment", 3, &raw))?;
             Ok(Experiment {
                 id: r.get(0)?,
                 track_id: r.get(1)?,
                 prereg_id: r.get(2)?,
-                status: ExperimentStatus::from_str(&status),
+                status,
                 started_at: r.get(4)?,
                 completed_at: r.get(5)?,
             })
@@ -268,6 +277,57 @@ impl Store {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn every_experiment_status_round_trips() {
+        for status in [
+            ExperimentStatus::Planned,
+            ExperimentStatus::Running,
+            ExperimentStatus::Completed,
+            ExperimentStatus::Failed,
+            ExperimentStatus::Killed,
+        ] {
+            assert_eq!(ExperimentStatus::parse(status.as_str()), Some(status));
+        }
+    }
+
+    #[test]
+    fn unknown_experiment_status_does_not_parse() {
+        // The old code returned Planned for all of these.
+        for raw in ["", "PLANNED", "faild", "aborted", "inconclusive"] {
+            assert_eq!(
+                ExperimentStatus::parse(raw),
+                None,
+                "{raw:?} should not parse"
+            );
+        }
+    }
+
+    /// A failed experiment whose status string the code does not
+    /// recognize must not read back as one that never ran.
+    #[test]
+    fn an_unrecognized_stored_status_is_an_error_not_planned() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let exp = store.create_experiment("t1", "t1-prereg").unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE experiments SET status = 'aborted' WHERE id = ?",
+                duckdb::params![exp.id],
+            )
+            .unwrap();
+
+        let err = store
+            .experiments_for("t1")
+            .expect_err("should refuse to read");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("aborted"),
+            "error should name the offending status, got: {msg}"
+        );
+    }
 
     #[test]
     fn create_experiment_starts_planned() {

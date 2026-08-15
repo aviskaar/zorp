@@ -45,12 +45,20 @@ impl TrackStatus {
         }
     }
 
-    fn from_str(s: &str) -> Self {
+    /// `None` for anything this enum does not name.
+    ///
+    /// Deliberately not a catch-all. This used to fall back to `Active`,
+    /// which meant a status the code did not recognize read back as a
+    /// live track. A killed track resurfacing as Active is the one
+    /// failure this product cannot afford, and a silent default is how
+    /// it would happen.
+    fn parse(s: &str) -> Option<Self> {
         match s {
-            "paused" => TrackStatus::Paused,
-            "completed" => TrackStatus::Completed,
-            "killed" => TrackStatus::Killed,
-            _ => TrackStatus::Active,
+            "active" => Some(TrackStatus::Active),
+            "paused" => Some(TrackStatus::Paused),
+            "completed" => Some(TrackStatus::Completed),
+            "killed" => Some(TrackStatus::Killed),
+            _ => None,
         }
     }
 }
@@ -65,13 +73,29 @@ pub struct Track {
 }
 
 fn row_to_track(r: &duckdb::Row) -> duckdb::Result<Track> {
+    let raw: String = r.get(2)?;
+    let status = TrackStatus::parse(&raw).ok_or_else(|| unknown_status("track", 2, &raw))?;
     Ok(Track {
         id: r.get(0)?,
         hypothesis: r.get(1)?,
-        status: TrackStatus::from_str(&r.get::<_, String>(2)?),
+        status,
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
     })
+}
+
+/// A status string the code does not recognize is a read failure, not a
+/// value to guess at. Surfaces through `From<duckdb::Error>` as a
+/// `TrackError::Db` naming the offending string.
+pub(crate) fn unknown_status(kind: &str, column: usize, raw: &str) -> duckdb::Error {
+    duckdb::Error::FromSqlConversionFailure(
+        column,
+        duckdb::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unknown {kind} status {raw:?}"),
+        )),
+    )
 }
 
 impl Store {
@@ -335,6 +359,46 @@ impl Store {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn every_track_status_round_trips() {
+        for status in [
+            TrackStatus::Active,
+            TrackStatus::Paused,
+            TrackStatus::Completed,
+            TrackStatus::Killed,
+        ] {
+            assert_eq!(TrackStatus::parse(status.as_str()), Some(status));
+        }
+    }
+
+    #[test]
+    fn unknown_track_status_does_not_parse() {
+        // The old code returned Active for all of these.
+        for raw in ["", "ACTIVE", "kiled", "abandoned", "inconclusive"] {
+            assert_eq!(TrackStatus::parse(raw), None, "{raw:?} should not parse");
+        }
+    }
+
+    /// The regression that matters: a killed track whose status string
+    /// the code does not recognize must not read back as a live one.
+    #[test]
+    fn an_unrecognized_stored_status_is_an_error_not_active() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "does it hold").unwrap();
+        store
+            .conn
+            .execute("UPDATE tracks SET status = 'abandoned' WHERE id = 't1'", [])
+            .unwrap();
+
+        let err = store.get_track("t1").expect_err("should refuse to read");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("abandoned"),
+            "error should name the offending status, got: {msg}"
+        );
+    }
 
     #[test]
     fn open_creates_all_tables() {
