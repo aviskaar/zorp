@@ -576,3 +576,38 @@ fn bare_tasks_still_reach_the_model() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+/// A project flavor that only tightens policy needs no trust decision, so it
+/// must apply. Dropping it silently means a user who wrote a restriction gets
+/// no restriction and no warning.
+#[test]
+fn project_flavor_approval_tightening_is_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".zorp")).unwrap();
+    std::fs::write(
+        dir.path().join(".zorp/flavor.toml"),
+        "[approval]\nwrite_file = \"deny\"",
+    )
+    .unwrap();
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"denied.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+        r#"{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}"#,
+    ]);
+    let out = Command::new(bin())
+        .args(["--yes", "write denied.txt"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("ZORP_BASE_URL", &base)
+        .env("ZORP_MODEL", "m")
+        .env("ZORP_STATE_DB", dir.path().join("s.db"))
+        .env("ZORP_TRUST_FILE", dir.path().join("trust"))
+        .env_remove("ZORP_API_KEY")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        !dir.path().join("denied.txt").exists(),
+        "project-scope `write_file = \"deny\"` must deny the write: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
