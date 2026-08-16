@@ -69,18 +69,7 @@ pub fn run(
     let outcome = agent.run(&task);
     let shortlist = match outcome {
         Outcome::Complete(text) => text,
-        Outcome::StepLimit => return Err(DeliverError::AgentOutcome("StepLimit".to_string())),
-        Outcome::VerificationFailed { attempts } => {
-            return Err(DeliverError::AgentOutcome(format!(
-                "VerificationFailed after {attempts} attempts"
-            )))
-        }
-        Outcome::Cancelled => return Err(DeliverError::AgentOutcome("Cancelled".to_string())),
-        Outcome::RepeatedAction => {
-            return Err(DeliverError::AgentOutcome("RepeatedAction".to_string()))
-        }
-        Outcome::Blocked => return Err(DeliverError::AgentOutcome("Blocked".to_string())),
-        Outcome::Error(e) => return Err(DeliverError::AgentOutcome(format!("Error: {e}"))),
+        other => return Err(DeliverError::AgentOutcome(other.describe())),
     };
 
     let track_dir = project.track_dir(track_id);

@@ -155,6 +155,25 @@ pub enum Outcome {
     Error(BoxErr),
 }
 
+impl Outcome {
+    /// Human phrasing for a stop reason, shared by the one-shot CLI and the
+    /// research capabilities so the same outcome does not get two different
+    /// names in two places.
+    pub fn describe(&self) -> String {
+        match self {
+            Outcome::Complete(_) => "complete".to_string(),
+            Outcome::StepLimit => "step limit reached".to_string(),
+            Outcome::VerificationFailed { attempts } => {
+                format!("verification still failing after {attempts} attempts")
+            }
+            Outcome::Cancelled => "cancelled".to_string(),
+            Outcome::RepeatedAction => "repeated action detected".to_string(),
+            Outcome::Blocked => "stopped: several actions were denied".to_string(),
+            Outcome::Error(e) => e.to_string(),
+        }
+    }
+}
+
 const VERIFY_NO_PROGRESS_ATTEMPTS: usize = 3;
 
 /// Consecutive denied tool results that end a run early with `Outcome::Blocked`.
@@ -2134,5 +2153,24 @@ mod tests {
         assert!(contents
             .lines()
             .any(|l| l.contains("\"infrastructure.error\"")));
+    }
+}
+
+#[cfg(test)]
+mod outcome_describe_tests {
+    use super::*;
+
+    #[test]
+    fn describe_matches_the_one_shot_wording() {
+        assert_eq!(Outcome::StepLimit.describe(), "step limit reached");
+        assert_eq!(
+            Outcome::VerificationFailed { attempts: 3 }.describe(),
+            "verification still failing after 3 attempts"
+        );
+        assert_eq!(Outcome::Cancelled.describe(), "cancelled");
+        assert_eq!(
+            Outcome::RepeatedAction.describe(),
+            "repeated action detected"
+        );
     }
 }
