@@ -23,7 +23,7 @@ impl fmt::Display for InvestigateError {
             InvestigateError::TrackKilled => write!(f, "this track has already been killed"),
             InvestigateError::PreregRequired { missing } => write!(
                 f,
-                "no pre-registration exists for this track yet; --{missing} is required on the first investigate call"
+                "no pre-registration exists for this track yet; pass --{missing} on the first investigate call"
             ),
             InvestigateError::PreregMismatch { field, recorded, provided } => write!(
                 f,
@@ -65,6 +65,26 @@ mod tests {
             missing: "metric-name",
         };
         assert!(e.to_string().contains("--metric-name"));
+    }
+
+    /// `missing` carries one flag in some call paths and a list in others, so
+    /// the sentence cannot agree in number with either. It should not try.
+    #[test]
+    fn display_prereg_required_reads_correctly_for_one_flag_and_for_several() {
+        let one = InvestigateError::PreregRequired {
+            missing: "metric-name",
+        }
+        .to_string();
+        let many = InvestigateError::PreregRequired {
+            missing: "metric-name, --kill-threshold, and --threshold-direction",
+        }
+        .to_string();
+        for message in [&one, &many] {
+            assert!(
+                !message.contains(" is required") && !message.contains(" are required"),
+                "number agreement cannot hold for both cases: {message}"
+            );
+        }
     }
 
     #[test]

@@ -63,18 +63,7 @@ pub fn run(
     let outcome = agent.run(&task);
     let text = match outcome {
         Outcome::Complete(text) => text,
-        Outcome::StepLimit => return Err(ValidateError::AgentOutcome("StepLimit".to_string())),
-        Outcome::VerificationFailed { attempts } => {
-            return Err(ValidateError::AgentOutcome(format!(
-                "VerificationFailed after {attempts} attempts"
-            )))
-        }
-        Outcome::Cancelled => return Err(ValidateError::AgentOutcome("Cancelled".to_string())),
-        Outcome::RepeatedAction => {
-            return Err(ValidateError::AgentOutcome("RepeatedAction".to_string()))
-        }
-        Outcome::Blocked => return Err(ValidateError::AgentOutcome("Blocked".to_string())),
-        Outcome::Error(e) => return Err(ValidateError::AgentOutcome(format!("Error: {e}"))),
+        other => return Err(ValidateError::AgentOutcome(other.describe())),
     };
 
     let result = parse_validation_result(&text)?;

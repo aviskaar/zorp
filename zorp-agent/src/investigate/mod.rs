@@ -142,43 +142,11 @@ pub fn run(
     let outcome = agent.run(&task);
     let text = match outcome {
         Outcome::Complete(text) => text,
-        Outcome::StepLimit => {
+        other => {
             project
                 .store
                 .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome("StepLimit".to_string()));
-        }
-        Outcome::VerificationFailed { attempts } => {
-            project
-                .store
-                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome(format!(
-                "VerificationFailed after {attempts} attempts"
-            )));
-        }
-        Outcome::Cancelled => {
-            project
-                .store
-                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome("Cancelled".to_string()));
-        }
-        Outcome::RepeatedAction => {
-            project
-                .store
-                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome("RepeatedAction".to_string()));
-        }
-        Outcome::Blocked => {
-            project
-                .store
-                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome("Blocked".to_string()));
-        }
-        Outcome::Error(e) => {
-            project
-                .store
-                .set_experiment_status(&experiment.id, ExperimentStatus::Failed)?;
-            return Err(InvestigateError::AgentOutcome(format!("Error: {e}")));
+            return Err(InvestigateError::AgentOutcome(other.describe()));
         }
     };
 

@@ -99,18 +99,7 @@ pub fn run(
     let outcome = agent.run(&task);
     let draft = match outcome {
         Outcome::Complete(text) => text,
-        Outcome::StepLimit => return Err(CoWriteError::AgentOutcome("StepLimit".to_string())),
-        Outcome::VerificationFailed { attempts } => {
-            return Err(CoWriteError::AgentOutcome(format!(
-                "VerificationFailed after {attempts} attempts"
-            )))
-        }
-        Outcome::Cancelled => return Err(CoWriteError::AgentOutcome("Cancelled".to_string())),
-        Outcome::RepeatedAction => {
-            return Err(CoWriteError::AgentOutcome("RepeatedAction".to_string()))
-        }
-        Outcome::Blocked => return Err(CoWriteError::AgentOutcome("Blocked".to_string())),
-        Outcome::Error(e) => return Err(CoWriteError::AgentOutcome(format!("Error: {e}"))),
+        other => return Err(CoWriteError::AgentOutcome(other.describe())),
     };
 
     let track_dir = project.track_dir(track_id);

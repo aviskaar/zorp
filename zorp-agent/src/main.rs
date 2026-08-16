@@ -60,7 +60,10 @@ const DEFAULT_SYSTEM: &str =
 #[command(version)]
 #[command(subcommand_precedence_over_arg = true)]
 struct Cli {
-    /// Approve trusted prompts without asking.
+    /// Approve trusted prompts without asking. This answers the asks an
+    /// approval preset produces, so --approval read-only --yes still edits.
+    /// To block an operation outright, set it to "deny" in a flavor's
+    /// [approval] section; the hard denylist always wins regardless.
     #[arg(long, global = true)]
     yes: bool,
     /// Skip configured verification commands.
@@ -81,10 +84,13 @@ struct Cli {
     /// Override the max_tokens sent to Anthropic requests (ignored for openai).
     #[arg(long, global = true)]
     max_tokens: Option<u32>,
-    /// Limit the number of agent steps.
+    /// Limit the number of agent steps. A failing verification gate needs a
+    /// few steps of headroom to report itself: it stops after 3 no-progress
+    /// attempts, and a tighter limit ends the run as a step limit instead.
     #[arg(long, global = true)]
     max_steps: Option<usize>,
-    /// Select the approval preset.
+    /// Select the approval preset: read-only, editor, or full. Presets set
+    /// what is asked about, not what is refused. See --yes.
     #[arg(long, global = true)]
     approval: Option<String>,
     /// Connect to an MCP server. Format: stdio:name:command[:arg1:arg2...]
@@ -540,11 +546,11 @@ fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
             "done"
         }
         Outcome::StepLimit => {
-            eprintln!("zorp-agent: step limit reached");
+            eprintln!("zorp-agent: {}", outcome.describe());
             "step_limit"
         }
-        Outcome::VerificationFailed { attempts } => {
-            eprintln!("zorp-agent: verification still failing after {attempts} attempts");
+        Outcome::VerificationFailed { .. } => {
+            eprintln!("zorp-agent: {}", outcome.describe());
             "verification_failed"
         }
         Outcome::Error(e) => {
@@ -552,17 +558,18 @@ fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
             "error"
         }
         Outcome::Cancelled => {
-            eprintln!("zorp-agent: cancelled");
+            eprintln!("zorp-agent: {}", outcome.describe());
             "cancelled"
         }
         Outcome::RepeatedAction => {
-            eprintln!("zorp-agent: repeated action detected");
+            eprintln!("zorp-agent: {}", outcome.describe());
             "repeated_action"
         }
         Outcome::Blocked => {
             eprintln!(
-                "zorp-agent: stopped — several actions were denied. Re-run with --yes to \
-                 auto-approve edits and commands, or set an approval preset in a flavor."
+                "zorp-agent: {}. Re-run with --yes to auto-approve edits and \
+                 commands, or set an approval preset in a flavor.",
+                outcome.describe()
             );
             "blocked"
         }
