@@ -11,7 +11,7 @@ impl Tool for TakeNote {
     }
 
     fn description(&self) -> &str {
-        "Create or append to a markdown note in the knowledge base (.qkb/ directory)."
+        "Create or append to a markdown note in the knowledge base (.zorp/notes/ directory)."
     }
 
     fn schema(&self) -> Value {
@@ -35,15 +35,16 @@ impl Tool for TakeNote {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("take_note: 'content' is required"))?;
 
-        let qkb_dir = cx.repo_root.join(".qkb");
-        if !qkb_dir.exists() {
-            fs::create_dir_all(&qkb_dir)
-                .map_err(|e| ToolError::new(format!("failed to create .qkb directory: {e}")))?;
+        let notes_dir = cx.repo_root.join(".zorp").join("notes");
+        if !notes_dir.exists() {
+            fs::create_dir_all(&notes_dir).map_err(|e| {
+                ToolError::new(format!("failed to create .zorp/notes directory: {e}"))
+            })?;
         }
 
         let filename = format!("{}.md", title.replace(|c: char| !c.is_alphanumeric(), "-"));
-        let file_path = qkb_dir.join(&filename);
-        let rel_path = format!(".qkb/{}", filename);
+        let file_path = notes_dir.join(&filename);
+        let rel_path = format!(".zorp/notes/{}", filename);
 
         let before = fs::read_to_string(&file_path).ok();
 
@@ -73,7 +74,7 @@ impl Tool for SearchNotes {
     }
 
     fn description(&self) -> &str {
-        "Search through knowledge base notes (.qkb/ directory)."
+        "Search through knowledge base notes (.zorp/notes/ directory)."
     }
 
     fn schema(&self) -> Value {
@@ -92,13 +93,13 @@ impl Tool for SearchNotes {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("search_notes: 'query' is required"))?;
 
-        let qkb_dir = cx.repo_root.join(".qkb");
-        if !qkb_dir.exists() {
+        let notes_dir = cx.repo_root.join(".zorp").join("notes");
+        if !notes_dir.exists() {
             return Ok(ToolOutput::new("no matches".to_string(), "0 matches"));
         }
 
         let mut hits: Vec<String> = Vec::new();
-        'walk: for dent in ignore::WalkBuilder::new(&qkb_dir)
+        'walk: for dent in ignore::WalkBuilder::new(&notes_dir)
             .require_git(false)
             .standard_filters(true)
             .build()
@@ -167,8 +168,12 @@ mod tests {
             .unwrap();
         assert!(out.content.contains("Test-Note.md"));
 
-        let path = dir.path().join(".qkb").join("Test-Note.md");
+        let path = dir.path().join(".zorp").join("notes").join("Test-Note.md");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello world\n");
+        assert!(
+            !dir.path().join(".qkb").exists(),
+            "notes must not resurrect quecto's .qkb directory"
+        );
 
         // Append to note
         TakeNote
@@ -207,5 +212,31 @@ mod tests {
             .unwrap();
         assert!(out.content.contains("Rust-Tips.md"));
         assert!(out.content.contains("Cargo.md"));
+    }
+
+    /// Notes live under `.zorp/`, which a project may well gitignore
+    /// wholesale to keep the research stack's DuckDB file out of the repo.
+    /// zorp's own notes are still zorp's to read.
+    #[test]
+    fn search_notes_finds_notes_in_a_gitignored_zorp_dir() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        fs::write(dir.path().join(".gitignore"), ".zorp/\n").unwrap();
+
+        TakeNote
+            .run(
+                &json!({"title": "Buried", "content": "findme in a gitignored dir"}),
+                &mut cx,
+            )
+            .unwrap();
+
+        let out = SearchNotes
+            .run(&json!({"query": "findme"}), &mut cx)
+            .unwrap();
+        assert!(
+            out.content.contains("Buried.md"),
+            "gitignoring .zorp/ must not hide notes from search_notes: {}",
+            out.content
+        );
     }
 }
