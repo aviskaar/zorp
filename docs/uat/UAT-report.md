@@ -13,6 +13,9 @@ This is zorp's first UAT. It follows the method of the quecto reports
 preserved in `docs/upstream-quecto/uat/`, and adds Area E for the four
 research capabilities, which quecto never had.
 
+> **Retested.** All six findings below were fixed and re-verified on
+> merged main. See [`UAT-report-002.md`](UAT-report-002.md).
+
 ---
 
 ## Executive summary
