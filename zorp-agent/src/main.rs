@@ -436,8 +436,11 @@ fn gated_flavor(
         return user.clone();
     };
     if !project.wants_privilege() {
-        // Only safe project fields exist; nothing to gate for policy/verify.
-        return user.clone();
+        // Only safe project fields exist. There is nothing to gate, so they
+        // apply. Returning `user` alone here would silently discard a
+        // project flavor that tightens approvals, which is a restriction the
+        // user asked for and gets no warning about.
+        return user.clone().merge(project.clone());
     }
     let hash = content_hash(&raw);
     let mut store = TrustStore::open();
