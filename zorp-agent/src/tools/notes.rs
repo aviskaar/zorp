@@ -125,12 +125,30 @@ impl Tool for SearchNotes {
                 .display()
                 .to_string();
 
+            // `take_note` writes the title into the filename and only the
+            // body into the file, so a note whose distinguishing word is its
+            // title has nothing to match on inside the text. Record the file
+            // itself in that case, but only when no line matched, so one note
+            // is one result.
+            let mut matched_a_line = false;
             for (i, line) in text.lines().enumerate() {
                 if line.contains(query) {
+                    matched_a_line = true;
                     hits.push(format!("{}:{}: {}", shown, i + 1, line.trim_end()));
                     if hits.len() >= 200 {
                         break 'walk;
                     }
+                }
+            }
+            if !matched_a_line
+                && dent
+                    .path()
+                    .file_stem()
+                    .is_some_and(|stem| stem.to_str().is_some_and(|stem| stem.contains(query)))
+            {
+                hits.push(format!("{shown}: (title match)"));
+                if hits.len() >= 200 {
+                    break 'walk;
                 }
             }
         }
@@ -212,6 +230,49 @@ mod tests {
             .unwrap();
         assert!(out.content.contains("Rust-Tips.md"));
         assert!(out.content.contains("Cargo.md"));
+    }
+
+    /// `take_note` puts the title in the filename and only the body in the
+    /// file, so searching by the title, the most natural way to look a note
+    /// up, used to be the one way that could not work.
+    #[test]
+    fn search_notes_matches_the_title_not_only_the_body() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+
+        TakeNote
+            .run(
+                &json!({"title": "build-marker-8802", "content": "is the build id"}),
+                &mut cx,
+            )
+            .unwrap();
+
+        let out = SearchNotes
+            .run(&json!({"query": "build-marker-8802"}), &mut cx)
+            .unwrap();
+        assert!(
+            out.content.contains("build-marker-8802.md"),
+            "a note must be findable by its title: {}",
+            out.content
+        );
+        assert_eq!(out.summary, "'build-marker-8802' (1 matches)");
+    }
+
+    /// A title hit and a body hit for the same note are one note, not two.
+    #[test]
+    fn a_note_matching_in_both_title_and_body_is_counted_once() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        TakeNote
+            .run(
+                &json!({"title": "cargo", "content": "cargo build"}),
+                &mut cx,
+            )
+            .unwrap();
+        let out = SearchNotes
+            .run(&json!({"query": "cargo"}), &mut cx)
+            .unwrap();
+        assert_eq!(out.summary, "'cargo' (1 matches)", "{}", out.content);
     }
 
     /// Notes live under `.zorp/`, which a project may well gitignore

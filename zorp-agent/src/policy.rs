@@ -88,6 +88,15 @@ impl Policy {
         }
     }
 
+    /// Whether this policy denies the edit tools while leaving the shell
+    /// open. That combination reads as "the agent cannot write" and is not:
+    /// `run_command` can redirect into any path inside the repo, which the
+    /// denylist permits by design. Callers surface this so the gap is seen
+    /// when the policy is written, not after something got written.
+    pub fn write_barrier_is_porous(&self) -> bool {
+        matches!(self.edit, Decision::Deny(_)) && !matches!(self.run, Decision::Deny(_))
+    }
+
     /// Attach the sandbox repo root so denylist path checks can allow
     /// absolute targets that stay inside it. Canonicalized once here to
     /// match `Sandbox::new`; all later checks are lexical string analysis.
@@ -962,6 +971,29 @@ mod tests {
         assert!(matches!(Preset::parse("editor"), Some(Preset::Editor)));
         assert!(matches!(Preset::parse("full"), Some(Preset::Full)));
         assert!(Preset::parse("bogus").is_none());
+    }
+
+    /// Denying the edit tools while `run_command` stays open is not a write
+    /// barrier: a shell redirect inside the repo writes just as well. Users
+    /// who deny one write path reasonably think they denied writing.
+    #[test]
+    fn a_denied_edit_with_an_open_shell_is_reported_as_porous() {
+        let denied_edit = Policy::default().with_override("write_file", "deny");
+        assert!(denied_edit.write_barrier_is_porous());
+    }
+
+    #[test]
+    fn denying_both_is_not_porous() {
+        let both = Policy::default()
+            .with_override("write_file", "deny")
+            .with_override("run_command", "deny");
+        assert!(!both.write_barrier_is_porous());
+    }
+
+    #[test]
+    fn a_policy_that_denies_no_writes_claims_no_barrier() {
+        assert!(!Policy::from_preset(Preset::Full).write_barrier_is_porous());
+        assert!(!Policy::from_preset(Preset::ReadOnly).write_barrier_is_porous());
     }
 
     #[test]

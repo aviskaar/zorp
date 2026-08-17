@@ -514,6 +514,13 @@ fn build_policy(flag: Option<&str>, user: &Flavor, repo_root: &Path) -> Policy {
     for (op, decision) in &user.approval.overrides {
         policy = policy.with_override(op, decision);
     }
+    if policy.write_barrier_is_porous() {
+        eprintln!(
+            "zorp-agent: note: edits are denied but run_command is not, so the \
+             agent can still write through the shell. Deny run_command too if \
+             you meant to stop writes."
+        );
+    }
     policy
 }
 
