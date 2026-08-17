@@ -18,7 +18,8 @@ agent_run                  one call to Agent::run / Agent::resume
     └── tool_span             one span per tool invocation
 ```
 
-Key attributes: `zorp.task` (secret-redacted), `zorp.step_number`,
+Key attributes: `zorp.task` (with values of secret-bearing environment
+variables redacted), `zorp.step_number`,
 `zorp.max_steps`, tool name, and step latency.
 
 ## Usage
