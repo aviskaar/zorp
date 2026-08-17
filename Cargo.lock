@@ -8230,6 +8230,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "ureq",
+ "zorp-agent",
 ]
 
 [[package]]
