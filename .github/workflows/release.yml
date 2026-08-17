@@ -1,0 +1,123 @@
+name: Release
+
+# Publishes prebuilt binaries so installing zorp does not require a Rust
+# toolchain. Until this existed, every user had to `cargo build`, which put
+# a compiler between a curious reader and a working binary.
+on:
+  push:
+    tags: ["v*"]
+  # Lets a maintainer produce artifacts for a commit without cutting a tag,
+  # which is how you check the pipeline itself works before relying on it.
+  workflow_dispatch:
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners per target, deliberately. Cross-compiling Rust to
+          # Linux from macOS needs a C toolchain and linker wrangling for the
+          # crates here (rusqlite bundles SQLite, which compiles C); native
+          # runners keep this workflow boring.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # Only the two installed binaries. zorp-track bundles DuckDB and
+      # zorp-eval is a dev harness; neither ships, and building them here
+      # would add tens of minutes per target for nothing.
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p zorp -p zorp-agent
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="zorp-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/zorp" "dist/$name/"
+          cp "target/${{ matrix.target }}/release/zorp-agent" "dist/$name/"
+          cp README.md LICENSE NOTICE.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          # Checksums are the only way a user can tell that what they
+          # downloaded is what was built.
+          if command -v shasum >/dev/null; then
+            shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+          else
+            sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
+          fi
+
+      - name: Smoke test the built binary
+        # A release that cannot print its own version is worse than no
+        # release. Only run where the host can execute what we just built.
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        run: |
+          "target/${{ matrix.target }}/release/zorp-agent" --version
+          "target/${{ matrix.target }}/release/zorp-agent" --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zorp-${{ matrix.target }}
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only a tag produces a release. A manual run still builds and uploads
+    # artifacts, which is the point of being able to rehearse.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Prebuilt binaries for `zorp` and `zorp-agent`. No Rust toolchain needed.
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
+            ```
+
+            Or download the archive for your platform below, verify it against
+            its `.sha256`, and put the two binaries on your `PATH`.
+
+            These binaries do not include the research capabilities
+            (`validate`, `investigate`, `co-write`, `deliver`), which are
+            behind the `research` feature and require building from source.
+            See the README.
+
+            **zorp is pre-alpha.** Interfaces change.
