@@ -3,7 +3,7 @@ use crate::event::{Event, EventKind};
 use crate::renderer::WebRenderer;
 use crate::state::SessionState;
 use std::sync::{Arc, Mutex};
-use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome};
+use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome, SqliteRecorder, Store};
 
 /// Run one turn to completion on a blocking thread.
 ///
@@ -11,7 +11,7 @@ use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome};
 /// Events are drained from the renderer's channel into the session backlog as
 /// they arrive, which is what lets the SSE endpoint stream a run that is still
 /// in progress.
-pub fn spawn_turn(session: Arc<Mutex<SessionState>>, message: String) {
+pub fn spawn_turn(session: Arc<Mutex<SessionState>>, session_id: String, message: String) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     // The counter lives on the session so numbering continues across turns.
     let seq = {
@@ -37,7 +37,7 @@ pub fn spawn_turn(session: Arc<Mutex<SessionState>>, message: String) {
         // requests interleave correctly with activity.
         renderer.set_seq(Arc::clone(&seq));
 
-        let outcome = run_agent(&message, Box::new(renderer), approver);
+        let outcome = run_agent(&session_id, &message, Box::new(renderer), approver);
 
         // The final answer arrives in Outcome::Complete rather than through
         // the renderer. The CLI prints it in finish(); the browser has to be
@@ -66,6 +66,7 @@ pub fn spawn_turn(session: Arc<Mutex<SessionState>>, message: String) {
 }
 
 fn run_agent(
+    session_id: &str,
     message: &str,
     renderer: Box<dyn zorp_agent::Renderer>,
     approver: Arc<WebApprover>,
@@ -77,6 +78,7 @@ fn run_agent(
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
+    let cwd_display = cwd.display().to_string();
     let mut agent = Agent::new(
         Box::new(model),
         "You are zorp, a careful assistant. Use tools when they help.",
@@ -87,6 +89,22 @@ fn run_agent(
     )
     .register_builtins_filtered(None)
     .with_renderer(renderer);
+
+    // Persist the conversation the same way the CLI does, so the sidebar and
+    // replay survive a restart. Without a recorder the agent runs fine and
+    // remembers nothing, which is what the first version did.
+    if let Ok(store) = Store::open_default() {
+        let seq = store.message_count(session_id).unwrap_or(0);
+        if seq == 0 {
+            let _ = store.create_session(session_id, message, &cwd_display, "");
+        }
+        agent = agent.with_recorder(Box::new(SqliteRecorder::new(
+            store,
+            session_id.to_string(),
+            seq,
+            0,
+        )));
+    }
 
     Ok(agent.run(message))
 }

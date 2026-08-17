@@ -34,6 +34,7 @@ pub fn router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/sessions", post(create_session).get(list_sessions))
+        .route("/api/sessions/:id", get(get_session))
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
@@ -55,13 +56,47 @@ async fn create_session(State(state): State<AppState>) -> Json<serde_json::Value
     Json(json!({"id": id}))
 }
 
+/// Sessions come from the store, not from memory, so history survives a
+/// server restart. In-memory sessions that have not recorded a message yet
+/// are unioned in so a brand new chat appears in the sidebar immediately.
 async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let ids: Vec<serde_json::Value> = state
-        .ids()
-        .into_iter()
-        .map(|id| json!({"id": id}))
-        .collect();
-    Json(json!(ids))
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Ok(store) = zorp_agent::Store::open_default() {
+        if let Ok(sessions) = store.sessions() {
+            for s in sessions {
+                seen.insert(s.id.clone());
+                rows.push(json!({"id": s.id, "title": s.task, "status": s.status}));
+            }
+        }
+    }
+    for id in state.ids() {
+        if seen.insert(id.clone()) {
+            rows.push(json!({"id": id, "title": "New chat", "status": "running"}));
+        }
+    }
+    Json(json!(rows))
+}
+
+/// Replay a conversation from the store.
+async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.load_messages(&id) {
+        Ok(messages) => {
+            let out: Vec<serde_json::Value> = messages
+                .iter()
+                .filter(|m| m.role == "user" || m.role == "assistant")
+                // Message content is structured to carry images; the browser
+                // transcript wants the text of each turn.
+                .map(|m| json!({"role": m.role, "content": m.text()}))
+                .collect();
+            Json(json!({"messages": out})).into_response()
+        }
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -81,7 +116,7 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
-    turn::spawn_turn(session, body.message);
+    turn::spawn_turn(session, id, body.message);
     StatusCode::ACCEPTED.into_response()
 }
 

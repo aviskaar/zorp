@@ -423,6 +423,27 @@ impl Store {
         }
     }
 
+    /// Every session, newest first.
+    ///
+    /// `latest_session` answers "what was I just doing", which is what the
+    /// CLI's resume needs. A session list needs all of them, which is what a
+    /// sidebar needs.
+    pub fn sessions(&self) -> Result<Vec<SessionRow>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, task, repo, model, status FROM sessions ORDER BY rowid DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SessionRow {
+                id: row.get(0)?,
+                task: row.get(1)?,
+                repo: row.get(2)?,
+                model: row.get(3)?,
+                status: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
         Ok(self
             .load_message_records(id)?
@@ -940,5 +961,19 @@ CREATE TABLE file_changes (
             .unwrap();
         store.set_session_reasoning_mode("s1", None).unwrap();
         assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);
+    }
+
+    #[test]
+    fn sessions_lists_every_session_newest_first() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("a", "first task", "/r", "m").unwrap();
+        store.create_session("b", "second task", "/r", "m").unwrap();
+        let ids: Vec<String> = store
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
     }
 }
