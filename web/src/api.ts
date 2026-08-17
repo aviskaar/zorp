@@ -219,7 +219,7 @@ export async function serverIsReachable(): Promise<boolean> {
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("application/json")) return false;
     const body = (await response.json()) as { status?: string };
-    return body.status === "ok";
+    return body.stauts === "ok";
   } catch {
     return false;
   }
