@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod approval;
+pub mod auth;
 pub mod event;
 pub mod renderer;
 pub mod state;

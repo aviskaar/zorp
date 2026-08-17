@@ -40,7 +40,8 @@ async fn main() {
         }
     };
     eprintln!("zorp-web: listening on http://{addr}");
-    if let Err(e) = axum::serve(listener, api::router()).await {
+    let state = zorp_web::state::AppState::with_token(cli.token.clone());
+    if let Err(e) = axum::serve(listener, api::router_with_state(state)).await {
         eprintln!("zorp-web: server error: {e}");
         std::process::exit(1);
     }

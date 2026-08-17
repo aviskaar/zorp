@@ -12,6 +12,11 @@ pub struct SessionState {
     pub backlog: Vec<Event>,
     pub running: bool,
     pub approver: Option<Arc<WebApprover>>,
+    /// Sequence counter for the whole session, not one turn.
+    ///
+    /// Last-Event-ID resume is keyed on this, so restarting it per turn makes
+    /// a reconnecting browser silently drop every later turn.
+    pub seq: Arc<Mutex<u64>>,
 }
 
 impl SessionState {
@@ -20,6 +25,7 @@ impl SessionState {
             backlog: Vec::new(),
             running: false,
             approver: None,
+            seq: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -33,11 +39,21 @@ impl SessionState {
 #[derive(Clone, Default)]
 pub struct AppState {
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<SessionState>>>>>,
+    /// Shared secret, set only when the server binds a non-loopback
+    /// interface. None means the operating system is the access control.
+    pub token: Option<String>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         AppState::default()
+    }
+
+    pub fn with_token(token: Option<String>) -> Self {
+        AppState {
+            token,
+            ..AppState::default()
+        }
     }
 
     pub fn create(&self, id: &str) -> Arc<Mutex<SessionState>> {

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>zorp</title>
+    <meta
+      name="description"
+      content="Chat interface for the zorp agent, with live tool activity and human approvals."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e0f11'/%3E%3Cpath d='M10 10h12l-12 12h12' fill='none' stroke='%235eead4' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Where the zorp-web server lives. Empty means this page's own origin,
+      // which is the case when the server serves these files itself. Set it to
+      // a full origin to serve the UI from somewhere else, for example a CDN.
+      //
+      //   window.ZORP_API_BASE = "http://127.0.0.1:7777";
+      //
+      // Opening this file straight off disk gives the page no usable origin,
+      // so fall back to the server's default address in that case.
+      if (window.ZORP_API_BASE === undefined) {
+        window.ZORP_API_BASE = location.protocol === "file:" ? "http://127.0.0.1:7777" : "";
+      }
+      // Only needed when the server was started with --token.
+      // window.ZORP_API_TOKEN = "the token you passed to zorp-web";
+    </script>
+  </head>
+  <body>
+    <div class="app" id="app">
+      <div class="scrim" id="scrim"></div>
+
+      <aside class="sidebar" id="sidebar" aria-label="Sessions">
+        <div class="sidebar-head">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span class="brand-name">zorp</span>
+          </div>
+          <button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="Hide sessions">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <button class="new-chat" id="new-chat" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          New chat
+        </button>
+
+        <div class="sidebar-label">Sessions</div>
+        <ul class="session-list" id="session-list"></ul>
+
+        <div class="sidebar-foot">
+          <p>
+            This UI is only as safe as the server it points at. That server runs commands and edits
+            files on the machine it was started on.
+          </p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Show sessions">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </button>
+          <h1 class="topbar-title" id="session-title">New chat</h1>
+          <div class="status" id="status" data-state="idle">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="status-text">idle</span>
+          </div>
+        </header>
+
+        <div class="scroller" id="scroller">
+          <div class="transcript" id="transcript"></div>
+          <div class="working" id="working" hidden>
+            <span class="working-spinner" id="working-spinner" aria-hidden="true">⠋</span>
+            <span class="working-verb" id="working-verb">Working</span>
+            <span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          </div>
+        </div>
+
+        <button class="jump" id="jump" type="button" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6" /></svg>
+          Jump to latest
+        </button>
+
+        <form class="composer" id="composer">
+          <div class="composer-box">
+            <textarea
+              id="input"
+              rows="1"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="Ask zorp to do something in this workspace…"
+            ></textarea>
+            <button class="send" id="send" type="submit" aria-label="Send message">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M12 5l7 7-7 7" /></svg>
+            </button>
+          </div>
+          <p class="composer-hint">
+            <kbd>Enter</kbd> to send, <kbd>Shift</kbd><span>+</span><kbd>Enter</kbd> for a newline
+          </p>
+        </form>
+      </main>
+    </div>
+
+    <script src="dist/main.js" defer></script>
+  </body>
+</html>

@@ -13,14 +13,14 @@ use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome};
 /// in progress.
 pub fn spawn_turn(session: Arc<Mutex<SessionState>>, message: String) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
-    let seq = Arc::new(Mutex::new(0u64));
-    let approver = Arc::new(WebApprover::new(tx.clone(), Arc::clone(&seq)));
-
-    {
+    // The counter lives on the session so numbering continues across turns.
+    let seq = {
         let mut guard = session.lock().unwrap();
         guard.running = true;
-        guard.approver = Some(Arc::clone(&approver));
-    }
+        Arc::clone(&guard.seq)
+    };
+    let approver = Arc::new(WebApprover::new(tx.clone(), Arc::clone(&seq)));
+    session.lock().unwrap().approver = Some(Arc::clone(&approver));
 
     // Drain into the backlog on its own thread so a slow browser cannot
     // apply backpressure to the agent.

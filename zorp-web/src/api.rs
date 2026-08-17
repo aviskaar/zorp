@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::convert::Infallible;
 use std::time::Duration;
+use tower_http::cors::{Any, CorsLayer};
 
 /// How often the stream checks for new events. A chat UI does not need
 /// sub-100ms latency, and polling a backlog is far less machinery than a
@@ -21,12 +22,26 @@ pub fn router() -> Router {
 }
 
 pub fn router_with_state(state: AppState) -> Router {
+    // The UI is a separate artifact by design and may be served from another
+    // origin, including `null` when index.html is opened straight off disk.
+    // The POSTs send application/json, which is not a simple request, so
+    // preflight has to be answered too.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         .route("/api/health", get(health))
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_token,
+        ))
+        .layer(cors)
         .with_state(state)
 }
 
