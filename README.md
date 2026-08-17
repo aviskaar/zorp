@@ -193,6 +193,31 @@ search-capable tool is available" and `deliver` with "no
 huiban-prefixed tool is available", rather than running with no
 evidence.
 
+### Web UI
+
+A chat interface for the agent, with tool activity streamed as it happens and
+an approval prompt before anything is written or run.
+
+```bash
+cargo run -p zorp-web            # http://127.0.0.1:7777
+```
+
+Or the whole thing in containers, server and UI as separate images:
+
+```bash
+ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
+# UI on http://localhost:8080, server on http://localhost:7777
+```
+
+The server binds loopback by default. Binding anything else requires
+`--token` and refuses to start without it, because a reachable `zorp-web`
+is agent-driven shell access to whatever the process can see. In the
+compose file that mount is `./workspace`, so the agent sees that directory
+and nothing else; set `ZORP_WORKSPACE` to point it elsewhere.
+
+Design and plan:
+[`docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`](docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md).
+
 ## Development
 
 ```bash

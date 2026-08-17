@@ -1,0 +1,38 @@
+# Runs the whole thing: the agent server and the chat UI, as separate
+# containers, which is the point of keeping them separate artifacts.
+#
+#   ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
+#
+# Then open http://localhost:8080 and set the token when prompted.
+services:
+  server:
+    build:
+      context: .
+      dockerfile: zorp-web/Dockerfile
+    ports:
+      - "7777:7777"
+    environment:
+      # A reachable server is agent-driven shell access to whatever it can
+      # see, so the token is not optional. The server refuses to start
+      # without one on a non-loopback bind.
+      ZORP_WEB_TOKEN: ${ZORP_WEB_TOKEN:?set ZORP_WEB_TOKEN, for example with openssl rand -hex 16}
+      # host.docker.internal reaches a model running on the host, such as
+      # Ollama. Point these anywhere an OpenAI-compatible endpoint lives.
+      ZORP_BASE_URL: ${ZORP_BASE_URL:-http://host.docker.internal:11434/v1}
+      ZORP_MODEL: ${ZORP_MODEL:-qwen3:4b}
+      ZORP_API_KEY: ${ZORP_API_KEY:-}
+      ZORP_MAX_STEPS: ${ZORP_MAX_STEPS:-12}
+    volumes:
+      # The agent works on your project. Mount the directory you want it to
+      # see, and nothing more: it can read and, with approval, write here.
+      - ${ZORP_WORKSPACE:-./workspace}:/work
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  ui:
+    build:
+      context: ./web
+    ports:
+      - "8080:80"
+    depends_on:
+      - server

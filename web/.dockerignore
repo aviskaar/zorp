@@ -1,0 +1,5 @@
+# The host's node_modules is built for the host's platform. Copying it over
+# the container's install makes npm run the wrong architecture's esbuild,
+# which fails as an exec format error.
+node_modules/
+dist/
