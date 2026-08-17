@@ -19,6 +19,8 @@ the four research capabilities, which quecto never had.
 
 | telemetry | [`UAT-telemetry.md`](UAT-telemetry.md) | same, at `7f8ebaa` | Addition to the baseline, not a re-run. 12 scenarios over the `ZORP_TRACE_FILE` JSONL layer and the `otel` OpenTelemetry export, including the example's Jaeger stack. | ACCEPT. 12 pass. Three low findings, I1 to I3, all documentation or noise. |
 
+| cold install | [`UAT-cold-install.md`](UAT-cold-install.md) | the published `v0.3.1` release, not a local build | 8 scenarios on the README's `curl \| bash` path in a bare `ubuntu:22.04` with no toolchain and nothing cached. | ACCEPT with reservations. 8 pass. Four findings, J1 to J4. J1 fixed here; J2 and J3 fixed on main but live for anyone installing today; J4 needs a maintainer. |
+
 Both runs used a local Ollama endpoint with an isolated `HOME`,
 `ZORP_STATE_DB`, and `ZORP_TRUST_FILE`, so nothing touched the tester's
 real state.

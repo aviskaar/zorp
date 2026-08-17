@@ -110,10 +110,12 @@ mkdir -p "$INSTALL_DIR"
 # install(1) replaces the file atomically, which avoids ETXTBSY when
 # upgrading over a binary that is currently running.
 say "Installing binaries to $INSTALL_DIR..."
+INSTALLED="'zorp', 'zorp-agent'"
 install -m 755 "$BIN_SRC/zorp" "$INSTALL_DIR/"
 install -m 755 "$BIN_SRC/zorp-agent" "$INSTALL_DIR/"
 if [ -x "$BIN_SRC/zorp-web" ]; then
     install -m 755 "$BIN_SRC/zorp-web" "$INSTALL_DIR/"
+    INSTALLED="$INSTALLED and 'zorp-web'"
 fi
 # The web UI is static files the server does not embed. They go beside the
 # binaries so `zorp-web` has something to serve.
@@ -124,8 +126,15 @@ if [ -d "$BIN_SRC/web" ]; then
     say "Installed the web UI to $UI_DIR"
 fi
 
-say "Successfully installed 'zorp' and 'zorp-agent' to $INSTALL_DIR!"
+# Name every binary that was actually installed. This said "'zorp' and
+# 'zorp-agent'" while also installing zorp-web, so the chat UI, the part
+# that makes this usable by someone who does not live in a terminal,
+# arrived on the machine without being mentioned.
+say "Successfully installed $INSTALLED to $INSTALL_DIR!"
 "$INSTALL_DIR/zorp-agent" --version || true
+if [ -x "$INSTALL_DIR/zorp-web" ]; then
+    say "For the chat UI, run 'zorp-web' and open http://127.0.0.1:7777"
+fi
 
 # Check if INSTALL_DIR is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
