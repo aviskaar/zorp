@@ -1,0 +1,17 @@
+{
+  // Deploys the chat UI as static assets on a Worker, matching the pattern
+  // the other aviskaar sites use.
+  //
+  //   npm run build && npx wrangler deploy
+  //
+  // Static asset requests are not billed, so hosting this costs nothing at
+  // any volume this project will see.
+  //
+  // This deploys the INTERFACE only. The agent itself runs on the visitor's
+  // own machine, which is what keeps their files and their inference private.
+  // With no server running the page says so and gives the install command,
+  // so a cold visitor gets instructions rather than a dead chat box.
+  "name": "zorp-ui",
+  "compatibility_date": "2026-08-17",
+  "assets": { "directory": "./dist-site" }
+}

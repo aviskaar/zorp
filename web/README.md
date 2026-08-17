@@ -150,3 +150,25 @@ become markup.
   Anything more wants a dependency and a sanitiser.
 - **No test framework.** The behavior lives in the API, which is tested on the
   server side.
+
+## Deploying the UI
+
+The interface is static files, so it hosts anywhere for nothing. A
+Cloudflare Worker config is included:
+
+```bash
+npm run deploy        # builds, then wrangler deploy
+```
+
+This deploys the **interface only**. The agent runs on the visitor's own
+machine, which is what keeps their files and their inference private, and
+what makes hosting free: there is no server to pay for.
+
+A visitor with no agent running sees the setup panel and the install
+command rather than a chat box that goes nowhere, so a hosted UI works as
+a landing page as well as an app.
+
+If you host the server somewhere reachable instead, set
+`window.ZORP_API_BASE` in `index.html` to its URL, and read the warning at
+the top of this file first: a reachable server is agent-driven shell
+access to the machine it runs on.
