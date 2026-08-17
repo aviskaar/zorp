@@ -10,6 +10,9 @@ license.workspace = true
 ureq = { workspace = true }   # do NOT set default-features = false
 serde_json = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
 
