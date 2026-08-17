@@ -165,10 +165,18 @@ async fn approve(
     }
 }
 
-/// Stream a session's events, replaying anything the client missed.
+/// Stream a session's events for as long as the browser is listening.
 ///
-/// `Last-Event-ID` is set by the browser automatically on reconnect, so a
-/// dropped connection resumes rather than losing the run.
+/// The stream is deliberately long lived. It belongs to the session, not to a
+/// turn, so a finished turn does not end it: the next message streams down the
+/// connection that is already open. Ending it per turn looked harmless and was
+/// not, because `EventSource` reconnects on its own whenever the server ends
+/// the response. An idle tab on a finished conversation opened a new
+/// connection every few seconds forever and sat on a "reconnecting" badge with
+/// nothing wrong.
+///
+/// `Last-Event-ID` is set by the browser automatically on a real reconnect, so
+/// a connection that genuinely dropped resumes rather than losing the run.
 async fn stream_events(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -181,36 +189,40 @@ async fn stream_events(
         .map(|seq| seq + 1)
         .unwrap_or(0);
 
-    let session = state.get(&id);
+    // An unknown session is not an empty stream. An empty stream that ends at
+    // once is a reconnect loop by another name, which is what opening a stored
+    // session from the sidebar used to be after a restart. Say plainly that
+    // there is nothing to stream: a browser stops retrying on a 404.
+    let Some(session) = state.get(&id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+
     let stream = async_stream::stream! {
-        let mut next = resume_from;
+        // The backlog only ever grows, so remembering how far along it we are
+        // keeps each tick proportional to what is new rather than to the whole
+        // conversation, which now matters: this loop runs for hours.
+        let mut walked = 0usize;
         loop {
-            let (batch, finished) = match &session {
-                Some(s) => {
-                    let guard = s.lock().unwrap();
-                    let batch: Vec<_> = guard
-                        .backlog
-                        .iter()
-                        .filter(|e| e.seq >= next)
-                        .cloned()
-                        .collect();
-                    (batch, guard.finished())
-                }
-                None => (Vec::new(), true),
+            let batch: Vec<_> = {
+                let guard = session.lock().unwrap();
+                let batch = guard.backlog[walked..].to_vec();
+                walked = guard.backlog.len();
+                batch
             };
             for event in batch {
-                next = event.seq + 1;
+                if event.seq < resume_from {
+                    continue;
+                }
                 let data = serde_json::to_string(&event).unwrap_or_default();
                 yield Ok::<_, Infallible>(
                     SseEvent::default().id(event.seq.to_string()).data(data),
                 );
             }
-            if finished {
-                break;
-            }
             tokio::time::sleep(POLL).await;
         }
     };
 
-    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }

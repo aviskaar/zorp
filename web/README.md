@@ -128,6 +128,12 @@ Every frame's SSE event id is its `seq`, so a dropped connection resumes with
 the sequence number already seen are dropped, which keeps a generous replay
 from doubling the transcript.
 
+The stream is opened once per session and stays open. `done` ends a turn, not
+the connection, and the next message streams down the same one. The server
+holds the response open for exactly this reason: `EventSource` reopens a
+connection the moment the server closes it, so a stream that ended with the
+turn meant a finished conversation reconnected every few seconds forever.
+
 When you open a session from the sidebar, its stored messages are read from
 `GET /api/sessions/:id` and the event stream's replay is buffered for a moment
 first. A replay that ends in `done` describes a turn that already finished, so

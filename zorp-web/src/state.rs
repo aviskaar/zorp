@@ -1,5 +1,5 @@
 use crate::approval::WebApprover;
-use crate::event::{Event, EventKind};
+use crate::event::Event;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -8,6 +8,12 @@ use std::sync::{Arc, Mutex};
 /// The backlog is the whole event history for the session, which is what makes
 /// reconnection cheap: a client sends the last seq it saw and the stream
 /// replays from there.
+///
+/// There is deliberately no "is this session finished" flag. There used to be
+/// one, and because the backlog is never cleared it read as finished forever
+/// after the first turn, which ended every later event stream the moment it
+/// opened. A session is finished when it is gone. A turn is finished when a
+/// `Done` event goes out, and that is the client's business.
 pub struct SessionState {
     pub backlog: Vec<Event>,
     pub running: bool,
@@ -27,12 +33,6 @@ impl SessionState {
             approver: None,
             seq: Arc::new(Mutex::new(0)),
         }
-    }
-
-    pub fn finished(&self) -> bool {
-        self.backlog
-            .iter()
-            .any(|e| matches!(e.kind, EventKind::Done | EventKind::Error { .. }))
     }
 }
 
