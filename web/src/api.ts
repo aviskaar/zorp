@@ -205,6 +205,26 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 /** Start a session. Returns its id. */
+/** Whether the configured base URL is actually a zorp server.
+ *
+ * Worth checking on load. When the UI is served as static files the base URL
+ * defaults to the page's own origin, so a plain file server answers, the UI
+ * looks connected, and the first message returns that server's HTML error
+ * page. Better to say the server is missing before anyone types.
+ */
+export async function serverIsReachable(): Promise<boolean> {
+  try {
+    const response = await fetch(url("/api/health"));
+    if (!response.ok) return false;
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) return false;
+    const body = (await response.json()) as { status?: string };
+    return body.status === "ok";
+  } catch {
+    return false;
+  }
+}
+
 export async function newSession(): Promise<string> {
   const created = await request<{ id: string }>("POST", "/api/sessions", {});
   return created.id;
