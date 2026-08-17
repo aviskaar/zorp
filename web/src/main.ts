@@ -21,6 +21,7 @@ import {
   type SessionSummary,
   type StreamStatus,
   type ZorpEvent,
+  serverIsReachable,
 } from "./api";
 
 // The spinner frames the CLI uses, so the two surfaces look related.
@@ -99,8 +100,56 @@ function start(): void {
   wireScroller();
   showEmptyState();
   setStatus("idle", "idle");
-  void refreshSessions();
-  dom.input.focus();
+  void connectOrExplain();
+}
+
+/** Check there is a zorp server before offering a composer.
+ *
+ * Without this the UI looks ready when nothing is behind it: served as static
+ * files the base URL is the page's own origin, so a file server answers, the
+ * badge reads connected, and the first message comes back as that server's
+ * HTML error page. Someone arriving from a link deserves to be told what to
+ * run, not to type into a box that goes nowhere.
+ */
+async function connectOrExplain(): Promise<void> {
+  if (await serverIsReachable()) {
+    setStatus("idle", "idle");
+    void refreshSessions();
+    dom.input.focus();
+    return;
+  }
+  setStatus("idle", "no server");
+  showServerMissing();
+}
+
+function showServerMissing(): void {
+  dom.transcript.replaceChildren();
+  const card = el("div", "card card-error");
+  const head = el("div", "card-head");
+  head.append(glyph("alert"), textNode("span", "card-title", "No zorp server here"));
+
+  const body = el("div", "card-body");
+  const lead = el("p");
+  lead.textContent =
+    "This page is the interface. The agent itself runs on your machine, so " +
+    "that nothing you do here leaves it. Start it and reload.";
+
+  const code = el("pre", "card-code");
+  code.textContent =
+    "curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash\n" +
+    "zorp-web";
+
+  const tail = el("p");
+  tail.textContent =
+    "By default the server listens on http://127.0.0.1:7777. If it runs " +
+    "somewhere else, set window.ZORP_API_BASE in index.html.";
+
+  body.append(lead, code, tail);
+  card.append(head, body);
+  dom.transcript.append(card);
+
+  dom.input.disabled = true;
+  dom.input.placeholder = "Start zorp-web on your machine, then reload";
 }
 
 /* ------------------------------------------------------------------ */
@@ -455,7 +504,11 @@ function appendError(message: string): void {
   const head = el("div", "card-head");
   head.append(glyph("alert"), textNode("span", "card-title", "Something went wrong"));
   const body = el("p", "card-body");
-  body.textContent = message;
+  // Servers that are not zorp answer with HTML. Pasting a whole error page
+  // into the transcript tells a reader nothing and looks broken.
+  body.textContent = message.trimStart().startsWith("<")
+    ? "The server did not answer with JSON. Check that ZORP_API_BASE points at a zorp server."
+    : message;
   card.append(head, body);
   dom.transcript.append(card);
 }

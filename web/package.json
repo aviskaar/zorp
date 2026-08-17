@@ -10,7 +10,9 @@
     "build:min": "npm run build -- --minify --sourcemap",
     "watch": "npm run build -- --watch",
     "serve": "npm run build -- --servedir=. --watch",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "build:site": "npm run build && rm -rf dist-site && mkdir -p dist-site && cp index.html styles.css dist-site/ && cp -r dist dist-site/dist",
+    "deploy": "npm run build:site && wrangler deploy"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
