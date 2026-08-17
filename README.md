@@ -119,6 +119,10 @@ Run the core transport directly:
 export ZORP_BASE_URL="https://api.openai.com/v1"   # or a local endpoint (Ollama, LM Studio, vLLM)
 export ZORP_API_KEY="sk-..."
 export ZORP_MODEL="gpt-4o-mini"
+# Optional. Seconds to wait for the model, default 300. Loading a local model
+# into memory can take minutes on modest hardware, and that wait happens
+# before the first token.
+export ZORP_HTTP_TIMEOUT_SECS=300
 cargo run -- "Summarize the second law of thermodynamics in one sentence."
 ```
 
