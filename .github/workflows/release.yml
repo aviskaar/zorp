@@ -124,11 +124,22 @@ jobs:
           tar -czf "dist/$name.tar.gz" -C dist "$name"
           # Checksums are the only way a user can tell that what they
           # downloaded is what was built.
-          if command -v shasum >/dev/null; then
-            shasum -a 256 "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
-          else
-            sha256sum "dist/$name.tar.gz" > "dist/$name.tar.gz.sha256"
-          fi
+          #
+          # Generated from inside dist/ so the file records a bare
+          # filename. It used to record "dist/zorp-....tar.gz", the path on
+          # this runner, which nobody downloading it has. `shasum -c` then
+          # answered "1 listed file could not be read" for anyone following
+          # the README, which reads as a failed verification of a good
+          # download. install.sh never noticed because it pulls the hash
+          # out with awk and compares by hand.
+          (
+            cd dist
+            if command -v shasum >/dev/null; then
+              shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+            else
+              sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+            fi
+          )
 
       - name: Smoke test the built binary
         # A release that cannot print its own version is worse than no
@@ -170,10 +181,16 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
             ```
 
-            Or download the archive for your platform below, verify it against
-            its `.sha256`, and put the binaries on your `PATH`. The `web/`
-            directory beside them is the chat UI; point any static file server
-            at it, or use the container image.
+            Or download the archive for your platform below along with its
+            `.sha256`, put both in the same directory, and check it:
+
+            ```bash
+            shasum -a 256 -c zorp-*.tar.gz.sha256    # sha256sum -c on Linux
+            ```
+
+            Then put the binaries on your `PATH`. The `web/` directory beside
+            them is the chat UI; point any static file server at it, or use
+            the container image.
 
             ```bash
             zorp-web          # then open http://127.0.0.1:7777
