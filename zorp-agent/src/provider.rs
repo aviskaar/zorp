@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(content[1]["type"], "image");
         assert_eq!(content[1]["source"]["type"], "base64");
         assert_eq!(content[1]["source"]["media_type"], "image/jpeg");
-        assert!(content[1]["source"]["data"].as_str().unwrap().len() > 0);
+        assert!(!content[1]["source"]["data"].as_str().unwrap().is_empty());
     }
 
     #[test]

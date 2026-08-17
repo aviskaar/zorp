@@ -1322,18 +1322,33 @@ impl Drop for RawModeGuard {
     }
 }
 
+/// The part of a chat REPL's context that is fixed for as long as the REPL
+/// runs: which session it is, where the store recording it lives, what
+/// directory it is rooted in, and which model it talks to. These four were
+/// being threaded as separate parameters, in the same order, through
+/// `chat_line_loop` and `handle_chat_command` and repeated at every call
+/// site. Naming them once removes that duplication and drops both functions
+/// back under clippy's argument limit. Copy, because it is four shared
+/// references and callers pass it on every loop iteration.
+#[derive(Clone, Copy)]
+struct ChatContext<'a> {
+    store: &'a Option<Store>,
+    session_id: &'a str,
+    cwd: &'a Path,
+    model_name: &'a str,
+}
+
 /// Line-based chat input loop, used for piped stdin and as the fallback when
 /// raw mode cannot be enabled on a TTY.
-#[allow(clippy::too_many_arguments)]
 fn chat_line_loop(
     agent: &mut Agent,
-    store: &Option<Store>,
-    session_id: &str,
-    cwd: &Path,
-    model_name: &str,
+    ctx: ChatContext<'_>,
     capsules: &mut CapsuleState,
     out: &mut dyn Renderer,
 ) {
+    let ChatContext {
+        store, session_id, ..
+    } = ctx;
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
     loop {
@@ -1344,9 +1359,7 @@ fn chat_line_loop(
             Ok(l) => l,
             Err(_) => break,
         };
-        let exit = handle_chat_command(
-            &line, agent, store, session_id, cwd, model_name, capsules, out,
-        );
+        let exit = handle_chat_command(&line, agent, ctx, capsules, out);
         if exit {
             break;
         }
@@ -1452,16 +1465,15 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let mut out = LineRenderer::new(std::io::stdout(), color);
     out.notice("zorp-agent chat — /help for commands, /exit to quit");
 
+    let ctx = ChatContext {
+        store: &store,
+        session_id: &session_id,
+        cwd: &cwd,
+        model_name: &model_name,
+    };
+
     if !std::io::stdin().is_terminal() {
-        chat_line_loop(
-            &mut agent,
-            &store,
-            &session_id,
-            &cwd,
-            &model_name,
-            &mut capsules,
-            &mut out,
-        );
+        chat_line_loop(&mut agent, ctx, &mut capsules, &mut out);
         return;
     }
 
@@ -1473,15 +1485,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     // mode is unavailable, fall back to plain line input instead of dying.
     let Some(_raw_guard) = RawModeGuard::enable() else {
         eprintln!("zorp-agent: could not enable raw terminal mode; using line input");
-        chat_line_loop(
-            &mut agent,
-            &store,
-            &session_id,
-            &cwd,
-            &model_name,
-            &mut capsules,
-            &mut out,
-        );
+        chat_line_loop(&mut agent, ctx, &mut capsules, &mut out);
         return;
     };
     #[cfg(feature = "clipboard")]
@@ -1570,10 +1574,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                     let exit = handle_chat_command(
                                         first_text,
                                         &mut agent,
-                                        &store,
-                                        &session_id,
-                                        &cwd,
-                                        &model_name,
+                                        ctx,
                                         &mut capsules,
                                         &mut out,
                                     );
@@ -1736,13 +1737,16 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
 fn handle_chat_command(
     line: &str,
     agent: &mut Agent,
-    store: &Option<Store>,
-    session_id: &str,
-    cwd: &Path,
-    model_name: &str,
+    ctx: ChatContext<'_>,
     capsules: &mut CapsuleState,
     out: &mut dyn Renderer,
 ) -> bool {
+    let ChatContext {
+        store,
+        session_id,
+        cwd,
+        model_name,
+    } = ctx;
     let mut exit = false;
     let capsule_names = capsules.registry().names();
     match parse_command(line, &capsule_names) {
@@ -2386,6 +2390,18 @@ mod main_tests {
         CapsuleState::new(registry, "system".to_string())
     }
 
+    /// The fixed half of a chat REPL's context. Every command test uses the
+    /// same session id and model name, so only the store and the working
+    /// directory are worth passing.
+    fn test_ctx<'a>(store: &'a Option<Store>, cwd: &'a Path) -> ChatContext<'a> {
+        ChatContext {
+            store,
+            session_id: "s1",
+            cwd,
+            model_name: "test-model",
+        }
+    }
+
     #[test]
     fn load_unknown_capsule_reports_error() {
         let mut agent = test_agent(None);
@@ -2396,10 +2412,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/load demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2428,10 +2441,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/load demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2460,20 +2470,14 @@ mod main_tests {
         handle_chat_command(
             "/load demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
         let exit = handle_chat_command(
             "/unload demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2499,20 +2503,14 @@ mod main_tests {
         handle_chat_command(
             "/load demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
         handle_chat_command(
             "hello",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2521,10 +2519,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/clear",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2546,10 +2541,7 @@ mod main_tests {
         handle_chat_command(
             "/load demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2557,10 +2549,7 @@ mod main_tests {
         handle_chat_command(
             "/capsules",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2580,10 +2569,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2606,10 +2592,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/unload demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2635,10 +2618,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/load demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2648,10 +2628,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/demo please help",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2664,10 +2641,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/unload demo",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2677,10 +2651,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/exit",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2701,10 +2672,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/capsule-create demo does the thing",
             &mut agent,
-            &store,
-            "s1",
-            dir.path(),
-            "test-model",
+            test_ctx(&store, dir.path()),
             &mut capsules,
             &mut out,
         );
@@ -2728,10 +2696,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/capsule-create",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2753,10 +2718,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/capsule-create load does the thing",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2778,10 +2740,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/capsule-create ../../evil do the thing",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2801,10 +2760,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/capsule-create /tmp/evil do the thing",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut capsules,
             &mut out,
         );
@@ -2828,10 +2784,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/capsule-create demo draft a demo workflow",
             &mut agent,
-            &store,
-            "s1",
-            dir.path(),
-            "test-model",
+            test_ctx(&store, dir.path()),
             &mut capsules,
             &mut out,
         );
@@ -2869,10 +2822,7 @@ mod main_tests {
         handle_chat_command(
             "/capsule-create demo do the thing",
             &mut agent,
-            &store,
-            "s1",
-            dir.path(),
-            "test-model",
+            test_ctx(&store, dir.path()),
             &mut capsules,
             &mut out,
         );
@@ -2892,10 +2842,7 @@ mod main_tests {
         handle_chat_command(
             "/capsule-create demo do the thing",
             &mut agent,
-            &store,
-            "s1",
-            dir.path(),
-            "test-model",
+            test_ctx(&store, dir.path()),
             &mut capsules,
             &mut out,
         );
@@ -2956,10 +2903,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/reasoning",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut test_capsules(),
             &mut out,
         );
@@ -2982,10 +2926,7 @@ mod main_tests {
         let exit = handle_chat_command(
             "/reasoning high",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut test_capsules(),
             &mut out,
         );
@@ -3023,10 +2964,7 @@ mod main_tests {
         handle_chat_command(
             "/reasoning off",
             &mut agent,
-            &store,
-            "s1",
-            Path::new("/repo"),
-            "test-model",
+            test_ctx(&store, Path::new("/repo")),
             &mut test_capsules(),
             &mut out,
         );

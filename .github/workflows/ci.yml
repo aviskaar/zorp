@@ -41,6 +41,45 @@ jobs:
       - name: Test workspace (excluding zorp-track)
         run: cargo test --workspace --exclude zorp-track --locked
 
+  clippy:
+    # Clippy had never run here. Eleven warnings had accumulated by the time
+    # anyone looked, including dead test scaffolding and a lock held across
+    # an await. Four choices, made on purpose:
+    #
+    # 1. One runner, not the two-OS matrix. Every lint clippy has caught in
+    #    this workspace so far is platform independent, so a second leg
+    #    would double the cost to catch close to nothing. Platform-specific
+    #    code still gets compiled by the macOS test leg above.
+    # 2. `-D warnings`. A lint that only prints is a lint nobody reads, and
+    #    that is exactly how eleven of them piled up. The existing warnings
+    #    are cleared in the same change that adds this, so the gate starts
+    #    from zero rather than from a wall of red.
+    # 3. `--all-targets`, so tests are linted too. Most of the warnings this
+    #    found were in test code. Linting the library alone would have
+    #    gated the easy half.
+    # 4. Same exclusion as the test job: zorp-track builds DuckDB from
+    #    source and would dominate this job the way it dominates that one.
+    #    That leaves zorp-track and the research feature unlinted, which is
+    #    a known gap, not an oversight. Closing it belongs with the research
+    #    jobs and their shared cache, not here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Its own cache entry, keyed on the job name by default. Small, because
+      # the DuckDB tree is excluded, so it does not threaten the shared
+      # research entry the way a full-workspace entry would.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --exclude zorp-track --all-targets --locked -- -D warnings
+
   web:
     # The chat UI is TypeScript, and no Rust job compiles a line of it.
     # Without this, a type error or a broken bundle ships: the workspace
