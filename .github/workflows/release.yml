@@ -27,9 +27,15 @@ jobs:
           # Linux from macOS needs a C toolchain and linker wrangling for the
           # crates here (rusqlite bundles SQLite, which compiles C); native
           # runners keep this workflow boring.
-          - os: ubuntu-latest
+          # Pinned to 22.04, not ubuntu-latest. A binary links against the
+          # glibc of the machine that built it and will not start on anything
+          # older. ubuntu-latest is 24.04 (glibc 2.39), and the first v0.2.1
+          # Linux build failed on Ubuntu 22.04 with "GLIBC_2.39 not found".
+          # 22.04 gives glibc 2.35, which covers Ubuntu 22.04 LTS, Debian 12
+          # and RHEL 9, the distributions most users are actually on.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
