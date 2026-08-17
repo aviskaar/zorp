@@ -42,9 +42,9 @@ build_from_source() {
     # would also compile zorp-track (bundled DuckDB) and zorp-eval, neither of
     # which is installed.
     if [ -f Cargo.lock ]; then
-        cargo build --release --locked -p zorp -p zorp-agent
+        cargo build --release --locked -p zorp -p zorp-agent -p zorp-web
     else
-        cargo build --release -p zorp -p zorp-agent
+        cargo build --release -p zorp -p zorp-agent -p zorp-web
     fi
     BIN_SRC="target/release"
 }
@@ -112,6 +112,17 @@ mkdir -p "$INSTALL_DIR"
 say "Installing binaries to $INSTALL_DIR..."
 install -m 755 "$BIN_SRC/zorp" "$INSTALL_DIR/"
 install -m 755 "$BIN_SRC/zorp-agent" "$INSTALL_DIR/"
+if [ -x "$BIN_SRC/zorp-web" ]; then
+    install -m 755 "$BIN_SRC/zorp-web" "$INSTALL_DIR/"
+fi
+# The web UI is static files the server does not embed. They go beside the
+# binaries so `zorp-web` has something to serve.
+if [ -d "$BIN_SRC/web" ]; then
+    UI_DIR="${ZORP_UI_DIR:-$HOME/.local/share/zorp/web}"
+    mkdir -p "$UI_DIR"
+    cp -R "$BIN_SRC/web/." "$UI_DIR/"
+    say "Installed the web UI to $UI_DIR"
+fi
 
 say "Successfully installed 'zorp' and 'zorp-agent' to $INSTALL_DIR!"
 "$INSTALL_DIR/zorp-agent" --version || true

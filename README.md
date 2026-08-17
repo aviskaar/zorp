@@ -134,9 +134,11 @@ cargo run -p zorp-agent -- "<task>"
 curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
 ```
 
-This downloads prebuilt `zorp` and `zorp-agent` binaries for your platform
-from the latest release, verifies the published checksum, and installs them
-to `~/.local/bin`. No Rust needed. Linux and macOS, x86_64 and arm64.
+This downloads prebuilt `zorp`, `zorp-agent` and `zorp-web` binaries for
+your platform from the latest release, verifies the published checksum, and
+installs them to `~/.local/bin`. The chat UI's static files go to
+`~/.local/share/zorp/web`. No Rust and no Node needed. Linux and macOS,
+x86_64 and arm64.
 
 If no prebuilt binary fits your platform, the same script falls back to
 building from source, which does need a toolchain. `ZORP_INSTALL_FROM_SOURCE=1`
