@@ -6,14 +6,21 @@
 # published artifact in.
 #
 # Build for a released version:
-#   docker build --build-arg VERSION=v0.2.1 -t zorp .
+#   docker build --build-arg VERSION=v0.3.1 -t zorp .
+#
+# VERSION defaults to the current release and must be bumped with each one.
+# It is not cosmetic: a stale default means a bare `docker build` silently
+# produces an old binary. It sat at v0.2.1 through the v0.3.1 release, which
+# handed anyone who built without the flag the one release whose first
+# message times out on a cold model. The `default-version` check in the
+# Release workflow now fails the release if this drifts again.
 #
 # The default feature set only. The research capabilities (validate,
 # investigate, co-write, deliver) are behind the `research` feature and need
 # a source build, because zorp-track bundles DuckDB.
 FROM debian:12-slim
 
-ARG VERSION=v0.2.1
+ARG VERSION=v0.3.1
 ARG TARGETARCH
 
 # ca-certificates is required: zorp talks to an OpenAI-compatible endpoint

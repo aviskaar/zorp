@@ -1,6 +1,6 @@
 [package]
 name = "zorp-agent"
-version = "0.2.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Coding agent built on the zorp core."
