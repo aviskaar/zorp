@@ -19,14 +19,14 @@ was believed at the time and not only what survived.
 fail the build.
 
 **Why:** clippy had never run in CI at all. Nothing gated it, so
-warnings accumulated unnoticed: dead test scaffolding, a `mut` that was
-never needed, a length comparison to zero, an argument list that had
-outgrown the lint's limit, and a std lock held across an await in
-zorp-web's tests. That last one is test-only. It serialises tests that
-write process-global env vars, and no production path touches it. A
-check that only prints is a check nobody reads, which is how the pile
-grew, so this one fails instead. Every warning was cleared before the
-gate went in, so it starts from zero.
+warnings accumulated unnoticed. Among them: dead test scaffolding, a
+`mut` that was never needed, a length comparison to zero, an argument
+list that had outgrown the lint's limit, and a std lock held across an
+await in zorp-web's tests. That last one is test-only. It serialises
+tests that write process-global env vars, and no production path
+touches it. A check that only prints is a check nobody reads, which is
+how the pile grew, so this one fails instead. Every warning was cleared
+before the gate went in, so it starts from zero.
 
 One runner rather than the two-OS test matrix: every lint clippy found
 here is platform independent, and the macOS test leg still compiles the
