@@ -252,10 +252,11 @@ async function submitMessage(): Promise<void> {
       await refreshSessions();
       markActiveSession();
     }
+    // The stream for this session is already open and stays open, so the
+    // turn's events arrive on it. The replay guard deliberately keeps its high
+    // water mark: seq climbs for the life of the session, and resetting it
+    // here would let a reconnect mid-turn render the backlog twice.
     await ensureStream(sessionId);
-    // A server that numbers events per turn rather than per session starts
-    // over here, so the replay guard has to start over with it.
-    lastSeq = -1;
     await sendTurn(sessionId, message);
   } catch (error) {
     setTurnRunning(false);
@@ -270,6 +271,10 @@ async function submitMessage(): Promise<void> {
 
 /**
  * Open the event stream for a session, reusing the one already open for it.
+ *
+ * There is one stream per session and it lives as long as the session is on
+ * screen, which is what the server's long lived SSE response is for. Every
+ * turn arrives on it, so nothing here reopens it between turns.
  *
  * With `joining` set, the server's replay is buffered rather than rendered.
  * That replay may describe a turn that already finished, in which case the
@@ -345,8 +350,8 @@ function handleStreamStatus(status: StreamStatus): void {
 function handleEvent(event: ZorpEvent): void {
   // A reconnect replays from the last id the browser saw. Dropping anything at
   // or below the high water mark keeps a generous replay from doubling the
-  // transcript. lastSeq resets when a turn starts, so a server that numbers
-  // per turn rather than per session still works.
+  // transcript. The mark only resets when a stream is opened from scratch,
+  // because seq climbs for the whole session and never restarts per turn.
   if (typeof event.seq === "number" && event.seq <= lastSeq) {
     return;
   }

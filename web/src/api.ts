@@ -94,7 +94,11 @@ export interface ErrorEvent {
   message: string;
 }
 
-/** The turn finished. The session stays open for the next message. */
+/**
+ * The turn finished. The session stays open for the next message, and so does
+ * the stream. Closing the `EventSource` here would look tidy and would stop
+ * the next turn from streaming at all.
+ */
 export interface DoneEvent {
   seq: number;
   type: "done";
@@ -281,10 +285,16 @@ export interface EventStream {
 /**
  * Subscribe to a session's event stream.
  *
- * `EventSource` reconnects on its own and replays the last event id it saw, so
- * a dropped connection resumes rather than losing the middle of a turn. Frames
- * that do not parse are surfaced as error events instead of being dropped,
- * because a chat UI that stalls without saying why is the worst failure here.
+ * The server holds the response open for the life of the session, so this
+ * connects once and stays connected across turns. `EventSource` reconnects on
+ * its own and replays the last event id it saw, so a connection that really
+ * drops resumes rather than losing the middle of a turn. That automatic
+ * reconnect is also why the server must not end the response when a turn
+ * finishes: the browser would simply open it again, forever.
+ *
+ * Frames that do not parse are surfaced as error events instead of being
+ * dropped, because a chat UI that stalls without saying why is the worst
+ * failure here.
  */
 export function streamEvents(
   sessionId: string,

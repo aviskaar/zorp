@@ -1,6 +1,7 @@
 mod common;
-use common::mock_script;
+use common::{mock_script, EventStream};
 use std::net::SocketAddr;
+use std::time::Duration;
 
 async fn spawn() -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -80,20 +81,18 @@ async fn a_denied_write_never_touches_the_disk() {
     .unwrap();
     assert!(denied, "no approval request ever arrived");
 
-    let stream = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("http://{addr}/api/sessions/{id}/events"))
-            .call()
-            .unwrap()
-            .into_string()
-            .unwrap()
+    // The stream stays open for the life of the session, so read it until the
+    // event we care about shows up and then hang up. Reading it to the end
+    // would wait forever.
+    let asked = tokio::task::spawn_blocking(move || {
+        let mut events = EventStream::connect(addr, &id);
+        let asked = events.wait_for("approval_request", Duration::from_secs(20));
+        (asked, events.text())
     })
     .await
     .unwrap();
 
-    assert!(
-        stream.contains("approval_request"),
-        "the browser was never asked: {stream}"
-    );
+    assert!(asked.0, "the browser was never asked: {}", asked.1);
     assert!(
         !dir.path().join("denied.txt").exists(),
         "a denied write reached the disk"
