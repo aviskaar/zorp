@@ -857,8 +857,13 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
     let project = match zorp_track::Project::open(&cwd) {
         Ok(p) => p,
         Err(e) => {
+            // Exit 1, not 2. Two is this binary's usage-error code (no
+            // arguments, unknown flag). A store that will not open is a
+            // runtime failure, most often another zorp run holding the
+            // DuckDB lock, and a caller scripting zorp should be able to
+            // tell a locked database from a mistyped command.
             eprintln!("zorp-agent: {e}");
-            std::process::exit(2);
+            std::process::exit(1);
         }
     };
     let track_id = zorp_track::id::track_id(question);
@@ -969,8 +974,13 @@ fn investigate(
     let project = match zorp_track::Project::open(&cwd) {
         Ok(p) => p,
         Err(e) => {
+            // Exit 1, not 2. Two is this binary's usage-error code (no
+            // arguments, unknown flag). A store that will not open is a
+            // runtime failure, most often another zorp run holding the
+            // DuckDB lock, and a caller scripting zorp should be able to
+            // tell a locked database from a mistyped command.
             eprintln!("zorp-agent: {e}");
-            std::process::exit(2);
+            std::process::exit(1);
         }
     };
     let track_id = zorp_track::id::track_id(question);
@@ -1097,8 +1107,13 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
     let project = match zorp_track::Project::open(&cwd) {
         Ok(p) => p,
         Err(e) => {
+            // Exit 1, not 2. Two is this binary's usage-error code (no
+            // arguments, unknown flag). A store that will not open is a
+            // runtime failure, most often another zorp run holding the
+            // DuckDB lock, and a caller scripting zorp should be able to
+            // tell a locked database from a mistyped command.
             eprintln!("zorp-agent: {e}");
-            std::process::exit(2);
+            std::process::exit(1);
         }
     };
     let track_id = zorp_track::id::track_id(question);
@@ -1197,8 +1212,13 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
     let project = match zorp_track::Project::open(&cwd) {
         Ok(p) => p,
         Err(e) => {
+            // Exit 1, not 2. Two is this binary's usage-error code (no
+            // arguments, unknown flag). A store that will not open is a
+            // runtime failure, most often another zorp run holding the
+            // DuckDB lock, and a caller scripting zorp should be able to
+            // tell a locked database from a mistyped command.
             eprintln!("zorp-agent: {e}");
-            std::process::exit(2);
+            std::process::exit(1);
         }
     };
     let track_id = zorp_track::id::track_id(question);
