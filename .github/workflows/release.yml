@@ -33,7 +33,12 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+          # Intel macOS is cross-compiled from the arm64 runner rather than
+          # built on macos-13. GitHub is retiring the Intel macOS runners and
+          # that job sat unassigned indefinitely, which blocked publish for
+          # the three targets that had already built. Xcode ships both
+          # architectures' SDKs, so this needs no extra toolchain.
+          - os: macos-latest
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
