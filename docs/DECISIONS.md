@@ -12,6 +12,71 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-08-17: one version for the product crates, and a release refuses to disagree with it
+
+**Decision:** `zorp`, `zorp-agent`, `zorp-mcp`, `zorp-track`, `zorp-eval`
+and `zorp-web` inherit a single `[workspace.package] version`, bumped
+with each release tag. `erbga` keeps its own version. A tag push whose
+tag, workspace version and Dockerfile `ARG VERSION` default disagree
+fails the release.
+
+**Why:** the versions had drifted from the tags without anyone noticing.
+`zorp` sat at 0.1.0 and `zorp-agent` at 0.2.1 across both v0.3.0 and
+v0.3.1, so the published v0.3.1 binary answered `--version` with 0.2.1.
+That is the release whose first message times out on a cold model, and
+v0.3.1 is its fix, so every user who installed the fix and checked was
+told they had not got it. The Dockerfile default had rotted the same
+way, which meant a bare `docker build` fetched the broken release on
+purpose.
+
+**What it rules out:** independent per-crate versioning for the product
+crates. If one of them ever needs to be published to crates.io on its
+own cadence, this has to be revisited. Nothing needs that today, and the
+cost of the current scheme was a public release that lied about which
+release it was.
+
+`erbga` is excluded because it is standalone published prior work that
+does not ship with zorp, and giving it zorp's release number would claim
+a relationship that does not exist.
+
+## 2026-08-17: --version and --help are answered by the binary, not the model
+
+**Decision:** `zorp` intercepts a leading `--version`, `-V`, `--help` or
+`-h` and answers locally. Anywhere other than the first argument they are
+still part of the prompt.
+
+**Why:** they were joined into the prompt and POSTed to the model, so two
+of the first flags anyone types at an unfamiliar binary cost a
+completion, and with no key configured the new user's first impression
+was a 401 wall of JSON from OpenAI. This is not a departure from "argv is
+the prompt": `main` already intercepted `--init`. These were missing from
+that list rather than deliberately excluded from it.
+
+**What it rules out:** a prompt whose *first* word is one of those four
+flags. `zorp what does --version print` still reaches the model, and
+there is a test for it, because that is the behavior the change could
+plausibly have broken.
+
+## 2026-08-17: CI decides what to run with git, not a downloaded action
+
+**Decision:** the research-stack path filter is a `git diff` and a grep
+instead of `dorny/paths-filter`.
+
+**Why:** the action is fetched from codeload when the job starts, and
+when codeload answers 429 or 503 the job fails during setup before
+running anything. That happened on three runs in one morning, twice in a
+row on a rerun of the same commit, on pull requests that had not touched
+the research stack and would have skipped every step anyway. A
+dependency that can be unavailable was sitting in the critical path of
+every pull request in order to decide to do nothing.
+
+**What it rules out:** the action's richer glob syntax. The filter is six
+patterns; if it ever needs more than a grep can express, reconsider. A
+diff that fails now assumes the research stack changed, because failing
+towards running the tests is the only safe direction.
+
+---
+
 ## 2026-08-16: everything zorp writes into a project lives under .zorp/
 
 **Decision:** the `take_note` and `search_notes` tools write to
