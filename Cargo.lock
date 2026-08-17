@@ -8171,7 +8171,7 @@ dependencies = [
 
 [[package]]
 name = "zorp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -8180,7 +8180,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-agent"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -8214,7 +8214,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-eval"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -8228,7 +8228,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-mcp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -8241,7 +8241,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-track"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "duckdb",
@@ -8255,7 +8255,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-web"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-stream",
  "axum 0.7.9",

@@ -6,7 +6,7 @@
 # published artifact in.
 #
 # Build for a released version:
-#   docker build --build-arg VERSION=v0.3.1 -t zorp .
+#   docker build --build-arg VERSION=v0.3.2 -t zorp .
 #
 # VERSION defaults to the current release and must be bumped with each one.
 # It is not cosmetic: a stale default means a bare `docker build` silently
@@ -20,7 +20,7 @@
 # a source build, because zorp-track bundles DuckDB.
 FROM debian:12-slim
 
-ARG VERSION=v0.3.1
+ARG VERSION=v0.3.2
 ARG TARGETARCH
 
 # ca-certificates is required: zorp talks to an OpenAI-compatible endpoint
