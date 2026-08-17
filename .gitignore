@@ -1,4 +1,7 @@
 /target
+# Scratch build dir used for integration checks. 12G of artifacts that
+# must never reach a commit.
+/target-integ
 .superpowers/
 evals/workspace_*/
 evals/results/
