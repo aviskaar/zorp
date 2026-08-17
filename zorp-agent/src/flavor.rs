@@ -254,6 +254,16 @@ pub fn layer_paths(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Vec<(S
     paths
 }
 
+/// Whether a named flavor exists at either scope. A name that matches no
+/// file is a mistake worth stopping for: flavors exist to change behavior,
+/// most often to restrict it, so quietly running without one gives the user
+/// the opposite of what they asked for.
+pub fn named_flavor_exists(home: &Path, cwd: &Path, name: &str) -> bool {
+    layer_paths(home, cwd, Some(name))
+        .into_iter()
+        .any(|(_, path)| path.file_stem().is_some_and(|stem| stem == name) && path.exists())
+}
+
 /// Concatenate the raw text of existing project-scope layer files (in layer
 /// order). Returns `None` when no project flavor file exists or the flavor
 /// name is invalid.

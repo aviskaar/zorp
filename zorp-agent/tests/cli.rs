@@ -611,3 +611,42 @@ fn project_flavor_approval_tightening_is_applied() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A `--flavor` name that matches no manifest used to run silently with
+/// defaults. That is how a mistyped profile drops every restriction it was
+/// meant to apply, with nothing on stderr to say so.
+#[test]
+fn an_unknown_flavor_name_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".zorp/flavors")).unwrap();
+    std::fs::write(
+        dir.path().join(".zorp/flavors/safe.toml"),
+        "name = \"safe\"\n[tools]\nenabled = [\"read_file\"]",
+    )
+    .unwrap();
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["--flavor", "safee", "hello"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("ZORP_BASE_URL", &base)
+        .env("ZORP_MODEL", "m")
+        .env("ZORP_STATE_DB", dir.path().join("s.db"))
+        .env_remove("ZORP_API_KEY")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("safee"),
+        "an unknown flavor name must be reported, got stderr: {err:?}"
+    );
+    assert!(
+        !out.status.success(),
+        "a flavor that was asked for and not found must not run as if unrestricted"
+    );
+}

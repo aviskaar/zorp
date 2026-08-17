@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use zorp_agent::{
     cancel_token, chat_spinner_renderer, content_hash, default_user_capsules_dir,
-    extract_fenced_block, is_reserved, join_url, load_instructions, new_session_id, parse_command,
-    parse_spinner_verbs, project_capsules_dir, project_raw, render_assistant_text,
-    render_change_summary, resolve_scoped_configured, seed_context, Agent, ApprovalMode, Capsule,
-    CapsuleRegistry, CapsuleState, ChatCommand, ConfiguredFlavor, Flavor, HttpModel, LineRenderer,
-    Message, Outcome, Policy, Preset, Provider, ReasoningCommand, ReasoningMode, Renderer,
-    SqliteRecorder, Store, TrustStore, Verifier,
+    extract_fenced_block, is_reserved, join_url, load_instructions, named_flavor_exists,
+    new_session_id, parse_command, parse_spinner_verbs, project_capsules_dir, project_raw,
+    render_assistant_text, render_change_summary, resolve_scoped_configured, seed_context, Agent,
+    ApprovalMode, Capsule, CapsuleRegistry, CapsuleState, ChatCommand, ConfiguredFlavor, Flavor,
+    HttpModel, LineRenderer, Message, Outcome, Policy, Preset, Provider, ReasoningCommand,
+    ReasoningMode, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
 };
 
 #[cfg(feature = "otel")]
@@ -417,6 +417,19 @@ fn compose_system_with_persona(cwd: &Path, persona: Option<&str>) -> String {
 fn resolve_flavor(overrides: &Overrides) -> (ConfiguredFlavor, ConfiguredFlavor) {
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    // A name that matches no file is a mistake, not a no-op. Flavors usually
+    // restrict what the agent may do, so running without the one that was
+    // asked for hands back more freedom than the user wanted, silently.
+    if let Some(name) = overrides.flavor.as_deref() {
+        if !named_flavor_exists(&home, &cwd, name) {
+            eprintln!(
+                "zorp-agent: no flavor named '{name}'; looked in \
+                 {}/.config/zorp/flavors/{name}.toml and ./.zorp/flavors/{name}.toml",
+                home.display()
+            );
+            std::process::exit(1);
+        }
+    }
     match resolve_scoped_configured(&home, &cwd, overrides.flavor.as_deref()) {
         Ok(pair) => pair,
         Err(e) => {
