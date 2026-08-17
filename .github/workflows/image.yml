@@ -22,10 +22,23 @@ permissions:
 
 jobs:
   publish:
-    # Never package a release that did not build.
+    # Never package a release that did not build, and never treat a
+    # rehearsal as one.
+    #
+    # Release can be run manually to build all four targets without
+    # cutting a tag, which is how you check that pipeline before relying
+    # on it. Every such run finished "success" and woke this workflow,
+    # which then tried to package `main` and died on "not a release tag".
+    # A red run on main for a rehearsal that did exactly what it should
+    # trains people to ignore the badge.
+    #
+    # head_branch is the tag name when Release ran from a tag push, and
+    # the branch name otherwise, so this skips the job rather than
+    # failing it.
     if: >
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
