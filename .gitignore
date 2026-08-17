@@ -23,3 +23,13 @@ docs/paper/*.out
 docs/paper/*.bbl
 docs/paper/*.blg
 docs/paper/zorp-paper.tex
+
+# Scratch from browser automation runs (snapshots, console logs, screenshots).
+# Written into the repo root by the Playwright tooling when the web UI is
+# driven by hand.
+/.playwright-mcp/
+
+# Generated knowledge-graph output, including its own cache directory.
+# Ignored so it is not committed by accident; un-ignore it deliberately if
+# the report is meant to be tracked.
+/graphify-out/
