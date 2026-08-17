@@ -120,21 +120,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Both PR endpoints must be present locally to diff them.
+          fetch-depth: 0
 
+      # Plain git rather than dorny/paths-filter. That action has to be
+      # downloaded from codeload at job start, and when codeload answers
+      # 429 or 503 the job fails during setup, before running anything.
+      # That happened on three separate runs in one morning and failed
+      # pull requests which had not touched the research stack at all.
+      # The filter is one grep; it does not need a dependency that can be
+      # unavailable.
       - name: Detect research-stack changes
         id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            research:
-              - 'zorp-track/**'
-              - 'zorp-agent/src/validate/**'
-              - 'zorp-agent/src/investigate/**'
-              - 'zorp-agent/src/co_write/**'
-              - 'zorp-agent/src/deliver/**'
-              - 'zorp-agent/Cargo.toml'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          # Three-dot: what this branch changed since it diverged, not
+          # whatever else landed on main in the meantime.
+          changed="$(git diff --name-only "$BASE...$HEAD")"
+          status=$?
+          if [ $status -ne 0 ]; then
+            # Fail towards running the tests. Skipping them because the
+            # diff broke is the one outcome worth avoiding.
+            echo "could not diff $BASE...$HEAD; assuming the research stack changed" >&2
+            echo "research=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|zorp-agent/src/(validate|investigate|co_write|deliver)/|zorp-agent/Cargo\.toml$|Cargo\.toml$|Cargo\.lock$)'; then
+            echo "research stack touched" >&2
+            echo "research=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "research stack untouched" >&2
+            echo "research=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Rust
         if: steps.filter.outputs.research == 'true'
