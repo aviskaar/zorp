@@ -50,6 +50,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,8 +67,14 @@ jobs:
       # Only the two installed binaries. zorp-track bundles DuckDB and
       # zorp-eval is a dev harness; neither ships, and building them here
       # would add tens of minutes per target for nothing.
+      - name: Build the UI bundle
+        run: |
+          cd web
+          npm install --no-audit --no-fund
+          npm run build
+
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }} -p zorp -p zorp-agent
+        run: cargo build --release --locked --target ${{ matrix.target }} -p zorp -p zorp-agent -p zorp-web
 
       - name: Package
         shell: bash
@@ -74,7 +84,14 @@ jobs:
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/zorp" "dist/$name/"
           cp "target/${{ matrix.target }}/release/zorp-agent" "dist/$name/"
+          cp "target/${{ matrix.target }}/release/zorp-web" "dist/$name/"
           cp README.md LICENSE NOTICE.md "dist/$name/"
+          # The web UI is static files the server does not embed, so they
+          # ship beside the binaries. Without them zorp-web serves an API
+          # with nothing to point a browser at.
+          mkdir -p "dist/$name/web"
+          cp web/index.html web/styles.css "dist/$name/web/"
+          cp -r web/dist "dist/$name/web/dist"
           tar -czf "dist/$name.tar.gz" -C dist "$name"
           # Checksums are the only way a user can tell that what they
           # downloaded is what was built.
@@ -117,14 +134,21 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           body: |
-            Prebuilt binaries for `zorp` and `zorp-agent`. No Rust toolchain needed.
+            Prebuilt binaries for `zorp`, `zorp-agent` and `zorp-web`, plus the
+            static web UI. No Rust toolchain and no Node needed.
 
             ```bash
             curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
             ```
 
             Or download the archive for your platform below, verify it against
-            its `.sha256`, and put the two binaries on your `PATH`.
+            its `.sha256`, and put the binaries on your `PATH`. The `web/`
+            directory beside them is the chat UI; point any static file server
+            at it, or use the container image.
+
+            ```bash
+            zorp-web          # then open http://127.0.0.1:7777
+            ```
 
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
