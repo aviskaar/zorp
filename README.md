@@ -146,6 +146,17 @@ Prebuilt binaries carry the default feature set. The four research
 capabilities are behind the `research` feature and still need a source
 build, because `zorp-track` bundles DuckDB.
 
+Or try it without installing anything:
+
+```bash
+docker run --rm -v "$PWD":/work \
+  -e ZORP_BASE_URL -e ZORP_MODEL -e ZORP_API_KEY \
+  ghcr.io/aviskaar/zorp "<your task>"
+```
+
+The image is about 150MB, runs as a non-root user, and mounts your project
+at `/work`. `linux/amd64` and `linux/arm64`.
+
 ### Using validate, investigate, co-write, deliver
 
 Two of the four need an MCP tool connected first (behind `zorp-agent`'s

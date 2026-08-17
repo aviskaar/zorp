@@ -1,0 +1,76 @@
+name: Image
+
+# Publishes a container image so zorp can be tried with no install at all:
+#   docker run --rm -v "$PWD":/work ghcr.io/aviskaar/zorp "<task>"
+#
+# Runs after Release, because the Dockerfile installs the published release
+# artifact rather than rebuilding the workspace. Running it on the tag push
+# directly would race the release that produces the binaries it needs.
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to package, for example v0.2.1"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    # Never package a release that did not build.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the version to package
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            # The triggering Release run was a tag push, so its head_branch
+            # is the tag name.
+            version="${{ github.event.workflow_run.head_branch }}"
+          fi
+          case "$version" in
+            v*) ;;
+            *) echo "not a release tag: $version" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # arm64 matters here. A large share of cheap cloud instances and
+          # every Apple Silicon machine is arm64, and emulating amd64 to run
+          # a CLI is a poor first impression.
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ steps.v.outputs.version }}
+          push: true
+          tags: |
+            ghcr.io/aviskaar/zorp:${{ steps.v.outputs.version }}
+            ghcr.io/aviskaar/zorp:latest
+
+      - name: Smoke test the published image
+        # An image that cannot print its own version is worse than no image.
+        run: |
+          docker run --rm ghcr.io/aviskaar/zorp:${{ steps.v.outputs.version }} --version
