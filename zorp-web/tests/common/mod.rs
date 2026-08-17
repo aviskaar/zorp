@@ -137,29 +137,6 @@ impl EventStream {
     }
 }
 
-/// One-shot mock HTTP server. Serves one connection with `status` + `body`
-/// (using `content_type`), then the thread exits. Returns "http://127.0.0.1:PORT".
-/// Reads the client's full request (headers + Content-Length body) before
-/// responding, so it stays reliable under parallel test execution.
-pub fn mock(status: u16, content_type: &str, body: &str) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let reason = if status == 200 { "OK" } else { "ERROR" };
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            read_request(&mut stream);
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-            let _ = stream.shutdown(std::net::Shutdown::Write);
-        }
-    });
-    format!("http://{addr}")
-}
-
 /// Mock server that serves a queued list of 200 JSON response bodies, one per
 /// connection, in order — for multi-turn agent runs. Returns the base URL.
 #[allow(dead_code)]

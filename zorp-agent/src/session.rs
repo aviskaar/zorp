@@ -965,7 +965,7 @@ CREATE TABLE file_changes (
 
     #[test]
     fn sessions_lists_every_session_newest_first() {
-        let mut store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().unwrap();
         store.create_session("a", "first task", "/r", "m").unwrap();
         store.create_session("b", "second task", "/r", "m").unwrap();
         let ids: Vec<String> = store

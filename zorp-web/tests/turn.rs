@@ -1,12 +1,17 @@
 mod common;
 use common::{mock_script, EventStream};
 use std::net::SocketAddr;
-use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 /// Model configuration lives in process-global env vars, so tests that set it
-/// cannot run concurrently with each other.
-static ENV: Mutex<()> = Mutex::new(());
+/// cannot run concurrently with each other. tokio's mutex, not std's: the
+/// guard is deliberately held across awaits, which is the whole point of the
+/// lock, and a std guard held across an await is what
+/// `clippy::await_holding_lock` is about. tokio's also does not poison, so a
+/// test that fails while holding it no longer makes the next test fail with a
+/// message about a poisoned lock instead of its real cause.
+static ENV: Mutex<()> = Mutex::const_new(());
 
 /// Long enough for a mock-backed turn to finish, short enough that a broken
 /// server fails the test instead of hanging the suite.
@@ -83,7 +88,7 @@ where
 
 #[tokio::test]
 async fn a_turn_streams_assistant_text_then_done() {
-    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":"hello from the model"},"finish_reason":"stop"}]}"#,
@@ -136,7 +141,7 @@ async fn a_turn_on_a_missing_session_is_not_found() {
 /// finished.
 #[tokio::test]
 async fn a_finished_turn_leaves_the_stream_open() {
-    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":"all done"},"finish_reason":"stop"}]}"#,
@@ -171,7 +176,7 @@ async fn a_finished_turn_leaves_the_stream_open() {
 /// open, a second and a third turn have to stream on that same connection.
 #[tokio::test]
 async fn later_turns_stream_on_the_same_connection() {
-    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":"first"},"finish_reason":"stop"}]}"#,
@@ -219,7 +224,7 @@ async fn later_turns_stream_on_the_same_connection() {
 /// drops the second turn's events.
 #[tokio::test]
 async fn seq_keeps_climbing_across_turns() {
-    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":"first"},"finish_reason":"stop"}]}"#,
@@ -259,7 +264,7 @@ async fn seq_keeps_climbing_across_turns() {
 /// and must be sent what it missed, and only what it missed.
 #[tokio::test]
 async fn a_resumed_stream_replays_only_what_was_missed() {
-    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":"the whole answer"},"finish_reason":"stop"}]}"#,
