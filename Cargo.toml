@@ -1,6 +1,6 @@
 [package]
 name = "zorp"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "The smallest harness of all time."
@@ -19,6 +19,15 @@ members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track", "zorp-web",
 [workspace.package]
 edition = "2021"
 license = "MIT"
+# One version for the whole product, bumped with each release tag, so
+# `--version` names the release you actually installed. These drifted
+# apart once already: v0.3.1 shipped a zorp-agent that reported 0.2.1,
+# which is the version whose first message times out on a cold model, so
+# anyone checking that they had the fix was told they did not. The
+# `default-version` job in the Release workflow now fails a release whose
+# tag and manifest disagree. erbga is deliberately not on this version;
+# it is standalone prior-work and versions on its own terms.
+version = "0.3.1"
 # Floor is set by Option::is_none_or (stable 1.82), used in zorp-agent
 # and zorp-eval. Raise deliberately, not by accident.
 rust-version = "1.82"

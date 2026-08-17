@@ -18,7 +18,49 @@ permissions:
   contents: write
 
 jobs:
+  default-version:
+    # The Dockerfile's `ARG VERSION` default is what a bare `docker build`
+    # produces. Nothing else notices when it goes stale, because both the
+    # Image workflow and the documented build command pass VERSION
+    # explicitly. It sat at v0.2.1 through the whole v0.3.1 release, so
+    # anyone who built without the flag got the one release whose first
+    # message times out on a cold model.
+    #
+    # Always runs, rather than being gated on the ref, because a skipped
+    # job counts as unmet for anything that `needs` it, which would skip
+    # the build on workflow_dispatch.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag, workspace version and Dockerfile default must agree
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "not a tag push; nothing to check"
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME}"
+          docker_default="$(sed -n 's/^ARG VERSION=\(.*\)$/\1/p' Dockerfile)"
+          # The [workspace.package] version, which every product crate
+          # inherits. Read after that header so the root [package] block
+          # cannot be picked up by mistake.
+          cargo_version="v$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml \
+            | sed -n 's/^version = "\(.*\)"$/\1/p')"
+          echo "tag=${tag} cargo=${cargo_version} dockerfile=${docker_default}"
+          fail=0
+          if [ "$tag" != "$cargo_version" ]; then
+            echo "::error file=Cargo.toml::[workspace.package] version is '${cargo_version#v}' but this release is '${tag}'. Bump it, or the published binary reports the wrong version to everyone who checks."
+            fail=1
+          fi
+          if [ "$tag" != "$docker_default" ]; then
+            echo "::error file=Dockerfile::ARG VERSION is '${docker_default}' but this release is '${tag}'. Bump it, or a bare docker build ships the old binary."
+            fail=1
+          fi
+          exit $fail
+
   build:
+    needs: default-version
     strategy:
       fail-fast: false
       matrix:

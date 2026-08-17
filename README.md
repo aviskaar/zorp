@@ -163,6 +163,12 @@ docker run --rm -v "$PWD":/work \
 The image is about 150MB, runs as a non-root user, and mounts your project
 at `/work`. `linux/amd64` and `linux/arm64`.
 
+That pull does not work yet. The image is published but the package is
+still private, so an anonymous `docker pull` answers `unauthorized`. See
+[#30](https://github.com/aviskaar/zorp/issues/30). Until it is flipped,
+use the install script above, or build the image yourself with
+`docker build -t zorp .`.
+
 ### Using validate, investigate, co-write, deliver
 
 Two of the four need an MCP tool connected first (behind `zorp-agent`'s
