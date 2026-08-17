@@ -69,12 +69,34 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
 /// is fixed (no per-call knobs), so a single static is enough.
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
+/// Seconds to wait for a model to respond, and the variable that overrides it.
+///
+/// 300, not 60. A local model that is not resident has to be loaded before it
+/// can emit a token, and on ordinary hardware that takes longer than a minute:
+/// a cold 4B on an Apple laptop measured 131 seconds to first response. At 60
+/// the first message a new user ever sends fails, which reads as "this is
+/// broken" rather than "the model is loading".
+pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 300;
+pub const READ_TIMEOUT_VAR: &str = "ZORP_HTTP_TIMEOUT_SECS";
+
+fn read_timeout_secs() -> u64 {
+    std::env::var(READ_TIMEOUT_VAR)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(DEFAULT_READ_TIMEOUT_SECS)
+}
+
 fn agent() -> ureq::Agent {
     AGENT
         .get_or_init(|| {
             ureq::AgentBuilder::new()
-                .timeout_connect(Duration::from_secs(60))
-                .timeout_read(Duration::from_secs(60))
+                // Connecting is a different problem from waiting for tokens.
+                // A host that will not accept a connection in 30 seconds is
+                // down, and making the user wait longer to hear that is not
+                // kind.
+                .timeout_connect(Duration::from_secs(30))
+                .timeout_read(Duration::from_secs(read_timeout_secs()))
                 .build()
         })
         .clone()
@@ -387,5 +409,46 @@ mod tests {
                 ("ZORP_MODEL".to_string(), "qwen".to_string()),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn the_default_read_timeout_outlasts_a_cold_model_load() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(READ_TIMEOUT_VAR);
+        // A cold 4B measured 131 seconds to first response. The default has to
+        // clear that with room, or a new user's first message fails.
+        assert!(read_timeout_secs() >= 180, "got {}", read_timeout_secs());
+    }
+
+    #[test]
+    fn the_read_timeout_is_overridable() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(READ_TIMEOUT_VAR, "42");
+        assert_eq!(read_timeout_secs(), 42);
+        std::env::remove_var(READ_TIMEOUT_VAR);
+    }
+
+    /// Nonsense and zero fall back rather than producing an agent that times
+    /// out instantly.
+    #[test]
+    fn a_bad_override_falls_back_to_the_default() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        for bad in ["0", "-5", "soon", ""] {
+            std::env::set_var(READ_TIMEOUT_VAR, bad);
+            assert_eq!(
+                read_timeout_secs(),
+                DEFAULT_READ_TIMEOUT_SECS,
+                "for {bad:?}"
+            );
+        }
+        std::env::remove_var(READ_TIMEOUT_VAR);
     }
 }
