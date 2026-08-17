@@ -1,0 +1,21 @@
+[package]
+name = "zorp-web"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Local web UI server for the zorp agent."
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+ureq = { workspace = true }
+tempfile = { workspace = true }
