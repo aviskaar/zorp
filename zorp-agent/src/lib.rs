@@ -39,9 +39,9 @@ pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
 pub use flavor::{
-    content_hash, is_valid_flavor_name, layer_paths, project_raw, resolve, resolve_configured,
-    resolve_scoped, resolve_scoped_configured, ApprovalSection, ConfiguredFlavor, Flavor, Scope,
-    ToolsSection, VerifySection,
+    content_hash, is_valid_flavor_name, layer_paths, named_flavor_exists, project_raw, resolve,
+    resolve_configured, resolve_scoped, resolve_scoped_configured, ApprovalSection,
+    ConfiguredFlavor, Flavor, Scope, ToolsSection, VerifySection,
 };
 pub use instructions::load as load_instructions;
 pub use model::{
