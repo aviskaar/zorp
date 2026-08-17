@@ -8163,6 +8163,7 @@ name = "zorp"
 version = "0.3.1"
 dependencies = [
  "serde_json",
+ "tempfile",
  "ureq",
 ]
 

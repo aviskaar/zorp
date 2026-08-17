@@ -33,31 +33,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The logic lives in scripts/check-release-version.sh, not inline
+      # here, so that tests/release_version_check.rs can run it on every
+      # pull request. A check that executes only during a release is a
+      # check nobody has run.
       - name: Tag, workspace version and Dockerfile default must agree
         run: |
-          set -euo pipefail
+          set -eu
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
             echo "not a tag push; nothing to check"
             exit 0
           fi
-          tag="${GITHUB_REF_NAME}"
-          docker_default="$(sed -n 's/^ARG VERSION=\(.*\)$/\1/p' Dockerfile)"
-          # The [workspace.package] version, which every product crate
-          # inherits. Read after that header so the root [package] block
-          # cannot be picked up by mistake.
-          cargo_version="v$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml \
-            | sed -n 's/^version = "\(.*\)"$/\1/p')"
-          echo "tag=${tag} cargo=${cargo_version} dockerfile=${docker_default}"
-          fail=0
-          if [ "$tag" != "$cargo_version" ]; then
-            echo "::error file=Cargo.toml::[workspace.package] version is '${cargo_version#v}' but this release is '${tag}'. Bump it, or the published binary reports the wrong version to everyone who checks."
-            fail=1
-          fi
-          if [ "$tag" != "$docker_default" ]; then
-            echo "::error file=Dockerfile::ARG VERSION is '${docker_default}' but this release is '${tag}'. Bump it, or a bare docker build ships the old binary."
-            fail=1
-          fi
-          exit $fail
+          sh scripts/check-release-version.sh "${GITHUB_REF_NAME}" .
 
   build:
     needs: default-version
