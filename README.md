@@ -128,9 +128,23 @@ Or the full agent:
 cargo run -p zorp-agent -- "<task>"
 ```
 
-`./install.sh` builds release binaries and installs `zorp` and
-`zorp-agent` to `~/.local/bin`. It builds only those two crates, so it
-skips the `zorp-track` cold-build cost noted above.
+### Install without a toolchain
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
+```
+
+This downloads prebuilt `zorp` and `zorp-agent` binaries for your platform
+from the latest release, verifies the published checksum, and installs them
+to `~/.local/bin`. No Rust needed. Linux and macOS, x86_64 and arm64.
+
+If no prebuilt binary fits your platform, the same script falls back to
+building from source, which does need a toolchain. `ZORP_INSTALL_FROM_SOURCE=1`
+forces that path, and `ZORP_INSTALL_DIR` changes where the binaries land.
+
+Prebuilt binaries carry the default feature set. The four research
+capabilities are behind the `research` feature and still need a source
+build, because `zorp-track` bundles DuckDB.
 
 ### Using validate, investigate, co-write, deliver
 
