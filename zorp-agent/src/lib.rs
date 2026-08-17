@@ -22,6 +22,8 @@ mod reasoning;
 mod recorder;
 mod render;
 mod sandbox;
+#[cfg(feature = "search")]
+mod search_tool;
 mod session;
 mod tools;
 mod trust;

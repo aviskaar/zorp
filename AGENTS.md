@@ -11,8 +11,9 @@ when either changes.
 
 A Rust workspace, forked from [quecto](https://github.com/adityak74/quecto)
 (MIT) and renamed. Crates and binaries are `zorp`, `zorp-agent`,
-`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`. `erbga` is a
-sixth workspace member and ships no binary; see the bullet below. Env
+`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`. `zorp-search`
+and `erbga` are further workspace members and ship no binary; see the
+bullets below. Env
 vars use the `ZORP_` prefix. It's being extended into a harness for
 evidence-based
 investigation: validate a question, investigate it, co-write the
@@ -33,6 +34,14 @@ resulting artifact, deliver it in the right form.
 - New, zorp-specific capabilities should be clearly separated from
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
+- `zorp-search/` is zorp's own web search capability: a
+  `SearchProvider` trait with Tavily as the first provider. It depends on
+  no other workspace member and knows nothing about agents or tools.
+  `zorp-agent` exposes it as the `web_search` built-in behind the
+  non-default `search` feature, which is the only built-in that sends
+  anything over the network. `research` deliberately does not enable it;
+  run `--features research,search` when you want it. The API key comes
+  from `ZORP_TAVILY_API_KEY` and never from a flavor manifest.
 - `erbga/` is neither inherited harness code nor a zorp capability, so
   neither of the two bullets above applies to it. It is a standalone,
   zero-dependency implementation of published prior work (Rao, Janikow,

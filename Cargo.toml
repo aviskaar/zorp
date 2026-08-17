@@ -17,7 +17,7 @@ tempfile = { workspace = true }
 workspace = true
 
 [workspace]
-members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track", "zorp-web", "erbga"]
+members = [".", "zorp-agent", "zorp-mcp", "zorp-eval", "zorp-track", "zorp-web", "zorp-search", "erbga"]
 
 [workspace.package]
 edition = "2021"

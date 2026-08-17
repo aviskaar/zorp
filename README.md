@@ -230,6 +230,29 @@ and nothing else; set `ZORP_WORKSPACE` to point it elsewhere.
 Design and plan:
 [`docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`](docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md).
 
+### Web search without an MCP server
+
+`validate` also accepts a built-in `web_search` tool, behind the
+`search` feature, so it can run with no MCP server at all:
+
+```bash
+export ZORP_TAVILY_API_KEY="tvly-..."
+cargo run -p zorp-agent --features research,search -- --yes \
+  validate "Should we migrate off Kafka to Redpanda?"
+```
+
+`search` is deliberately not part of `research`. It is the only built-in
+that sends anything over the network, so it is opted into on its own.
+The tool asks for approval like an MCP tool does, since a search sends
+your question to a third party, and `--yes` answers that ask. A project
+flavor can withhold it entirely by leaving `web_search` out of
+`[tools] enabled`.
+
+Tavily is the first provider behind a small `SearchProvider` trait in the
+`zorp-search` crate; the API key is read from the environment and never
+from a manifest. See
+[`docs/superpowers/specs/2026-08-16-tavily-web-search-design.md`](docs/superpowers/specs/2026-08-16-tavily-web-search-design.md).
+
 ## Development
 
 ```bash

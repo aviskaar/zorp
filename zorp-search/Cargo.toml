@@ -1,0 +1,16 @@
+[package]
+name        = "zorp-search"
+version     = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Web search providers for zorp, with Tavily as the first one."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependency on any other workspace member. This crate knows about HTTP
+# and JSON, nothing about agents, tools, or approval.
+[dependencies]
+ureq       = { workspace = true }
+serde_json = { workspace = true }

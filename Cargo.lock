@@ -8209,6 +8209,7 @@ dependencies = [
  "ureq",
  "zorp",
  "zorp-mcp",
+ "zorp-search",
  "zorp-track",
 ]
 
@@ -8237,6 +8238,14 @@ dependencies = [
  "toml",
  "ureq",
  "zorp",
+]
+
+[[package]]
+name = "zorp-search"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
