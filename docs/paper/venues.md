@@ -18,14 +18,19 @@ just the candidate list and a recommended sequence.
 
 ## Recommended sequence
 
-zorp is pre-alpha. Nothing in the four-capability product (validate,
-experiment, co-write, find a venue) is built yet, and the paper needs a
-real eval story (zorp compared against AI-Scientist-v2 and Catalyst) to
-be worth submitting anywhere ranked. Submitting now would mean submitting
-a design doc, not a paper.
+zorp is pre-alpha. All four capabilities (validate, investigate,
+co-write, deliver) are built and tested, and the writeup exists at
+`zorp-paper.md`, but the paper still needs a real eval story (zorp
+compared against AI-Scientist-v2 and Catalyst) to be worth submitting
+anywhere ranked. A ranked submission today would still be a design doc,
+not a paper. This paragraph originally said nothing in the
+four-capability product was built yet, which was true when it was
+written on 2026-08-09 and is not true now; the rest of this file is that
+day's search and has not been re-run.
 
 1. Post to arXiv as a preprint whenever the writeup is ready. No review,
-   no deadline, immediate. Do this regardless of what happens next.
+   no deadline, immediate. Do this regardless of what happens next. Not
+   done yet: the draft is written and built, and has not been posted.
 2. Once there's a real eval story: ICLR's September deadline is the
    nearest top-tier target that fits. FSE's October deadline is the
    nearest SE-framed alternative if the tool-design angle ends up

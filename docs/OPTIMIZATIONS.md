@@ -1,5 +1,13 @@
 # zorp: optimizations and suggestions
 
+> **Historical record, not a to-do list.** This review was written
+> against commit `0c0305e` and acted on in `dd7589a` ("Act on the
+> workspace optimization review"). Re-checked against the code on
+> 2026-08-16: every finding in section 1, correctness and integrity, is
+> fixed today. File and line references throughout are pinned to
+> `0c0305e` and no longer match current code. Read this for what was
+> found and why it mattered, not for what to do next.
+
 A code-level review of the whole workspace, pinned to commit `0c0305e`. It
 covers the core crate, `zorp-agent`, the research stack (`zorp-track` plus the
 validate/investigate/co-write/deliver capabilities), `zorp-mcp`, and
@@ -12,7 +20,8 @@ directly.
 **Status (2026-08-14): acted on.** The findings in this document were
 implemented in the optimization branch that followed the review. The document
 is kept as the review record; line references are pinned to `0c0305e` and no
-longer match the fixed code.
+longer match the fixed code. The decisions that came out of it are logged in
+`DECISIONS.md` under 2026-08-14.
 
 ## How to read this
 

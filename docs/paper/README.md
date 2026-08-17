@@ -6,6 +6,24 @@ evidence foundation, and the four capabilities. It is a design and
 status report, not a benchmark study. The paper says so plainly and
 states what a real comparative evaluation would require.
 
+## Status
+
+Written and building. `zorp-paper.md` is the full draft, and the built
+`zorp-paper.pdf` is committed alongside it, so the paper can be read
+without a TeX toolchain installed. Figures, the bibliography, the
+arXiv-style template, and the Makefile that ties them together are all
+here.
+
+What is still open:
+
+- It has not been posted to arXiv.
+- There is no comparative evaluation. The paper's own Limitations
+  section says so and states what such a study would require.
+- The test and line counts in Section 7 and Table 1 are pinned to commit
+  `fd07e81` (2026-08-13) and have drifted since.
+- Only the two AI-Scientist entries in `references.bib` have been
+  verified against their published records.
+
 ## Building
 
 ```bash
@@ -31,10 +49,13 @@ but may error in GitHub's viewer.
 | File | What it is |
 |---|---|
 | `zorp-paper.md` | the paper source, the only file to edit for prose |
+| `zorp-paper.pdf` | the built paper, committed so it can be read without a TeX toolchain |
 | `arxiv-template.tex` | pandoc LaTeX template: arXiv preprint style, Times via newtx |
 | `references.bib` | bibliography |
+| `Makefile` | the build, see above |
 | `make_figures.py` | generates `figures/` from real repo state |
 | `figures/logo.png` | the real zorp mark, placed directly, **not** generated |
+| `venues.md` | candidate venues from a 2026-08-09 search, not part of the paper build |
 
 Figures are built from actual repository state (crate layout, `cargo
 test` output), not mocked up, and use Times to match the body text.

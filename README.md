@@ -14,7 +14,7 @@ an evidence record, and a report where every claim traces back to it.
 
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-605%20passing-success?style=flat-square)](#development)
+[![Tests](https://img.shields.io/badge/tests-708%20passing-success?style=flat-square)](#development)
 [![Status](https://img.shields.io/badge/status-pre--alpha-critical?style=flat-square)](#status--roadmap)
 [![Part of Aviskaar](https://img.shields.io/badge/part%20of-Aviskaar-6f42c1?style=flat-square)](https://github.com/aviskaar)
 
@@ -135,14 +135,16 @@ skips the `zorp-track` cold-build cost noted above.
 ### Using validate, investigate, co-write, deliver
 
 Two of the four need an MCP tool connected first (behind `zorp-agent`'s
-`research` feature): `validate` needs any MCP tool, to search for
-evidence before scoring a question; `deliver` specifically needs a
-huiban-prefixed tool, to match a draft against real venues (see
+`research` feature): `validate` needs a search-capable tool, one whose
+name carries a search verb (search, fetch, query, browse, find, lookup,
+retrieve), to search for evidence before scoring a question; `deliver`
+specifically needs a huiban-prefixed tool, to match a draft against real
+venues (see
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). Connect one with
 `--mcp`, or configure it once in `.zorp/mcp.toml`:
 
 ```bash
-# any MCP server satisfies validate; here, a real search server
+# a search server satisfies validate; its tools are named mcp__brave-search__*
 cargo run -p zorp-agent --features research -- --yes \
   --mcp "stdio:brave-search:npx:-y:@modelcontextprotocol/server-brave-search" \
   validate "Should we migrate off Kafka to Redpanda?"
@@ -158,11 +160,13 @@ args = ["-y", "@modelcontextprotocol/server-brave-search"]
 trust = "sandbox"
 ```
 
-Tools show up prefixed `mcp__<server>__<tool>`, so a server named
-`huiban` satisfies `deliver`'s check. Without any MCP tool connected,
-`validate` fails fast with "no search-capable tool is available" and
-`deliver` with "no huiban-prefixed tool is available", rather than
-running with no evidence.
+Tools show up prefixed `mcp__<server>__<tool>`, and both checks read
+that name: a server named `huiban` satisfies `deliver`, and any tool
+whose name carries one of the verbs above satisfies `validate`.
+Without a matching tool connected, `validate` fails fast with "no
+search-capable tool is available" and `deliver` with "no
+huiban-prefixed tool is available", rather than running with no
+evidence.
 
 ## Development
 
