@@ -112,8 +112,44 @@ fn run_init() -> Result<(), BoxErr> {
     Ok(())
 }
 
+const USAGE: &str = "\
+zorp: one prompt, one answer, against any OpenAI-compatible endpoint.
+
+Usage:
+  zorp <prompt>...   answer a prompt and exit
+  zorp               read prompts from stdin until EOF
+  zorp --init        print `export` lines for your shell, interactively
+  zorp --version     print the version
+  zorp --help        print this
+
+Configuration, all environment variables:
+  ZORP_BASE_URL            endpoint base (default https://api.openai.com/v1)
+  ZORP_API_KEY             bearer token; leave unset for a local endpoint
+  ZORP_MODEL               model name
+  ZORP_SYSTEM              system prompt
+  ZORP_STREAM              set to 0 to buffer the reply instead of streaming
+  ZORP_HTTP_TIMEOUT_SECS   read timeout; raise it for a slow cold model
+
+Only a leading flag is read as a flag. Anywhere else it is part of the
+prompt, so `zorp what does --version print` still asks the model.
+";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Answered here rather than forwarded to the model. These are the first
+    // things anyone types at an unfamiliar binary, and sending them costs a
+    // completion to be told, at best, something the model guessed.
+    match args.first().map(|s| s.as_str()) {
+        Some("--version" | "-V") => {
+            println!("zorp {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("--help" | "-h") => {
+            print!("{USAGE}");
+            return;
+        }
+        _ => {}
+    }
     if args.first().map(|s| s.as_str()) == Some("--init") {
         if let Err(e) = run_init() {
             eprintln!("zorp: {e}");
