@@ -22,6 +22,29 @@ pub fn router() -> Router {
 }
 
 pub fn router_with_state(state: AppState) -> Router {
+    router_with_ui(state, None)
+}
+
+/// The API, optionally with the chat UI mounted underneath it.
+///
+/// The UI stays a separate artifact: the container split serves it from
+/// nginx and `ui_dir` is then `None`. But an installed `zorp-web` has the
+/// files sitting right there, and until this existed it served none of
+/// them, so `zorp-web` followed by opening the printed URL gave a 404 on
+/// every asset while `/api/health` cheerfully returned 200.
+///
+/// Static files are deliberately outside the token gate. The browser has to
+/// load the page before it can present a token, and the bundle is public
+/// source either way. The API keeps its gate.
+pub fn router_with_ui(state: AppState, ui_dir: Option<std::path::PathBuf>) -> Router {
+    let api = api_router(state);
+    match ui_dir {
+        Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
+        None => api,
+    }
+}
+
+fn api_router(state: AppState) -> Router {
     // The UI is a separate artifact by design and may be served from another
     // origin, including `null` when index.html is opened straight off disk.
     // The POSTs send application/json, which is not a simple request, so
