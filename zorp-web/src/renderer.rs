@@ -10,17 +10,45 @@ use zorp_agent::Renderer;
 pub struct WebRenderer {
     tx: Sender<Event>,
     seq: u64,
+    /// When set, sequence numbers come from here instead of the local
+    /// counter, so the renderer and the approval gate share one ordering.
+    shared: Option<std::sync::Arc<std::sync::Mutex<u64>>>,
 }
 
 impl WebRenderer {
     pub fn new(tx: Sender<Event>) -> Self {
-        WebRenderer { tx, seq: 0 }
+        WebRenderer {
+            tx,
+            seq: 0,
+            shared: None,
+        }
+    }
+
+    /// Share a sequence counter with another emitter, such as the approval
+    /// gate, so all events on one session are totally ordered.
+    pub fn set_seq(&mut self, shared: std::sync::Arc<std::sync::Mutex<u64>>) {
+        self.shared = Some(shared);
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        match &self.shared {
+            Some(shared) => {
+                let mut guard = shared.lock().unwrap();
+                let seq = *guard;
+                *guard += 1;
+                seq
+            }
+            None => {
+                let seq = self.seq;
+                self.seq += 1;
+                seq
+            }
+        }
     }
 
     pub fn emit(&mut self, kind: EventKind) {
-        let event = Event { seq: self.seq, kind };
-        self.seq += 1;
-        let _ = self.tx.send(event);
+        let seq = self.next_seq();
+        let _ = self.tx.send(Event { seq, kind });
     }
 }
 

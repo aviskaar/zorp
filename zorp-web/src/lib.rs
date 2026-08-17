@@ -6,5 +6,8 @@
 //! `docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`.
 
 pub mod api;
+pub mod approval;
 pub mod event;
 pub mod renderer;
+pub mod state;
+pub mod turn;
