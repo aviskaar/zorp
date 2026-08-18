@@ -25,6 +25,18 @@ End your answer with a single fenced JSON block, exactly this shape:\n\
 ```\n\n\
 Question: ";
 
+/// Nouns that name the user's own stored material rather than the world.
+///
+/// A memory server searches back what you already told it. That is not
+/// evidence, but it carries a search verb, so without this it satisfies the
+/// gate below and validate scores a question against the user's own notes
+/// while reporting that it searched. Refusing to run is the better failure.
+///
+/// This is a heuristic on names, and it only covers the case it can see. The
+/// durable version is an explicit per-server flag in `.zorp/mcp.toml`, which
+/// needs the server config threaded down to here; see `docs/DECISIONS.md`.
+const OWN_MATERIAL: [&str; 4] = ["context", "memor", "note", "recall"];
+
 /// Whether any connected MCP tool can actually search or fetch. The
 /// bare `mcp__` prefix is not enough: it matches every MCP tool of any
 /// kind, so a server that cannot search at all would pass the gate and
@@ -41,6 +53,9 @@ fn name_can_search(name: &str) -> bool {
         return false;
     };
     let rest = rest.to_ascii_lowercase();
+    if OWN_MATERIAL.iter().any(|noun| rest.contains(noun)) {
+        return false;
+    }
     [
         "search", "fetch", "query", "browse", "find", "lookup", "retrieve",
     ]
@@ -234,5 +249,36 @@ mod tests {
     fn local_text_search_does_not_satisfy_the_gate() {
         assert!(!name_can_search("search_text"));
         assert!(!name_can_search("search_notes"));
+    }
+
+    /// Searching your own saved material is not searching for evidence.
+    /// open-context is the case that showed this up: its `search_contexts`
+    /// carries a search verb, so connecting it as a memory server used to
+    /// satisfy this gate, and validate would then score a question against
+    /// notes the user wrote themselves while reporting that it had searched.
+    #[test]
+    fn searching_your_own_stored_context_does_not_satisfy_the_gate() {
+        for name in [
+            "mcp__opencontext__search_contexts",
+            "mcp__opencontext__recall_context",
+            "mcp__memory__search_memories",
+            "mcp__notes__find_note",
+        ] {
+            assert!(
+                !name_can_search(name),
+                "{name} searches the user's own material, not evidence"
+            );
+        }
+        // The exclusion must not swallow real search servers that happen to
+        // mention what they search over.
+        for name in [
+            "mcp__brave-search__brave_web_search",
+            "mcp__arxiv__search_papers",
+        ] {
+            assert!(
+                name_can_search(name),
+                "{name} should still satisfy the gate"
+            );
+        }
     }
 }
