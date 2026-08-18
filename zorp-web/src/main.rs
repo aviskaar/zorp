@@ -95,6 +95,13 @@ async fn main() {
         ),
     }
     let state = zorp_web::state::AppState::with_token(cli.token.clone());
+    // Restore whatever model settings were last saved through the UI. Only
+    // done here, not inside `AppState::new`/`with_token` themselves, so the
+    // test suite stays hermetic against whatever a developer's own machine
+    // happens to have in ~/.config/zorp/web.toml.
+    if let Some(persisted) = zorp_web::settings::load() {
+        state.settings.lock().unwrap().load_persisted(persisted);
+    }
     if let Err(e) = axum::serve(listener, api::router_with_ui(state, ui)).await {
         eprintln!("zorp-web: server error: {e}");
         std::process::exit(1);
