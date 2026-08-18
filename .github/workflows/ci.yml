@@ -114,9 +114,20 @@ jobs:
         working-directory: web
         run: |
           set -euo pipefail
-          for f in dist-site/index.html dist-site/styles.css dist-site/dist/main.js; do
+          # The fonts are here for the same reason as the rest: three
+          # separate places copy this directory by name (build:site, the
+          # release packaging, the nginx image) and a font left out of one
+          # of them does not fail, it just silently falls back to the system
+          # sans. Assert on it so a dropped copy is a red check instead.
+          for f in dist-site/index.html dist-site/styles.css dist-site/dist/main.js \
+                   dist-site/fonts/poppins-latin-300-normal.woff2 \
+                   dist-site/fonts/poppins-latin-500-normal.woff2; do
             [ -s "$f" ] || { echo "missing or empty: $f" >&2; exit 1; }
           done
+          # Every font the stylesheet asks for must actually be shipped.
+          while read -r want; do
+            [ -s "dist-site/$want" ] || { echo "styles.css wants $want, not in the site" >&2; exit 1; }
+          done < <(grep -o 'fonts/[A-Za-z0-9._-]*\.woff2' styles.css | sort -u)
 
   research:
     # Full build of zorp-track and the research-feature surface of

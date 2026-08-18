@@ -17,6 +17,16 @@ Sakana AI, which is licensed under a custom, restrictive "Responsible AI
 Source Code License." No code from `reference/` is copied into zorp. It is
 consulted for ideas only and never redistributed as part of this repo.
 
+## Fonts (redistributed)
+
+`web/fonts/` holds two Poppins weights, committed and shipped with the
+chat UI so it renders the same on a machine with no network and makes no
+request to a third party. Poppins is Copyright 2020 The Poppins Project
+Authors (https://github.com/itfoundry/Poppins), licensed under the SIL
+Open Font License, Version 1.1. The full license text travels with the
+files at `web/fonts/LICENSE`. The woff2 files are the latin subset builds
+from [@fontsource/poppins](https://github.com/fontsource/font-files).
+
 ## Benchmark datasets (redistributed)
 
 `erbga/tests/data/` holds four network datasets, committed so the
