@@ -30,6 +30,13 @@ Question: ";
 /// kind, so a server that cannot search at all would pass the gate and
 /// validate would score a question with no evidence behind it.
 fn name_can_search(name: &str) -> bool {
+    // The native provider (zorp-search, behind the `search` feature) is
+    // matched by exact name. Local tools whose names merely contain a search
+    // verb, `search_text` and `search_notes`, look at the repository rather
+    // than at prior work, so they must not satisfy this gate.
+    if name == "web_search" {
+        return true;
+    }
     let Some(rest) = name.strip_prefix("mcp__") else {
         return false;
     };
@@ -201,7 +208,7 @@ mod tests {
             assert!(name_can_search(name), "{name} should satisfy the gate");
         }
         // An MCP server with no search surface must not pass just
-        // because it speaks MCP, and local built-ins never do.
+        // because it speaks MCP.
         for name in [
             "mcp__huiban__get_conference",
             "mcp__filesystem__write_file",
@@ -211,5 +218,21 @@ mod tests {
         ] {
             assert!(!name_can_search(name), "{name} should not satisfy the gate");
         }
+    }
+
+    /// The native provider is the whole point of the search feature: with it
+    /// configured, validate must run without any MCP server at all.
+    #[test]
+    fn the_native_web_search_tool_satisfies_the_gate() {
+        assert!(name_can_search("web_search"));
+    }
+
+    /// `search_text` greps the repository. Searching your own files is not
+    /// evidence about prior work, and a validate run that accepted it would
+    /// score novelty against nothing.
+    #[test]
+    fn local_text_search_does_not_satisfy_the_gate() {
+        assert!(!name_can_search("search_text"));
+        assert!(!name_can_search("search_notes"));
     }
 }

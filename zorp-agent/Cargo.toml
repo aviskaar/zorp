@@ -30,6 +30,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 zorp-mcp   = { path = "../zorp-mcp", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
+zorp-search = { path = "../zorp-search", optional = true }
 arboard    = { version = "3", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies
@@ -53,6 +54,10 @@ otel = [
     "dep:tokio"
 ]
 mcp      = ["dep:zorp-mcp"]
+# The only built-in that sends anything over the network. Deliberately not
+# part of `research`: running investigate locally should not acquire an
+# egress path by side effect.
+search   = ["dep:zorp-search"]
 research = ["dep:zorp-track", "mcp"]
 # Opt-in vector store for validate's cited sources. Deliberately not
 # part of `research`: it drags in LanceDB's arrow stack at build time.

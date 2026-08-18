@@ -151,6 +151,9 @@ impl Policy {
                     self.run.clone()
                 }
             }
+            // A search leaves the machine with the user's question in it.
+            // Gated like an MCP tool, not allowed like a local read.
+            "web_search" => Decision::Ask,
             name if name.starts_with("mcp__") => Decision::Ask,
             _ => Decision::Deny(format!(
                 "tool '{}' is not permitted by the built-in policy",
@@ -994,6 +997,25 @@ mod tests {
     fn a_policy_that_denies_no_writes_claims_no_barrier() {
         assert!(!Policy::from_preset(Preset::Full).write_barrier_is_porous());
         assert!(!Policy::from_preset(Preset::ReadOnly).write_barrier_is_porous());
+    }
+
+    /// A web search sends the user's question, which in this product is a
+    /// research hypothesis, to a third party. That is not a silent read.
+    #[test]
+    fn web_search_asks_under_every_preset() {
+        for preset in [Preset::ReadOnly, Preset::Editor, Preset::Full] {
+            let p = Policy::from_preset(preset);
+            let call = ToolCall {
+                id: "1".into(),
+                name: "web_search".into(),
+                arguments: serde_json::json!({"query": "anything"}),
+            };
+            assert_eq!(
+                p.decide(&call),
+                Decision::Ask,
+                "preset {preset:?} should Ask for web_search"
+            );
+        }
     }
 
     #[test]

@@ -474,6 +474,24 @@ impl Agent {
             self.registry
                 .register(Box::new(crate::tools::subagent::CancelSubagent::new(pool)));
         }
+
+        // The search provider needs an API key. Missing one warns and skips
+        // registration rather than failing the process: a build with the
+        // `search` feature on is still a perfectly good agent for tasks that
+        // never search. Capabilities that genuinely require it, `validate`
+        // above all, then fail with their own gate message.
+        #[cfg(feature = "search")]
+        if allow("web_search") {
+            match zorp_search::TavilyProvider::from_env() {
+                Ok(provider) => {
+                    self.registry
+                        .register(Box::new(crate::search_tool::WebSearch::new(Box::new(
+                            provider,
+                        ))))
+                }
+                Err(e) => eprintln!("zorp-agent: web_search unavailable: {e}"),
+            }
+        }
         self
     }
 
