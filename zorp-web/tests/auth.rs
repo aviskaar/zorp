@@ -74,11 +74,22 @@ fn get(url: &str, authorization: Option<&str>) -> (u16, String) {
     }
 }
 
+/// A PUT with no request body, deliberately.
+///
+/// It used to send `{}`. The token layer refuses before routing and so never
+/// reads that body, and closing a socket that still has unread data makes the
+/// kernel send RST rather than FIN. On macOS the RST discards the response
+/// already sitting in the client's receive buffer, so the status arrived and
+/// the body came back empty, which `unwrap_or_default` then turned into `""`
+/// and the assertion blamed on the gate. Green on Linux, red on macOS, and
+/// nothing to do with the thing under test. The gate runs before extractors,
+/// so a bodyless PUT exercises exactly the same path with no unread bytes to
+/// race over.
 fn put(url: &str) -> (u16, String) {
     match client()
         .put(url)
         .set("content-type", "application/json")
-        .send_string("{}")
+        .call()
     {
         Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
