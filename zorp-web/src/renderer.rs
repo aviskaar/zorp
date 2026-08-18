@@ -81,6 +81,12 @@ impl Renderer for WebRenderer {
         });
     }
 
+    fn assistant_delta(&mut self, chunk: &str) {
+        self.emit(EventKind::AssistantDelta {
+            text: chunk.to_string(),
+        });
+    }
+
     fn assistant(&mut self, text: &str) {
         self.emit(EventKind::Assistant {
             text: text.to_string(),
@@ -119,6 +125,31 @@ mod tests {
         drop(r);
         let seqs: Vec<u64> = rx.iter().map(|e| e.seq).collect();
         assert_eq!(seqs, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn deltas_become_their_own_event_kind_rather_than_assistant_messages() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut r = WebRenderer::new(tx);
+        r.assistant_delta("he");
+        r.assistant_delta("llo");
+        r.assistant("hello");
+        drop(r);
+
+        let events: Vec<Event> = rx.iter().collect();
+        let kinds: Vec<&str> = events
+            .iter()
+            .map(|e| match &e.kind {
+                EventKind::AssistantDelta { .. } => "delta",
+                EventKind::Assistant { .. } => "final",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["delta", "delta", "final"],
+            "the browser cannot tell a preview from the answer"
+        );
     }
 
     /// A browser that closed its stream must not take the agent down with it.

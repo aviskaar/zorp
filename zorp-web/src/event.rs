@@ -29,6 +29,15 @@ pub enum EventKind {
     Notice {
         text: String,
     },
+    /// A fragment of the answer, as the provider produces it.
+    ///
+    /// A preview, not the answer. The browser shows these as they land and
+    /// then replaces them with the `Assistant` text below, which is the one
+    /// authoritative statement of what the model said. Treating deltas as
+    /// final is how a dropped frame becomes a silently truncated answer.
+    AssistantDelta {
+        text: String,
+    },
     Assistant {
         text: String,
     },

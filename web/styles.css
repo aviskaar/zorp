@@ -455,6 +455,33 @@ button {
   padding-left: 1px;
 }
 
+/* A caret while the answer is still arriving, so a pause between tokens
+   reads as thinking rather than as a finished, oddly short answer. Drawn
+   after the last block so it sits at the end of the text. */
+.msg-assistant.is-streaming .msg-body::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 0.15em;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: zorp-caret 1s steps(2, start) infinite;
+}
+
+@keyframes zorp-caret {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* Someone who does not want motion should not be given a blinking block. */
+@media (prefers-reduced-motion: reduce) {
+  .msg-assistant.is-streaming .msg-body::after {
+    animation: none;
+  }
+}
+
 .msg-body .para {
   margin: 0 0 0.85em;
   white-space: pre-wrap;
