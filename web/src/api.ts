@@ -364,8 +364,16 @@ export async function listModels(baseUrl: string): Promise<ModelsList> {
 }
 
 /** Check that the currently saved settings actually reach a server. */
-export async function testConnection(): Promise<ConnectionTestResult> {
-  return request<ConnectionTestResult>("POST", "/api/settings/test");
+export async function testConnection(
+  baseUrl?: string,
+): Promise<ConnectionTestResult> {
+  // With a base URL, the server probes that candidate and stores nothing.
+  // Without one, it probes whatever is already saved.
+  return request<ConnectionTestResult>(
+    "POST",
+    "/api/settings/test",
+    baseUrl ? { base_url: baseUrl } : undefined,
+  );
 }
 
 /** Resolve a pending approval. Nothing here ever decides on the user's behalf. */

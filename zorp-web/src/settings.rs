@@ -168,7 +168,12 @@ impl SettingsState {
             self.provider = Some(parsed);
         }
         if let Some(base_url) = &put.base_url {
-            self.base_url = Some(base_url.trim().to_string());
+            // Same check `fetch_models` applies to the probe. It belongs here
+            // more than there: this is the value that gets written to the
+            // config file and used to build every later model call, while the
+            // probe only reads. Nothing is stored when this fails, so a
+            // rejected save leaves the previous setting intact.
+            self.base_url = Some(validate_scheme(base_url)?);
         }
         if let Some(model) = &put.model {
             self.model = Some(model.trim().to_string());
@@ -531,5 +536,50 @@ mod tests {
         assert!(validate_scheme("").is_err());
         assert!(validate_scheme("http://localhost:11434/v1").is_ok());
         assert!(validate_scheme("https://api.openai.com/v1").is_ok());
+    }
+
+    /// The scheme check guarded only `fetch_models`, which is the read-only
+    /// probe. A save went through unchecked, so `file:///etc/passwd` could be
+    /// written to `~/.config/zorp/web.toml` and handed to the model call on
+    /// every later turn. The stricter check was on the harmless path and the
+    /// looser one on the path that persists. Rejecting here turns it into the
+    /// same 400 an unknown provider gets.
+    #[test]
+    fn a_save_rejects_a_base_url_that_is_not_http() {
+        for bad in ["file:///etc/passwd", "ftp://example.com", "  "] {
+            let mut state = SettingsState::default();
+            let err = state
+                .apply(&PutSettings {
+                    base_url: Some(bad.to_string()),
+                    ..PutSettings::default()
+                })
+                .expect_err("{bad} was accepted");
+            assert!(
+                err.contains("http://") || err.contains("no base URL"),
+                "unhelpful message for {bad}: {err}"
+            );
+            assert!(
+                state.base_url.is_none(),
+                "{bad} was stored anyway despite the error"
+            );
+        }
+    }
+
+    /// The good case, so the check above cannot be satisfied by rejecting
+    /// everything. Ollama's URL is the one this feature exists to accept.
+    #[test]
+    fn a_save_still_accepts_an_ordinary_http_base_url() {
+        let mut state = SettingsState::default();
+        state
+            .apply(&PutSettings {
+                base_url: Some("  http://localhost:11434/v1  ".to_string()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        assert_eq!(
+            state.base_url.as_deref(),
+            Some("http://localhost:11434/v1"),
+            "the surrounding whitespace should still be trimmed"
+        );
     }
 }

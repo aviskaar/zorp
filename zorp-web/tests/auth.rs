@@ -358,3 +358,35 @@ async fn settings_endpoints_are_gated_too() {
     );
     assert_eq!(test_body, REFUSED);
 }
+
+/// The 401s above prove less than they look like they prove. The token layer
+/// wraps the router, so it answers before routing happens and a path that
+/// matches no route is refused exactly like a path that does. Delete all
+/// three settings routes and every assertion in the test above still passes.
+/// Verified by deleting them, not assumed.
+///
+/// So this is the other half: with the right token, `GET /api/settings` has
+/// to answer 200 and return the settings document. That is what tells the two
+/// cases apart, and it is what fails if the route ever goes away.
+#[tokio::test]
+async fn the_settings_route_exists_rather_than_being_a_404_that_looks_gated() {
+    let addr = spawn(Some(TOKEN)).await;
+
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        get(
+            &format!("http://{addr}/api/settings"),
+            Some(&format!("Bearer {TOKEN}")),
+        )
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status, 200,
+        "GET /api/settings with a good token did not answer: {body}"
+    );
+    assert!(
+        body.contains("\"model\""),
+        "answered 200 without the settings document: {body}"
+    );
+}

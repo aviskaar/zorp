@@ -286,16 +286,43 @@ async fn list_models(Query(query): Query<ModelsQuery>) -> Json<serde_json::Value
     Json(json!({"models": result.models, "error": result.error}))
 }
 
-/// Check that the currently configured endpoint answers at all. Reuses the
-/// models probe: a 2xx JSON response to `/models` is good enough evidence
-/// that the base URL is a real, reachable OpenAI-compatible server without
-/// spending a real completion call (and its tokens) just to say so.
-async fn test_connection(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let resolved = state.settings.lock().unwrap().resolve();
-    if !resolved.configured {
-        return Json(json!({"ok": false, "reason": "no model is configured yet"}));
-    }
-    let base_url = resolved.base_url;
+/// Check that an endpoint answers at all. Reuses the models probe: a 2xx
+/// JSON response to `/models` is good enough evidence that the base URL is a
+/// real, reachable OpenAI-compatible server without spending a real
+/// completion call (and its tokens) just to say so.
+///
+/// A body of `{"base_url": "..."}` tests that candidate and stores nothing.
+/// Without it, the saved configuration is tested instead, which is what a
+/// bare `curl -X POST` gets. The candidate form exists because the panel's
+/// Test button otherwise had to save the form before it could test it, so a
+/// button that reads like a question overwrote the stored config to ask it,
+/// and an address that turned out to be wrong took the working one with it.
+///
+/// The body is read as bytes and parsed here rather than through a `Json`
+/// extractor because an absent body is the normal case, not a rejection.
+async fn test_connection(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Json<serde_json::Value> {
+    let candidate = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("base_url")
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+        })
+        .filter(|u| !u.trim().is_empty());
+
+    let base_url = match candidate {
+        Some(url) => url,
+        None => {
+            let resolved = state.settings.lock().unwrap().resolve();
+            if !resolved.configured {
+                return Json(json!({"ok": false, "reason": "no model is configured yet"}));
+            }
+            resolved.base_url
+        }
+    };
     let result = tokio::task::spawn_blocking(move || settings::fetch_models(&base_url))
         .await
         .unwrap_or_else(|e| settings::ModelsResult {

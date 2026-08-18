@@ -1106,16 +1106,15 @@ async function saveSettings(): Promise<void> {
 }
 
 /**
- * Save first, then check the endpoint answers. `POST /api/settings/test`
- * checks whatever the server currently has saved, not an unsaved draft in
- * this form, so testing what is on screen means saving it first.
+ * Test what is on screen, without saving it. The base URL in the form goes
+ * along on the request, so an address that turns out to be wrong is never
+ * written anywhere and whatever was saved before is still saved after.
  */
 async function runConnectionTest(): Promise<void> {
   dom.settingsTest.disabled = true;
   setSettingsResult("Testing…", null);
   try {
-    await putSettings(formToUpdate());
-    const result = await testConnection();
+    const result = await testConnection(dom.settingsBaseUrl.value.trim());
     if (result.ok) {
       setSettingsResult("Connected.", "ok");
     } else {

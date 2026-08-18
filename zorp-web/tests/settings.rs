@@ -307,3 +307,85 @@ async fn test_connection_reports_ok_against_a_reachable_endpoint() {
     let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
     assert_eq!(json["ok"], true, "body: {body}");
 }
+
+/// Testing a candidate endpoint must not save it.
+///
+/// The panel's Test button used to save the form and then test what it had
+/// just saved, because the endpoint only ever looked at stored state. That
+/// makes a read-sounding verb overwrite `~/.config/zorp/web.toml`, so trying
+/// an address that turns out to be wrong destroys the working one that was
+/// there. A body on the POST now names the candidate, and nothing about it
+/// is stored.
+#[tokio::test]
+async fn testing_a_candidate_endpoint_does_not_overwrite_the_saved_one() {
+    let _env = ENV.lock().await;
+    let _iso = Isolated::new();
+    let addr = spawn().await;
+
+    let good = common::mock_script(vec![r#"{"data":[{"id":"qwen3:4b"}]}"#]);
+    let (put_status, put_resp) = put_async(
+        format!("http://{addr}/api/settings"),
+        format!(r#"{{"base_url":"{good}","model":"qwen3:4b"}}"#),
+    )
+    .await;
+    assert_eq!(put_status, 200, "body: {put_resp}");
+
+    // Nothing listens here. This is the candidate a user types by mistake.
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        match ureq::post(&format!("http://{addr}/api/settings/test"))
+            .set("content-type", "application/json")
+            .send_string(r#"{"base_url":"http://127.0.0.1:9/v1"}"#)
+        {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 200, "body: {body}");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    assert_eq!(
+        json["ok"], false,
+        "the unreachable candidate was reported as working: {body}"
+    );
+
+    // The point of the test: the good URL is still what is saved.
+    let (get_status, get_body) = get_async(format!("http://{addr}/api/settings")).await;
+    assert_eq!(get_status, 200, "body: {get_body}");
+    let saved: serde_json::Value = serde_json::from_str(&get_body).expect("valid JSON");
+    assert_eq!(
+        saved["base_url"], good,
+        "testing a candidate overwrote the saved base URL: {get_body}"
+    );
+}
+
+/// A POST with no body keeps testing whatever is saved, so `curl -X POST`
+/// and any older client still work.
+#[tokio::test]
+async fn testing_with_no_body_still_checks_the_saved_endpoint() {
+    let _env = ENV.lock().await;
+    let _iso = Isolated::new();
+    let addr = spawn().await;
+
+    let good = common::mock_script(vec![r#"{"data":[{"id":"qwen3:4b"}]}"#]);
+    let (put_status, put_resp) = put_async(
+        format!("http://{addr}/api/settings"),
+        format!(r#"{{"base_url":"{good}","model":"qwen3:4b"}}"#),
+    )
+    .await;
+    assert_eq!(put_status, 200, "body: {put_resp}");
+
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        match ureq::post(&format!("http://{addr}/api/settings/test")).call() {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status, 200, "body: {body}");
+    let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    assert_eq!(json["ok"], true, "body: {body}");
+}
