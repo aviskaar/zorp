@@ -1,0 +1,19 @@
+[package]
+name        = "zorp-skill"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Claude Code compatible skill discovery and parsing for zorp."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependency on any other workspace member, and no third-party crates at
+# all. This crate reads files and parses text. It knows nothing about agents,
+# tools, approval, or the model. The frontmatter parser is hand written on
+# purpose; see src/frontmatter.rs for why there is no YAML dependency here.
+[dependencies]
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -126,6 +126,13 @@ impl Policy {
 
     pub fn decide(&self, call: &ToolCall) -> Decision {
         match call.name.as_str() {
+            // `skill` reads one local file the user installed and returns it
+            // as text. It is gated like a read, not like a shell, because a
+            // skill body confers nothing: the instructions it adds still have
+            // to route every action through this same function. Gating it at
+            // Ask instead would make skills unusable under the default
+            // NonInteractive mode, where Ask means deny, and would buy no
+            // safety that the calls it leads to do not already have.
             "read_file"
             | "list_files"
             | "search_text"
@@ -133,7 +140,8 @@ impl Policy {
             | "git_status"
             | "search_notes"
             | "list_background_processes"
-            | "monitor_subagents" => Decision::Allow,
+            | "monitor_subagents"
+            | "skill" => Decision::Allow,
             "write_file" | "apply_patch" | "take_note" => self.edit.clone(),
             "run_command"
             | "start_background_process"
