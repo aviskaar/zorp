@@ -240,13 +240,34 @@ function table(rows: string[]): HTMLElement {
   return wrap;
 }
 
+/**
+ * Split a table row on its cell boundaries.
+ *
+ * A pipe preceded by a backslash is text, not a boundary. That is what GFM
+ * says, and it is what keeps a cell whose contents contain a pipe from adding
+ * a column: the server escapes them that way when it turns a Word or
+ * OpenDocument table into markdown.
+ */
 function splitRow(row: string): string[] {
-  return row
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((c) => c.trim());
+  const trimmed = row.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (char === "\\" && trimmed[index + 1] === "|") {
+      current += "|";
+      index += 1;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells;
 }
 
 /**

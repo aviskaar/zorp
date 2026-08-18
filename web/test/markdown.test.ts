@@ -124,6 +124,18 @@ test("a pipe table renders as a table with a header row", () => {
   assert.equal(host.querySelectorAll("tbody td")[0]?.textContent, "1");
 });
 
+/**
+ * A backslash escaped pipe is one cell's contents, not a cell boundary. This
+ * matters now that the server turns Word and OpenDocument tables into pipe
+ * tables: a cell whose text contains a pipe would otherwise silently add a
+ * column and reshape the table it came from.
+ */
+test("an escaped pipe stays inside its cell rather than splitting it", () => {
+  const host = render("| a\\|b | c |\n| --- | --- |\n| 1 | 2 |");
+  assert.equal(host.querySelectorAll("thead th").length, 2);
+  assert.equal(host.querySelectorAll("thead th")[0]?.textContent, "a|b");
+});
+
 test("a line with a pipe but no separator row stays a paragraph", () => {
   const host = render("this | that");
   assert.equal(host.querySelectorAll("table").length, 0);

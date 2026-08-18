@@ -51,6 +51,14 @@ async-stream = "0.3"
 futures-core = "0.3"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+# Office formats are zip archives of XML. Only stored and deflated entries
+# ever appear in one, so every other codec is switched off: aes, bzip2,
+# lzma, zstd and xz would all be attack surface for a file format that
+# never uses them. Pinned to 4 rather than the 6 already in the lock as a
+# build dependency of libduckdb-sys, because 6 needs Rust 1.83 and this
+# workspace's floor is 1.82.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+quick-xml = "0.41"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

@@ -10,6 +10,13 @@
 import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import {
+  needsText,
+  producedSince,
+  showArtifact as showArtifactIn,
+  type ArtifactStamp,
+  type Pane,
+} from "./artifact-view";
+import {
   ApiError,
   TurnBusyError,
   approve,
@@ -104,6 +111,7 @@ interface Elements {
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
   artifactsBtn: HTMLButtonElement;
+  artifactsBadge: HTMLElement;
   artifacts: HTMLElement;
   artifactsClose: HTMLButtonElement;
   artifactsRefresh: HTMLButtonElement;
@@ -111,6 +119,7 @@ interface Elements {
   artifactEmpty: HTMLElement;
   artifactDoc: HTMLElement;
   artifactFrame: HTMLIFrameElement;
+  artifactImage: HTMLImageElement;
 }
 
 type ApprovalOutcome = "allowed" | "denied" | "expired";
@@ -252,6 +261,7 @@ function collectElements(): Elements {
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     artifactsBtn: byId<HTMLButtonElement>("artifacts-btn"),
+    artifactsBadge: byId<HTMLElement>("artifacts-badge"),
     artifacts: byId<HTMLElement>("artifacts"),
     artifactsClose: byId<HTMLButtonElement>("artifacts-close"),
     artifactsRefresh: byId<HTMLButtonElement>("artifacts-refresh"),
@@ -259,6 +269,7 @@ function collectElements(): Elements {
     artifactEmpty: byId<HTMLElement>("artifact-empty"),
     artifactDoc: byId<HTMLElement>("artifact-doc"),
     artifactFrame: byId<HTMLIFrameElement>("artifact-frame"),
+    artifactImage: byId<HTMLImageElement>("artifact-image"),
     settingsResult: byId("settings-result"),
   };
 }
@@ -347,6 +358,9 @@ async function submitMessage(): Promise<void> {
   scrollToBottomIfFollowing(true);
 
   setTurnRunning(true);
+  // Before anything runs, so "what did this turn write" has a baseline. Not
+  // awaited: a slow listing must not delay the message.
+  void snapshotArtifacts();
 
   try {
     if (!sessionId) {
@@ -491,6 +505,10 @@ function applyEvent(event: ZorpEvent): void {
 
     case "tool":
       appendActivity(activityLine(event.name, event.summary));
+      // A tool ran, so the workspace may have changed. The name and summary
+      // are not read for a path: what got written is a question for the
+      // directory, not for the tool that claims to have written it.
+      void checkForProducedArtifacts();
       break;
 
     case "verify":
@@ -515,6 +533,11 @@ function applyEvent(event: ZorpEvent): void {
 
     case "error":
       appendError(event.message);
+      // A turn that failed is still a turn that ran, and the server sends
+      // `error` instead of `done` rather than as well as it, so without this
+      // a run that wrote three files and then lost the model would leave them
+      // unmentioned.
+      void checkForProducedArtifacts(true);
       break;
 
     case "done":
@@ -531,6 +554,9 @@ function finishTurn(): void {
   updateWorking();
   expirePendingApprovals();
   void refreshSessions();
+  // Forced past the poll interval: this is the last chance to notice what the
+  // run wrote, and a file written in the final second is the interesting one.
+  void checkForProducedArtifacts(true);
 }
 
 function setTurnRunning(running: boolean): void {
@@ -936,6 +962,10 @@ function resetTranscript(): void {
   workingDepth = 0;
   updateWorking();
   dom.jump.hidden = true;
+  // "This run wrote that" belongs to the conversation it happened in. Carrying
+  // the marks into another session would claim a run wrote files it never
+  // touched.
+  forgetProducedArtifacts();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1379,6 +1409,36 @@ function glyph(kind: "shield" | "alert"): SVGSVGElement {
 
 /** The file currently open, so a refresh can put it back. */
 let openArtifact: string | null = null;
+/**
+ * The listing as it was when the turn started, and what has changed since.
+ *
+ * A run produces files, and until this existed the only way to find out was to
+ * open the pane and press Refresh. The snapshot is what makes "produced" a
+ * question with an answer: everything new or newer than this is something the
+ * run did.
+ */
+let artifactsAtTurnStart: ArtifactStamp[] | null = null;
+/** Paths this turn has produced, so the list can mark them. */
+const producedThisTurn = new Set<string>();
+/** When the listing was last fetched, to keep tool activity from hammering it. */
+let lastArtifactPoll = 0;
+/** How often tool activity may trigger a listing refresh. */
+const ARTIFACT_POLL_MS = 1500;
+
+const pane: Pane = {
+  get doc() {
+    return dom.artifactDoc;
+  },
+  get frame() {
+    return dom.artifactFrame;
+  },
+  get image() {
+    return dom.artifactImage;
+  },
+  get empty() {
+    return dom.artifactEmpty;
+  },
+};
 
 function wireArtifacts(): void {
   dom.artifactsBtn.addEventListener("click", () => {
@@ -1399,7 +1459,15 @@ function openArtifactsPane(): void {
   dom.artifacts.hidden = false;
   dom.artifactsBtn.setAttribute("aria-expanded", "true");
   dom.app.dataset.artifacts = "open";
-  void refreshArtifacts();
+  // Opening the pane is the user acting on the badge, so the badge has done
+  // its job. The rows stay marked; only the count on the button clears.
+  clearArtifactBadge();
+  const newest = newestProducedPath;
+  void refreshArtifacts().then(() => {
+    if (newest) {
+      void showArtifact(newest);
+    }
+  });
 }
 
 function closeArtifacts(): void {
@@ -1408,9 +1476,98 @@ function closeArtifacts(): void {
   delete dom.app.dataset.artifacts;
 }
 
+/** The most recently written file this turn produced, if any. */
+let newestProducedPath: string | null = null;
+
+/** Back to knowing nothing about what any run wrote. */
+function forgetProducedArtifacts(): void {
+  producedThisTurn.clear();
+  newestProducedPath = null;
+  artifactsAtTurnStart = null;
+  clearArtifactBadge();
+}
+
+/**
+ * Take the "before" picture for this turn.
+ *
+ * Deliberately the listing and not the tool stream. How a file got written is
+ * not knowable from a tool summary: a PDF that pandoc produced under
+ * `run_command` names no path anywhere, and it is exactly as much a result of
+ * the run as one `write_file` wrote. Asking the directory catches both.
+ */
+async function snapshotArtifacts(): Promise<void> {
+  forgetProducedArtifacts();
+  try {
+    artifactsAtTurnStart = (await listArtifacts()).files;
+  } catch {
+    // No snapshot means nothing gets claimed as produced this turn. Quietly
+    // doing nothing beats badging the button over a failed request.
+    artifactsAtTurnStart = null;
+  }
+}
+
+/**
+ * Look for files the run has produced and surface them.
+ *
+ * With the pane open, the newest one is shown: the user asked to watch the
+ * workspace, so showing them what appeared in it is the answer. With the pane
+ * closed, the button gets a count and nothing else happens. Opening a pane
+ * over what somebody is reading mid-answer is not a feature, it is an
+ * interruption, so the closed case stays a dot until they act on it.
+ */
+async function checkForProducedArtifacts(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastArtifactPoll < ARTIFACT_POLL_MS) {
+    return;
+  }
+  lastArtifactPoll = now;
+
+  let files: Artifact[];
+  let truncated: boolean;
+  try {
+    const listing = await listArtifacts();
+    files = listing.files;
+    truncated = listing.truncated;
+  } catch {
+    return;
+  }
+
+  const fresh = producedSince(artifactsAtTurnStart, files);
+  if (!fresh.length) {
+    return;
+  }
+  for (const file of fresh) {
+    producedThisTurn.add(file.path);
+  }
+  newestProducedPath = fresh[0].path;
+
+  if (dom.artifacts.hidden) {
+    showArtifactBadge(producedThisTurn.size);
+    return;
+  }
+  renderArtifactList(files, truncated);
+  await showArtifact(newestProducedPath);
+}
+
+function showArtifactBadge(count: number): void {
+  dom.artifactsBadge.hidden = false;
+  dom.artifactsBadge.textContent = count > 9 ? "9+" : String(count);
+  dom.artifactsBtn.dataset.produced = "yes";
+  dom.artifactsBtn.title =
+    count === 1 ? "This run wrote a file" : `This run wrote ${count} files`;
+}
+
+function clearArtifactBadge(): void {
+  dom.artifactsBadge.hidden = true;
+  dom.artifactsBadge.textContent = "";
+  delete dom.artifactsBtn.dataset.produced;
+  dom.artifactsBtn.title = "Show files this workspace has produced";
+}
+
 async function refreshArtifacts(): Promise<void> {
   try {
     const listing = await listArtifacts();
+    lastArtifactPoll = Date.now();
     renderArtifactList(listing.files, listing.truncated);
     // Reopening what was already open means a refresh after a run shows the
     // new contents rather than dropping the reader back to an empty pane.
@@ -1443,6 +1600,12 @@ function renderArtifactList(files: Artifact[], truncated: boolean): void {
       textNode("span", "artifact-name", file.path),
       textNode("span", "artifact-size", humanBytes(file.bytes)),
     );
+    if (producedThisTurn.has(file.path)) {
+      // Which of these the run wrote is worth knowing after the fact, so the
+      // mark outlives the badge on the button.
+      button.dataset.fresh = "yes";
+      button.append(textNode("span", "artifact-fresh", "new"));
+    }
     button.addEventListener("click", () => {
       void showArtifact(file.path);
     });
@@ -1457,9 +1620,12 @@ function renderArtifactList(files: Artifact[], truncated: boolean): void {
 }
 
 /**
- * Show one file. Markdown and text render into the pane through the same
- * renderer the chat uses; a PDF goes into an iframe and the browser's own
- * viewer handles it. Nothing is parsed here that does not have to be.
+ * Show one file.
+ *
+ * The decision about how is `artifact-view.ts`'s, and the part of it that
+ * matters is that anything which can execute (a PDF, an SVG, an HTML file)
+ * goes into the sandboxed iframe by URL and is never fetched into this page.
+ * Only the types this page renders itself get read as text at all.
  */
 async function showArtifact(path: string): Promise<void> {
   openArtifact = path;
@@ -1471,30 +1637,14 @@ async function showArtifact(path: string): Promise<void> {
     }
   }
 
-  if (path.toLowerCase().endsWith(".pdf")) {
-    dom.artifactDoc.hidden = true;
-    dom.artifactEmpty.hidden = true;
-    dom.artifactFrame.hidden = false;
-    dom.artifactFrame.src = artifactUrl(path);
+  if (!needsText(path)) {
+    showArtifactIn(pane, path, artifactUrl(path), null, renderMarkdown);
     return;
   }
 
-  dom.artifactFrame.hidden = true;
-  dom.artifactFrame.removeAttribute("src");
   try {
     const text = await readArtifact(path);
-    dom.artifactDoc.replaceChildren();
-    if (path.toLowerCase().endsWith(".md") || path.toLowerCase().endsWith(".markdown")) {
-      renderMarkdown(dom.artifactDoc, text);
-    } else {
-      const pre = el("pre", "code-block");
-      const code = el("code");
-      code.textContent = text;
-      pre.append(code);
-      dom.artifactDoc.append(pre);
-    }
-    dom.artifactDoc.hidden = false;
-    dom.artifactEmpty.hidden = true;
+    showArtifactIn(pane, path, artifactUrl(path), text, renderMarkdown);
   } catch (error) {
     // A file that vanished between listing and opening says so. An empty
     // pane and an empty file look identical, and they are not the same.
@@ -1505,6 +1655,9 @@ async function showArtifact(path: string): Promise<void> {
 function setArtifactMessage(text: string): void {
   dom.artifactDoc.hidden = true;
   dom.artifactFrame.hidden = true;
+  dom.artifactFrame.removeAttribute("src");
+  dom.artifactImage.hidden = true;
+  dom.artifactImage.removeAttribute("src");
   dom.artifactEmpty.hidden = false;
   dom.artifactEmpty.textContent = text;
 }

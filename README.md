@@ -290,11 +290,41 @@ and not shown, the same as in the terminal. Providers that cannot stream,
 which includes Anthropic today, still answer exactly as they did before.
 
 **Reading what a run produced.** The Files button opens a pane listing the
-files in the directory the server was started in, and renders them:
-markdown formatted, PDFs inline, anything else as plain text. It is
+files in the directory the server was started in, and renders them. It is
 read-only. Paths are resolved against that directory and refused if they
-land outside it, and only a small allowlist of extensions is served at
-all, so this is a window on the workspace rather than a file server.
+land outside it, and only an allowlist of extensions is served at all, so
+this is a window on the workspace rather than a file server.
+
+| Format | Shown as |
+|---|---|
+| `.md`, `.markdown` | Rendered markdown |
+| `.txt`, `.json`, `.csv` | Plain text |
+| `.docx`, `.odt` | Extracted to markdown: headings, paragraphs, lists, tables |
+| `.xlsx` | One markdown table per sheet |
+| `.pptx` | One heading per slide, plus that slide's text |
+| `.png`, `.jpg`, `.gif`, `.webp` | Inline image |
+| `.pdf`, `.svg`, `.html` | Inside a sandboxed iframe |
+
+The office formats are extracted on the server and rendered by the same
+markdown renderer the chat uses. The extraction is deliberately plain:
+text structure comes across, and images, fonts, colours and page layout do
+not. It is for reading what a run produced, not for rendering a document.
+
+`.pdf`, `.svg` and `.html` are the three that can execute. They load into
+the pane's iframe by URL and never into the page, because every served
+file carries `X-Content-Type-Options: nosniff` and a bare
+`Content-Security-Policy: sandbox`. That is a unique origin with scripting
+off, so script inside one of these neither runs nor reaches the page that
+framed it.
+
+**Noticing what a run produced.** The pane no longer waits to be asked. The
+browser takes a snapshot of the file listing when a turn starts and compares
+it afterwards, so anything the run wrote or rewrote gets marked. With the
+pane open the newest one opens in it; with the pane closed the Files button
+gets a count, and nothing appears over what you are reading. This works by
+diffing the directory rather than by reading tool output, so a PDF that
+pandoc wrote under `run_command` is caught exactly like one `write_file`
+wrote.
 
 Design and plan:
 [`docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`](docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md),
