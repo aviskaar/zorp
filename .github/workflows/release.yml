@@ -121,6 +121,10 @@ jobs:
           mkdir -p "dist/$name/web"
           cp web/index.html web/styles.css "dist/$name/web/"
           cp -r web/dist "dist/$name/web/dist"
+          # The wordmark and headings are Poppins, served from here. Leave
+          # this out and the UI still loads, just quietly in the system font,
+          # which is the kind of break nobody files a bug about.
+          cp -r web/fonts "dist/$name/web/fonts"
           tar -czf "dist/$name.tar.gz" -C dist "$name"
           # Checksums are the only way a user can tell that what they
           # downloaded is what was built.

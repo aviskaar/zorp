@@ -2,6 +2,29 @@
    One hand written stylesheet. No framework, matching the repo's preference
    for keeping the dependency list short. */
 
+/* Poppins carries the wordmark and headings, the same way it does on the
+   landing site, and the same two weights: 300 for the wordmark, 500 for
+   headings. The files are served from beside this stylesheet rather than
+   from Google Fonts, because this UI has to work on a machine with no
+   network and should not phone a third party either way. Latin subset,
+   woff2 only, which every browser that can run this UI supports.
+   SIL Open Font License, see fonts/LICENSE. */
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("fonts/poppins-latin-300-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/poppins-latin-500-normal.woff2") format("woff2");
+}
+
 :root {
   --bg: #0d0e11;
   --bg-sidebar: #0a0b0d;
@@ -20,6 +43,12 @@
   --accent-dim: #2dd4bf;
   --accent-glow: rgba(94, 234, 212, 0.12);
 
+  /* The logo's own colours, from its dark version: white nodes and edges,
+     electric blue on the two accent nodes. Kept separate from --accent
+     because the mark is the brand and does not follow this UI's palette. */
+  --brand-fg: #ffffff;
+  --brand-accent: #1450f5;
+
   --warn: #f5b544;
   --warn-soft: rgba(245, 181, 68, 0.09);
   --warn-line: rgba(245, 181, 68, 0.34);
@@ -32,6 +61,9 @@
 
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, "Helvetica Neue",
     Arial, sans-serif;
+  /* Display only, for the wordmark and headings. Body text stays on the
+     system sans, which is what the landing site does too. */
+  --display: "Poppins", ui-sans-serif, system-ui, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --reading: 46rem;
@@ -125,18 +157,33 @@ button {
   gap: 9px;
 }
 
+/* The mark is 400x424 in its own units, so the box keeps that ratio rather
+   than being squared off. This sidebar is near black, so it takes the logo's
+   dark version as it is drawn rather than recolouring it to match the UI. */
 .brand-mark {
-  width: 15px;
-  height: 15px;
-  border-radius: 5px;
-  background: linear-gradient(150deg, var(--accent) 0%, #3b82f6 120%);
-  box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.25), 0 0 18px var(--accent-glow);
+  width: 28px;
+  height: 29px;
+  color: var(--brand-fg);
+}
+
+.brand-mark line {
+  stroke-width: 8;
+}
+
+.brand-mark circle {
+  fill: currentColor;
+  stroke: none;
+}
+
+.brand-mark .mark-accent {
+  fill: var(--brand-accent);
 }
 
 .brand-name {
-  font-weight: 600;
+  font-family: var(--display);
+  font-weight: 300;
   letter-spacing: 0.02em;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .icon-btn {
@@ -288,6 +335,7 @@ button {
   flex: 1;
   min-width: 0;
   margin: 0;
+  font-family: var(--display);
   font-size: 14px;
   font-weight: 500;
   color: var(--text-dim);
@@ -786,10 +834,10 @@ button {
 }
 
 .empty-mark {
-  font-family: var(--mono);
-  font-size: 30px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  font-family: var(--display);
+  font-size: 34px;
+  font-weight: 300;
+  letter-spacing: -0.01em;
   background: linear-gradient(100deg, var(--accent) 0%, #7dd3fc 90%);
   -webkit-background-clip: text;
   background-clip: text;

@@ -10,4 +10,5 @@ FROM nginx:alpine
 COPY --from=build /src/index.html /usr/share/nginx/html/index.html
 COPY --from=build /src/styles.css /usr/share/nginx/html/styles.css
 COPY --from=build /src/dist /usr/share/nginx/html/dist
+COPY --from=build /src/fonts /usr/share/nginx/html/fonts
 EXPOSE 80
