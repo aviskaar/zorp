@@ -135,6 +135,11 @@ jobs:
     # research stack.
     if: github.event_name == 'schedule' || github.event_name == 'push'
     runs-on: ubuntu-latest
+    # A cap, because the default is six hours. These jobs build DuckDB
+    # from source and take about three minutes warm, so anything past
+    # this is stuck rather than slow, and a stuck job should say so
+    # while someone is still looking at the pull request.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -155,7 +160,24 @@ jobs:
           shared-key: research-stack
 
       - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        timeout-minutes: 5
+        run: |
+          set -eu
+          # Retried, because this is a network fetch from Ubuntu's mirrors
+          # sitting in the critical path of a job that otherwise does not
+          # touch the network. A mirror that accepts the connection and then
+          # stalls used to hang here until GitHub's six hour limit killed the
+          # job, twice, and a six hour red check reads like a broken test
+          # rather than a broken mirror.
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y protobuf-compiler; then
+              exit 0
+            fi
+            echo "protoc install attempt $attempt failed, retrying" >&2
+            sleep 5
+          done
+          echo "could not install protoc after three attempts" >&2
+          exit 1
 
       - name: Test zorp-track
         run: cargo test -p zorp-track --locked
@@ -168,6 +190,11 @@ jobs:
     # stay cheap.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # A cap, because the default is six hours. These jobs build DuckDB
+    # from source and take about three minutes warm, so anything past
+    # this is stuck rather than slow, and a stuck job should say so
+    # while someone is still looking at the pull request.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -229,7 +256,19 @@ jobs:
 
       - name: Install protoc
         if: steps.filter.outputs.research == 'true'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        timeout-minutes: 5
+        run: |
+          set -eu
+          # See the note on the same step in the `research` job above.
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y protobuf-compiler; then
+              exit 0
+            fi
+            echo "protoc install attempt $attempt failed, retrying" >&2
+            sleep 5
+          done
+          echo "could not install protoc after three attempts" >&2
+          exit 1
 
       - name: Test zorp-track
         if: steps.filter.outputs.research == 'true'
