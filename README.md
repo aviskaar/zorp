@@ -266,8 +266,32 @@ is agent-driven shell access to whatever the process can see. In the
 compose file that mount is `./workspace`, so the agent sees that directory
 and nothing else; set `ZORP_WORKSPACE` to point it elsewhere.
 
+**Choosing a model.** The gear button in the top bar opens a settings
+panel: pick a provider, point it at a base URL, and choose from the models
+that endpoint actually lists. Ollama is a preset rather than a special
+case, since it serves an OpenAI-compatible `/v1/models`:
+
+```bash
+ollama serve
+cargo run -p zorp-web    # then pick "Ollama (local)" in the panel
+```
+
+A setting saved here beats the matching `ZORP_*` environment variable,
+which beats the built-in default, and every field says which of the three
+it came from. The API key is the exception to what gets saved: it is held
+in memory for the life of the server process and never written to disk.
+Set `ZORP_API_KEY` in the environment if you want it to survive a restart.
+
+**Reading what a run produced.** The Files button opens a pane listing the
+files in the directory the server was started in, and renders them:
+markdown formatted, PDFs inline, anything else as plain text. It is
+read-only. Paths are resolved against that directory and refused if they
+land outside it, and only a small allowlist of extensions is served at
+all, so this is a window on the workspace rather than a file server.
+
 Design and plan:
-[`docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`](docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md).
+[`docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`](docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md),
+[`docs/superpowers/specs/2026-08-17-artifact-pane-design.md`](docs/superpowers/specs/2026-08-17-artifact-pane-design.md).
 
 ### Web search without an MCP server
 
