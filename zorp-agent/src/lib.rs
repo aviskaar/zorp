@@ -1,4 +1,4 @@
-//! zorp-agent — a coding agent built on the tiny zorp core.
+//! zorp-agent — a research agent built on the tiny zorp core.
 //! Milestone 1 (walking skeleton): normalized model turns + a bare agent loop.
 
 mod agent;
@@ -12,6 +12,7 @@ mod context;
 pub mod deliver;
 mod embed;
 mod flavor;
+mod identity;
 mod instructions;
 #[cfg(feature = "research")]
 pub mod investigate;
@@ -45,6 +46,7 @@ pub use flavor::{
     resolve_configured, resolve_scoped, resolve_scoped_configured, ApprovalSection,
     ConfiguredFlavor, Flavor, Scope, ToolsSection, VerifySection,
 };
+pub use identity::DEFAULT_SYSTEM_PROMPT;
 pub use instructions::load as load_instructions;
 pub use model::{
     messages_to_body, parse_assistant, parse_assistant_completion, AssistantMessage,

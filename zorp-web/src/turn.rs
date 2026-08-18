@@ -3,7 +3,22 @@ use crate::event::{Event, EventKind};
 use crate::renderer::WebRenderer;
 use crate::state::{SessionState, SettingsHandle};
 use std::sync::{Arc, Mutex};
-use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome, SqliteRecorder, Store};
+use zorp_agent::{
+    cancel_token, Agent, ApprovalMode, HttpModel, Outcome, SqliteRecorder, Store,
+    DEFAULT_SYSTEM_PROMPT,
+};
+
+/// The system prompt this server hands the agent.
+///
+/// A function rather than a `use` at the call site so a test can assert on
+/// the value the browser actually gets. The browser is the surface where the
+/// old prompt did its visible damage: it said only "a careful assistant", and
+/// a local model filled in the rest by introducing itself as a "coding
+/// buddy". zorp is a research agent, and there is now exactly one string in
+/// the workspace that says what zorp is.
+pub fn system_prompt() -> &'static str {
+    DEFAULT_SYSTEM_PROMPT
+}
 
 /// Run one turn to completion on a blocking thread.
 ///
@@ -109,7 +124,7 @@ fn run_agent(
     let cwd_display = cwd.display().to_string();
     let mut agent = Agent::new(
         Box::new(model),
-        "You are zorp, a careful assistant. Use tools when they help.",
+        system_prompt(),
         steps,
         cwd,
         cancel_token(),
@@ -135,4 +150,46 @@ fn run_agent(
     }
 
     Ok(agent.run(message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The browser is where this went wrong in front of a user, so the
+    /// browser's own prompt gets its own test rather than relying on the
+    /// library's.
+    #[test]
+    fn the_browser_gets_the_research_agent_prompt() {
+        assert!(
+            system_prompt().contains("research agent"),
+            "the web UI is back to a prompt that does not say what zorp is: {}",
+            system_prompt()
+        );
+    }
+
+    /// The specific failure: a prompt vague enough that the model invents the
+    /// product's positioning on its own.
+    #[test]
+    fn the_browsers_prompt_is_not_a_generic_assistant_line() {
+        let lowered = system_prompt().to_lowercase();
+        for vague in ["careful assistant", "helpful assistant", "coding"] {
+            assert!(
+                !lowered.contains(vague),
+                "the web UI prompt is generic again ({vague}), which is what let a \
+                 model introduce zorp as a coding buddy"
+            );
+        }
+    }
+
+    /// One string, not two. This is the property that stops the next surface
+    /// from writing its own.
+    #[test]
+    fn the_browser_and_the_cli_share_one_prompt() {
+        assert_eq!(
+            system_prompt(),
+            zorp_agent::DEFAULT_SYSTEM_PROMPT,
+            "zorp-web has started keeping its own copy of the system prompt"
+        );
+    }
 }

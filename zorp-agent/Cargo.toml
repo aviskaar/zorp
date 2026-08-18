@@ -3,7 +3,7 @@ name = "zorp-agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Coding agent built on the zorp core."
+description = "Research agent built on the zorp core."
 license.workspace = true
 default-run = "zorp-agent"
 
