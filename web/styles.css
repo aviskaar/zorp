@@ -125,12 +125,28 @@ button {
   gap: 9px;
 }
 
+/* The mark carries two node sizes and heavier strokes than the full eight
+   node version on the landing site. That version is drawn for 160px and turns
+   to mush at 20px, which is why the favicon has its own geometry; this reuses
+   the favicon's. Colours come from the tokens rather than the brand's own, so
+   the mark sits in this dark palette instead of fighting it. */
 .brand-mark {
-  width: 15px;
-  height: 15px;
-  border-radius: 5px;
-  background: linear-gradient(150deg, var(--accent) 0%, #3b82f6 120%);
-  box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.25), 0 0 18px var(--accent-glow);
+  width: 20px;
+  height: 20px;
+  color: var(--text);
+}
+
+.brand-mark path {
+  stroke-width: 6.5;
+}
+
+.brand-mark circle {
+  fill: currentColor;
+  stroke: none;
+}
+
+.brand-mark .mark-accent {
+  fill: var(--accent);
 }
 
 .brand-name {

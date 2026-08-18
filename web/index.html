@@ -11,7 +11,7 @@
     />
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e0f11'/%3E%3Cpath d='M10 10h12l-12 12h12' fill='none' stroke='%235eead4' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ffffff'/%3E%3Cpath d='M14 14h36L14 50h36' fill='none' stroke='%2312182b' stroke-width='6.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cg fill='%2312182b'%3E%3Ccircle cx='14' cy='14' r='6'/%3E%3Ccircle cx='50' cy='14' r='6'/%3E%3Ccircle cx='14' cy='50' r='6'/%3E%3Ccircle cx='50' cy='50' r='6'/%3E%3C/g%3E%3Cg fill='%231450f5'%3E%3Ccircle cx='32' cy='14' r='5.5'/%3E%3Ccircle cx='26.4' cy='37.6' r='5.5'/%3E%3C/g%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="styles.css" />
     <script>
@@ -37,7 +37,18 @@
       <aside class="sidebar" id="sidebar" aria-label="Sessions">
         <div class="sidebar-head">
           <div class="brand">
-            <span class="brand-mark" aria-hidden="true"></span>
+            <!-- The zorp mark: a Z drawn as a node graph, which is what an
+                 evidence record is. Same shape as the landing site and the
+                 favicon, kept as vector so it stays crisp at any size. -->
+            <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+              <path d="M14 14h36L14 50h36" />
+              <circle cx="14" cy="14" r="6" />
+              <circle cx="50" cy="14" r="6" />
+              <circle cx="14" cy="50" r="6" />
+              <circle cx="50" cy="50" r="6" />
+              <circle class="mark-accent" cx="32" cy="14" r="5.5" />
+              <circle class="mark-accent" cx="26.4" cy="37.6" r="5.5" />
+            </svg>
             <span class="brand-name">zorp</span>
           </div>
           <button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="Hide sessions">
