@@ -53,8 +53,7 @@ mod otel_init {
     }
 }
 
-const DEFAULT_SYSTEM: &str =
-    "You are zorp-agent, a helpful coding assistant. Answer concisely and accurately.";
+use zorp_agent::DEFAULT_SYSTEM_PROMPT as DEFAULT_SYSTEM;
 
 #[derive(Parser)]
 #[command(version)]
@@ -783,11 +782,11 @@ fn run(
     }
 }
 
-/// Prepended to the composed system prompt for `validate`, so the model is
-/// framed as doing research with citation discipline rather than as a
-/// general coding assistant. The task prompt (TASK_PROMPT_PREFIX in
-/// validate/mod.rs) already spells out the exact scoring/citation format;
-/// this just sets the frame before that.
+/// Prepended to the composed system prompt for `validate`, which narrows the
+/// default prompt's general research framing to this one job: scoring a
+/// hypothesis, and not touching code while doing it. The task prompt
+/// (TASK_PROMPT_PREFIX in validate/mod.rs) already spells out the exact
+/// scoring/citation format; this just sets the frame before that.
 #[cfg(feature = "research")]
 const VALIDATE_SYSTEM_PREAMBLE: &str = "\
 You are conducting research to validate a hypothesis, not writing or \
