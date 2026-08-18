@@ -1087,3 +1087,261 @@ button {
     scroll-behavior: auto !important;
   }
 }
+
+/* ==================================================================== */
+/* model settings                                                        */
+/*                                                                        */
+/* Everything below this line was added for the settings panel: the      */
+/* topbar model control, the "not configured" composer banner, and the   */
+/* settings dialog itself. Kept in one block so it is obvious what to    */
+/* touch (or leave alone) when the brand/logo markup elsewhere changes.  */
+/* ==================================================================== */
+
+/* ---------------------------------------------------------------- model button */
+
+.model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  max-width: 220px;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.model-btn svg {
+  color: var(--text-faint);
+  flex: none;
+}
+
+.model-btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.model-btn[data-state="unconfigured"] {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+
+.model-btn[data-state="unconfigured"] svg {
+  color: var(--warn);
+}
+
+/* ---------------------------------------------------------------- composer warning */
+
+.composer-warning {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  max-width: var(--reading);
+  margin: 0 auto 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--warn-line);
+  border-radius: 12px;
+  background: var(--warn-soft);
+  color: #f6dfae;
+  font-size: 13px;
+}
+
+.composer-warning[hidden] {
+  display: none;
+}
+
+.composer-warning-btn {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 120ms ease;
+}
+
+.composer-warning-btn:hover {
+  background: rgba(245, 181, 68, 0.16);
+}
+
+/* ---------------------------------------------------------------- settings dialog */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(1.5px);
+}
+
+.settings-overlay[hidden] {
+  display: none;
+}
+
+.settings-panel {
+  width: 100%;
+  max-width: 30rem;
+  max-height: 82vh;
+  overflow-y: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 12px 14px 20px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.settings-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-form {
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-field label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.settings-field select,
+.settings-field input[type="text"],
+.settings-field input[type="password"] {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--bg-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+}
+
+.settings-field select:focus,
+.settings-field input:focus {
+  outline: none;
+  border-color: rgba(94, 234, 212, 0.45);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.settings-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-link-btn {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-dim);
+}
+
+.settings-link-btn:hover {
+  color: var(--accent);
+}
+
+.settings-link-btn:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.settings-source {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+.settings-hint[hidden] {
+  display: none;
+}
+
+.settings-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-soft);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+.settings-note code {
+  font-family: var(--mono);
+  color: #cfe9e3;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.settings-actions .btn {
+  flex: 1;
+}
+
+.settings-result {
+  margin: 0;
+  min-height: 1px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.settings-result[data-state="ok"] {
+  color: var(--ok);
+}
+
+.settings-result[data-state="fail"] {
+  color: var(--danger);
+}
+
+@media (max-width: 560px) {
+  .model-btn span {
+    display: none;
+  }
+
+  .model-btn {
+    padding: 6px;
+  }
+}

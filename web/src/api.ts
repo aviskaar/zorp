@@ -33,6 +33,78 @@ export interface SessionTranscript {
   messages: Message[];
 }
 
+/**
+ * Where an effective settings field's value came from: chosen in the
+ * settings panel, read from the matching `ZORP_*` env var, or the
+ * hardcoded fallback nobody asked for. Lets the panel say "from ZORP_MODEL"
+ * instead of implying the user picked it.
+ */
+export type SettingsSource = "ui" | "env" | "default";
+
+/**
+ * Which wire protocol the configured endpoint speaks. Ollama is not a third
+ * value here: it is "openai" pointed at a local base URL, offered in the
+ * settings panel as a preset rather than a distinct provider.
+ */
+export type ModelProvider = "openai" | "anthropic";
+
+/**
+ * The effective model configuration, as `GET`/`PUT /api/settings` answer.
+ * Settings live server-side; this is a read of what the server currently has,
+ * not something the browser ships with every turn. There is no `api_key`
+ * field here on purpose: the server never sends the key back out, only
+ * `has_api_key`.
+ */
+export interface Settings {
+  provider: ModelProvider;
+  provider_source: SettingsSource;
+  base_url: string;
+  base_url_source: SettingsSource;
+  model: string;
+  model_source: SettingsSource;
+  max_tokens: number | null;
+  max_tokens_source: SettingsSource;
+  has_api_key: boolean;
+  api_key_source: SettingsSource;
+  /**
+   * False only when nothing at all is configured anywhere: no setting saved
+   * through this panel, no `ZORP_*` env var, and no API key. That is exactly
+   * the shape that used to fail silently on the first message, so the
+   * composer checks this before letting anyone type.
+   */
+  configured: boolean;
+}
+
+/**
+ * Body of `PUT /api/settings`. Every field is optional: a PUT only changes
+ * what it names, leaving the rest of the stored settings alone. `api_key` is
+ * sent once and never read back; an empty string clears the stored key.
+ */
+export interface SettingsUpdate {
+  provider?: string;
+  base_url?: string;
+  model?: string;
+  max_tokens?: number;
+  api_key?: string;
+}
+
+/**
+ * What `GET /api/settings/models` answers with. This endpoint is always 200:
+ * an unreachable or non-JSON endpoint comes back as an empty list with
+ * `error` explaining why, never a thrown request failure, so the panel can
+ * fall back to the free-text model field instead of looking broken.
+ */
+export interface ModelsList {
+  models: string[];
+  error: string | null;
+}
+
+/** What `POST /api/settings/test` answers with. */
+export interface ConnectionTestResult {
+  ok: boolean;
+  reason?: string;
+}
+
 /** The agent started work. Drives the in-progress indicator. */
 export interface WorkingEvent {
   seq: number;
@@ -259,6 +331,41 @@ export async function sendTurn(id: string, message: string): Promise<void> {
     }
     throw error;
   }
+}
+
+/** Read the effective model settings and where each field came from. */
+export async function getSettings(): Promise<Settings> {
+  return request<Settings>("GET", "/api/settings");
+}
+
+/**
+ * Save a settings change. Rejects (via `ApiError`, status 400) when the
+ * server does not recognize the provider string, so the panel can show that
+ * inline instead of the save silently doing nothing.
+ */
+export async function putSettings(update: SettingsUpdate): Promise<Settings> {
+  return request<Settings>("PUT", "/api/settings", update);
+}
+
+/**
+ * List model ids the given base URL serves, OpenAI's `/models` shape. Never
+ * throws on an unreachable or misbehaving endpoint: the server always
+ * answers 200, with `error` set and `models` empty, so the panel can fall
+ * back to its free-text model field instead of showing a request failure for
+ * what is usually just "Ollama is not running yet."
+ */
+export async function listModels(baseUrl: string): Promise<ModelsList> {
+  const query = new URLSearchParams({ base_url: baseUrl }).toString();
+  const result = await request<Partial<ModelsList>>("GET", `/api/settings/models?${query}`);
+  return {
+    models: Array.isArray(result?.models) ? result.models : [],
+    error: typeof result?.error === "string" ? result.error : null,
+  };
+}
+
+/** Check that the currently saved settings actually reach a server. */
+export async function testConnection(): Promise<ConnectionTestResult> {
+  return request<ConnectionTestResult>("POST", "/api/settings/test");
 }
 
 /** Resolve a pending approval. Nothing here ever decides on the user's behalf. */
