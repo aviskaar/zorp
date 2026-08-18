@@ -10,5 +10,6 @@ pub mod approval;
 pub mod auth;
 pub mod event;
 pub mod renderer;
+pub mod settings;
 pub mod state;
 pub mod turn;

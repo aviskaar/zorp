@@ -1,7 +1,7 @@
 use crate::approval::WebApprover;
 use crate::event::{Event, EventKind};
 use crate::renderer::WebRenderer;
-use crate::state::SessionState;
+use crate::state::{SessionState, SettingsHandle};
 use std::sync::{Arc, Mutex};
 use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome, SqliteRecorder, Store};
 
@@ -11,7 +11,12 @@ use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome, SqliteRe
 /// Events are drained from the renderer's channel into the session backlog as
 /// they arrive, which is what lets the SSE endpoint stream a run that is still
 /// in progress.
-pub fn spawn_turn(session: Arc<Mutex<SessionState>>, session_id: String, message: String) {
+pub fn spawn_turn(
+    session: Arc<Mutex<SessionState>>,
+    session_id: String,
+    message: String,
+    settings: SettingsHandle,
+) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     // The counter lives on the session so numbering continues across turns.
     let seq = {
@@ -37,7 +42,13 @@ pub fn spawn_turn(session: Arc<Mutex<SessionState>>, session_id: String, message
         // requests interleave correctly with activity.
         renderer.set_seq(Arc::clone(&seq));
 
-        let outcome = run_agent(&session_id, &message, Box::new(renderer), approver);
+        let outcome = run_agent(
+            &session_id,
+            &message,
+            Box::new(renderer),
+            approver,
+            &settings,
+        );
 
         // The final answer arrives in Outcome::Complete rather than through
         // the renderer. The CLI prints it in finish(); the browser has to be
@@ -70,8 +81,25 @@ fn run_agent(
     message: &str,
     renderer: Box<dyn zorp_agent::Renderer>,
     approver: Arc<WebApprover>,
+    settings: &SettingsHandle,
 ) -> Result<Outcome, String> {
-    let model = HttpModel::try_from_env().map_err(|e| e.to_string())?;
+    let resolved = settings.lock().unwrap().effective_model();
+    if !resolved.configured {
+        return Err("no model configured, open settings and pick one".to_string());
+    }
+    let url = zorp_agent::join_url(&resolved.base_url, resolved.provider.path_suffix());
+    let model = HttpModel {
+        url,
+        api_key: resolved.api_key,
+        model: resolved.model,
+        provider: resolved.provider,
+        max_tokens: resolved.max_tokens,
+    }
+    // Preserve the existing ZORP_REASONING_MODE support that
+    // `HttpModel::try_from_env` used to apply, now that the base
+    // model itself is built from resolved settings instead of `from_env`.
+    .try_with_env_reasoning_mode(None)
+    .map_err(|e| e.to_string())?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let steps = std::env::var("ZORP_MAX_STEPS")
         .ok()

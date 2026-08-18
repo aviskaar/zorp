@@ -74,6 +74,26 @@ fn get(url: &str, authorization: Option<&str>) -> (u16, String) {
     }
 }
 
+fn put(url: &str) -> (u16, String) {
+    match client()
+        .put(url)
+        .set("content-type", "application/json")
+        .send_string("{}")
+    {
+        Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+        Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+fn post(url: &str) -> (u16, String) {
+    match client().post(url).send_string("") {
+        Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+        Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+        Err(e) => panic!("{e}"),
+    }
+}
+
 fn status(url: &str) -> u16 {
     get(url, None).0
 }
@@ -285,4 +305,56 @@ async fn a_path_escaping_the_ui_directory_is_refused() {
             "{target} served a password file: {response}"
         );
     }
+}
+
+/// The settings surface added for the model-config UI must sit behind the
+/// same gate as the rest of the API. Proven the same way the session
+/// endpoints are proven above: no token, refused, with the middleware's own
+/// message, on every method the new routes answer to.
+#[tokio::test]
+async fn settings_endpoints_are_gated_too() {
+    let addr = spawn(Some(TOKEN)).await;
+
+    let (
+        get_status,
+        get_body,
+        put_status,
+        put_body,
+        models_status,
+        models_body,
+        test_status,
+        test_body,
+    ) = tokio::task::spawn_blocking(move || {
+        let (gs, gb) = get(&format!("http://{addr}/api/settings"), None);
+        let (ps, pb) = put(&format!("http://{addr}/api/settings"));
+        let (ms, mb) = get(
+            &format!("http://{addr}/api/settings/models?base_url=http://x"),
+            None,
+        );
+        let (ts, tb) = post(&format!("http://{addr}/api/settings/test"));
+        (gs, gb, ps, pb, ms, mb, ts, tb)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        get_status, 401,
+        "GET /api/settings was not gated: {get_body}"
+    );
+    assert_eq!(get_body, REFUSED);
+    assert_eq!(
+        put_status, 401,
+        "PUT /api/settings was not gated: {put_body}"
+    );
+    assert_eq!(put_body, REFUSED);
+    assert_eq!(
+        models_status, 401,
+        "GET /api/settings/models was not gated: {models_body}"
+    );
+    assert_eq!(models_body, REFUSED);
+    assert_eq!(
+        test_status, 401,
+        "POST /api/settings/test was not gated: {test_body}"
+    );
+    assert_eq!(test_body, REFUSED);
 }
