@@ -36,22 +36,39 @@ impl SessionState {
     }
 }
 
+/// Shared handle to the model settings, following the same `Arc<Mutex<..>>`
+/// pattern as `sessions`. Cloned into `turn::spawn_turn` so a running turn
+/// resolves against the same state a concurrent `GET /api/settings` sees.
+pub type SettingsHandle = Arc<Mutex<crate::settings::SettingsState>>;
+
 #[derive(Clone, Default)]
 pub struct AppState {
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<SessionState>>>>>,
     /// Shared secret, set only when the server binds a non-loopback
     /// interface. None means the operating system is the access control.
     pub token: Option<String>,
+    /// Model settings: a UI-saved value, the live env vars, and the
+    /// hardcoded defaults, in that precedence order. Seeded at construction
+    /// with `SettingsState::seeded_from_env`, which only captures
+    /// `ZORP_API_KEY` (see its doc comment for why); loading a persisted
+    /// config file on top is `main.rs`'s job, not this constructor's, so
+    /// that tests built on `AppState::new`/`with_token` never depend on
+    /// whatever the developer machine happens to have saved.
+    pub settings: SettingsHandle,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        AppState::default()
+        AppState {
+            settings: Arc::new(Mutex::new(crate::settings::SettingsState::seeded_from_env())),
+            ..AppState::default()
+        }
     }
 
     pub fn with_token(token: Option<String>) -> Self {
         AppState {
             token,
+            settings: Arc::new(Mutex::new(crate::settings::SettingsState::seeded_from_env())),
             ..AppState::default()
         }
     }

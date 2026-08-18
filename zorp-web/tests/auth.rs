@@ -74,6 +74,37 @@ fn get(url: &str, authorization: Option<&str>) -> (u16, String) {
     }
 }
 
+/// A PUT with no request body, deliberately.
+///
+/// It used to send `{}`. The token layer refuses before routing and so never
+/// reads that body, and closing a socket that still has unread data makes the
+/// kernel send RST rather than FIN. On macOS the RST discards the response
+/// already sitting in the client's receive buffer, so the status arrived and
+/// the body came back empty, which `unwrap_or_default` then turned into `""`
+/// and the assertion blamed on the gate. Green on Linux, red on macOS, and
+/// nothing to do with the thing under test. The gate runs before extractors,
+/// so a bodyless PUT exercises exactly the same path with no unread bytes to
+/// race over.
+fn put(url: &str) -> (u16, String) {
+    match client()
+        .put(url)
+        .set("content-type", "application/json")
+        .call()
+    {
+        Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+        Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+fn post(url: &str) -> (u16, String) {
+    match client().post(url).send_string("") {
+        Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+        Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+        Err(e) => panic!("{e}"),
+    }
+}
+
 fn status(url: &str) -> u16 {
     get(url, None).0
 }
@@ -285,4 +316,88 @@ async fn a_path_escaping_the_ui_directory_is_refused() {
             "{target} served a password file: {response}"
         );
     }
+}
+
+/// The settings surface added for the model-config UI must sit behind the
+/// same gate as the rest of the API. Proven the same way the session
+/// endpoints are proven above: no token, refused, with the middleware's own
+/// message, on every method the new routes answer to.
+#[tokio::test]
+async fn settings_endpoints_are_gated_too() {
+    let addr = spawn(Some(TOKEN)).await;
+
+    let (
+        get_status,
+        get_body,
+        put_status,
+        put_body,
+        models_status,
+        models_body,
+        test_status,
+        test_body,
+    ) = tokio::task::spawn_blocking(move || {
+        let (gs, gb) = get(&format!("http://{addr}/api/settings"), None);
+        let (ps, pb) = put(&format!("http://{addr}/api/settings"));
+        let (ms, mb) = get(
+            &format!("http://{addr}/api/settings/models?base_url=http://x"),
+            None,
+        );
+        let (ts, tb) = post(&format!("http://{addr}/api/settings/test"));
+        (gs, gb, ps, pb, ms, mb, ts, tb)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        get_status, 401,
+        "GET /api/settings was not gated: {get_body}"
+    );
+    assert_eq!(get_body, REFUSED);
+    assert_eq!(
+        put_status, 401,
+        "PUT /api/settings was not gated: {put_body}"
+    );
+    assert_eq!(put_body, REFUSED);
+    assert_eq!(
+        models_status, 401,
+        "GET /api/settings/models was not gated: {models_body}"
+    );
+    assert_eq!(models_body, REFUSED);
+    assert_eq!(
+        test_status, 401,
+        "POST /api/settings/test was not gated: {test_body}"
+    );
+    assert_eq!(test_body, REFUSED);
+}
+
+/// The 401s above prove less than they look like they prove. The token layer
+/// wraps the router, so it answers before routing happens and a path that
+/// matches no route is refused exactly like a path that does. Delete all
+/// three settings routes and every assertion in the test above still passes.
+/// Verified by deleting them, not assumed.
+///
+/// So this is the other half: with the right token, `GET /api/settings` has
+/// to answer 200 and return the settings document. That is what tells the two
+/// cases apart, and it is what fails if the route ever goes away.
+#[tokio::test]
+async fn the_settings_route_exists_rather_than_being_a_404_that_looks_gated() {
+    let addr = spawn(Some(TOKEN)).await;
+
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        get(
+            &format!("http://{addr}/api/settings"),
+            Some(&format!("Bearer {TOKEN}")),
+        )
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        status, 200,
+        "GET /api/settings with a good token did not answer: {body}"
+    );
+    assert!(
+        body.contains("\"model\""),
+        "answered 200 without the settings document: {body}"
+    );
 }

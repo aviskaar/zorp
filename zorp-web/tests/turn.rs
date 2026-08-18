@@ -327,3 +327,53 @@ async fn events_for_an_unknown_session_are_not_found() {
         "expected a 404 for an unknown session, got: {status}"
     );
 }
+
+/// With nothing configured anywhere (no UI setting, no `ZORP_*` env var),
+/// the turn must fail with a clear, actionable error event instead of
+/// reaching a real provider and coming back with a raw 401. This is the bug
+/// the settings feature exists to fix: previously
+/// `HttpModel::try_from_env` silently defaulted to
+/// `https://api.openai.com/v1` and `gpt-4o` with no key, so the first
+/// message a fresh install ever sent died deep inside the provider call.
+#[tokio::test]
+async fn a_turn_with_nothing_configured_fails_with_a_clear_error_not_a_provider_401() {
+    let _env = ENV.lock().await;
+    for var in [
+        "ZORP_PROVIDER",
+        "ZORP_BASE_URL",
+        "ZORP_MODEL",
+        "ZORP_API_KEY",
+        "ZORP_MAX_TOKENS",
+    ] {
+        std::env::remove_var(var);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ZORP_STATE_DB", dir.path().join("unconfigured.db"));
+
+    let addr = spawn().await;
+    let id = new_session(addr).await;
+    start_turn(addr, &id).await;
+
+    let events = on_stream(EventStream::connect(addr, &id), |events| {
+        assert!(
+            events.wait_for("\"type\":\"error\"", PATIENCE),
+            "no error event arrived: {}",
+            events.text()
+        );
+    })
+    .await;
+
+    let text = events.text();
+    assert!(
+        text.contains("no model configured"),
+        "error message did not explain the real cause: {text}"
+    );
+    assert!(
+        text.contains("settings"),
+        "error message did not point at settings: {text}"
+    );
+    assert!(
+        !text.contains("api.openai.com"),
+        "the turn reached a real provider instead of refusing up front: {text}"
+    );
+}

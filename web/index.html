@@ -83,6 +83,22 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
           <h1 class="topbar-title" id="session-title">New chat</h1>
+          <button
+            class="model-btn"
+            id="model-btn"
+            type="button"
+            data-state="unknown"
+            aria-haspopup="dialog"
+            aria-controls="settings-overlay"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.1" />
+              <path
+                d="M19.2 12a7.2 7.2 0 0 0-.13-1.36l2-1.55-2-3.46-2.36.95a7.3 7.3 0 0 0-2.36-1.37L14 2.4h-4l-.35 2.81a7.3 7.3 0 0 0-2.36 1.37l-2.36-.95-2 3.46 2 1.55a7.4 7.4 0 0 0 0 2.72l-2 1.55 2 3.46 2.36-.95c.7.58 1.5 1.04 2.36 1.37L10 21.6h4l.35-2.81c.86-.33 1.66-.79 2.36-1.37l2.36.95 2-3.46-2-1.55c.09-.45.13-.9.13-1.36Z"
+              />
+            </svg>
+            <span id="model-btn-label">Model</span>
+          </button>
           <div class="status" id="status" data-state="idle">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="status-text">idle</span>
@@ -103,6 +119,13 @@
           Jump to latest
         </button>
 
+        <div class="composer-warning" id="composer-warning" hidden>
+          <span>No model is configured yet, so nothing typed here can be sent.</span>
+          <button class="composer-warning-btn" id="composer-warning-settings" type="button">
+            Open settings
+          </button>
+        </div>
+
         <form class="composer" id="composer">
           <div class="composer-box">
             <textarea
@@ -121,6 +144,85 @@
           </p>
         </form>
       </main>
+    </div>
+
+    <div class="settings-overlay" id="settings-overlay" hidden>
+      <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="settings-head">
+          <h2 id="settings-title">Model settings</h2>
+          <button class="icon-btn" id="settings-close" type="button" aria-label="Close settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <form class="settings-form" id="settings-form">
+          <div class="settings-field">
+            <label for="settings-preset">Provider</label>
+            <select id="settings-preset">
+              <option value="ollama">Ollama (local)</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="custom">Custom (OpenAI-compatible)</option>
+            </select>
+          </div>
+
+          <div class="settings-field">
+            <label for="settings-base-url">Base URL</label>
+            <input
+              id="settings-base-url"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="http://localhost:11434/v1"
+            />
+            <span class="settings-source" id="settings-base-url-source"></span>
+          </div>
+
+          <div class="settings-field">
+            <label for="settings-model">Model</label>
+            <select id="settings-model"></select>
+            <input
+              id="settings-model-text"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="model name"
+              hidden
+            />
+            <div class="settings-field-row">
+              <button class="settings-link-btn" id="settings-refresh-models" type="button">
+                Refresh models
+              </button>
+              <span class="settings-source" id="settings-model-source"></span>
+            </div>
+            <p class="settings-hint" id="settings-model-hint" hidden></p>
+          </div>
+
+          <div class="settings-field" id="settings-api-key-field">
+            <label for="settings-api-key">API key</label>
+            <input
+              id="settings-api-key"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="leave blank to keep the current key"
+            />
+            <span class="settings-source" id="settings-api-key-source"></span>
+          </div>
+
+          <p class="settings-note">
+            The API key is held in memory only, for as long as this server process keeps running, and is
+            never written to disk. Set <code>ZORP_API_KEY</code> in the server's environment to make it
+            persist across restarts.
+          </p>
+
+          <div class="settings-actions">
+            <button class="btn btn-deny" id="settings-test" type="button">Test connection</button>
+            <button class="btn btn-allow" id="settings-save" type="submit">Save</button>
+          </div>
+          <p class="settings-result" id="settings-result"></p>
+        </form>
+      </div>
     </div>
 
     <script src="dist/main.js" defer></script>

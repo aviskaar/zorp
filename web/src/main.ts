@@ -12,12 +12,19 @@ import {
   TurnBusyError,
   approve,
   getSession,
+  getSettings,
+  listModels,
   listSessions,
   newSession,
+  putSettings,
   sendTurn,
   streamEvents,
+  testConnection,
   type EventStream,
   type Message,
+  type Settings,
+  type SettingsSource,
+  type SettingsUpdate,
   type SessionSummary,
   type StreamStatus,
   type ZorpEvent,
@@ -58,6 +65,8 @@ interface Elements {
   menu: HTMLButtonElement;
   sidebarClose: HTMLButtonElement;
   title: HTMLElement;
+  modelBtn: HTMLButtonElement;
+  modelBtnLabel: HTMLElement;
   status: HTMLElement;
   statusText: HTMLElement;
   scroller: HTMLElement;
@@ -66,9 +75,28 @@ interface Elements {
   workingSpinner: HTMLElement;
   workingVerb: HTMLElement;
   jump: HTMLButtonElement;
+  composerWarning: HTMLElement;
+  composerWarningSettings: HTMLButtonElement;
   composer: HTMLFormElement;
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
+  settingsOverlay: HTMLElement;
+  settingsClose: HTMLButtonElement;
+  settingsForm: HTMLFormElement;
+  settingsPreset: HTMLSelectElement;
+  settingsBaseUrl: HTMLInputElement;
+  settingsBaseUrlSource: HTMLElement;
+  settingsModelSelect: HTMLSelectElement;
+  settingsModelText: HTMLInputElement;
+  settingsModelSource: HTMLElement;
+  settingsModelHint: HTMLElement;
+  settingsRefreshModels: HTMLButtonElement;
+  settingsApiKeyField: HTMLElement;
+  settingsApiKey: HTMLInputElement;
+  settingsApiKeySource: HTMLElement;
+  settingsTest: HTMLButtonElement;
+  settingsSave: HTMLButtonElement;
+  settingsResult: HTMLElement;
 }
 
 type ApprovalOutcome = "allowed" | "denied" | "expired";
@@ -91,6 +119,9 @@ let activityGroup: HTMLElement | null = null;
 let spinnerTimer: number | null = null;
 let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
+/** The last settings the server reported. Null until the first successful
+ * `GET /api/settings`, which happens once the server is known reachable. */
+let currentSettings: Settings | null = null;
 
 start();
 
@@ -98,6 +129,7 @@ function start(): void {
   wireComposer();
   wireSidebar();
   wireScroller();
+  wireSettings();
   showEmptyState();
   setStatus("idle", "idle");
   void connectOrExplain();
@@ -115,6 +147,7 @@ async function connectOrExplain(): Promise<void> {
   if (await serverIsReachable()) {
     setStatus("idle", "idle");
     void refreshSessions();
+    void refreshSettingsBadge();
     dom.input.focus();
     return;
   }
@@ -172,6 +205,8 @@ function collectElements(): Elements {
     menu: byId<HTMLButtonElement>("menu"),
     sidebarClose: byId<HTMLButtonElement>("sidebar-close"),
     title: byId("session-title"),
+    modelBtn: byId<HTMLButtonElement>("model-btn"),
+    modelBtnLabel: byId("model-btn-label"),
     status: byId("status"),
     statusText: byId("status-text"),
     scroller: byId("scroller"),
@@ -180,9 +215,28 @@ function collectElements(): Elements {
     workingSpinner: byId("working-spinner"),
     workingVerb: byId("working-verb"),
     jump: byId<HTMLButtonElement>("jump"),
+    composerWarning: byId("composer-warning"),
+    composerWarningSettings: byId<HTMLButtonElement>("composer-warning-settings"),
     composer: byId<HTMLFormElement>("composer"),
     input: byId<HTMLTextAreaElement>("input"),
     send: byId<HTMLButtonElement>("send"),
+    settingsOverlay: byId("settings-overlay"),
+    settingsClose: byId<HTMLButtonElement>("settings-close"),
+    settingsForm: byId<HTMLFormElement>("settings-form"),
+    settingsPreset: byId<HTMLSelectElement>("settings-preset"),
+    settingsBaseUrl: byId<HTMLInputElement>("settings-base-url"),
+    settingsBaseUrlSource: byId("settings-base-url-source"),
+    settingsModelSelect: byId<HTMLSelectElement>("settings-model"),
+    settingsModelText: byId<HTMLInputElement>("settings-model-text"),
+    settingsModelSource: byId("settings-model-source"),
+    settingsModelHint: byId("settings-model-hint"),
+    settingsRefreshModels: byId<HTMLButtonElement>("settings-refresh-models"),
+    settingsApiKeyField: byId("settings-api-key-field"),
+    settingsApiKey: byId<HTMLInputElement>("settings-api-key"),
+    settingsApiKeySource: byId("settings-api-key-source"),
+    settingsTest: byId<HTMLButtonElement>("settings-test"),
+    settingsSave: byId<HTMLButtonElement>("settings-save"),
+    settingsResult: byId("settings-result"),
   };
 }
 
@@ -224,6 +278,32 @@ function wireScroller(): void {
   dom.jump.addEventListener("click", () => {
     dom.scroller.scrollTop = dom.scroller.scrollHeight;
     dom.jump.hidden = true;
+  });
+}
+
+function wireSettings(): void {
+  dom.modelBtn.addEventListener("click", () => void openSettings());
+  dom.composerWarningSettings.addEventListener("click", () => void openSettings());
+  dom.settingsClose.addEventListener("click", closeSettings);
+  dom.settingsOverlay.addEventListener("click", (event) => {
+    // Only a click on the backdrop itself closes it; clicks inside the
+    // panel bubble up from far more useful targets than "close the dialog".
+    if (event.target === dom.settingsOverlay) {
+      closeSettings();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.settingsOverlay.hidden) {
+      closeSettings();
+    }
+  });
+  dom.settingsPreset.addEventListener("change", () => applyPreset(dom.settingsPreset.value));
+  dom.settingsBaseUrl.addEventListener("change", () => void refreshModelOptions());
+  dom.settingsRefreshModels.addEventListener("click", () => void refreshModelOptions());
+  dom.settingsTest.addEventListener("click", () => void runConnectionTest());
+  dom.settingsForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void saveSettings();
   });
 }
 
@@ -794,6 +874,281 @@ function resetTranscript(): void {
   workingDepth = 0;
   updateWorking();
   dom.jump.hidden = true;
+}
+
+/* ------------------------------------------------------------------ */
+/* model settings                                                      */
+/*                                                                      */
+/* Settings live server-side (docs/DECISIONS.md, 2026-08-17): this      */
+/* panel is a client for them, not a place that ships provider config   */
+/* with every turn. Every read/write goes through GET/PUT               */
+/* /api/settings; nothing here keeps its own copy of the API key.       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Preset base URLs and the protocol each one speaks. Ollama is not a
+ * separate protocol: it is the OpenAI-compatible wire format pointed at a
+ * local server, offered here as a shortcut rather than a distinct provider.
+ * "custom" leaves whatever base URL is already in the field alone.
+ */
+const PRESET_DEFAULTS: Record<string, { baseUrl: string; provider: string; needsKey: boolean }> = {
+  ollama: { baseUrl: "http://localhost:11434/v1", provider: "openai", needsKey: false },
+  openai: { baseUrl: "https://api.openai.com/v1", provider: "openai", needsKey: true },
+  anthropic: { baseUrl: "https://api.anthropic.com/v1", provider: "anthropic", needsKey: true },
+  custom: { baseUrl: "", provider: "openai", needsKey: true },
+};
+
+const SETTINGS_ENV_VARS: Record<string, string> = {
+  provider: "ZORP_PROVIDER",
+  base_url: "ZORP_BASE_URL",
+  model: "ZORP_MODEL",
+  api_key: "ZORP_API_KEY",
+  max_tokens: "ZORP_MAX_TOKENS",
+};
+
+async function openSettings(): Promise<void> {
+  dom.settingsOverlay.hidden = false;
+  setSettingsResult("", null);
+  await loadSettingsIntoForm();
+  void refreshModelOptions();
+}
+
+function closeSettings(): void {
+  dom.settingsOverlay.hidden = true;
+}
+
+/** Refresh just the topbar badge and composer banner, without opening the panel. */
+async function refreshSettingsBadge(): Promise<void> {
+  try {
+    const settings = await getSettings();
+    currentSettings = settings;
+    updateModelBadge(settings);
+    updateComposerWarning(settings);
+  } catch {
+    // The status pill already reports connectivity problems; a stale model
+    // badge on top of that is not worth an error card of its own.
+  }
+}
+
+async function loadSettingsIntoForm(): Promise<void> {
+  try {
+    const settings = await getSettings();
+    currentSettings = settings;
+    applySettingsToForm(settings);
+    updateModelBadge(settings);
+    updateComposerWarning(settings);
+  } catch (error) {
+    setSettingsResult(`Could not load settings: ${describeError(error)}`, "fail");
+  }
+}
+
+function applySettingsToForm(settings: Settings): void {
+  const preset = presetFor(settings.provider, settings.base_url);
+  dom.settingsPreset.value = preset;
+  dom.settingsBaseUrl.value = settings.base_url;
+  dom.settingsBaseUrlSource.textContent = sourceLabel("base_url", settings.base_url_source);
+  setModelValue(settings.model);
+  dom.settingsModelSource.textContent = sourceLabel("model", settings.model_source);
+  dom.settingsApiKey.value = "";
+  dom.settingsApiKey.placeholder = settings.has_api_key
+    ? "leave blank to keep the current key"
+    : "leave blank if this endpoint needs no key";
+  dom.settingsApiKeySource.textContent = settings.has_api_key
+    ? sourceLabel("api_key", settings.api_key_source)
+    : "";
+  updateApiKeyVisibility(preset);
+}
+
+/** Guess which preset a resolved (provider, base_url) pair matches, so
+ * reopening the panel shows the right choice instead of always "custom". */
+function presetFor(provider: string, baseUrl: string): string {
+  if (provider === "anthropic") {
+    return "anthropic";
+  }
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  if (trimmed.includes("11434")) {
+    return "ollama";
+  }
+  if (trimmed === "https://api.openai.com/v1") {
+    return "openai";
+  }
+  return "custom";
+}
+
+function sourceLabel(field: string, source: SettingsSource): string {
+  if (source === "ui") {
+    return "saved";
+  }
+  if (source === "env") {
+    return `from ${SETTINGS_ENV_VARS[field] ?? "the environment"}`;
+  }
+  return "default";
+}
+
+function applyPreset(preset: string): void {
+  const config = PRESET_DEFAULTS[preset] ?? PRESET_DEFAULTS.custom;
+  if (preset !== "custom") {
+    dom.settingsBaseUrl.value = config.baseUrl;
+  }
+  updateApiKeyVisibility(preset);
+  void refreshModelOptions();
+}
+
+function updateApiKeyVisibility(preset: string): void {
+  const needsKey = (PRESET_DEFAULTS[preset] ?? PRESET_DEFAULTS.custom).needsKey;
+  dom.settingsApiKeyField.hidden = !needsKey;
+}
+
+function setModelValue(model: string): void {
+  dom.settingsModelText.value = model;
+  const hasOption = Array.from(dom.settingsModelSelect.options).some((option) => option.value === model);
+  if (hasOption) {
+    dom.settingsModelSelect.value = model;
+  }
+}
+
+/** Whichever of the select or the free-text fallback is currently showing. */
+function currentModelValue(): string {
+  return dom.settingsModelSelect.hidden
+    ? dom.settingsModelText.value.trim()
+    : dom.settingsModelSelect.value;
+}
+
+/**
+ * Populate the model `<select>` from `GET /api/settings/models`, falling
+ * back to the free-text field when listing fails or comes back empty. That
+ * endpoint is always 200, so "fails" here means a thrown network error, not
+ * the normal "Ollama is not running" case, which comes back as `error` set
+ * on an otherwise successful response.
+ */
+async function refreshModelOptions(): Promise<void> {
+  const baseUrl = dom.settingsBaseUrl.value.trim();
+  const currentModel = currentModelValue() || currentSettings?.model || "";
+  if (!baseUrl) {
+    showModelFallback("Enter a base URL to list models.");
+    return;
+  }
+  dom.settingsRefreshModels.disabled = true;
+  dom.settingsRefreshModels.textContent = "Listing…";
+  try {
+    const { models, error } = await listModels(baseUrl);
+    if (models.length === 0) {
+      showModelFallback(error ?? "No models were returned.");
+      return;
+    }
+    dom.settingsModelSelect.replaceChildren();
+    for (const id of models) {
+      dom.settingsModelSelect.append(modelOption(id));
+    }
+    if (currentModel && !models.includes(currentModel)) {
+      dom.settingsModelSelect.append(modelOption(currentModel));
+    }
+    dom.settingsModelSelect.value = currentModel || models[0];
+    dom.settingsModelSelect.hidden = false;
+    dom.settingsModelText.hidden = true;
+    dom.settingsModelHint.hidden = true;
+  } catch (error) {
+    showModelFallback(describeError(error));
+  } finally {
+    dom.settingsRefreshModels.disabled = false;
+    dom.settingsRefreshModels.textContent = "Refresh models";
+  }
+}
+
+function modelOption(id: string): HTMLOptionElement {
+  const option = document.createElement("option");
+  option.value = id;
+  option.textContent = id;
+  return option;
+}
+
+function showModelFallback(reason: string): void {
+  dom.settingsModelSelect.hidden = true;
+  dom.settingsModelText.hidden = false;
+  if (!dom.settingsModelText.value && currentSettings) {
+    dom.settingsModelText.value = currentSettings.model;
+  }
+  dom.settingsModelHint.hidden = false;
+  dom.settingsModelHint.textContent = reason;
+}
+
+/** What the form currently says, shaped as a `PUT /api/settings` body. */
+function formToUpdate(): SettingsUpdate {
+  const preset = dom.settingsPreset.value;
+  const provider = (PRESET_DEFAULTS[preset] ?? PRESET_DEFAULTS.custom).provider;
+  const update: SettingsUpdate = {
+    provider,
+    base_url: dom.settingsBaseUrl.value.trim(),
+    model: currentModelValue(),
+  };
+  const apiKey = dom.settingsApiKey.value;
+  if (apiKey) {
+    update.api_key = apiKey;
+  }
+  return update;
+}
+
+async function saveSettings(): Promise<void> {
+  dom.settingsSave.disabled = true;
+  setSettingsResult("Saving…", null);
+  try {
+    const settings = await putSettings(formToUpdate());
+    currentSettings = settings;
+    applySettingsToForm(settings);
+    updateModelBadge(settings);
+    updateComposerWarning(settings);
+    setSettingsResult("Saved.", "ok");
+  } catch (error) {
+    setSettingsResult(`Could not save: ${describeError(error)}`, "fail");
+  } finally {
+    dom.settingsSave.disabled = false;
+  }
+}
+
+/**
+ * Test what is on screen, without saving it. The base URL in the form goes
+ * along on the request, so an address that turns out to be wrong is never
+ * written anywhere and whatever was saved before is still saved after.
+ */
+async function runConnectionTest(): Promise<void> {
+  dom.settingsTest.disabled = true;
+  setSettingsResult("Testing…", null);
+  try {
+    const result = await testConnection(dom.settingsBaseUrl.value.trim());
+    if (result.ok) {
+      setSettingsResult("Connected.", "ok");
+    } else {
+      setSettingsResult(result.reason ?? "The endpoint did not answer.", "fail");
+    }
+  } catch (error) {
+    setSettingsResult(describeError(error), "fail");
+  } finally {
+    dom.settingsTest.disabled = false;
+  }
+}
+
+function setSettingsResult(text: string, state: "ok" | "fail" | null): void {
+  dom.settingsResult.textContent = text;
+  if (state) {
+    dom.settingsResult.dataset.state = state;
+  } else {
+    delete dom.settingsResult.dataset.state;
+  }
+}
+
+function updateModelBadge(settings: Settings): void {
+  if (!settings.configured) {
+    dom.modelBtn.dataset.state = "unconfigured";
+    dom.modelBtnLabel.textContent = "Not configured";
+    return;
+  }
+  dom.modelBtn.dataset.state = "configured";
+  dom.modelBtnLabel.textContent = settings.model;
+}
+
+/** The whole point of this feature: say so before the first message dies. */
+function updateComposerWarning(settings: Settings): void {
+  dom.composerWarning.hidden = settings.configured;
 }
 
 /* ------------------------------------------------------------------ */

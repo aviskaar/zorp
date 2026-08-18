@@ -8274,6 +8274,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tower-http",
  "ureq",
  "zorp-agent",

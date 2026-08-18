@@ -1,6 +1,7 @@
+use crate::settings;
 use crate::state::AppState;
 use crate::turn;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::IntoResponse;
@@ -61,6 +62,9 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
+        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/settings/models", get(list_models))
+        .route("/api/settings/test", post(test_connection))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_token,
@@ -139,7 +143,7 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
-    turn::spawn_turn(session, id, body.message);
+    turn::spawn_turn(session, id, body.message, state.settings.clone());
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -225,4 +229,108 @@ async fn stream_events(
     Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::default())
         .into_response()
+}
+
+/// The effective model configuration plus, for each field, where it came
+/// from. `has_api_key` is the only thing said about the key itself: the
+/// `Resolved` type this serializes has no field that could carry it.
+async fn get_settings(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let resolved = state.settings.lock().unwrap().resolve();
+    Json(serde_json::to_value(resolved).unwrap_or_default())
+}
+
+/// Validate and store a settings change. An unknown provider string is a 400
+/// with a readable message, not a panic; everything else is accepted as
+/// given. The updated, non-secret fields are persisted to disk immediately,
+/// so a restart keeps whatever was last saved; a failure to write is logged
+/// rather than failing the request, since the in-memory state (what the next
+/// turn actually uses) is already correct either way.
+async fn put_settings(
+    State(state): State<AppState>,
+    Json(body): Json<settings::PutSettings>,
+) -> impl IntoResponse {
+    let resolved = {
+        let mut guard = state.settings.lock().unwrap();
+        if let Err(message) = guard.apply(&body) {
+            return (StatusCode::BAD_REQUEST, message).into_response();
+        }
+        let persisted = guard.to_persisted();
+        if let Err(e) = settings::save(&persisted) {
+            eprintln!(
+                "zorp-web: could not persist settings to {}: {e}",
+                settings::config_path().display()
+            );
+        }
+        guard.resolve()
+    };
+    Json(serde_json::to_value(resolved).unwrap_or_default()).into_response()
+}
+
+#[derive(Deserialize)]
+struct ModelsQuery {
+    base_url: Option<String>,
+}
+
+/// Proxy `GET {base_url}/models`. Never a 500: an unreachable or non-JSON
+/// endpoint is a normal, expected outcome for a settings panel probing
+/// whatever the user just typed, and is reported as an empty list with a
+/// reason instead. See `settings::fetch_models` for the SSRF-shape note.
+async fn list_models(Query(query): Query<ModelsQuery>) -> Json<serde_json::Value> {
+    let base_url = query.base_url.unwrap_or_default();
+    let result = tokio::task::spawn_blocking(move || settings::fetch_models(&base_url))
+        .await
+        .unwrap_or_else(|e| settings::ModelsResult {
+            models: Vec::new(),
+            error: Some(format!("internal error: {e}")),
+        });
+    Json(json!({"models": result.models, "error": result.error}))
+}
+
+/// Check that an endpoint answers at all. Reuses the models probe: a 2xx
+/// JSON response to `/models` is good enough evidence that the base URL is a
+/// real, reachable OpenAI-compatible server without spending a real
+/// completion call (and its tokens) just to say so.
+///
+/// A body of `{"base_url": "..."}` tests that candidate and stores nothing.
+/// Without it, the saved configuration is tested instead, which is what a
+/// bare `curl -X POST` gets. The candidate form exists because the panel's
+/// Test button otherwise had to save the form before it could test it, so a
+/// button that reads like a question overwrote the stored config to ask it,
+/// and an address that turned out to be wrong took the working one with it.
+///
+/// The body is read as bytes and parsed here rather than through a `Json`
+/// extractor because an absent body is the normal case, not a rejection.
+async fn test_connection(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Json<serde_json::Value> {
+    let candidate = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            v.get("base_url")
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+        })
+        .filter(|u| !u.trim().is_empty());
+
+    let base_url = match candidate {
+        Some(url) => url,
+        None => {
+            let resolved = state.settings.lock().unwrap().resolve();
+            if !resolved.configured {
+                return Json(json!({"ok": false, "reason": "no model is configured yet"}));
+            }
+            resolved.base_url
+        }
+    };
+    let result = tokio::task::spawn_blocking(move || settings::fetch_models(&base_url))
+        .await
+        .unwrap_or_else(|e| settings::ModelsResult {
+            models: Vec::new(),
+            error: Some(format!("internal error: {e}")),
+        });
+    match result.error {
+        None => Json(json!({"ok": true})),
+        Some(reason) => Json(json!({"ok": false, "reason": reason})),
+    }
 }
