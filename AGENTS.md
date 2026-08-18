@@ -70,6 +70,15 @@ resulting artifact, deliver it in the right form.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.
+- `web/` is TypeScript and no Rust job compiles a line of it. After
+  changing anything in there run `npm run check`, `npm test` and
+  `npm run build` from `web/`. The tests are jsdom plus `node:test`, and
+  most of them are injection cases against `web/src/markdown.ts`, which
+  renders model output. That renderer builds DOM nodes and must never
+  assemble an HTML string: everything it puts on the page goes through
+  `textContent`, because the text it is rendering came from a model that
+  has been reading tool results and web pages. Reach for a markdown
+  library and you have reached for `innerHTML`.
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` explicitly whenever

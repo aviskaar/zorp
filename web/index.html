@@ -99,6 +99,20 @@
             </svg>
             <span id="model-btn-label">Model</span>
           </button>
+          <button
+            class="model-btn artifacts-btn"
+            id="artifacts-btn"
+            type="button"
+            aria-expanded="false"
+            aria-controls="artifacts"
+            title="Show files this workspace has produced"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
+              <path d="M14 3v5h5" />
+            </svg>
+            <span>Files</span>
+          </button>
           <div class="status" id="status" data-state="idle">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="status-text">idle</span>
@@ -144,6 +158,37 @@
           </p>
         </form>
       </main>
+
+      <!--
+        The artifact pane. A run ends in a file, and until this existed the
+        only way to read that file was to leave the browser. Read only: it
+        shows what the workspace already contains and never writes.
+      -->
+      <aside class="artifacts" id="artifacts" aria-label="Artifacts" hidden>
+        <div class="artifacts-head">
+          <h2 class="artifacts-title">Files</h2>
+          <button class="icon-btn" id="artifacts-refresh" type="button" aria-label="Refresh file list">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-.6 3" />
+              <path d="M20 4v7h-7" />
+            </svg>
+          </button>
+          <button class="icon-btn" id="artifacts-close" type="button" aria-label="Hide files">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <ul class="artifact-list" id="artifact-list"></ul>
+        <div class="artifact-view" id="artifact-view">
+          <p class="artifact-empty" id="artifact-empty">Pick a file to read it here.</p>
+          <div class="artifact-doc" id="artifact-doc" hidden></div>
+          <iframe
+            class="artifact-frame"
+            id="artifact-frame"
+            title="Document preview"
+            hidden
+          ></iframe>
+        </div>
+      </aside>
     </div>
 
     <div class="settings-overlay" id="settings-overlay" hidden>

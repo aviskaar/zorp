@@ -65,6 +65,8 @@ fn api_router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/models", get(list_models))
         .route("/api/settings/test", post(test_connection))
+        .route("/api/artifacts", get(list_artifacts))
+        .route("/api/artifacts/raw", get(read_artifact))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_token,
@@ -333,4 +335,118 @@ async fn test_connection(
         None => Json(json!({"ok": true})),
         Some(reason) => Json(json!({"ok": false, "reason": reason})),
     }
+}
+
+#[derive(Deserialize)]
+struct ArtifactQuery {
+    path: Option<String>,
+}
+
+/// List the files under the workspace that `read_artifact` would serve.
+///
+/// Empty rather than an error when no workspace is configured: a UI asking
+/// "what is there" and being told "nothing" is a working answer, while a 500
+/// would make the pane look broken on a server that simply has the feature
+/// switched off.
+async fn list_artifacts(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let Some(root) = state.workspace.clone() else {
+        return Json(json!({"files": [], "truncated": false}));
+    };
+    let listing = tokio::task::spawn_blocking(move || crate::artifacts::list(&root))
+        .await
+        .unwrap_or(crate::artifacts::Listing {
+            files: Vec::new(),
+            truncated: false,
+        });
+    Json(serde_json::to_value(listing).unwrap_or_default())
+}
+
+/// Serve one file, by a path relative to the workspace root.
+///
+/// The headers are not decoration. `nosniff` stops the browser
+/// second-guessing the declared type, and `sandbox` means a served file
+/// cannot reach the rest of this origin even if the browser does decide to
+/// execute something in it, which is what makes it safe to drop a PDF into
+/// an iframe here. See `crate::artifacts` for the traversal rules.
+async fn read_artifact(
+    State(state): State<AppState>,
+    Query(query): Query<ArtifactQuery>,
+) -> axum::response::Response {
+    use crate::artifacts::{self, Refusal};
+
+    let Some(root) = state.workspace.clone() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "this server was not started with a workspace",
+        )
+            .into_response();
+    };
+    let requested = query.path.unwrap_or_default();
+    if requested.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no path given").into_response();
+    }
+
+    let resolved = tokio::task::spawn_blocking(move || artifacts::resolve(&root, &requested)).await;
+    let path = match resolved {
+        Ok(Ok(p)) => p,
+        Ok(Err(Refusal::Outside)) => {
+            return (
+                StatusCode::FORBIDDEN,
+                "that path is outside this server's workspace",
+            )
+                .into_response()
+        }
+        Ok(Err(Refusal::Missing)) => {
+            return (StatusCode::NOT_FOUND, "no such file in this workspace").into_response()
+        }
+        Ok(Err(Refusal::UnsupportedType)) => {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "this endpoint does not serve that kind of file",
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("internal error: {e}"),
+            )
+                .into_response()
+        }
+    };
+
+    // Size is checked before reading, not after, so an enormous file never
+    // makes it into memory at all.
+    let mime = artifacts::content_type(&path).unwrap_or("application/octet-stream");
+    if mime.starts_with("text/") {
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() > artifacts::MAX_TEXT_BYTES => {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
+                        "that file is {} bytes, over the {} this pane will render",
+                        m.len(),
+                        artifacts::MAX_TEXT_BYTES
+                    ),
+                )
+                    .into_response()
+            }
+            Ok(_) => {}
+            Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        }
+    }
+
+    let body = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", mime.parse().unwrap());
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("content-security-policy", "sandbox".parse().unwrap());
+    // Inline, because the point is to show it in the pane. The sandbox above
+    // is what makes that safe, not the disposition.
+    headers.insert("content-disposition", "inline".parse().unwrap());
+    (headers, body).into_response()
 }

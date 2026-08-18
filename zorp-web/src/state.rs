@@ -55,6 +55,13 @@ pub struct AppState {
     /// that tests built on `AppState::new`/`with_token` never depend on
     /// whatever the developer machine happens to have saved.
     pub settings: SettingsHandle,
+    /// The directory artifacts are served from, and the boundary nothing
+    /// served may escape. The agent already works in this directory, so this
+    /// adds no reach; what it adds is a second way to read from it, which is
+    /// why `artifacts.rs` resolves every request against this and refuses
+    /// anything that lands outside. `None` turns the artifact endpoints off
+    /// entirely rather than defaulting to somewhere surprising.
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 impl AppState {
@@ -71,6 +78,14 @@ impl AppState {
             settings: Arc::new(Mutex::new(crate::settings::SettingsState::seeded_from_env())),
             ..AppState::default()
         }
+    }
+
+    /// Point the artifact endpoints at a directory. `main.rs` passes the
+    /// directory the server was started in, which is the one the agent
+    /// works in.
+    pub fn with_workspace(mut self, root: std::path::PathBuf) -> Self {
+        self.workspace = Some(root);
+        self
     }
 
     pub fn create(&self, id: &str) -> Arc<Mutex<SessionState>> {

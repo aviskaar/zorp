@@ -94,7 +94,22 @@ async fn main() {
              Install it, or pass --ui-dir."
         ),
     }
-    let state = zorp_web::state::AppState::with_token(cli.token.clone());
+    // The artifact pane reads from the directory the server was started in,
+    // which is the directory the agent already works in. If that cannot be
+    // determined the pane is simply switched off, which is a better answer
+    // than picking somewhere and serving from it.
+    let workspace = std::env::current_dir().ok();
+    match &workspace {
+        Some(dir) => println!("zorp-web: serving artifacts from {}", dir.display()),
+        None => eprintln!(
+            "zorp-web: could not determine the working directory, \
+             so the artifact pane is switched off"
+        ),
+    }
+    let mut state = zorp_web::state::AppState::with_token(cli.token.clone());
+    if let Some(dir) = workspace {
+        state = state.with_workspace(dir);
+    }
     // Restore whatever model settings were last saved through the UI. Only
     // done here, not inside `AppState::new`/`with_token` themselves, so the
     // test suite stays hermetic against whatever a developer's own machine
