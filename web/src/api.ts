@@ -140,6 +140,18 @@ export interface NoticeEvent {
   text: string;
 }
 
+/**
+ * A fragment of the answer, as the model produces it.
+ *
+ * A preview. The `AssistantEvent` below is the server's one authoritative
+ * statement of what the model said, and it replaces whatever these built.
+ */
+export interface AssistantDeltaEvent {
+  seq: number;
+  type: "assistant_delta";
+  text: string;
+}
+
 /** Model output meant for the reader. */
 export interface AssistantEvent {
   seq: number;
@@ -182,6 +194,7 @@ export type ZorpEvent =
   | ToolEvent
   | VerifyEvent
   | NoticeEvent
+  | AssistantDeltaEvent
   | AssistantEvent
   | ApprovalRequestEvent
   | ErrorEvent
@@ -481,17 +494,29 @@ export function streamEvents(
   };
 }
 
-const EVENT_TYPES: ReadonlySet<string> = new Set<ZorpEventType>([
-  "working",
-  "working_done",
-  "tool",
-  "verify",
-  "notice",
-  "assistant",
-  "approval_request",
-  "error",
-  "done",
-]);
+/**
+ * Every event type the browser will accept.
+ *
+ * A record keyed by the union rather than `new Set<ZorpEventType>([...])`,
+ * because that form happily accepts a *subset*. Adding `assistant_delta` to
+ * the union above and forgetting it here typechecked cleanly and then
+ * rejected every streamed fragment at runtime as an unrecognised event. A
+ * record makes a missing variant a compile error instead.
+ */
+const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
+  working: true,
+  working_done: true,
+  tool: true,
+  verify: true,
+  notice: true,
+  assistant_delta: true,
+  assistant: true,
+  approval_request: true,
+  error: true,
+  done: true,
+};
+
+const EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(EVENT_TYPES_BY_NAME));
 
 function isZorpEvent(value: unknown): value is ZorpEvent {
   if (typeof value !== "object" || value === null) {

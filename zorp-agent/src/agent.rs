@@ -668,10 +668,16 @@ impl Agent {
 
             self.renderer.working();
             let start = std::time::Instant::now();
-            let completed = self.model.complete_with_options(
+            // Streaming path. Models that cannot stream fall back to the
+            // buffered call and report their answer as one delta, so this is
+            // the same code path for both and there is no second branch here
+            // to keep in step.
+            let renderer = &mut self.renderer;
+            let completed = self.model.complete_streaming(
                 &self.messages,
                 &schemas,
                 &crate::reasoning::CompletionOptions::default(),
+                &mut |chunk| renderer.assistant_delta(chunk),
             );
             let duration = start.elapsed().as_millis() as u64;
             self.renderer.working_done();

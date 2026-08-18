@@ -282,6 +282,13 @@ it came from. The API key is the exception to what gets saved: it is held
 in memory for the life of the server process and never written to disk.
 Set `ZORP_API_KEY` in the environment if you want it to survive a restart.
 
+**Watching the answer arrive.** Answers stream. Text appears as the model
+produces it rather than after it finishes, which is the difference between
+a spinner and a page on a local 27B model. Reasoning is filtered out on
+the way: a model that thinks in `<think>` tags has that thinking recorded
+and not shown, the same as in the terminal. Providers that cannot stream,
+which includes Anthropic today, still answer exactly as they did before.
+
 **Reading what a run produced.** The Files button opens a pane listing the
 files in the directory the server was started in, and renders them:
 markdown formatted, PDFs inline, anything else as plain text. It is

@@ -476,6 +476,30 @@ fn build_message_json(m: &Message) -> Value {
 pub trait Model: Send + Sync {
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
 
+    /// Complete a turn, reporting visible text as it arrives.
+    ///
+    /// The default does not stream: it runs the buffered path and reports the
+    /// finished answer as a single delta. That keeps every existing `Model`,
+    /// including test doubles and the Anthropic provider, working unchanged
+    /// while still satisfying a caller that wants deltas. Only providers that
+    /// can genuinely stream override it.
+    ///
+    /// `on_delta` receives text a user may see. Reasoning never arrives here;
+    /// see `streaming::ThinkGate` for why that distinction is load bearing.
+    fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        options: &crate::reasoning::CompletionOptions,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelCompletion, BoxErr> {
+        let completion = self.complete_with_options(messages, tools, options)?;
+        if !completion.message.content.is_empty() {
+            on_delta(&completion.message.content);
+        }
+        Ok(completion)
+    }
+
     fn complete_with_options(
         &self,
         messages: &[Message],
@@ -640,6 +664,71 @@ impl Model for HttpModel {
         .map(|completion| completion.message)
     }
 
+    fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        options: &crate::reasoning::CompletionOptions,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelCompletion, BoxErr> {
+        // Anthropic's streaming protocol is a different set of events and is
+        // its own piece of work. Until it exists, that provider takes the
+        // buffered path and behaves exactly as it does today rather than
+        // half-streaming.
+        if !matches!(self.provider, crate::provider::Provider::OpenAiCompatible) {
+            let completion = self.complete_with_options(messages, tools, options)?;
+            if !completion.message.content.is_empty() {
+                on_delta(&completion.message.content);
+            }
+            return Ok(completion);
+        }
+
+        let mut body = messages_to_body(&self.model, messages);
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools.to_vec());
+        }
+        let provider_reasoning_parameters =
+            crate::reasoning::apply_reasoning_mode(&mut body, &self.url, options.reasoning_mode);
+        let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
+        body["stream"] = json!(true);
+        // Ask for the usage block that a non-streamed response carries, so
+        // reasoning-token telemetry does not quietly become zero the moment
+        // streaming is switched on. Providers that do not know the option
+        // ignore it.
+        body["stream_options"] = json!({ "include_usage": true });
+
+        let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
+        let mut headers: Vec<(&str, &str)> = Vec::new();
+        if let Some(a) = &auth {
+            headers.push(("Authorization", a.as_str()));
+        }
+
+        let mut accumulator = crate::streaming::DeltaAccumulator::new();
+        let outcome = crate::streaming::stream_sse(&self.url, &headers, body, &mut |payload| {
+            if let Some(visible) = accumulator.apply(payload) {
+                on_delta(&visible);
+            }
+        })?;
+        let mut completion = match outcome {
+            crate::streaming::StreamOutcome::Streamed => accumulator.finish()?,
+            // The endpoint ignored `stream` and answered with a document.
+            // Parse it the ordinary way and report it as one delta, so a
+            // provider that cannot stream still produces an answer instead of
+            // an eerie silence.
+            crate::streaming::StreamOutcome::Buffered(response) => {
+                let completion = parse_assistant_completion(&response)?;
+                if !completion.message.content.is_empty() {
+                    on_delta(&completion.message.content);
+                }
+                completion
+            }
+        };
+        completion.telemetry.requested_reasoning_mode = options.reasoning_mode;
+        completion.telemetry.provider_reasoning_parameters = provider_reasoning_parameters;
+        completion.telemetry.reasoning_parameters_sent = reasoning_parameters_sent;
+        Ok(completion)
+    }
+
     fn complete_with_options(
         &self,
         messages: &[Message],
@@ -774,6 +863,24 @@ impl Model for ConfiguredHttpModel {
             reasoning_mode: effective_reasoning_mode(self.default_reasoning_mode, options),
         };
         self.inner.complete_with_options(messages, tools, &options)
+    }
+
+    /// Delegated explicitly. Without this the inherited default would call
+    /// `complete_with_options` and buffer, so every caller that goes through
+    /// a configured model, which is all of `zorp-web`, would stream nothing
+    /// while the streaming code sat there looking correct.
+    fn complete_streaming(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        options: &crate::reasoning::CompletionOptions,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelCompletion, BoxErr> {
+        let options = crate::reasoning::CompletionOptions {
+            reasoning_mode: effective_reasoning_mode(self.default_reasoning_mode, options),
+        };
+        self.inner
+            .complete_streaming(messages, tools, &options, on_delta)
     }
 
     fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
@@ -1588,5 +1695,271 @@ mod tests {
         let json = super::message_to_json(&m);
         assert!(json["content"].is_string());
         assert_eq!(json["content"], "hello");
+    }
+
+    /// Serve one SSE response, written in several pieces so the decoder is
+    /// exercised on real chunk boundaries rather than one tidy buffer.
+    /// Returns the address and a channel carrying the request body.
+    fn sse_stub(events: Vec<String>) -> (std::net::SocketAddr, std::sync::mpsc::Receiver<Value>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<Value>();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
+            let content_length = headers
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            request_tx
+                .send(serde_json::from_slice(&request[header_end..]).unwrap())
+                .unwrap();
+
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            for event in events {
+                write!(stream, "data: {event}\n\n").unwrap();
+                stream.flush().unwrap();
+            }
+            write!(stream, "data: [DONE]\n\n").unwrap();
+            stream.flush().unwrap();
+        });
+        (address, request_rx)
+    }
+
+    fn hello_stream() -> Vec<String> {
+        vec![
+            json!({"choices":[{"delta":{"content":"he"}}]}).to_string(),
+            json!({"choices":[{"delta":{"content":"llo"}}]}).to_string(),
+            json!({"choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+        ]
+    }
+
+    #[test]
+    fn an_openai_compatible_completion_streams_its_text_in_pieces() {
+        let (address, requests) = sse_stub(hello_stream());
+        let model = HttpModel {
+            url: format!("http://{address}/v1/chat/completions"),
+            api_key: None,
+            model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
+        };
+        let mut deltas = Vec::new();
+        let completion = model
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+                &mut |chunk| deltas.push(chunk.to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            deltas,
+            vec!["he".to_string(), "llo".to_string()],
+            "the answer did not arrive in pieces, so nothing streamed"
+        );
+        assert_eq!(completion.message.content, "hello");
+        assert_eq!(completion.message.finish_reason, "stop");
+
+        let body = requests.recv().unwrap();
+        assert_eq!(
+            body["stream"],
+            json!(true),
+            "the request never asked the provider to stream"
+        );
+    }
+
+    /// The trap. `zorp-web` builds a `ConfiguredHttpModel`, so a streaming
+    /// implementation that only covers `HttpModel` looks complete, compiles,
+    /// passes its own tests, and streams nothing in the product.
+    #[test]
+    fn a_configured_model_streams_rather_than_silently_buffering() {
+        let (address, _requests) = sse_stub(hello_stream());
+        let model = HttpModel {
+            url: format!("http://{address}/v1/chat/completions"),
+            api_key: None,
+            model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
+        }
+        .with_default_reasoning_mode(None);
+
+        let mut deltas = Vec::new();
+        let completion = model
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+                &mut |chunk| deltas.push(chunk.to_string()),
+            )
+            .unwrap();
+
+        assert!(
+            deltas.len() > 1,
+            "ConfiguredHttpModel delivered the answer in one lump: {deltas:?}"
+        );
+        assert_eq!(completion.message.content, "hello");
+    }
+
+    /// Reasoning must not reach a caller that is putting deltas on a page.
+    #[test]
+    fn streamed_think_tags_never_reach_the_delta_callback() {
+        let (address, _requests) = sse_stub(vec![
+            json!({"choices":[{"delta":{"content":"<thi"}}]}).to_string(),
+            json!({"choices":[{"delta":{"content":"nk>plotting</think>"}}]}).to_string(),
+            json!({"choices":[{"delta":{"content":"answer"}}]}).to_string(),
+            json!({"choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+        ]);
+        let model = HttpModel {
+            url: format!("http://{address}/v1/chat/completions"),
+            api_key: None,
+            model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
+        };
+        let mut deltas = Vec::new();
+        let completion = model
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+                &mut |chunk| deltas.push(chunk.to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(deltas.concat(), "answer", "reasoning leaked to the page");
+        assert_eq!(completion.message.content, "answer");
+        assert_eq!(
+            completion.message.reasoning_content.as_deref(),
+            Some("plotting")
+        );
+    }
+
+    /// A model with no streaming support must still satisfy a caller that
+    /// asked for deltas, or every test double and the Anthropic path break.
+    #[test]
+    fn a_model_that_cannot_stream_still_reports_its_answer_once() {
+        struct Buffered;
+        impl Model for Buffered {
+            fn clone_box(&self) -> Box<dyn Model> {
+                Box::new(Buffered)
+            }
+            fn complete(&self, _: &[Message], _: &[Value]) -> Result<AssistantMessage, BoxErr> {
+                Ok(AssistantMessage {
+                    content: "all at once".into(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".into(),
+                    reasoning_content: None,
+                })
+            }
+        }
+        let mut deltas = Vec::new();
+        let completion = Buffered
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+                &mut |chunk| deltas.push(chunk.to_string()),
+            )
+            .unwrap();
+        assert_eq!(deltas, vec!["all at once".to_string()]);
+        assert_eq!(completion.message.content, "all at once");
+    }
+
+    /// A provider that ignores `stream` and answers with a whole JSON body.
+    /// Proxies, gateways, mocks and older local runtimes all do this. Before
+    /// this was handled, they answered nothing at all: no error, no text, just
+    /// an empty turn, which is the worst failure shape available here.
+    #[test]
+    fn a_provider_that_ignores_the_stream_flag_still_produces_its_answer() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // Read exactly the headers and then exactly the declared body.
+            // Anything looser here is a flaky test rather than a fast one.
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let content_length = String::from_utf8_lossy(&request[..header_end])
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body =
+                r#"{"choices":[{"message":{"content":"buffered anyway"},"finish_reason":"stop"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+
+        let model = HttpModel {
+            url: format!("http://{address}/v1/chat/completions"),
+            api_key: None,
+            model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
+        };
+        let mut deltas = Vec::new();
+        let completion = model
+            .complete_streaming(
+                &[Message::user("hi")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+                &mut |chunk| deltas.push(chunk.to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(completion.message.content, "buffered anyway");
+        assert_eq!(
+            deltas,
+            vec!["buffered anyway".to_string()],
+            "a non-streaming provider reported no text at all"
+        );
     }
 }

@@ -8,6 +8,7 @@
  */
 
 import { renderMarkdown } from "./markdown";
+import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import {
   ApiError,
   TurnBusyError,
@@ -471,6 +472,12 @@ function handleEvent(event: ZorpEvent): void {
 function applyEvent(event: ZorpEvent): void {
   const following = isNearBottom();
 
+  // See endsStreamedMessage for which events close the message being
+  // streamed and, more importantly, which ones must not.
+  if (endsStreamedMessage(event.type)) {
+    finishStream(null);
+  }
+
   switch (event.type) {
     case "working":
       workingDepth += 1;
@@ -494,8 +501,12 @@ function applyEvent(event: ZorpEvent): void {
       appendActivity(noticeLine(event.text));
       break;
 
+    case "assistant_delta":
+      appendStreamDelta(event.text);
+      break;
+
     case "assistant":
-      appendMessage("assistant", event.text);
+      finishStream(event.text);
       break;
 
     case "approval_request":
@@ -564,6 +575,28 @@ function stopSpinner(): void {
 /* ------------------------------------------------------------------ */
 /* transcript rendering                                                */
 /* ------------------------------------------------------------------ */
+
+/* ---- streaming ---- */
+
+/**
+ * The assistant message currently being streamed.
+ *
+ * Fragments are a preview. The server states the finished answer exactly
+ * once, in an `assistant` event, and that is what ends up on the page.
+ */
+const streamed = new StreamedMessage(dom.transcript, renderMarkdown);
+
+function appendStreamDelta(chunk: string): void {
+  if (!streamed.open) activityGroup = null;
+  streamed.append(chunk);
+}
+
+function finishStream(authoritative: string | null): void {
+  const handled = streamed.finish(authoritative);
+  if (!handled && authoritative !== null) {
+    appendMessage("assistant", authoritative);
+  }
+}
 
 function appendMessage(role: "user" | "assistant", text: string): void {
   activityGroup = null;

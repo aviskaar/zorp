@@ -74,7 +74,8 @@ resulting artifact, deliver it in the right form.
   changing anything in there run `npm run check`, `npm test` and
   `npm run build` from `web/`. The tests are jsdom plus `node:test`, and
   most of them are injection cases against `web/src/markdown.ts`, which
-  renders model output. That renderer builds DOM nodes and must never
+  renders model output, and against `web/src/streamed-message.ts`, which
+  is the second path onto it now that answers stream. That renderer builds DOM nodes and must never
   assemble an HTML string: everything it puts on the page goes through
   `textContent`, because the text it is rendering came from a model that
   has been reading tool results and web pages. Reach for a markdown

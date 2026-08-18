@@ -295,6 +295,12 @@ struct SpinnerState {
 pub trait Renderer: Send {
     fn working(&mut self) {}
     fn working_done(&mut self) {}
+    /// A fragment of the answer, as the provider produces it.
+    ///
+    /// Empty by default, so a renderer that only wants the finished answer,
+    /// which is every terminal renderer here, is unaffected by streaming.
+    /// Only text a user may see arrives; reasoning is filtered out upstream.
+    fn assistant_delta(&mut self, _chunk: &str) {}
     fn tool(&mut self, name: &str, summary: &str);
     fn verify(&mut self, command: &str, passed: bool);
     fn notice(&mut self, text: &str);

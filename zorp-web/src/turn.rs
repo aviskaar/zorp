@@ -20,6 +20,22 @@ pub fn system_prompt() -> &'static str {
     DEFAULT_SYSTEM_PROMPT
 }
 
+/// Append one event to a session's replay backlog.
+///
+/// **The backlog is append-only, and must stay that way.** `stream_events` in
+/// `api.rs` holds an index into it across polls and slices from there, so
+/// anything that shortens this vector panics that task on the next tick and
+/// poisons the session mutex, which takes every later request with it.
+///
+/// This function exists to say so where the next person will be tempted.
+/// Streaming a turn writes one entry per fragment, and dropping them once the
+/// finished answer arrived looked like an obvious saving. It is not available
+/// without also teaching the reader that its index can move backwards, and a
+/// few hundred kilobytes per session does not buy that risk.
+fn record(backlog: &mut Vec<Event>, event: Event) {
+    backlog.push(event);
+}
+
 /// Run one turn to completion on a blocking thread.
 ///
 /// The agent loop is synchronous, so it must not run on the async runtime.
@@ -47,7 +63,7 @@ pub fn spawn_turn(
     let drain_session = Arc::clone(&session);
     std::thread::spawn(move || {
         for event in rx {
-            drain_session.lock().unwrap().backlog.push(event);
+            record(&mut drain_session.lock().unwrap().backlog, event);
         }
     });
 
@@ -180,6 +196,66 @@ mod tests {
                  model introduce zorp as a coding buddy"
             );
         }
+    }
+
+    fn delta(text: &str) -> Event {
+        Event {
+            seq: 0,
+            kind: EventKind::AssistantDelta { text: text.into() },
+        }
+    }
+
+    /// The invariant `stream_events` depends on. It keeps an index into this
+    /// vector across polls, so a backlog that ever gets shorter panics that
+    /// task and poisons the session mutex behind it.
+    #[test]
+    fn the_backlog_only_ever_grows() {
+        let mut backlog = Vec::new();
+        let mut seen = 0;
+        for event in [
+            delta("he"),
+            delta("llo"),
+            Event {
+                seq: 2,
+                kind: EventKind::Assistant {
+                    text: "hello".into(),
+                },
+            },
+            Event {
+                seq: 3,
+                kind: EventKind::Done,
+            },
+        ] {
+            record(&mut backlog, event);
+            assert!(
+                backlog.len() >= seen,
+                "the backlog shrank from {seen} to {}",
+                backlog.len()
+            );
+            // What the reader does every tick. It panicked here before.
+            let _ = &backlog[seen..];
+            seen = backlog.len();
+        }
+        assert_eq!(backlog.len(), 4);
+    }
+
+    /// Fragments are kept rather than pruned once the answer lands. They cost
+    /// memory; removing them cost a poisoned mutex.
+    #[test]
+    fn fragments_survive_the_finished_answer() {
+        let mut backlog = Vec::new();
+        record(&mut backlog, delta("he"));
+        record(&mut backlog, delta("llo"));
+        record(
+            &mut backlog,
+            Event {
+                seq: 2,
+                kind: EventKind::Assistant {
+                    text: "hello".into(),
+                },
+            },
+        );
+        assert_eq!(backlog.len(), 3);
     }
 
     /// One string, not two. This is the property that stops the next surface
