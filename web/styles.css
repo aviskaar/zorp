@@ -125,19 +125,18 @@ button {
   gap: 9px;
 }
 
-/* The mark carries two node sizes and heavier strokes than the full eight
-   node version on the landing site. That version is drawn for 160px and turns
-   to mush at 20px, which is why the favicon has its own geometry; this reuses
-   the favicon's. Colours come from the tokens rather than the brand's own, so
-   the mark sits in this dark palette instead of fighting it. */
+/* The mark is 400x424 in its own units, so the box keeps that ratio rather
+   than being squared off. Colours come from the tokens rather than the
+   brand's own navy, which would be invisible on this background; the mark is
+   drawn as vector against CSS variables precisely so it can do that. */
 .brand-mark {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 25px;
   color: var(--text);
 }
 
-.brand-mark path {
-  stroke-width: 6.5;
+.brand-mark line {
+  stroke-width: 8;
 }
 
 .brand-mark circle {
