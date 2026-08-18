@@ -31,6 +31,15 @@ resulting artifact, deliver it in the right form.
   co-write, deliver) sit on top of it as `zorp-agent` subcommands,
   behind the `research` feature. All four are built and tested
   (deliver most recently).
+- `critique` (`zorp-agent/src/critique/`) is a gate on co-write's
+  artifact, not a fifth capability. It audits `draft.md` against the
+  track's own evidence record and revises what the record does not
+  support, within a bound (`--critique-rounds`, `ZORP_CRITIQUE_ROUNDS`,
+  default 2). The audit is code, the model only inventories claims, and
+  the pass refuses if the record moved under it, so it cannot touch the
+  Kill Threshold or anything else pre-registered. It lives behind
+  `research` alongside the four capabilities and is covered by the same
+  `cargo test -p zorp-agent --features research` run.
 - New, zorp-specific capabilities should be clearly separated from
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.

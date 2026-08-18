@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS validations (
     verdict TEXT NOT NULL,
     created_at BIGINT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS critiques (
+    id TEXT PRIMARY KEY,
+    track_id TEXT NOT NULL,
+    round BIGINT NOT NULL,
+    draft_hash TEXT NOT NULL,
+    findings TEXT NOT NULL,
+    accepted BOOLEAN NOT NULL,
+    created_at BIGINT NOT NULL,
+    seq BIGINT
+);
 -- Monotonic insert order within a track. created_at is milliseconds, so
 -- two rows written in the same millisecond tie and give no ordering;
 -- seq breaks the tie, the same way metrics already do. Both are derived
@@ -74,4 +84,5 @@ CREATE INDEX IF NOT EXISTS idx_preregistrations_track_id ON preregistrations(tra
 CREATE INDEX IF NOT EXISTS idx_experiments_track_id ON experiments(track_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_experiment_id ON metrics(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_track_id ON checkpoints(track_id);
-CREATE INDEX IF NOT EXISTS idx_validations_track_id ON validations(track_id);";
+CREATE INDEX IF NOT EXISTS idx_validations_track_id ON validations(track_id);
+CREATE INDEX IF NOT EXISTS idx_critiques_track_id ON critiques(track_id);";

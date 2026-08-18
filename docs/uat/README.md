@@ -23,6 +23,8 @@ the four research capabilities, which quecto never had.
 
 | cold install | [`UAT-cold-install.md`](UAT-cold-install.md) | the published `v0.3.1` release, not a local build | 8 scenarios on the README's `curl \| bash` path in a bare `ubuntu:22.04` with no toolchain and nothing cached. | ACCEPT with reservations. 8 pass. Four findings, J1 to J4. J1 fixed here; J2 and J3 fixed on main but live for anyone installing today; J4 needs a maintainer. |
 
+| critique | [`UAT-critique.md`](UAT-critique.md) | `zorp-agent 0.3.2`, debug, at `feat/self-critique` | Addition, not a re-run. 10 scenarios over the `critique` subcommand, driven by a canned completions endpoint rather than a live model so the model-call count is checkable. | ACCEPT. 10 pass. No findings. Live-model behaviour is explicitly out of scope. |
+
 Both runs used a local Ollama endpoint with an isolated `HOME`,
 `ZORP_STATE_DB`, and `ZORP_TRUST_FILE`, so nothing touched the tester's
 real state.

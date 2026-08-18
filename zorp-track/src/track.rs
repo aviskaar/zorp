@@ -421,6 +421,7 @@ mod tests {
             names,
             vec![
                 "checkpoints",
+                "critiques",
                 "experiments",
                 "metrics",
                 "preregistrations",

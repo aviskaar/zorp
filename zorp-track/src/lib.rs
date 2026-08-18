@@ -6,6 +6,7 @@
 //! pattern `zorp-mcp` already uses for its own async transport.
 
 pub mod checkpoint;
+pub mod critique;
 pub mod error;
 pub mod experiment;
 pub mod id;
@@ -17,6 +18,7 @@ mod schema;
 pub mod track;
 pub mod validation;
 
+pub use critique::{CritiqueFinding, CritiqueRound};
 pub use error::TrackError;
 pub use project::Project;
 pub use track::Store;
