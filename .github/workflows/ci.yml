@@ -104,6 +104,15 @@ jobs:
         working-directory: web
         run: npm run check
 
+      # The markdown renderer turns model output into DOM nodes. If it ever
+      # starts producing markup instead of text, that is a cross-site
+      # scripting hole in the one place the product shows untrusted content,
+      # and a typecheck would not notice. Most of these tests are injection
+      # cases for exactly that reason.
+      - name: Test the UI
+        working-directory: web
+        run: npm test
+
       # Builds exactly what `npm run deploy` uploads, so a broken deploy is
       # a failed check rather than a live site serving a stale bundle.
       - name: Build the deployable site

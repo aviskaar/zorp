@@ -7,6 +7,7 @@
  * answers. Nothing here approves anything on its own.
  */
 
+import { renderMarkdown } from "./markdown";
 import {
   ApiError,
   TurnBusyError,
@@ -20,6 +21,10 @@ import {
   sendTurn,
   streamEvents,
   testConnection,
+  artifactUrl,
+  listArtifacts,
+  readArtifact,
+  type Artifact,
   type EventStream,
   type Message,
   type Settings,
@@ -97,6 +102,14 @@ interface Elements {
   settingsTest: HTMLButtonElement;
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
+  artifactsBtn: HTMLButtonElement;
+  artifacts: HTMLElement;
+  artifactsClose: HTMLButtonElement;
+  artifactsRefresh: HTMLButtonElement;
+  artifactList: HTMLElement;
+  artifactEmpty: HTMLElement;
+  artifactDoc: HTMLElement;
+  artifactFrame: HTMLIFrameElement;
 }
 
 type ApprovalOutcome = "allowed" | "denied" | "expired";
@@ -130,6 +143,7 @@ function start(): void {
   wireSidebar();
   wireScroller();
   wireSettings();
+  wireArtifacts();
   showEmptyState();
   setStatus("idle", "idle");
   void connectOrExplain();
@@ -236,6 +250,14 @@ function collectElements(): Elements {
     settingsApiKeySource: byId("settings-api-key-source"),
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
+    artifactsBtn: byId<HTMLButtonElement>("artifacts-btn"),
+    artifacts: byId<HTMLElement>("artifacts"),
+    artifactsClose: byId<HTMLButtonElement>("artifacts-close"),
+    artifactsRefresh: byId<HTMLButtonElement>("artifacts-refresh"),
+    artifactList: byId<HTMLElement>("artifact-list"),
+    artifactEmpty: byId<HTMLElement>("artifact-empty"),
+    artifactDoc: byId<HTMLElement>("artifact-doc"),
+    artifactFrame: byId<HTMLIFrameElement>("artifact-frame"),
     settingsResult: byId("settings-result"),
   };
 }
@@ -549,7 +571,14 @@ function appendMessage(role: "user" | "assistant", text: string): void {
   const label = el("div", "msg-role");
   label.textContent = role === "user" ? "You" : "zorp";
   const body = el("div", "msg-body");
-  renderRichText(body, text);
+  // What the user typed is shown as they typed it. Running their own message
+  // through a markdown renderer would mean a question containing `#` or `*`
+  // came back looking like something they did not write.
+  if (role === "user") {
+    renderRichText(body, text);
+  } else {
+    renderMarkdown(body, text);
+  }
   row.append(label, body);
   dom.transcript.append(row);
 }
@@ -1309,4 +1338,150 @@ function glyph(kind: "shield" | "alert"): SVGSVGElement {
   svg.append(mark);
 
   return svg;
+}
+
+/* ------------------------------------------------------------------ */
+/* artifact pane                                                       */
+/* ------------------------------------------------------------------ */
+
+/** The file currently open, so a refresh can put it back. */
+let openArtifact: string | null = null;
+
+function wireArtifacts(): void {
+  dom.artifactsBtn.addEventListener("click", () => {
+    const showing = !dom.artifacts.hidden;
+    if (showing) {
+      closeArtifacts();
+    } else {
+      openArtifactsPane();
+    }
+  });
+  dom.artifactsClose.addEventListener("click", closeArtifacts);
+  dom.artifactsRefresh.addEventListener("click", () => {
+    void refreshArtifacts();
+  });
+}
+
+function openArtifactsPane(): void {
+  dom.artifacts.hidden = false;
+  dom.artifactsBtn.setAttribute("aria-expanded", "true");
+  dom.app.dataset.artifacts = "open";
+  void refreshArtifacts();
+}
+
+function closeArtifacts(): void {
+  dom.artifacts.hidden = true;
+  dom.artifactsBtn.setAttribute("aria-expanded", "false");
+  delete dom.app.dataset.artifacts;
+}
+
+async function refreshArtifacts(): Promise<void> {
+  try {
+    const listing = await listArtifacts();
+    renderArtifactList(listing.files, listing.truncated);
+    // Reopening what was already open means a refresh after a run shows the
+    // new contents rather than dropping the reader back to an empty pane.
+    if (openArtifact && listing.files.some((f) => f.path === openArtifact)) {
+      await showArtifact(openArtifact);
+    }
+  } catch (error) {
+    dom.artifactList.replaceChildren();
+    setArtifactMessage(`Could not list files: ${describeError(error)}`);
+  }
+}
+
+function renderArtifactList(files: Artifact[], truncated: boolean): void {
+  dom.artifactList.replaceChildren();
+  if (!files.length) {
+    const empty = el("li", "artifact-none");
+    empty.textContent = "Nothing here yet. Files the agent writes show up in this list.";
+    dom.artifactList.append(empty);
+    return;
+  }
+  for (const file of files) {
+    const row = el("li");
+    const button = el("button", "artifact-item") as HTMLButtonElement;
+    button.type = "button";
+    button.dataset.path = file.path;
+    if (file.path === openArtifact) {
+      button.dataset.open = "yes";
+    }
+    button.append(
+      textNode("span", "artifact-name", file.path),
+      textNode("span", "artifact-size", humanBytes(file.bytes)),
+    );
+    button.addEventListener("click", () => {
+      void showArtifact(file.path);
+    });
+    row.append(button);
+    dom.artifactList.append(row);
+  }
+  if (truncated) {
+    const note = el("li", "artifact-none");
+    note.textContent = "That is as many as this pane lists. Narrower is better than wrong.";
+    dom.artifactList.append(note);
+  }
+}
+
+/**
+ * Show one file. Markdown and text render into the pane through the same
+ * renderer the chat uses; a PDF goes into an iframe and the browser's own
+ * viewer handles it. Nothing is parsed here that does not have to be.
+ */
+async function showArtifact(path: string): Promise<void> {
+  openArtifact = path;
+  for (const node of dom.artifactList.querySelectorAll<HTMLElement>(".artifact-item")) {
+    if (node.dataset.path === path) {
+      node.dataset.open = "yes";
+    } else {
+      delete node.dataset.open;
+    }
+  }
+
+  if (path.toLowerCase().endsWith(".pdf")) {
+    dom.artifactDoc.hidden = true;
+    dom.artifactEmpty.hidden = true;
+    dom.artifactFrame.hidden = false;
+    dom.artifactFrame.src = artifactUrl(path);
+    return;
+  }
+
+  dom.artifactFrame.hidden = true;
+  dom.artifactFrame.removeAttribute("src");
+  try {
+    const text = await readArtifact(path);
+    dom.artifactDoc.replaceChildren();
+    if (path.toLowerCase().endsWith(".md") || path.toLowerCase().endsWith(".markdown")) {
+      renderMarkdown(dom.artifactDoc, text);
+    } else {
+      const pre = el("pre", "code-block");
+      const code = el("code");
+      code.textContent = text;
+      pre.append(code);
+      dom.artifactDoc.append(pre);
+    }
+    dom.artifactDoc.hidden = false;
+    dom.artifactEmpty.hidden = true;
+  } catch (error) {
+    // A file that vanished between listing and opening says so. An empty
+    // pane and an empty file look identical, and they are not the same.
+    setArtifactMessage(describeError(error));
+  }
+}
+
+function setArtifactMessage(text: string): void {
+  dom.artifactDoc.hidden = true;
+  dom.artifactFrame.hidden = true;
+  dom.artifactEmpty.hidden = false;
+  dom.artifactEmpty.textContent = text;
+}
+
+function humanBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }

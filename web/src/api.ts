@@ -500,3 +500,42 @@ function isZorpEvent(value: unknown): value is ZorpEvent {
   const candidate = value as { type?: unknown; seq?: unknown };
   return typeof candidate.type === "string" && EVENT_TYPES.has(candidate.type);
 }
+
+/** One file the artifact pane can open. */
+export interface Artifact {
+  path: string;
+  bytes: number;
+}
+
+export interface ArtifactListing {
+  files: Artifact[];
+  /** The server capped the list. Saying so beats implying it is complete. */
+  truncated: boolean;
+}
+
+export async function listArtifacts(): Promise<ArtifactListing> {
+  return request<ArtifactListing>("GET", "/api/artifacts");
+}
+
+/**
+ * The URL a PDF iframe points at. A URL rather than fetched bytes because
+ * the browser's own PDF viewer is what renders it, and it needs something to
+ * navigate to. The token, if there is one, rides along via `url`.
+ */
+export function artifactUrl(path: string): string {
+  return url(`/api/artifacts/raw?path=${encodeURIComponent(path)}`);
+}
+
+/** The text of an artifact, for the markdown renderer. */
+export async function readArtifact(path: string): Promise<string> {
+  const response = await fetch(artifactUrl(path), { headers: authHeaders() });
+  if (!response.ok) {
+    throw new ApiError(response.status, (await response.text()) || response.statusText);
+  }
+  return response.text();
+}
+
+function authHeaders(): Record<string, string> {
+  const token = apiToken();
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
