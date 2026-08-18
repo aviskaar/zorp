@@ -20,6 +20,12 @@
   --accent-dim: #2dd4bf;
   --accent-glow: rgba(94, 234, 212, 0.12);
 
+  /* The logo's own colours, from its dark version: white nodes and edges,
+     electric blue on the two accent nodes. Kept separate from --accent
+     because the mark is the brand and does not follow this UI's palette. */
+  --brand-fg: #ffffff;
+  --brand-accent: #1450f5;
+
   --warn: #f5b544;
   --warn-soft: rgba(245, 181, 68, 0.09);
   --warn-line: rgba(245, 181, 68, 0.34);
@@ -126,13 +132,12 @@ button {
 }
 
 /* The mark is 400x424 in its own units, so the box keeps that ratio rather
-   than being squared off. Colours come from the tokens rather than the
-   brand's own navy, which would be invisible on this background; the mark is
-   drawn as vector against CSS variables precisely so it can do that. */
+   than being squared off. This sidebar is near black, so it takes the logo's
+   dark version as it is drawn rather than recolouring it to match the UI. */
 .brand-mark {
-  width: 24px;
-  height: 25px;
-  color: var(--text);
+  width: 28px;
+  height: 29px;
+  color: var(--brand-fg);
 }
 
 .brand-mark line {
@@ -145,7 +150,7 @@ button {
 }
 
 .brand-mark .mark-accent {
-  fill: var(--accent);
+  fill: var(--brand-accent);
 }
 
 .brand-name {
