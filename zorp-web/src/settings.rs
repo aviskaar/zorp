@@ -440,9 +440,12 @@ pub fn fetch_models(base_url: &str) -> ModelsResult {
                 resp.into_string().unwrap_or_default()
             )),
         },
+        // No `{url}` prefix here. ureq's transport errors already start with
+        // the URL, and prefixing produced "http://…/models: http://…/models:
+        // Connection Failed: …", which reads like two different failures.
         Err(e) => ModelsResult {
             models: Vec::new(),
-            error: Some(format!("{url}: {e}")),
+            error: Some(e.to_string()),
         },
     }
 }
