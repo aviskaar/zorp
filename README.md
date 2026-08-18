@@ -205,6 +205,45 @@ search-capable tool is available" and `deliver` with "no
 huiban-prefixed tool is available", rather than running with no
 evidence.
 
+A tool that searches your own saved material does not count, even
+though it carries a search verb. Scoring a question against notes you
+wrote yourself, and calling that a search for evidence, is worse than
+refusing to run.
+
+### Memory across sessions, with open-context
+
+[open-context](https://github.com/aviskaar/open-context) is a separate
+MIT-licensed tool that keeps a portable store of context and exposes it
+over MCP. Connecting it gives the agent memory that outlives a single
+session, without zorp taking on a dependency: it is an MCP server like
+any other.
+
+Build it once, then point zorp at it:
+
+```toml
+# .zorp/mcp.toml
+[[server]]
+name = "opencontext"
+transport = "stdio"
+command = "node"
+# The path to your checkout. Absolute, because the server is started
+# from whatever directory the agent happens to be working in.
+args = ["/path/to/open-context/dist/mcp/index.js"]
+trust = "sandbox"
+```
+
+Eleven tools arrive, `mcp__opencontext__save_context` through
+`mcp__opencontext__delete_bubble`. `/tools` in a chat session lists
+them.
+
+Two things worth knowing:
+
+- The npm package named `opencontext` is an unrelated project by
+  another author. There is no `npx` recipe here on purpose; installing
+  by that name gets you someone else's code.
+- `mcp__opencontext__search_contexts` deliberately does not satisfy
+  `validate`'s search gate, for the reason above.
+
 ### Web UI
 
 A chat interface for the agent, with tool activity streamed as it happens and
