@@ -9,6 +9,7 @@
 
 import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
+import { copyButton } from "./copy-response";
 import {
   needsText,
   producedSince,
@@ -608,7 +609,13 @@ function stopSpinner(): void {
  * Fragments are a preview. The server states the finished answer exactly
  * once, in an `assistant` event, and that is what ends up on the page.
  */
-const streamed = new StreamedMessage(dom.transcript, renderMarkdown);
+const streamed = new StreamedMessage(
+  dom.transcript,
+  renderMarkdown,
+  undefined,
+  undefined,
+  (row, text) => row.append(answerCopyButton(text)),
+);
 
 function appendStreamDelta(chunk: string): void {
   if (!streamed.open) activityGroup = null;
@@ -637,7 +644,26 @@ function appendMessage(role: "user" | "assistant", text: string): void {
     renderMarkdown(body, text);
   }
   row.append(label, body);
+  if (role === "assistant") {
+    row.append(answerCopyButton(text));
+  }
   dom.transcript.append(row);
+}
+
+/**
+ * A copy button for one answer.
+ *
+ * `navigator.clipboard` is absent outside a secure context, and a browser can
+ * refuse the write even inside one. Both arrive at the button as a rejected
+ * promise, which is what makes it say "Copy failed" rather than appear to
+ * work. Loopback counts as secure, so the ordinary case is fine.
+ */
+function answerCopyButton(text: string): HTMLButtonElement {
+  return copyButton(document, () => text, (value) =>
+    navigator.clipboard
+      ? navigator.clipboard.writeText(value)
+      : Promise.reject(new Error("this browser offers no clipboard here")),
+  );
 }
 
 /** The CLI's shape: a bullet, the tool name, then the summary. */

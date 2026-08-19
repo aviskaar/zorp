@@ -71,12 +71,17 @@ export class StreamedMessage {
   private readonly render: (body: HTMLElement, text: string) => void;
   private readonly schedule: (fn: () => void) => number;
   private readonly cancel: (handle: number) => void;
+  private readonly onFinished: (row: HTMLElement, text: string) => void;
 
   /**
    * @param transcript where messages are appended
    * @param render     puts text on the page; the markdown renderer in practice
    * @param schedule   defers a render; one animation frame in practice
    * @param cancel     cancels a deferred render
+   * @param onFinished handed each completed row and the text left on it, so a
+   *                   caller can decorate it. This is how the copy button
+   *                   reaches a streamed answer without this module knowing
+   *                   anything about clipboards.
    */
   constructor(
     transcript: HTMLElement,
@@ -88,11 +93,13 @@ export class StreamedMessage {
     // scheduler, so this path had no coverage until it broke in a browser.
     schedule: (fn: () => void) => number = (fn) => requestAnimationFrame(fn),
     cancel: (handle: number) => void = (handle) => cancelAnimationFrame(handle),
+    onFinished: (row: HTMLElement, text: string) => void = () => {},
   ) {
     this.transcript = transcript;
     this.render = render;
     this.schedule = schedule;
     this.cancel = cancel;
+    this.onFinished = onFinished;
   }
 
   /** Whether a message is currently open. */
@@ -167,6 +174,9 @@ export class StreamedMessage {
     } else {
       this.paint(final);
       this.row.classList.remove("is-streaming");
+      // After the paint, so anything added here survives the last repaint,
+      // and only for a row that stayed: an empty turn has nothing to offer.
+      this.onFinished(this.row, final);
     }
     this.row = null;
     this.body = null;
