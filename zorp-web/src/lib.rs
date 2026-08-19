@@ -9,6 +9,7 @@ pub mod api;
 pub mod approval;
 pub mod artifacts;
 pub mod auth;
+pub mod documents;
 pub mod event;
 pub mod renderer;
 pub mod settings;

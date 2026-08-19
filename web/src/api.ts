@@ -530,6 +530,13 @@ function isZorpEvent(value: unknown): value is ZorpEvent {
 export interface Artifact {
   path: string;
   bytes: number;
+  /**
+   * Last modified, milliseconds since the epoch, or 0 when the server could
+   * not tell. This is what lets the pane notice that a run wrote something:
+   * it snapshots the listing when a turn starts and compares afterwards. Size
+   * alone would miss a rewrite that landed on the same length.
+   */
+  modified_ms: number;
 }
 
 export interface ArtifactListing {
@@ -551,7 +558,14 @@ export function artifactUrl(path: string): string {
   return url(`/api/artifacts/raw?path=${encodeURIComponent(path)}`);
 }
 
-/** The text of an artifact, for the markdown renderer. */
+/**
+ * The text of an artifact, for the markdown renderer.
+ *
+ * Only ever called for the types the pane renders itself. A `.svg`, a `.html`
+ * or a `.pdf` is never fetched into the page: those are addressed by URL from
+ * the sandboxed iframe, so the browser loads them somewhere this page cannot
+ * be reached from. See `artifact-view.ts`.
+ */
 export async function readArtifact(path: string): Promise<string> {
   const response = await fetch(artifactUrl(path), { headers: authHeaders() });
   if (!response.ok) {

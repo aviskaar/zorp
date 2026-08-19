@@ -1610,14 +1610,70 @@ button {
   line-height: 1.65;
 }
 
-/* The browser's own PDF viewer renders inside this. The sandbox CSP the
-   server sends with the file is what keeps it from reaching this page. */
+/* PDFs, SVGs and HTML files render inside this and nowhere else. The sandbox
+   CSP the server sends with the file, and the sandbox attribute on the
+   element, are what keep them from reaching this page. */
 .artifact-frame {
   flex: 1;
   min-height: 0;
   width: 100%;
   border: 0;
   background: var(--bg);
+}
+
+/* An image is inert, so it goes straight on the page. Contained rather than
+   stretched: a screenshot the run took should look like the screenshot. */
+.artifact-image {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  padding: 18px;
+  background: var(--bg);
+}
+
+/* A file this turn produced. Quiet on purpose: it marks the row, it does not
+   take it over. */
+.artifact-fresh {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.artifact-item[data-fresh="yes"] .artifact-name {
+  color: var(--text);
+}
+
+/* What a finished run says when the pane is closed. A count on the button,
+   and nothing else: opening a pane over the answer somebody is reading is an
+   interruption, not a feature. */
+.artifacts-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.artifacts-btn[data-produced="yes"] {
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.artifacts-btn[data-produced="yes"] svg {
+  color: var(--accent-dim);
 }
 
 /* Narrow screens have no room for three columns, so the pane takes the

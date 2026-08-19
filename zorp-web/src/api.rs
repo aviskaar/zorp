@@ -416,24 +416,28 @@ async fn read_artifact(
     };
 
     // Size is checked before reading, not after, so an enormous file never
-    // makes it into memory at all.
+    // makes it into memory at all. What counts as enormous depends on what
+    // the file is for: text is rendered by the page and a picture is not.
+    let served = artifacts::served_as(&path).unwrap_or(artifacts::Served::Text);
     let mime = artifacts::content_type(&path).unwrap_or("application/octet-stream");
-    if mime.starts_with("text/") {
-        match std::fs::metadata(&path) {
-            Ok(m) if m.len() > artifacts::MAX_TEXT_BYTES => {
-                return (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    format!(
-                        "that file is {} bytes, over the {} this pane will render",
-                        m.len(),
-                        artifacts::MAX_TEXT_BYTES
-                    ),
-                )
-                    .into_response()
-            }
-            Ok(_) => {}
-            Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    let cap = match served {
+        artifacts::Served::Text => artifacts::MAX_TEXT_BYTES,
+        artifacts::Served::Document(_) => artifacts::MAX_DOCUMENT_BYTES,
+        artifacts::Served::Image | artifacts::Served::Sandboxed => artifacts::MAX_BINARY_BYTES,
+    };
+    match std::fs::metadata(&path) {
+        Ok(m) if m.len() > cap => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "that file is {} bytes, over the {cap} this pane will render",
+                    m.len()
+                ),
+            )
+                .into_response()
         }
+        Ok(_) => {}
+        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
 
     let body = match std::fs::read(&path) {
@@ -441,9 +445,29 @@ async fn read_artifact(
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
 
+    // An office file is a zip of XML that the browser cannot show. It is
+    // turned into markdown here rather than shipped as bytes, so the only
+    // thing that reaches the page is text the existing renderer handles.
+    // See `crate::documents` for the caps that make reading one safe.
+    let body = match served {
+        artifacts::Served::Document(kind) => match crate::documents::to_markdown(kind, &body) {
+            Ok(markdown) => markdown.into_bytes(),
+            // A file that is not really the format its name claims is an
+            // ordinary outcome when a model wrote it, so it gets a sentence
+            // rather than a 500 or a blank pane.
+            Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
+        },
+        _ => body,
+    };
+
     let mut headers = HeaderMap::new();
     headers.insert("content-type", mime.parse().unwrap());
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    // A bare `sandbox`, with no `allow-` token. That is what makes it safe to
+    // point an iframe at a PDF, an SVG or an HTML file this server did not
+    // write: the document loads into a unique origin with scripting off, so
+    // script inside it neither runs nor has a handle on the page that framed
+    // it. Every token added here gives some of that back.
     headers.insert("content-security-policy", "sandbox".parse().unwrap());
     // Inline, because the point is to show it in the pane. The sandbox above
     // is what makes that safe, not the disposition.

@@ -112,6 +112,12 @@
               <path d="M14 3v5h5" />
             </svg>
             <span>Files</span>
+            <!--
+              How a finished run says it wrote something, when the pane is
+              closed. A count, not a pane that opens itself over whatever the
+              reader is in the middle of.
+            -->
+            <span class="artifacts-badge" id="artifacts-badge" hidden></span>
           </button>
           <div class="status" id="status" data-state="idle">
             <span class="status-dot" aria-hidden="true"></span>
@@ -181,12 +187,22 @@
         <div class="artifact-view" id="artifact-view">
           <p class="artifact-empty" id="artifact-empty">Pick a file to read it here.</p>
           <div class="artifact-doc" id="artifact-doc" hidden></div>
+          <!--
+            The sandbox. PDFs, SVGs and HTML files load here by URL and never
+            into the page above, because all three can carry script. The
+            server sends them with a bare `Content-Security-Policy: sandbox`,
+            which is what stops that script running or reaching this page. The
+            sandbox attribute below says the same thing from this side.
+          -->
           <iframe
             class="artifact-frame"
             id="artifact-frame"
             title="Document preview"
+            sandbox
+            referrerpolicy="no-referrer"
             hidden
           ></iframe>
+          <img class="artifact-image" id="artifact-image" alt="" hidden />
         </div>
       </aside>
     </div>

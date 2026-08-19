@@ -17,23 +17,83 @@ const MAX_ENTRIES: usize = 500;
 /// Refuse to render text past this. The point is that a tab that freezes is
 /// worse than a message saying the file is too big.
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+/// Refuse to open an office file past this. Higher than the text cap because
+/// the archive on disk is compressed and the caps that matter for a zip bomb
+/// are on what comes out of it, in `crate::documents`.
+pub const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
+/// Refuse to hand a browser bytes past this. A PDF or an image is not parsed
+/// here, but it is still read into memory before it goes out.
+pub const MAX_BINARY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Directories never worth walking into. Not a security control (the
 /// traversal check is), just the difference between a useful list and ten
 /// thousand entries of somebody else's code.
 const SKIP_DIRS: [&str; 4] = ["target", "node_modules", ".git", "dist"];
 
-/// What a given extension is served as. An allowlist, deliberately: an
-/// unknown type guessed at as `text/html` is a cross-site scripting hole,
-/// while an unknown type simply refused is an inconvenience.
-pub fn content_type(path: &Path) -> Option<&'static str> {
+/// How the pane is meant to put a file on screen. The type the bytes are
+/// served as follows from this, not the other way round.
+///
+/// The split that matters is `Sandboxed`. A PDF, an SVG and an HTML file are
+/// all documents a browser will happily execute things inside, so they only
+/// ever appear in the pane's sandboxed iframe, never in the page's own DOM.
+/// Everything else is either inert bytes (`Image`) or text that goes through
+/// the markdown renderer, which builds DOM nodes and never assembles markup.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Served {
+    /// Served as text and rendered by the page.
+    Text,
+    /// Served as image bytes and shown in an `<img>`.
+    Image,
+    /// Served as its own type and shown only inside the sandboxed iframe.
+    Sandboxed,
+    /// Extracted to markdown on the server, then served and rendered as text.
+    Document(crate::documents::Kind),
+}
+
+/// How a given extension is handled, or `None` for a type this endpoint will
+/// not serve at all. An allowlist, deliberately: an unknown type guessed at as
+/// `text/html` is a cross-site scripting hole, while an unknown type simply
+/// refused is an inconvenience.
+pub fn served_as(path: &Path) -> Option<Served> {
+    if let Some(kind) = crate::documents::Kind::for_path(path) {
+        return Some(Served::Document(kind));
+    }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "md" | "markdown" | "txt" | "text" => Some("text/plain; charset=utf-8"),
-        "json" => Some("text/plain; charset=utf-8"),
-        "csv" => Some("text/plain; charset=utf-8"),
-        "pdf" => Some("application/pdf"),
+        "md" | "markdown" | "txt" | "text" | "json" | "csv" => Some(Served::Text),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => Some(Served::Image),
+        // These three execute, or can be made to. They are on the list
+        // because a run that draws a chart or writes a report page has
+        // nowhere else to put it, and they are safe only because the
+        // response headers below put them in a sandbox with no script.
+        "pdf" | "svg" | "html" => Some(Served::Sandboxed),
         _ => None,
+    }
+}
+
+/// What a given extension is served as.
+///
+/// Never sniffed, and never a fallback: a type this table does not name is
+/// refused rather than guessed at. `.svg` gets `image/svg+xml` and `.html`
+/// gets `text/html` because that is what they are; the sandbox header on the
+/// response, not a mislabelled type, is what keeps them harmless.
+pub fn content_type(path: &Path) -> Option<&'static str> {
+    match served_as(path)? {
+        Served::Document(_) => Some("text/markdown; charset=utf-8"),
+        Served::Text => Some("text/plain; charset=utf-8"),
+        Served::Image | Served::Sandboxed => {
+            let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+            match ext.as_str() {
+                "png" => Some("image/png"),
+                "jpg" | "jpeg" => Some("image/jpeg"),
+                "gif" => Some("image/gif"),
+                "webp" => Some("image/webp"),
+                "pdf" => Some("application/pdf"),
+                "svg" => Some("image/svg+xml"),
+                "html" => Some("text/html; charset=utf-8"),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -89,6 +149,14 @@ pub struct Entry {
     /// gets handed back to `resolve`.
     pub path: String,
     pub bytes: u64,
+    /// Last modified, in milliseconds since the epoch, or 0 when the
+    /// filesystem would not say.
+    ///
+    /// This is what lets the pane tell "a run wrote this" from "this was
+    /// already here": it takes a listing before a turn and compares it with
+    /// the listing after. Size alone is not enough, since a rewrite that
+    /// happens to land on the same length would look like nothing happened.
+    pub modified_ms: u64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -153,11 +221,19 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<Entry>, truncated: 
         if content_type(&path).is_none() {
             continue;
         }
-        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let metadata = entry.metadata().ok();
+        let bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        let modified_ms = metadata
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
         if let Ok(rel) = path.strip_prefix(root) {
             out.push(Entry {
                 path: rel.to_string_lossy().replace('\\', "/"),
                 bytes,
+                modified_ms,
             });
         }
     }
@@ -222,8 +298,122 @@ mod tests {
         let root = dir.path().join("workspace");
         std::fs::write(root.join("thing.env"), "TOKEN=x").unwrap();
         assert_eq!(resolve(&root, "thing.env"), Err(Refusal::UnsupportedType));
-        assert!(content_type(Path::new("x.html")).is_none());
-        assert!(content_type(Path::new("x.svg")).is_none());
+        assert!(content_type(Path::new("x.exe")).is_none());
+        assert!(content_type(Path::new("x.xhtml")).is_none());
+        assert!(content_type(Path::new("noextension")).is_none());
+    }
+
+    /// The one type that must never be guessed at. `.svg` is an XML document
+    /// that can carry script, so serving it as anything but its own type, or
+    /// as text the page might inline, is the whole hole.
+    #[test]
+    fn svg_and_html_are_served_as_themselves_and_only_from_the_iframe() {
+        assert_eq!(content_type(Path::new("d.svg")), Some("image/svg+xml"));
+        assert_eq!(
+            content_type(Path::new("r.html")),
+            Some("text/html; charset=utf-8")
+        );
+        // These two are what the pane keys on when it decides between the
+        // iframe and the page's own DOM. A file that executes must never be
+        // anything but Sandboxed.
+        assert_eq!(served_as(Path::new("d.svg")), Some(Served::Sandboxed));
+        assert_eq!(served_as(Path::new("r.html")), Some(Served::Sandboxed));
+        assert_eq!(served_as(Path::new("p.pdf")), Some(Served::Sandboxed));
+        assert_eq!(served_as(Path::new("n.md")), Some(Served::Text));
+        assert_eq!(served_as(Path::new("p.png")), Some(Served::Image));
+    }
+
+    #[test]
+    fn images_are_served_with_their_own_type() {
+        assert_eq!(content_type(Path::new("a.png")), Some("image/png"));
+        assert_eq!(content_type(Path::new("a.JPG")), Some("image/jpeg"));
+        assert_eq!(content_type(Path::new("a.jpeg")), Some("image/jpeg"));
+        assert_eq!(content_type(Path::new("a.gif")), Some("image/gif"));
+        assert_eq!(content_type(Path::new("a.webp")), Some("image/webp"));
+    }
+
+    /// Office files are extracted to markdown before they leave the server,
+    /// so what goes on the wire is text, not the archive.
+    #[test]
+    fn office_documents_are_served_as_the_markdown_they_extract_to() {
+        for name in ["a.docx", "a.odt", "a.xlsx", "a.pptx"] {
+            assert!(
+                matches!(served_as(Path::new(name)), Some(Served::Document(_))),
+                "{name} is not extracted"
+            );
+            assert_eq!(
+                content_type(Path::new(name)),
+                Some("text/markdown; charset=utf-8"),
+                "{name}"
+            );
+        }
+    }
+
+    /// The pane diffs one listing against another to notice what a run wrote.
+    /// Without a timestamp a file rewritten at the same size is invisible.
+    #[test]
+    fn the_listing_carries_a_modified_time_for_each_file() {
+        let dir = workspace();
+        let root = dir.path().join("workspace");
+        let listing = list(&root);
+        let draft = listing
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("draft.md"))
+            .expect("draft.md");
+        assert!(
+            draft.modified_ms > 0,
+            "no modified time on {:?}",
+            draft.path
+        );
+    }
+
+    /// Rewriting a file has to move its timestamp forward, because that is
+    /// the only signal the pane gets that a run produced something.
+    #[test]
+    fn rewriting_a_file_moves_its_modified_time_forward() {
+        let dir = workspace();
+        let root = dir.path().join("workspace");
+        let before = list(&root)
+            .files
+            .into_iter()
+            .find(|f| f.path == "notes.md")
+            .map(|f| f.modified_ms);
+        assert_eq!(before, None, "the fixture should not have notes.md yet");
+
+        std::fs::write(root.join("notes.md"), "one").unwrap();
+        let first = list(&root)
+            .files
+            .into_iter()
+            .find(|f| f.path == "notes.md")
+            .expect("notes.md")
+            .modified_ms;
+
+        // Filesystem timestamps are not infinitely fine grained, so a rewrite
+        // in the same millisecond would compare equal and prove nothing.
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        std::fs::write(root.join("notes.md"), "one two three").unwrap();
+        let second = list(&root)
+            .files
+            .into_iter()
+            .find(|f| f.path == "notes.md")
+            .expect("notes.md")
+            .modified_ms;
+
+        assert!(second > first, "{second} did not move past {first}");
+    }
+
+    #[test]
+    fn the_new_formats_show_up_in_the_listing() {
+        let dir = workspace();
+        let root = dir.path().join("workspace");
+        for name in ["chart.svg", "report.html", "shot.png", "memo.docx"] {
+            std::fs::write(root.join(name), "x").unwrap();
+        }
+        let paths: Vec<String> = list(&root).files.into_iter().map(|f| f.path).collect();
+        for name in ["chart.svg", "report.html", "shot.png", "memo.docx"] {
+            assert!(paths.iter().any(|p| p == name), "{name} missing: {paths:?}");
+        }
     }
 
     #[test]

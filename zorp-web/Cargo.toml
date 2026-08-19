@@ -21,6 +21,8 @@ futures-core = { workspace = true }
 tower-http = { workspace = true }
 toml = { workspace = true }
 ureq = { workspace = true }
+zip = { workspace = true }
+quick-xml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
