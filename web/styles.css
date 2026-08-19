@@ -1500,12 +1500,27 @@ button {
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--artifacts-w);
 }
 
+/* `min-height: 0` is load bearing, the same way it is on `.main`. A grid
+   item defaults to `min-height: auto`, which refuses to shrink below its
+   content, so a long document grew this column to the height of the whole
+   file. Two things broke at once: `overflow-y` on `.artifact-doc` never had
+   anything to clip, so the document would not scroll, and the stretched grid
+   row dragged the conversation column down with it. */
 .artifacts {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   border-left: 1px solid var(--line);
   background: var(--bg-sidebar);
+}
+
+/* Spelled out because the `display: flex` above beats the user agent's
+   `[hidden] { display: none }`. A closed pane kept its grid slot, and with
+   the grid down to two columns it wrapped onto a second row underneath the
+   sidebar, so hiding the files put a copy of them below the session list. */
+.artifacts[hidden] {
+  display: none;
 }
 
 .artifacts-head {
