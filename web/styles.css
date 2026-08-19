@@ -455,6 +455,48 @@ button {
   padding-left: 1px;
 }
 
+/* Under the answer rather than over it. `.msg` is a column, so this sits
+   below the text without the message needing a header row, and it is dim
+   until the message is hovered so a long conversation is not a column of
+   buttons. Kept visible at all times rather than appearing on hover only,
+   because a control nobody can see is a control nobody uses. */
+.copy-btn {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.msg:hover .copy-btn {
+  color: var(--text-dim);
+  border-color: var(--line-soft);
+}
+
+.copy-btn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+  border-color: var(--line);
+}
+
+.copy-btn[data-state="done"],
+.msg:hover .copy-btn[data-state="done"] {
+  color: var(--ok);
+  border-color: transparent;
+  background: none;
+}
+
+.copy-btn[data-state="failed"],
+.msg:hover .copy-btn[data-state="failed"] {
+  color: var(--danger);
+  border-color: transparent;
+  background: none;
+}
+
 /* A caret while the answer is still arriving, so a pause between tokens
    reads as thinking rather than as a finished, oddly short answer. Drawn
    after the last block so it sits at the end of the text. */

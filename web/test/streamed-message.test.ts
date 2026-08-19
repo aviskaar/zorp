@@ -267,3 +267,46 @@ test("the default scheduler works when it is a real window method", async () => 
     "the fragment never reached the page",
   );
 });
+
+/**
+ * A finished message gets handed to the caller so it can decorate the row,
+ * which is how the copy button reaches a streamed answer. The hook fires with
+ * the text that was actually left on the page, so a copy button built from it
+ * offers the server's finished answer rather than the fragments it replaced.
+ */
+test("finishing a message offers the finished row and text", () => {
+  const doc = shared.window.document;
+  const transcript = doc.createElement("div");
+  const seen: Array<{ text: string; hasBody: boolean }> = [];
+  const streamed = new StreamedMessage(
+    transcript,
+    (body, text) => renderMarkdown(body, text),
+    now,
+    noop,
+    (row, text) => seen.push({ text, hasBody: !!row.querySelector(".msg-body") }),
+  );
+
+  streamed.append("partial ans");
+  streamed.finish("the whole answer");
+
+  assert.deepEqual(seen, [{ text: "the whole answer", hasBody: true }]);
+});
+
+/** An empty turn removes its row, so there is nothing to decorate. */
+test("a message with nothing in it is not offered", () => {
+  const doc = shared.window.document;
+  const transcript = doc.createElement("div");
+  const seen: string[] = [];
+  const streamed = new StreamedMessage(
+    transcript,
+    (body, text) => renderMarkdown(body, text),
+    now,
+    noop,
+    (_row, text) => seen.push(text),
+  );
+
+  streamed.append("   ");
+  streamed.finish("");
+
+  assert.deepEqual(seen, [], "an empty message was decorated anyway");
+});
