@@ -36,6 +36,31 @@ fn record(backlog: &mut Vec<Event>, event: Event) {
     backlog.push(event);
 }
 
+/// The events that close a turn.
+///
+/// Every path ends with `Done`, the failures included. The browser
+/// re-enables its composer on `Done` and on nothing else, so a turn that
+/// closed with only an `Error` left the send button disabled until the page
+/// was reloaded. An error ends a turn exactly as much as an answer does, and
+/// the one thing a user needs after a failure is the ability to try again.
+fn closing_events(outcome: Result<Outcome, String>) -> Vec<EventKind> {
+    let mut kinds = Vec::new();
+    match outcome {
+        Ok(Outcome::Complete(text)) => {
+            // An empty answer gets no bubble. The turn still ended.
+            if !text.trim().is_empty() {
+                kinds.push(EventKind::Assistant { text });
+            }
+        }
+        Ok(other) => kinds.push(EventKind::Error {
+            message: other.describe(),
+        }),
+        Err(message) => kinds.push(EventKind::Error { message }),
+    }
+    kinds.push(EventKind::Done);
+    kinds
+}
+
 /// Run one turn to completion on a blocking thread.
 ///
 /// The agent loop is synchronous, so it must not run on the async runtime.
@@ -84,19 +109,7 @@ pub fn spawn_turn(
         // The final answer arrives in Outcome::Complete rather than through
         // the renderer. The CLI prints it in finish(); the browser has to be
         // sent it explicitly or the turn ends with activity and no reply.
-        let mut kinds = Vec::new();
-        match outcome {
-            Ok(Outcome::Complete(text)) => {
-                if !text.trim().is_empty() {
-                    kinds.push(EventKind::Assistant { text });
-                }
-                kinds.push(EventKind::Done);
-            }
-            Ok(other) => kinds.push(EventKind::Error {
-                message: other.describe(),
-            }),
-            Err(message) => kinds.push(EventKind::Error { message }),
-        }
+        let kinds = closing_events(outcome);
         let mut next = seq.lock().unwrap();
         for kind in kinds {
             let _ = tx.send(Event { seq: *next, kind });
@@ -267,5 +280,60 @@ mod tests {
             zorp_agent::DEFAULT_SYSTEM_PROMPT,
             "zorp-web has started keeping its own copy of the system prompt"
         );
+    }
+
+    /// A turn that failed is still a turn that ended.
+    ///
+    /// The browser re-enables the composer on `Done` and on nothing else, so
+    /// a turn closing with only an `Error` left the send button disabled
+    /// until the page was reloaded. Found while testing the artifact pane,
+    /// which is to say: found by a user, not by this suite.
+    #[test]
+    fn a_failed_turn_still_ends_the_turn() {
+        let kinds = closing_events(Err("the model went away".to_string()));
+        assert!(
+            matches!(kinds.last(), Some(EventKind::Done)),
+            "a failed turn never told the browser it was over: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(
+                |k| matches!(k, EventKind::Error { message } if message.contains("went away"))
+            ),
+            "the failure was swallowed: {kinds:?}"
+        );
+    }
+
+    /// Same for an outcome that is not an error but is not an answer either,
+    /// such as a cancel or a step limit.
+    #[test]
+    fn an_outcome_that_is_not_an_answer_still_ends_the_turn() {
+        let kinds = closing_events(Ok(Outcome::Cancelled));
+        assert!(
+            matches!(kinds.last(), Some(EventKind::Done)),
+            "a cancelled turn never ended: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn a_successful_turn_sends_its_answer_and_then_ends() {
+        let kinds = closing_events(Ok(Outcome::Complete("the answer".into())));
+        assert!(
+            matches!(&kinds[0], EventKind::Assistant { text } if text == "the answer"),
+            "{kinds:?}"
+        );
+        assert!(matches!(kinds.last(), Some(EventKind::Done)), "{kinds:?}");
+    }
+
+    /// An empty answer is not worth a bubble, but the turn still ended.
+    #[test]
+    fn an_empty_answer_ends_the_turn_without_an_empty_message() {
+        let kinds = closing_events(Ok(Outcome::Complete("   ".into())));
+        assert!(
+            !kinds
+                .iter()
+                .any(|k| matches!(k, EventKind::Assistant { .. })),
+            "{kinds:?}"
+        );
+        assert!(matches!(kinds.last(), Some(EventKind::Done)), "{kinds:?}");
     }
 }
