@@ -120,7 +120,14 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
                 .filter(|m| m.role == "user" || m.role == "assistant")
                 // Message content is structured to carry images; the browser
                 // transcript wants the text of each turn.
-                .map(|m| json!({"role": m.role, "content": m.text()}))
+                .map(|m| (&m.role, m.text()))
+                // A turn where the model only called a tool has no text. The
+                // browser draws tool activity from its own event kind, so
+                // there is nothing here for it to render, and sending the row
+                // anyway put a labelled bubble with an empty body into the
+                // transcript every time the session was reopened.
+                .filter(|(_, text)| !text.trim().is_empty())
+                .map(|(role, text)| json!({"role": role, "content": text}))
                 .collect();
             Json(json!({"messages": out})).into_response()
         }
