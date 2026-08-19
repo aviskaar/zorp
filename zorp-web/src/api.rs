@@ -37,10 +37,25 @@ pub fn router_with_state(state: AppState) -> Router {
 /// Static files are deliberately outside the token gate. The browser has to
 /// load the page before it can present a token, and the bundle is public
 /// source either way. The API keeps its gate.
+///
+/// They are served `Cache-Control: no-cache`, which means revalidate before
+/// reusing rather than do not store. None of these names carry a content
+/// hash, so a rebuilt `dist/main.js` arrives at the URL the browser already
+/// has a copy of, and with no `Cache-Control` at all a browser is free to
+/// guess a freshness lifetime from `Last-Modified`. It does, and the result
+/// is a page assembled from two different builds: a stale bundle running
+/// against fresh markup, throwing errors about elements that were removed,
+/// with nothing in the server log to explain it. `ServeDir` already answers
+/// 304 to a conditional request, so the cost of always asking is one small
+/// request per file on a connection to the same machine.
 pub fn router_with_ui(state: AppState, ui_dir: Option<std::path::PathBuf>) -> Router {
     let api = api_router(state);
     match ui_dir {
-        Some(dir) => api.fallback_service(tower_http::services::ServeDir::new(dir)),
+        Some(dir) => api.fallback_service(tower_http::set_header::SetResponseHeader::overriding(
+            tower_http::services::ServeDir::new(dir),
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-cache"),
+        )),
         None => api,
     }
 }
