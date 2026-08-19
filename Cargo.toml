@@ -49,7 +49,7 @@ axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 async-stream = "0.3"
 futures-core = "0.3"
-tower-http = { version = "0.6", features = ["cors", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "set-header"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 # Office formats are zip archives of XML. Only stored and deflated entries
 # ever appear in one, so every other codec is switched off: aes, bzip2,

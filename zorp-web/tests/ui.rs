@@ -91,3 +91,88 @@ async fn without_a_ui_directory_the_api_still_answers() {
     assert_eq!(status, 200);
     assert!(body.contains("\"status\":\"ok\""), "got: {body}");
 }
+
+/// Status, plus one response header.
+async fn get_header(url: String, name: &'static str) -> (u16, Option<String>) {
+    tokio::task::spawn_blocking(move || {
+        let r = match ureq::get(&url).call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => panic!("request failed: {e}"),
+        };
+        (r.status(), r.header(name).map(str::to_string))
+    })
+    .await
+    .unwrap()
+}
+
+/// A conditional request, the way a browser revalidates.
+async fn get_if_modified_since(url: String, since: String) -> u16 {
+    tokio::task::spawn_blocking(move || {
+        match ureq::get(&url).set("If-Modified-Since", &since).call() {
+            Ok(r) => r.status(),
+            Err(ureq::Error::Status(code, _)) => code,
+            Err(e) => panic!("request failed: {e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// Every file the page is built from must be revalidated before it is reused.
+///
+/// None of these names carry a content hash, so a rebuilt `dist/main.js`
+/// arrives at the same URL as the one already in the browser's cache. With no
+/// `Cache-Control` at all a browser is free to guess a freshness lifetime from
+/// `Last-Modified`, and it does: a rebuilt bundle would run against a freshly
+/// fetched `index.html`, which is how a UI ends up half old and half new with
+/// nothing in the server log to explain it.
+#[tokio::test]
+async fn the_files_the_page_is_built_from_are_revalidated() {
+    let dir = tempfile::tempdir().unwrap();
+    ui_tree(dir.path());
+    let addr = spawn_with_ui(Some(dir.path().to_path_buf())).await;
+
+    for path in ["/", "/index.html", "/styles.css", "/dist/main.js"] {
+        let (status, cache) = get_header(format!("http://{addr}{path}"), "cache-control").await;
+        assert_eq!(status, 200, "{path}");
+        assert_eq!(
+            cache.as_deref(),
+            Some("no-cache"),
+            "{path} may be reused without asking the server first",
+        );
+    }
+}
+
+/// `no-cache` means revalidate, not refetch. The point of choosing it over
+/// `no-store` is that an unchanged file still answers 304 with no body, so
+/// the cost of always asking is one small conditional request.
+#[tokio::test]
+async fn an_unchanged_file_still_answers_304() {
+    let dir = tempfile::tempdir().unwrap();
+    ui_tree(dir.path());
+    let addr = spawn_with_ui(Some(dir.path().to_path_buf())).await;
+
+    let url = format!("http://{addr}/dist/main.js");
+    let (status, last_modified) = get_header(url.clone(), "last-modified").await;
+    assert_eq!(status, 200);
+    let last_modified = last_modified.expect("no Last-Modified to revalidate against");
+
+    assert_eq!(
+        get_if_modified_since(url, last_modified).await,
+        304,
+        "revalidating an unchanged file sent the whole thing again",
+    );
+}
+
+/// The API answers with its own headers and must not pick these up: a JSON
+/// endpoint has nothing to revalidate and no cache entry to worry about.
+#[tokio::test]
+async fn the_api_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    ui_tree(dir.path());
+    let addr = spawn_with_ui(Some(dir.path().to_path_buf())).await;
+    let (status, cache) = get_header(format!("http://{addr}/api/health"), "cache-control").await;
+    assert_eq!(status, 200);
+    assert_eq!(cache, None, "the API grew a static file header");
+}
