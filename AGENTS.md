@@ -11,10 +11,10 @@ when either changes.
 
 A Rust workspace, forked from [quecto](https://github.com/adityak74/quecto)
 (MIT) and renamed. Crates and binaries are `zorp`, `zorp-agent`,
-`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`. `zorp-search`
-and `erbga` are further workspace members and ship no binary; see the
-bullets below. Env
-vars use the `ZORP_` prefix. It's being extended into a harness for
+`zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`.
+`zorp-search`, `zorp-skill`, and `erbga` are further workspace members
+and ship no binary; see the bullets below. Env vars use the `ZORP_`
+prefix. It's being extended into a harness for
 evidence-based
 investigation: validate a question, investigate it, co-write the
 resulting artifact, deliver it in the right form.
@@ -42,8 +42,18 @@ resulting artifact, deliver it in the right form.
   anything over the network. `research` deliberately does not enable it;
   run `--features research,search` when you want it. The API key comes
   from `ZORP_TAVILY_API_KEY` and never from a flavor manifest.
+- `zorp-skill/` is zorp's own skill capability: discovery and parsing
+  for Claude Code compatible skills (`SKILL.md` in a directory, YAML
+  frontmatter plus a markdown body). Like `zorp-search` it depends on no
+  other workspace member and knows nothing about agents or tools.
+  `zorp-agent` exposes it as the `skill` built-in, on by default, which
+  reads local files only. A skill body is untrusted input: it can grant
+  no tool, loosen no approval, and bypass no denylist entry, and
+  `allowed-tools` in a skill's frontmatter is parsed, warned about, and
+  ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
+  that. Skills are not capsules; the same entry says why both exist.
 - `erbga/` is neither inherited harness code nor a zorp capability, so
-  neither of the two bullets above applies to it. It is a standalone,
+  none of the bullets above applies to it. It is a standalone,
   zero-dependency implementation of published prior work (Rao, Janikow,
   Bhatia, Climer, MWAIS 2018): a genetic algorithm for graph community
   detection, validated against that work's four benchmarks. It knows

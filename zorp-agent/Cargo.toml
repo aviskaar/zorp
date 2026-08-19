@@ -31,6 +31,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 zorp-mcp   = { path = "../zorp-mcp", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
 zorp-search = { path = "../zorp-search", optional = true }
+zorp-skill = { path = "../zorp-skill" }
 arboard    = { version = "3", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies

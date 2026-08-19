@@ -26,6 +26,7 @@ mod sandbox;
 #[cfg(feature = "search")]
 mod search_tool;
 mod session;
+mod skill_tool;
 pub mod streaming;
 mod tools;
 mod trust;

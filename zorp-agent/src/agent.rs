@@ -475,6 +475,11 @@ impl Agent {
                 .register(Box::new(crate::tools::subagent::CancelSubagent::new(pool)));
         }
 
+        if allow("skill") {
+            let scopes = zorp_skill::scope_dirs_from_env(&self.cx.repo_root);
+            self = self.register_skills(&scopes);
+        }
+
         // The search provider needs an API key. Missing one warns and skips
         // registration rather than failing the process: a build with the
         // `search` feature on is still a perfectly good agent for tasks that
@@ -491,6 +496,28 @@ impl Agent {
                 }
                 Err(e) => eprintln!("zorp-agent: web_search unavailable: {e}"),
             }
+        }
+        self
+    }
+
+    /// Discover skills in `scopes`, lowest precedence first, and register the
+    /// `skill` tool if any were found. Nothing is registered for an empty set:
+    /// a tool whose whole index is empty costs schema space and buys nothing.
+    ///
+    /// Split out from `register_builtins_filtered` so a caller can say which
+    /// directories to look in. The env driven version above reads whatever
+    /// the machine has installed, which is right in production and wrong in a
+    /// test.
+    pub fn register_skills(mut self, scopes: &[PathBuf]) -> Self {
+        let (skills, warnings) = zorp_skill::SkillRegistry::discover(scopes);
+        // A skipped skill is reported, never swallowed. Someone whose skill
+        // stopped appearing needs to be told why.
+        for warning in warnings {
+            eprintln!("zorp-agent: {warning}");
+        }
+        if !skills.is_empty() {
+            self.registry
+                .register(Box::new(crate::skill_tool::SkillTool::new(skills)));
         }
         self
     }
@@ -1976,6 +2003,74 @@ mod tests {
         assert!(names.contains(&"spawn_subagent".to_string()));
         assert!(names.contains(&"monitor_subagents".to_string()));
         assert!(names.contains(&"cancel_subagent".to_string()));
+    }
+
+    fn skills_dir_with(name: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: a test skill\n---\nbody"),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn register_skills_adds_the_skill_tool_when_a_skill_exists() {
+        let root = skills_dir_with("demo");
+        let a =
+            agent(Scripted::new(vec![text("done")])).register_skills(&[root.path().to_path_buf()]);
+        assert!(a.tool_names().contains(&"skill".to_string()));
+    }
+
+    /// An empty tool is worse than no tool: it spends schema space telling the
+    /// model about a capability that cannot do anything.
+    #[test]
+    fn register_skills_adds_nothing_when_no_skill_exists() {
+        let root = tempfile::tempdir().unwrap();
+        let a =
+            agent(Scripted::new(vec![text("done")])).register_skills(&[root.path().to_path_buf()]);
+        assert!(!a.tool_names().contains(&"skill".to_string()));
+    }
+
+    /// The claim a skill must never be able to break: a flavor narrowed the
+    /// tool set, a skill asks for more than that, and it does not get it.
+    /// If this fails, a markdown file has learned to widen policy.
+    #[test]
+    fn a_skill_that_declares_allowed_tools_does_not_receive_them() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("greedy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: greedy\ndescription: d\nallowed-tools: run_command, write_file, \
+             apply_patch\n---\nbody",
+        )
+        .unwrap();
+        let allow: Vec<String> = vec!["read_file".to_string(), "skill".to_string()];
+
+        let a = agent(Scripted::new(vec![text("done")]))
+            .register_builtins_filtered(Some(&allow))
+            .register_skills(&[root.path().to_path_buf()]);
+
+        let names = a.tool_names();
+        assert!(names.contains(&"skill".to_string()));
+        for asked_for in ["run_command", "write_file", "apply_patch"] {
+            assert!(
+                !names.contains(&asked_for.to_string()),
+                "skill asked for {asked_for} and must not have it"
+            );
+        }
+    }
+
+    #[test]
+    fn register_builtins_filtered_can_exclude_the_skill_tool() {
+        let model = Scripted::new(vec![text("done")]);
+        let allow: Vec<String> = vec!["read_file".to_string()];
+        let a = agent(model).register_builtins_filtered(Some(&allow));
+        assert!(!a.tool_names().contains(&"skill".to_string()));
     }
 
     #[test]

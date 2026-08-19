@@ -8232,6 +8232,7 @@ dependencies = [
  "zorp",
  "zorp-mcp",
  "zorp-search",
+ "zorp-skill",
  "zorp-track",
 ]
 
@@ -8268,6 +8269,13 @@ version = "0.3.2"
 dependencies = [
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "zorp-skill"
+version = "0.3.2"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
