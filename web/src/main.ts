@@ -1634,9 +1634,9 @@ function renderArtifactList(files: Artifact[], truncated: boolean): void {
  * Show one file.
  *
  * The decision about how is `artifact-view.ts`'s, and the part of it that
- * matters is that anything which can execute (a PDF, an SVG, an HTML file)
- * goes into the sandboxed iframe by URL and is never fetched into this page.
- * Only the types this page renders itself get read as text at all.
+ * matters is that anything which can execute (an SVG, an HTML file) goes into
+ * the sandboxed iframe by URL and is never fetched into this page. Only the
+ * types this page renders itself get read as text at all.
  */
 async function showArtifact(path: string): Promise<void> {
   openArtifact = path;

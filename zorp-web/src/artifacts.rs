@@ -17,11 +17,13 @@ const MAX_ENTRIES: usize = 500;
 /// Refuse to render text past this. The point is that a tab that freezes is
 /// worse than a message saying the file is too big.
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
-/// Refuse to open an office file past this. Higher than the text cap because
-/// the archive on disk is compressed and the caps that matter for a zip bomb
-/// are on what comes out of it, in `crate::documents`.
+/// Refuse to open a document past this, meaning an office file or a PDF.
+/// Higher than the text cap because the file on disk is compressed and the
+/// caps that matter for a zip bomb are on what comes out of it, in
+/// `crate::documents`. Lower than the binary cap because a document is
+/// parsed, and the time that takes grows with the file.
 pub const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
-/// Refuse to hand a browser bytes past this. A PDF or an image is not parsed
+/// Refuse to hand a browser bytes past this. An image or an SVG is not parsed
 /// here, but it is still read into memory before it goes out.
 pub const MAX_BINARY_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -33,11 +35,15 @@ const SKIP_DIRS: [&str; 4] = ["target", "node_modules", ".git", "dist"];
 /// How the pane is meant to put a file on screen. The type the bytes are
 /// served as follows from this, not the other way round.
 ///
-/// The split that matters is `Sandboxed`. A PDF, an SVG and an HTML file are
-/// all documents a browser will happily execute things inside, so they only
-/// ever appear in the pane's sandboxed iframe, never in the page's own DOM.
+/// The split that matters is `Sandboxed`. An SVG and an HTML file are both
+/// documents a browser will happily execute things inside, so they only ever
+/// appear in the pane's sandboxed iframe, never in the page's own DOM.
 /// Everything else is either inert bytes (`Image`) or text that goes through
 /// the markdown renderer, which builds DOM nodes and never assembles markup.
+///
+/// A PDF used to be on that list and is not any more. It is now read on the
+/// server for the text in it, which is both what somebody opening the pane
+/// wanted and one fewer file type this server asks a browser to interpret.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Served {
     /// Served as text and rendered by the page.
@@ -47,7 +53,21 @@ pub enum Served {
     /// Served as its own type and shown only inside the sandboxed iframe.
     Sandboxed,
     /// Extracted to markdown on the server, then served and rendered as text.
-    Document(crate::documents::Kind),
+    Document(Extraction),
+}
+
+/// Which reader turns a document into the markdown that goes on the wire.
+///
+/// Both readers answer the same question, "what does this file say", and
+/// neither reproduces how it looked. They are separate because the formats
+/// have nothing in common: an office file is a zip of XML and a PDF is a
+/// stream of glyph placements.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Extraction {
+    /// One of the office formats. See `crate::documents`.
+    Office(crate::documents::Kind),
+    /// A PDF, read for the text in it. See `crate::pdf`.
+    Pdf,
 }
 
 /// How a given extension is handled, or `None` for a type this endpoint will
@@ -56,17 +76,24 @@ pub enum Served {
 /// refused is an inconvenience.
 pub fn served_as(path: &Path) -> Option<Served> {
     if let Some(kind) = crate::documents::Kind::for_path(path) {
-        return Some(Served::Document(kind));
+        return Some(Served::Document(Extraction::Office(kind)));
     }
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
         "md" | "markdown" | "txt" | "text" | "json" | "csv" => Some(Served::Text),
         "png" | "jpg" | "jpeg" | "gif" | "webp" => Some(Served::Image),
-        // These three execute, or can be made to. They are on the list
-        // because a run that draws a chart or writes a report page has
-        // nowhere else to put it, and they are safe only because the
-        // response headers below put them in a sandbox with no script.
-        "pdf" | "svg" | "html" => Some(Served::Sandboxed),
+        // Read on the server for the text in it, like an office file. It
+        // used to be sandboxed, on the theory that the browser's own viewer
+        // would render it in the iframe, and that theory was wrong: a bare
+        // `sandbox` CSP is an opaque origin with no scripting and no viewer
+        // starts under one, so the pane showed a broken-document icon. See
+        // `crate::pdf`.
+        "pdf" => Some(Served::Document(Extraction::Pdf)),
+        // These two execute. They are on the list because a run that draws a
+        // chart or writes a report page has nowhere else to put it, and they
+        // are safe only because the response headers below put them in a
+        // sandbox with no script.
+        "svg" | "html" => Some(Served::Sandboxed),
         _ => None,
     }
 }
@@ -88,7 +115,6 @@ pub fn content_type(path: &Path) -> Option<&'static str> {
                 "jpg" | "jpeg" => Some("image/jpeg"),
                 "gif" => Some("image/gif"),
                 "webp" => Some("image/webp"),
-                "pdf" => Some("application/pdf"),
                 "svg" => Some("image/svg+xml"),
                 "html" => Some("text/html; charset=utf-8"),
                 _ => None,
@@ -318,9 +344,45 @@ mod tests {
         // anything but Sandboxed.
         assert_eq!(served_as(Path::new("d.svg")), Some(Served::Sandboxed));
         assert_eq!(served_as(Path::new("r.html")), Some(Served::Sandboxed));
-        assert_eq!(served_as(Path::new("p.pdf")), Some(Served::Sandboxed));
         assert_eq!(served_as(Path::new("n.md")), Some(Served::Text));
         assert_eq!(served_as(Path::new("p.png")), Some(Served::Image));
+    }
+
+    /// A PDF is read for its text on the server, like the office formats, and
+    /// the browser never sees the file itself.
+    ///
+    /// It used to be `Sandboxed`, on the theory that the browser's own viewer
+    /// would render it inside the iframe. It does not: a bare `sandbox` CSP
+    /// gives the document an opaque origin with no scripting, and Chrome's
+    /// viewer cannot start under that, so the pane showed a broken-document
+    /// icon. Extracting the text is what "show me the file" actually needed,
+    /// and it takes the one remaining non-executable type off the list of
+    /// things this server hands a browser to interpret.
+    #[test]
+    fn a_pdf_is_extracted_to_markdown_rather_than_handed_to_the_browser() {
+        assert_eq!(
+            served_as(Path::new("paper.pdf")),
+            Some(Served::Document(Extraction::Pdf))
+        );
+        assert_eq!(
+            content_type(Path::new("paper.pdf")),
+            Some("text/markdown; charset=utf-8")
+        );
+        assert_ne!(served_as(Path::new("paper.PDF")), Some(Served::Sandboxed));
+    }
+
+    /// The two types that are still sandboxed are the two that execute, and
+    /// nothing else may join them by accident.
+    #[test]
+    fn only_the_formats_that_execute_are_sandboxed() {
+        let sandboxed: Vec<&str> = [
+            "a.md", "a.txt", "a.json", "a.csv", "a.png", "a.jpg", "a.gif", "a.webp", "a.pdf",
+            "a.docx", "a.odt", "a.xlsx", "a.pptx", "a.svg", "a.html",
+        ]
+        .into_iter()
+        .filter(|name| served_as(Path::new(name)) == Some(Served::Sandboxed))
+        .collect();
+        assert_eq!(sandboxed, ["a.svg", "a.html"]);
     }
 
     #[test]

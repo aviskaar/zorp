@@ -467,18 +467,46 @@ async fn read_artifact(
         Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
 
-    // An office file is a zip of XML that the browser cannot show. It is
-    // turned into markdown here rather than shipped as bytes, so the only
-    // thing that reaches the page is text the existing renderer handles.
-    // See `crate::documents` for the caps that make reading one safe.
+    // An office file is a zip of XML and a PDF is a list of glyph placements.
+    // Neither is something the browser will show, and neither is something
+    // this server wants to hand a browser to interpret, so both are read here
+    // and only their text goes out. See `crate::documents` for the caps that
+    // make reading an archive safe and `crate::pdf` for why a PDF is read at
+    // all rather than framed.
+    //
+    // Both readers run on a blocking thread. Reading is slow enough to matter
+    // on a long document, and both are parsers pointed at a file a model
+    // wrote or downloaded, so a panic in one has to end that request and
+    // nothing else. `spawn_blocking` gives both: a panicking task comes back
+    // as a join error rather than taking the server with it.
     let body = match served {
-        artifacts::Served::Document(kind) => match crate::documents::to_markdown(kind, &body) {
-            Ok(markdown) => markdown.into_bytes(),
-            // A file that is not really the format its name claims is an
-            // ordinary outcome when a model wrote it, so it gets a sentence
-            // rather than a 500 or a blank pane.
-            Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
-        },
+        artifacts::Served::Document(kind) => {
+            let read = tokio::task::spawn_blocking(move || match kind {
+                artifacts::Extraction::Office(kind) => {
+                    crate::documents::to_markdown(kind, &body).map_err(|e| e.to_string())
+                }
+                artifacts::Extraction::Pdf => {
+                    crate::pdf::to_markdown(&body).map_err(|e| e.to_string())
+                }
+            })
+            .await;
+            match read {
+                Ok(Ok(markdown)) => markdown.into_bytes(),
+                // A file that is not really the format its name claims is an
+                // ordinary outcome when a model wrote it, so it gets a sentence
+                // rather than a 500 or a blank pane.
+                Ok(Err(why)) => {
+                    return (StatusCode::UNPROCESSABLE_ENTITY, why).into_response();
+                }
+                Err(_) => {
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "reading this document crashed the reader, so there is nothing to show",
+                    )
+                        .into_response();
+                }
+            }
+        }
         _ => body,
     };
 

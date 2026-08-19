@@ -2,8 +2,8 @@
  * What the artifact pane shows, and how.
  *
  * This file exists to keep one decision in one place: whether a file goes on
- * the page or into the iframe. The pane now shows `.svg` and `.html`, which
- * are documents that execute. They are only safe because they load inside the
+ * the page or into the iframe. The pane shows `.svg` and `.html`, which are
+ * documents that execute. They are only safe because they load inside the
  * iframe, whose response the server sends with a bare
  * `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
  * That puts them in a unique origin with scripting off, so script inside them
@@ -41,14 +41,22 @@ export interface Pane {
 /**
  * Extensions that go into the sandbox.
  *
- * A PDF has been here since the pane existed. `.svg` and `.html` join it
- * because both are active documents: an SVG is XML that can carry a
- * `<script>`, and an HTML file needs no explanation.
+ * Both are active documents: an SVG is XML that can carry a `<script>`, and
+ * an HTML file needs no explanation.
+ *
+ * A PDF used to be here, on the assumption that pointing the iframe at one
+ * would get the browser's own viewer. It does not. The raw endpoint sends a
+ * bare `Content-Security-Policy: sandbox`, which puts the document in an
+ * opaque origin with scripting off, and no browser's PDF viewer starts under
+ * that, so the pane showed a broken-document icon on grey. The server reads
+ * the PDF instead and sends the text, which is what somebody opening the pane
+ * was after anyway.
  */
-const SANDBOXED = ["pdf", "svg", "html"];
+const SANDBOXED = ["svg", "html"];
 const IMAGES = ["png", "jpg", "jpeg", "gif", "webp"];
-/** The server extracts these to markdown before they leave it. */
-const EXTRACTED = ["docx", "odt", "xlsx", "pptx"];
+/** The server reads these and sends markdown, so the file itself never
+ * reaches the browser at all. */
+const EXTRACTED = ["docx", "odt", "xlsx", "pptx", "pdf"];
 const MARKDOWN = ["md", "markdown", ...EXTRACTED];
 
 /** The last extension, lowercased. `notes.md.svg` is an svg. */
