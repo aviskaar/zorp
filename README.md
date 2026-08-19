@@ -73,6 +73,12 @@ capabilities on top, each a clearly bounded layer, validate, investigate,
 co-write, and deliver, are built and tested; co-write drafts the
 artifact from the track's recorded evidence, with a human as author of
 record, and deliver matches the finished draft against real venues.
+Between those two sits `critique`, a gate rather than a capability: it
+audits the draft against the track's own evidence record, flags figures
+and claims the record cannot account for, revises within a bound you set,
+and writes what it found into the record. The auditing is done in code,
+not by asking a model whether it likes its own draft, and the pass cannot
+move the Kill Threshold.
 
 ## Architecture
 

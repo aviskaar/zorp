@@ -62,6 +62,16 @@ refuses on a killed track. Rejecting the checkpoint does not kill the
 track. See
 [`superpowers/specs/2026-08-09-zorp-co-write-design.md`](superpowers/specs/2026-08-09-zorp-co-write-design.md).
 
+**critique** is a gate on co-write's artifact, not a fifth capability. It
+has no scope of its own and produces no evidence: it audits `draft.md`
+against the track's own evidence record, flags claims that are uncited or
+that cite evidence the record does not contain plus figures the record
+cannot account for, and revises within a configured round bound. The
+audit is code; the model only inventories claims. It cannot move the Kill
+Threshold or anything else pre-registered, and it is refused on a killed
+track. See
+[`superpowers/specs/2026-08-18-zorp-self-critique-design.md`](superpowers/specs/2026-08-18-zorp-self-critique-design.md).
+
 **deliver** (get the finished artifact into the right form): scoped to
 academic venue-matching for v1, refuses on a killed track, requires
 `draft.md` (from co-write) and a huiban-prefixed MCP tool to be

@@ -152,6 +152,17 @@ enum Command {
     /// Draft an artifact from a track's recorded evidence.
     #[cfg(feature = "research")]
     CoWrite { question: String },
+    /// Audit a co-written draft against the track's evidence record and
+    /// revise what the record does not support.
+    #[cfg(feature = "research")]
+    Critique {
+        question: String,
+        /// Most revision rounds to run. The audit always runs once, so 0
+        /// reports what is wrong and leaves the draft alone. Falls back
+        /// to ZORP_CRITIQUE_ROUNDS, then to 2.
+        #[arg(long = "critique-rounds")]
+        critique_rounds: Option<usize>,
+    },
     /// Match a co-written draft against real venues.
     #[cfg(feature = "research")]
     Deliver { question: String },
@@ -200,6 +211,11 @@ fn main() {
         ),
         #[cfg(feature = "research")]
         Some(Command::CoWrite { question }) => co_write(&question, cli.yes, &overrides),
+        #[cfg(feature = "research")]
+        Some(Command::Critique {
+            question,
+            critique_rounds,
+        }) => critique(&question, critique_rounds, cli.yes, &overrides),
         #[cfg(feature = "research")]
         Some(Command::Deliver { question }) => deliver(&question, cli.yes, &overrides),
         None => {
@@ -1134,6 +1150,146 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
         ),
         Ok(false) => {
             println!("co-write: not yet approved, draft left at .zorp/tracks/{track_id}/draft.md")
+        }
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "research")]
+const CRITIQUE_SYSTEM_PREAMBLE: &str = "\
+You are auditing a draft against a fixed research run record. You cannot \
+add evidence to that record, and you cannot change the hypothesis, the \
+metric, or the kill threshold: they are pre-registered, and only a human \
+moves them. Work only from the record you are handed.";
+
+/// The critic gets no tools at all. It is a text task over a draft and a
+/// ledger, both of which arrive in the prompt, so a tool is not a
+/// capability it needs, only one it could misuse.
+#[cfg(feature = "research")]
+const CRITIQUE_TOOLS: &[String] = &[];
+
+/// How many revision rounds to allow: the flag, else
+/// `ZORP_CRITIQUE_ROUNDS`, else the built-in default. An unparseable env
+/// var falls through to the default rather than failing the run, matching
+/// how ZORP_MAX_STEPS is read.
+#[cfg(feature = "research")]
+fn resolve_critique_rounds(flag: Option<usize>, env: Option<String>) -> usize {
+    flag.or_else(|| env.and_then(|v| v.trim().parse().ok()))
+        .unwrap_or(zorp_agent::critique::DEFAULT_MAX_REVISIONS)
+}
+
+#[cfg(feature = "research")]
+fn critique(
+    question: &str,
+    critique_rounds: Option<usize>,
+    auto_approve: bool,
+    overrides: &Overrides,
+) {
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.clone().merge(project_flavor);
+    let mut system = CRITIQUE_SYSTEM_PREAMBLE.to_string();
+    system.push_str("\n\n");
+    system.push_str(&compose_system_with_persona(
+        &cwd,
+        persona(&cwd, &merged).as_deref(),
+    ));
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
+    let model = HttpModel {
+        url: join_url(&base_url, provider.path_suffix()),
+        api_key,
+        model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        steps,
+        cwd.clone(),
+        cancel,
+        approval,
+    )
+    .register_builtins_filtered(Some(CRITIQUE_TOOLS))
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+
+    let project = match zorp_track::Project::open(&cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            // Exit 1, not 2, for the same reason co-write does: a store
+            // that will not open is a runtime failure, not a usage error.
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    };
+    let track_id = zorp_track::id::track_id(question);
+    if let Err(e) = get_or_create_track(&project.store, &track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    }
+    let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+    let rounds =
+        resolve_critique_rounds(critique_rounds, std::env::var("ZORP_CRITIQUE_ROUNDS").ok());
+
+    match zorp_agent::critique::run(&mut agent, &project, &track_id, rounds, &checkpoint_mode) {
+        Ok(report) => {
+            if report.was_clean() {
+                println!(
+                    "critique: the draft is supported by the record as it stands; nothing changed. Notes at .zorp/tracks/{track_id}/critique.md"
+                );
+            } else {
+                println!(
+                    "critique: {} finding(s), {} left after {} revision round(s). {} Notes at .zorp/tracks/{track_id}/critique.md",
+                    report.initial(),
+                    report.remaining(),
+                    report.rounds.len() - 1,
+                    if report.draft_changed {
+                        format!("draft.md revised, original kept at .zorp/tracks/{track_id}/draft.pre-critique.md.")
+                    } else {
+                        "draft.md left unchanged.".to_string()
+                    }
+                );
+            }
+            if !report.approved {
+                println!("critique: not yet accepted; the draft and the notes are both on disk");
+            }
         }
         Err(e) => {
             eprintln!("zorp-agent: {e}");
@@ -3137,6 +3293,67 @@ mod main_tests {
             }
             _ => panic!("Expected image part"),
         }
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn the_critique_round_bound_comes_from_the_flag_then_the_env_then_the_default() {
+        assert_eq!(resolve_critique_rounds(Some(5), None), 5);
+        // The flag wins over the environment, the same precedence
+        // --max-steps has.
+        assert_eq!(resolve_critique_rounds(Some(5), Some("9".to_string())), 5);
+        assert_eq!(resolve_critique_rounds(None, Some("4".to_string())), 4);
+        assert_eq!(
+            resolve_critique_rounds(None, None),
+            zorp_agent::critique::DEFAULT_MAX_REVISIONS
+        );
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn a_zero_critique_round_bound_is_honoured_rather_than_read_as_unset() {
+        // Zero means "audit and record, do not revise", which is a real
+        // request. Treating it as absent would silently start revising.
+        assert_eq!(resolve_critique_rounds(Some(0), None), 0);
+        assert_eq!(resolve_critique_rounds(None, Some("0".to_string())), 0);
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn an_unparseable_critique_round_env_var_falls_back_to_the_default() {
+        assert_eq!(
+            resolve_critique_rounds(None, Some("lots".to_string())),
+            zorp_agent::critique::DEFAULT_MAX_REVISIONS
+        );
+    }
+
+    #[cfg(feature = "research")]
+    #[test]
+    fn the_critic_is_configured_with_no_tools_at_all() {
+        // The pass hands the model the draft and the ledger in the
+        // prompt. A tool is not something it needs, only something it
+        // could reach the record with.
+        assert!(CRITIQUE_TOOLS.is_empty());
+        let agent = Agent::new(
+            Box::new(zorp_agent::HttpModel {
+                url: "http://127.0.0.1:1/v1/chat/completions".into(),
+                api_key: None,
+                model: "m".into(),
+                provider: zorp_agent::Provider::OpenAiCompatible,
+                max_tokens: None,
+            }),
+            "system",
+            5,
+            std::env::temp_dir(),
+            zorp_agent::cancel_token(),
+            ApprovalMode::AutoApprove,
+        )
+        .register_builtins_filtered(Some(CRITIQUE_TOOLS));
+        assert!(
+            agent.tool_names().is_empty(),
+            "critique registered tools: {:?}",
+            agent.tool_names()
+        );
     }
 
     #[cfg(feature = "research")]

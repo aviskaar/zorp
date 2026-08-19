@@ -9,6 +9,8 @@ mod chat;
 pub mod co_write;
 mod context;
 #[cfg(feature = "research")]
+pub mod critique;
+#[cfg(feature = "research")]
 pub mod deliver;
 mod embed;
 mod flavor;
