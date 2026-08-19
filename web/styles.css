@@ -1649,33 +1649,6 @@ button {
   color: var(--text);
 }
 
-/* What a finished run says when the pane is closed. A count on the button,
-   and nothing else: opening a pane over the answer somebody is reading is an
-   interruption, not a feature. */
-.artifacts-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--bg);
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.artifacts-btn[data-produced="yes"] {
-  border-color: var(--accent-dim);
-  color: var(--text);
-}
-
-.artifacts-btn[data-produced="yes"] svg {
-  color: var(--accent-dim);
-}
-
 /* Narrow screens have no room for three columns, so the pane takes the
    whole width rather than squeezing the conversation into nothing. */
 @media (max-width: 1100px) {

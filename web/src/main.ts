@@ -111,7 +111,6 @@ interface Elements {
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
   artifactsBtn: HTMLButtonElement;
-  artifactsBadge: HTMLElement;
   artifacts: HTMLElement;
   artifactsClose: HTMLButtonElement;
   artifactsRefresh: HTMLButtonElement;
@@ -261,7 +260,6 @@ function collectElements(): Elements {
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     artifactsBtn: byId<HTMLButtonElement>("artifacts-btn"),
-    artifactsBadge: byId<HTMLElement>("artifacts-badge"),
     artifacts: byId<HTMLElement>("artifacts"),
     artifactsClose: byId<HTMLButtonElement>("artifacts-close"),
     artifactsRefresh: byId<HTMLButtonElement>("artifacts-refresh"),
@@ -1459,9 +1457,6 @@ function openArtifactsPane(): void {
   dom.artifacts.hidden = false;
   dom.artifactsBtn.setAttribute("aria-expanded", "true");
   dom.app.dataset.artifacts = "open";
-  // Opening the pane is the user acting on the badge, so the badge has done
-  // its job. The rows stay marked; only the count on the button clears.
-  clearArtifactBadge();
   const newest = newestProducedPath;
   void refreshArtifacts().then(() => {
     if (newest) {
@@ -1484,7 +1479,6 @@ function forgetProducedArtifacts(): void {
   producedThisTurn.clear();
   newestProducedPath = null;
   artifactsAtTurnStart = null;
-  clearArtifactBadge();
 }
 
 /**
@@ -1509,11 +1503,15 @@ async function snapshotArtifacts(): Promise<void> {
 /**
  * Look for files the run has produced and surface them.
  *
- * With the pane open, the newest one is shown: the user asked to watch the
- * workspace, so showing them what appeared in it is the answer. With the pane
- * closed, the button gets a count and nothing else happens. Opening a pane
- * over what somebody is reading mid-answer is not a feature, it is an
- * interruption, so the closed case stays a dot until they act on it.
+ * The newest one is shown either way, and a closed pane opens to show it.
+ *
+ * It used to stay shut and put a count on the Files button instead, on the
+ * reasoning that a pane appearing over a half-read answer is an interruption.
+ * In use that was wrong in the ordinary case: asking for a document and
+ * getting a small dot on a button reads as nothing having happened, and the
+ * document sits there unread behind a click nobody knows to make. Somebody who
+ * wants the pane out of the way can close it, and closing it is a smaller cost
+ * than never finding the file.
  */
 async function checkForProducedArtifacts(force = false): Promise<void> {
   const now = Date.now();
@@ -1542,26 +1540,13 @@ async function checkForProducedArtifacts(force = false): Promise<void> {
   newestProducedPath = fresh[0].path;
 
   if (dom.artifacts.hidden) {
-    showArtifactBadge(producedThisTurn.size);
+    // Opening it also refreshes the listing and shows the newest file, so
+    // there is nothing to do after this.
+    openArtifactsPane();
     return;
   }
   renderArtifactList(files, truncated);
   await showArtifact(newestProducedPath);
-}
-
-function showArtifactBadge(count: number): void {
-  dom.artifactsBadge.hidden = false;
-  dom.artifactsBadge.textContent = count > 9 ? "9+" : String(count);
-  dom.artifactsBtn.dataset.produced = "yes";
-  dom.artifactsBtn.title =
-    count === 1 ? "This run wrote a file" : `This run wrote ${count} files`;
-}
-
-function clearArtifactBadge(): void {
-  dom.artifactsBadge.hidden = true;
-  dom.artifactsBadge.textContent = "";
-  delete dom.artifactsBtn.dataset.produced;
-  dom.artifactsBtn.title = "Show files this workspace has produced";
 }
 
 async function refreshArtifacts(): Promise<void> {
