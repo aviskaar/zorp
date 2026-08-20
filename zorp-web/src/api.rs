@@ -65,10 +65,42 @@ fn api_router(state: AppState) -> Router {
     // origin, including `null` when index.html is opened straight off disk.
     // The POSTs send application/json, which is not a simple request, so
     // preflight has to be answered too.
+    //
+    // Which origins, though, has to be named rather than assumed. This was
+    // `allow_origin(Any)`, and on the ordinary loopback install there is no
+    // token either, so the two together meant any page the user happened to
+    // visit could `POST /turn` and drive an agent that runs commands on this
+    // machine, then read back what it produced. Nothing on the page would
+    // show it happening.
+    //
+    // An empty list is the default and allows no cross-origin call at all.
+    // That costs the normal install nothing: when this server serves the UI,
+    // the page and the API share an origin and the browser runs no CORS
+    // check. The container split names its origin with `--allow-origin`.
+    //
+    // The origins go in as one list rather than one call each. Passing a
+    // single value sets a fixed `Access-Control-Allow-Origin` that goes out
+    // whatever the request asked for, leaving the browser to notice the
+    // mismatch; passing the list makes the server compare and answer only for
+    // an origin actually on it. Repeated calls would also replace rather than
+    // accumulate, so all but the last name would be quietly dropped.
+    let allowed: Vec<axum::http::HeaderValue> = state
+        .allowed_origins
+        .iter()
+        .filter_map(|origin| match origin.parse::<axum::http::HeaderValue>() {
+            Ok(value) => Some(value),
+            // A malformed origin is dropped rather than widening the list.
+            // Failing open here would turn a typo into the hole above.
+            Err(_) => {
+                eprintln!("zorp-web: ignoring unparseable allowed origin {origin:?}");
+                None
+            }
+        })
+        .collect();
     let cors = CorsLayer::new()
-        .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        .allow_origin(allowed);
 
     Router::new()
         .route("/api/health", get(health))
