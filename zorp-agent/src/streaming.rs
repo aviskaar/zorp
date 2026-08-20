@@ -10,13 +10,31 @@
 //! See `docs/superpowers/specs/2026-08-18-streaming-responses-design.md`.
 
 use crate::model::{parse_assistant_completion, ModelCompletion};
+use crate::sandbox::CancelToken;
 use crate::BoxErr;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::sync::atomic::Ordering;
 
 /// How much of an error body to quote back. Matches the core's cap.
 const ERROR_BODY_CAP: u64 = 8 * 1024;
+
+/// What abandoning a half-arrived response reports.
+///
+/// An error rather than a third `StreamOutcome`, because there is nothing
+/// worth handing back. A response cut off partway is a message the model
+/// never finished saying: its text stops mid-sentence and its tool calls may
+/// be half-parsed JSON. Anything built from it would have to be repaired by
+/// guesswork, and a guessed tool call is worse than no answer.
+///
+/// Callers tell this apart from a real transport failure by reading the
+/// cancel token they own, not by matching on this string.
+pub const CANCELLED: &str = "cancelled while the model was still replying";
+
+fn cancelled(cancel: Option<&CancelToken>) -> bool {
+    cancel.is_some_and(|c| c.load(Ordering::SeqCst))
+}
 
 /// What the provider actually did when asked to stream.
 pub enum StreamOutcome {
@@ -36,10 +54,21 @@ pub enum StreamOutcome {
 /// Separate from `zorp::zorp_raw` rather than folded into it: that function
 /// reads the whole response into a `Value`, which is the one thing streaming
 /// cannot do.
+///
+/// `cancel` is checked between reads, so a caller that raises it stops
+/// waiting on the model within one chunk instead of at the end of the
+/// response. `None` reads to the end exactly as this always did. What this
+/// cannot interrupt is a socket that has gone quiet: the check sits between
+/// blocking reads, not inside one, so a provider that has accepted the
+/// request and sent nothing at all is still waited on. In practice a model
+/// that is producing an answer is sending something several times a second,
+/// including while it is reasoning, so that is the case this covers and the
+/// case that matters.
 pub fn stream_sse(
     url: &str,
     headers: &[(&str, &str)],
     body: Value,
+    cancel: Option<&CancelToken>,
     on_payload: &mut dyn FnMut(&str),
 ) -> Result<StreamOutcome, BoxErr> {
     let mut req = ureq::agent().post(url).set("Accept", "text/event-stream");
@@ -73,8 +102,25 @@ pub fn stream_sse(
 
     if !streaming {
         // Asked to stream, answered with a document. Hand it back whole.
+        //
+        // Read in pieces rather than `read_to_end`, for the one reason that
+        // `read_to_end` cannot be interrupted. An endpoint that ignores
+        // `stream` still takes as long to think as one that does not, so a
+        // stop pressed against this shape of reply has to work too, or the
+        // button means different things depending on which proxy is in the
+        // way.
         let mut raw = Vec::new();
-        reader.read_to_end(&mut raw)?;
+        let mut chunk = [0u8; 8192];
+        loop {
+            if cancelled(cancel) {
+                return Err(CANCELLED.into());
+            }
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+        }
         if let Ok(value) = serde_json::from_slice::<Value>(&raw) {
             return Ok(StreamOutcome::Buffered(value));
         }
@@ -104,6 +150,12 @@ pub fn stream_sse(
     let mut decoder = SseDecoder::new();
     let mut buf = [0u8; 4096];
     loop {
+        // Between reads, which is the only place a synchronous reader offers.
+        // One chunk of latency, against a response that otherwise has to
+        // finish before anything can stop it.
+        if cancelled(cancel) {
+            return Err(CANCELLED.into());
+        }
         let read = reader.read(&mut buf)?;
         if read == 0 {
             break;
@@ -389,6 +441,9 @@ impl DeltaAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     fn decode(chunks: &[&str]) -> Vec<String> {
         let mut d = SseDecoder::new();
@@ -604,5 +659,169 @@ mod tests {
         .unwrap();
 
         assert_eq!(streamed.message, buffered.message);
+    }
+
+    /* ---- cancelling a response that is still arriving ---- */
+
+    /// A server that answers slowly and for a long time, which is what a local
+    /// model writing a long answer is. `content_type` picks which branch of
+    /// `stream_sse` gets exercised: an event stream, or a document from an
+    /// endpoint that ignored `stream`.
+    ///
+    /// Every piece is flushed on its own so the reader really does wake up
+    /// many times over the life of the response. A stub that wrote the whole
+    /// body at once would let a cancel that never fires still look prompt.
+    fn drip_server(content_type: &str, pieces: Vec<String>, gap: Duration) -> std::net::SocketAddr {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let content_type = content_type.to_string();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            // The whole request, headers and body, before answering. Not
+            // because the body is interesting here, but because closing a
+            // socket that still has unread bytes on it sends RST rather than
+            // FIN, and the client then reports a connection reset instead of
+            // the clean end of a response.
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let content_length = String::from_utf8_lossy(&request[..header_end])
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.flush();
+            for piece in pieces {
+                // A client that hung up is the expected end of this stub, not
+                // a failure: that is exactly what cancelling looks like from
+                // the server's side.
+                if write!(stream, "{piece}").is_err() || stream.flush().is_err() {
+                    return;
+                }
+                std::thread::sleep(gap);
+            }
+        });
+        address
+    }
+
+    /// The bug this exists for.
+    ///
+    /// The agent checks its cancel token between steps and around tool calls,
+    /// so a stop pressed while a model was mid-response did nothing until the
+    /// response finished. Against a local model writing a long answer that is
+    /// minutes, during which the button says stop and the run carries on.
+    ///
+    /// The cancel is raised from inside the callback so the test does not race
+    /// a timer: the third payload trips it, and everything after that is the
+    /// read loop's business.
+    #[test]
+    fn a_cancel_raised_mid_stream_stops_reading_instead_of_finishing_the_response() {
+        let pieces: Vec<String> = (0..300)
+            .map(|i| format!("data: {}\n\n", json!({"choices":[{"delta":{"content":i}}]})))
+            .collect();
+        let address = drip_server("text/event-stream", pieces, Duration::from_millis(20));
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut seen = 0usize;
+        let started = std::time::Instant::now();
+        let outcome = stream_sse(
+            &format!("http://{address}/v1/chat/completions"),
+            &[],
+            json!({"stream": true}),
+            Some(&cancel),
+            &mut |_payload| {
+                seen += 1;
+                if seen == 3 {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            },
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            outcome.is_err(),
+            "a cancelled response came back as a finished one, so the agent \
+             will treat a stopped turn as an answer"
+        );
+        // The server needs six seconds to say everything it has. Anything in
+        // that region means the read loop sat there until the model was done.
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "the stream took {elapsed:?} to notice the cancel"
+        );
+        assert!(
+            seen < 100,
+            "the read loop kept consuming the response after the cancel: {seen} payloads"
+        );
+    }
+
+    /// The same promise for the endpoint that ignores `stream` and answers
+    /// with one document. It is a different branch with its own read, and a
+    /// stop that works on one shape of reply and not the other is a stop
+    /// nobody can rely on.
+    #[test]
+    fn a_cancel_also_abandons_a_document_from_an_endpoint_that_ignored_stream() {
+        // Long enough that reading it takes many reads, slow enough that the
+        // cancel lands in the middle of it.
+        let pieces: Vec<String> = (0..300).map(|i| format!("{{\"filler{i}\":1}},")).collect();
+        let address = drip_server("application/json", pieces, Duration::from_millis(20));
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        cancel.store(true, Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let outcome = stream_sse(
+            &format!("http://{address}/v1/chat/completions"),
+            &[],
+            json!({"stream": true}),
+            Some(&cancel),
+            &mut |_payload| {},
+        );
+
+        assert!(outcome.is_err(), "a cancelled document read to the end");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the document branch ignored the cancel"
+        );
+    }
+
+    /// Nothing to cancel with is the ordinary case for every caller that is
+    /// not an agent, and it must behave exactly as it did before.
+    #[test]
+    fn without_a_token_a_stream_still_reads_to_the_end() {
+        let pieces: Vec<String> = ["he", "llo"]
+            .iter()
+            .map(|t| format!("data: {}\n\n", json!({"choices":[{"delta":{"content":t}}]})))
+            .collect();
+        let address = drip_server("text/event-stream", pieces, Duration::from_millis(1));
+
+        let mut seen = 0usize;
+        let outcome = stream_sse(
+            &format!("http://{address}/v1/chat/completions"),
+            &[],
+            json!({"stream": true}),
+            None,
+            &mut |_payload| seen += 1,
+        );
+        assert!(outcome.is_ok(), "{:?}", outcome.err());
+        assert_eq!(seen, 2);
     }
 }

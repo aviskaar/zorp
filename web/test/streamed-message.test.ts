@@ -182,6 +182,13 @@ test("visible activity and turn endings all close the message", () => {
   }
 });
 
+// A stop lands in the middle of an answer more often than not, so whatever
+// was streamed has to be closed off and kept before the stopped card goes in
+// underneath it.
+test("a stop ends the message, so the fragments so far stay above the notice", () => {
+  assert.equal(endsStreamedMessage("stopped"), true);
+});
+
 // End to end over a real single-step turn: the answer must appear once.
 test("a single-step turn renders the answer exactly once", () => {
   const { transcript, streamed } = fixture();

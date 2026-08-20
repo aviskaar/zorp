@@ -203,6 +203,17 @@ export interface ErrorEvent {
 }
 
 /**
+ * A human pressed stop and the run ended because of it.
+ *
+ * Not an `ErrorEvent`, because the reader is the one who caused it. `done`
+ * still follows, the same as every other way a turn can end.
+ */
+export interface StoppedEvent {
+  seq: number;
+  type: "stopped";
+}
+
+/**
  * The turn finished. The session stays open for the next message, and so does
  * the stream. Closing the `EventSource` here would look tidy and would stop
  * the next turn from streaming at all.
@@ -223,6 +234,7 @@ export type ZorpEvent =
   | ApprovalRequestEvent
   | ContextEvent
   | ErrorEvent
+  | StoppedEvent
   | DoneEvent;
 
 export type ZorpEventType = ZorpEvent["type"];
@@ -366,6 +378,37 @@ export async function sendTurn(id: string, message: string): Promise<void> {
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       throw new TurnBusyError("a turn is already running on this session");
+    }
+    throw error;
+  }
+}
+
+/**
+ * Nothing was running, so nothing was stopped.
+ *
+ * Worth its own type. The browser only offers a stop control while it thinks a
+ * turn is live, so being told otherwise means its idea of the session is out of
+ * date, and the fix is to go back to idle rather than to show an error about a
+ * turn that already ended.
+ */
+export class NothingRunningError extends ApiError {
+  constructor(message: string) {
+    super(409, message);
+    this.name = "NothingRunningError";
+  }
+}
+
+/**
+ * Ask the server to stop the running turn. It answers 202 and the run ends a
+ * moment later, on the event stream, with `stopped` and then `done`. This
+ * resolving is not the end of the turn and must not be treated as one.
+ */
+export async function stopTurn(id: string): Promise<void> {
+  try {
+    await request<void>("POST", `/api/sessions/${segment(id)}/stop`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      throw new NothingRunningError("no turn is running on this session");
     }
     throw error;
   }
@@ -568,6 +611,7 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   approval_request: true,
   context: true,
   error: true,
+  stopped: true,
   done: true,
 };
 

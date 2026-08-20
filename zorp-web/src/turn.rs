@@ -59,12 +59,19 @@ fn record(backlog: &mut Vec<Event>, event: Event) {
 
 /// The events that close a turn.
 ///
-/// Every path ends with `Done`, the failures included. The browser
-/// re-enables its composer on `Done` and on nothing else, so a turn that
-/// closed with only an `Error` left the send button disabled until the page
-/// was reloaded. An error ends a turn exactly as much as an answer does, and
-/// the one thing a user needs after a failure is the ability to try again.
-fn closing_events(outcome: Result<Outcome, String>) -> Vec<EventKind> {
+/// Every path ends with `Done`, the failures included, and a stop is a
+/// failure for this purpose even though it is not one for the reader. The
+/// browser re-enables its composer on `Done` and on nothing else, so a turn
+/// that closed with only an `Error` left the send button disabled until the
+/// page was reloaded. An error ends a turn exactly as much as an answer does,
+/// and the one thing a user needs after a failure is the ability to try again.
+///
+/// `stopped` says a human pressed stop, which is not something the outcome
+/// can tell us on its own: the agent reports `Outcome::Cancelled` for any
+/// raised cancel flag, and a run that was stopped a moment after it finished
+/// still comes back `Complete`. The flag decides whether the transcript reads
+/// "you stopped this" or "this fell over".
+fn closing_events(outcome: Result<Outcome, String>, stopped: bool) -> Vec<EventKind> {
     let mut kinds = Vec::new();
     match outcome {
         Ok(Outcome::Complete(text)) => {
@@ -73,10 +80,18 @@ fn closing_events(outcome: Result<Outcome, String>) -> Vec<EventKind> {
                 kinds.push(EventKind::Assistant { text });
             }
         }
+        // A stop is the explanation for a cancelled or half-finished run, so
+        // there is nothing left for an error card to add. A real failure is
+        // still reported below even when a stop landed on top of it: the stop
+        // says why nothing was retried, not why the run broke.
+        Ok(_) if stopped => {}
         Ok(other) => kinds.push(EventKind::Error {
             message: other.describe(),
         }),
         Err(message) => kinds.push(EventKind::Error { message }),
+    }
+    if stopped {
+        kinds.push(EventKind::Stopped);
     }
     kinds.push(EventKind::Done);
     kinds
@@ -95,12 +110,19 @@ pub fn spawn_turn(
     settings: SettingsHandle,
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
+    // One token per turn, held by the session so the stop endpoint can reach
+    // it and passed to the agent so raising it reaches the run. It used to be
+    // built inside `run_agent`, which meant nothing outside that function
+    // ever had a handle on it: the agent was cancellable and nothing could
+    // cancel it.
+    let cancel = cancel_token();
     // The counter lives on the session so numbering continues across turns.
     // So does the standing approval answer: a user who stood approvals down
     // did it for this conversation, not for one message of it.
     let (seq, auto_approve) = {
         let mut guard = session.lock().unwrap();
         guard.running = true;
+        guard.cancel = Some(Arc::clone(&cancel));
         (Arc::clone(&guard.seq), Arc::clone(&guard.auto_approve))
     };
     let approver = Arc::new(WebApprover::new(tx.clone(), Arc::clone(&seq), auto_approve));
@@ -126,13 +148,17 @@ pub fn spawn_turn(
             &message,
             Box::new(renderer),
             approver,
+            Arc::clone(&cancel),
             &settings,
         );
 
+        // Read after the run, not before, so a stop that lands during the
+        // final moments of a turn is still reported as a stop.
+        let stopped = cancel.load(std::sync::atomic::Ordering::SeqCst);
         // The final answer arrives in Outcome::Complete rather than through
         // the renderer. The CLI prints it in finish(); the browser has to be
         // sent it explicitly or the turn ends with activity and no reply.
-        let kinds = closing_events(outcome);
+        let kinds = closing_events(outcome, stopped);
         let mut next = seq.lock().unwrap();
         for kind in kinds {
             let _ = tx.send(Event { seq: *next, kind });
@@ -148,6 +174,7 @@ fn run_agent(
     message: &str,
     mut renderer: Box<dyn zorp_agent::Renderer>,
     approver: Arc<WebApprover>,
+    cancel: zorp_agent::CancelToken,
     settings: &SettingsHandle,
 ) -> Result<Outcome, String> {
     let resolved = settings.lock().unwrap().effective_model();
@@ -212,12 +239,16 @@ fn run_agent(
         });
     }
 
+    // The same token the session holds. The agent checks it between steps and
+    // around every tool call, and hands it to the tool context, whose sandbox
+    // kills the process group of a command that is already running. That is
+    // what makes stop mean stopped rather than looked away.
     let mut agent = Agent::new(
         Box::new(model),
         system_prompt(),
         steps,
         cwd,
-        cancel_token(),
+        cancel,
         ApprovalMode::Interactive(approver),
     )
     .with_context_budget(budget)
@@ -542,7 +573,7 @@ mod tests {
     /// which is to say: found by a user, not by this suite.
     #[test]
     fn a_failed_turn_still_ends_the_turn() {
-        let kinds = closing_events(Err("the model went away".to_string()));
+        let kinds = closing_events(Err("the model went away".to_string()), false);
         assert!(
             matches!(kinds.last(), Some(EventKind::Done)),
             "a failed turn never told the browser it was over: {kinds:?}"
@@ -556,19 +587,78 @@ mod tests {
     }
 
     /// Same for an outcome that is not an error but is not an answer either,
-    /// such as a cancel or a step limit.
+    /// such as a step limit.
     #[test]
     fn an_outcome_that_is_not_an_answer_still_ends_the_turn() {
-        let kinds = closing_events(Ok(Outcome::Cancelled));
+        let kinds = closing_events(Ok(Outcome::StepLimit), false);
         assert!(
             matches!(kinds.last(), Some(EventKind::Done)),
-            "a cancelled turn never ended: {kinds:?}"
+            "a turn that hit the step limit never ended: {kinds:?}"
+        );
+    }
+
+    /// A stopped turn is still a turn that ended.
+    ///
+    /// The same property as `a_failed_turn_still_ends_the_turn`, for the
+    /// button a user presses on purpose. The browser leaves "running" on
+    /// `Done` and on nothing else.
+    #[test]
+    fn a_stopped_turn_still_ends_the_turn() {
+        let kinds = closing_events(Ok(Outcome::Cancelled), true);
+        assert!(
+            matches!(kinds.last(), Some(EventKind::Done)),
+            "a stopped turn never ended: {kinds:?}"
+        );
+    }
+
+    /// Pressing stop is not a failure. The transcript has to say which of the
+    /// two happened, because "cancelled" in an error card reads like the run
+    /// fell over on its own.
+    #[test]
+    fn a_stopped_turn_says_it_was_stopped_rather_than_that_it_failed() {
+        let kinds = closing_events(Ok(Outcome::Cancelled), true);
+        assert!(
+            kinds.iter().any(|k| matches!(k, EventKind::Stopped)),
+            "nothing in the transcript says the turn was stopped: {kinds:?}"
+        );
+        assert!(
+            !kinds.iter().any(|k| matches!(k, EventKind::Error { .. })),
+            "a deliberate stop was reported as a failure: {kinds:?}"
+        );
+    }
+
+    /// A run that broke and was then stopped still has to report the breakage.
+    /// The stop explains why nothing was retried; it does not explain the
+    /// error.
+    #[test]
+    fn a_stop_does_not_swallow_a_real_failure() {
+        let kinds = closing_events(Err("the model went away".to_string()), true);
+        assert!(
+            kinds.iter().any(|k| matches!(k, EventKind::Error { .. })),
+            "the failure was swallowed by the stop: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|k| matches!(k, EventKind::Stopped)),
+            "{kinds:?}"
+        );
+        assert!(matches!(kinds.last(), Some(EventKind::Done)), "{kinds:?}");
+    }
+
+    /// A turn nobody stopped must not claim it was stopped. This is the
+    /// property that keeps the flag honest when a run ends on its own a
+    /// moment before the button is pressed.
+    #[test]
+    fn a_turn_that_finished_on_its_own_is_not_reported_as_stopped() {
+        let kinds = closing_events(Ok(Outcome::Complete("the answer".into())), false);
+        assert!(
+            !kinds.iter().any(|k| matches!(k, EventKind::Stopped)),
+            "{kinds:?}"
         );
     }
 
     #[test]
     fn a_successful_turn_sends_its_answer_and_then_ends() {
-        let kinds = closing_events(Ok(Outcome::Complete("the answer".into())));
+        let kinds = closing_events(Ok(Outcome::Complete("the answer".into())), false);
         assert!(
             matches!(&kinds[0], EventKind::Assistant { text } if text == "the answer"),
             "{kinds:?}"
@@ -579,7 +669,7 @@ mod tests {
     /// An empty answer is not worth a bubble, but the turn still ended.
     #[test]
     fn an_empty_answer_ends_the_turn_without_an_empty_message() {
-        let kinds = closing_events(Ok(Outcome::Complete("   ".into())));
+        let kinds = closing_events(Ok(Outcome::Complete("   ".into())), false);
         assert!(
             !kinds
                 .iter()

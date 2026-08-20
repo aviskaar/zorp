@@ -1,8 +1,9 @@
 use crate::approval::WebApprover;
 use crate::event::Event;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use zorp_agent::CancelToken;
 
 /// Everything one conversation needs while it is alive.
 ///
@@ -19,6 +20,10 @@ pub struct SessionState {
     pub backlog: Vec<Event>,
     pub running: bool,
     pub approver: Option<Arc<WebApprover>>,
+    /// The running turn's cancel flag, the same one the agent loop and its
+    /// sandbox read. Replaced per turn by `spawn_turn`, so a stop can only
+    /// ever reach the run it was pressed on.
+    pub cancel: Option<CancelToken>,
     /// Sequence counter for the whole session, not one turn.
     ///
     /// Last-Event-ID resume is keyed on this, so restarting it per turn makes
@@ -45,9 +50,37 @@ impl SessionState {
             backlog: Vec::new(),
             running: false,
             approver: None,
+            cancel: None,
             seq: Arc::new(Mutex::new(0)),
             auto_approve: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Ask the running turn to stop. Returns false when nothing is running,
+    /// which is what a stale click from a reloaded page looks like.
+    ///
+    /// Two things happen here and the order between them is the whole point.
+    /// The flag goes up first, then any pending approval is resolved as a
+    /// denial. The agent's approval gate parks its own thread on a channel,
+    /// so flipping the flag alone stops nothing until that gate returns, and
+    /// it does not return for five minutes. Waking it first and flagging
+    /// second is worse: the agent would take the denial, carry on to the next
+    /// step, and only then notice.
+    ///
+    /// What this does not do is set `running` to false. The turn's own thread
+    /// does that after it has emitted its closing events, and moving it here
+    /// would let a second turn start while the first is still winding down.
+    pub fn stop(&mut self) -> bool {
+        if !self.running {
+            return false;
+        }
+        if let Some(cancel) = &self.cancel {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        if let Some(approver) = &self.approver {
+            approver.resolve(false);
+        }
+        true
     }
 }
 

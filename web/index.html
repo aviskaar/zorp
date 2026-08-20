@@ -197,8 +197,18 @@
               autocomplete="off"
               placeholder="Ask zorp to do something in this workspace…"
             ></textarea>
-            <button class="send" id="send" type="submit" aria-label="Send message">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M12 5l7 7-7 7" /></svg>
+            <!--
+              One control, two jobs. It sends while the composer is idle and
+              stops the run while one is going. Both icons are here and the
+              stylesheet shows one; the label is set from script, because a
+              stop square announcing itself as "Send message" is the same bug
+              as the wrong icon for anyone who cannot see either.
+            -->
+            <button class="send" id="send" type="submit" aria-label="Send message" title="Send message">
+              <svg class="send-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M12 5l7 7-7 7" /></svg>
+              <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="1.5" />
+              </svg>
             </button>
           </div>
           <p class="composer-hint">

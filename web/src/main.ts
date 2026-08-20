@@ -12,6 +12,7 @@ import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { copyButton } from "./copy-response";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
+import { setSendControl } from "./send-control";
 import {
   needsText,
   producedSince,
@@ -21,6 +22,7 @@ import {
 } from "./artifact-view";
 import {
   ApiError,
+  NothingRunningError,
   TurnBusyError,
   approve,
   getAutoApprove,
@@ -32,6 +34,7 @@ import {
   newSession,
   putSettings,
   sendTurn,
+  stopTurn,
   streamEvents,
   testConnection,
   artifactUrl,
@@ -129,7 +132,7 @@ interface Elements {
   artifactImage: HTMLImageElement;
 }
 
-type ApprovalOutcome = "allowed" | "denied" | "expired";
+type ApprovalOutcome = "allowed" | "denied" | "expired" | "stopped";
 
 interface PendingApproval {
   settle(outcome: ApprovalOutcome): void;
@@ -142,6 +145,14 @@ let stream: EventStream | null = null;
 let streamSessionId: string | null = null;
 let catchUp: ZorpEvent[] | null = null;
 let turnRunning = false;
+/**
+ * Whether the turn that is ending was stopped by hand.
+ *
+ * Set by the `stopped` event and read by `finishTurn`, which is the only
+ * place that knows a pending approval card is about to be settled and needs to
+ * say why. Cleared when the next turn starts.
+ */
+let turnStopped = false;
 let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
@@ -300,6 +311,19 @@ function wireComposer(): void {
   dom.composer.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitMessage();
+  });
+
+  // The stop lives on the button's own click, not on the form's submit, and
+  // the difference matters. Enter in the textarea submits the form, and Enter
+  // is a key people lean on: routing the stop through submit would mean a
+  // stray Enter during a run killed it. Preventing the default on a submit
+  // button's click is what stops the form from submitting underneath this.
+  dom.send.addEventListener("click", (event) => {
+    if (!turnRunning) {
+      return;
+    }
+    event.preventDefault();
+    void stopRunningTurn();
   });
 
   dom.input.addEventListener("keydown", (event) => {
@@ -488,6 +512,39 @@ async function submitMessage(): Promise<void> {
 }
 
 /**
+ * Ask the server to end the running turn.
+ *
+ * This does not end the turn here. The server stops the agent and the agent
+ * closes the turn on the stream, the same as every other ending, and the UI
+ * goes back to idle when `done` arrives. Ending it locally would put the
+ * composer back and leave the agent running, which is worse than no button:
+ * the next thing written to the workspace would come from a turn the page says
+ * is over.
+ *
+ * The exception is a server that says nothing was running. Then this page's
+ * idea of the session is the stale one, and the honest fix is to go idle.
+ */
+async function stopRunningTurn(): Promise<void> {
+  if (!sessionId || !turnRunning) {
+    return;
+  }
+  setSendControl(dom.send, "stopping");
+  try {
+    await stopTurn(sessionId);
+  } catch (error) {
+    if (error instanceof NothingRunningError) {
+      finishTurn();
+      return;
+    }
+    // The run is still going and the button has to stay a stop button, or
+    // there is no second chance at it.
+    setSendControl(dom.send, "stop");
+    appendError(`Could not stop the turn: ${describeError(error)}`);
+    scrollToBottomIfFollowing(true);
+  }
+}
+
+/**
  * Open the event stream for a session, reusing the one already open for it.
  *
  * There is one stream per session and it lives as long as the session is on
@@ -649,6 +706,14 @@ function applyEvent(event: ZorpEvent): void {
       void checkForProducedArtifacts(true);
       break;
 
+    case "stopped":
+      turnStopped = true;
+      appendStopped();
+      // A stopped run wrote whatever it wrote before it was stopped, and
+      // those files are exactly the ones worth looking at.
+      void checkForProducedArtifacts(true);
+      break;
+
     case "done":
       finishTurn();
       break;
@@ -661,7 +726,10 @@ function finishTurn(): void {
   setTurnRunning(false);
   workingDepth = 0;
   updateWorking();
-  expirePendingApprovals();
+  // Settled with the reason, so a card left open by a stop does not claim it
+  // timed out. The server denied it either way; what differs is who decided.
+  expirePendingApprovals(turnStopped ? "stopped" : "expired");
+  turnStopped = false;
   void refreshSessions();
   // Forced past the poll interval: this is the last chance to notice what the
   // run wrote, and a file written in the final second is the interesting one.
@@ -670,9 +738,13 @@ function finishTurn(): void {
 
 function setTurnRunning(running: boolean): void {
   turnRunning = running;
-  dom.send.disabled = running;
+  // One control: an arrow that sends while idle, a square that stops while a
+  // turn runs. It used to be disabled for the length of the run, which is why
+  // there was no way to stop anything.
+  setSendControl(dom.send, running ? "stop" : "send");
   dom.composer.classList.toggle("is-busy", running);
   if (running) {
+    turnStopped = false;
     dom.workingVerb.textContent = pick(WORKING_VERBS);
     startSpinner();
     setStatus("live", "running");
@@ -841,9 +913,54 @@ function appendError(message: string): void {
 }
 
 /**
+ * The turn was stopped by hand.
+ *
+ * A card rather than an activity line, and deliberately not an error card. The
+ * run ended without an answer, and the reader needs to know that it ended
+ * because they said so and not because something broke. Whatever the model had
+ * streamed by then is above this and stays.
+ */
+function appendStopped(): void {
+  activityGroup = null;
+  const card = el("div", "card card-stopped");
+  const head = el("div", "card-head");
+  head.append(glyph("stop"), textNode("span", "card-title", "Stopped"));
+  const body = el("p", "card-body");
+  body.textContent =
+    "You stopped this turn. The agent is not running any more, and anything it had already written is still there.";
+  card.append(head, body);
+  dom.transcript.append(card);
+}
+
+/**
  * The security boundary of the product. The agent is parked until one of these
  * buttons is pressed, and nothing here presses one automatically.
  */
+/**
+ * How a settled approval card describes itself.
+ *
+ * Records rather than nested conditionals, so a new outcome is a compile
+ * error here instead of quietly falling into whichever branch was last. The
+ * distinction they carry is who decided: "expired" means nobody did and the
+ * server denied it after five minutes, "stopped" means the reader ended the
+ * turn while it was on screen. Both deny the tool. Calling the second one
+ * expired would be a small lie told at exactly the moment the reader is
+ * checking what their button press did.
+ */
+const APPROVAL_TITLES: Record<ApprovalOutcome, string> = {
+  allowed: "Tool allowed",
+  denied: "Tool denied",
+  expired: "Approval expired",
+  stopped: "Turn stopped",
+};
+
+const APPROVAL_NOTES: Record<ApprovalOutcome, string> = {
+  allowed: "You allowed this, so the agent carried on.",
+  denied: "You denied this. The tool did not run.",
+  expired: "The turn ended before this was answered, so the server denied it.",
+  stopped: "You stopped the turn while this was waiting, so the tool did not run.",
+};
+
 function appendApproval(id: string, tool: string, args: string): void {
   activityGroup = null;
 
@@ -903,14 +1020,8 @@ function appendApproval(id: string, tool: string, args: string): void {
     lead.remove();
     card.classList.add(`is-${outcome}`);
     tag.textContent = outcome;
-    title.textContent =
-      outcome === "allowed" ? "Tool allowed" : outcome === "denied" ? "Tool denied" : "Approval expired";
-    note.textContent =
-      outcome === "allowed"
-        ? "You allowed this, so the agent carried on."
-        : outcome === "denied"
-          ? "You denied this. The tool did not run."
-          : "The turn ended before this was answered, so the server denied it.";
+    title.textContent = APPROVAL_TITLES[outcome];
+    note.textContent = APPROVAL_NOTES[outcome];
     pendingApprovals.delete(id);
   };
 
@@ -954,9 +1065,10 @@ function appendApproval(id: string, tool: string, args: string): void {
   pendingApprovals.set(id, { settle });
 }
 
-function expirePendingApprovals(): void {
+/** Settle every card still on screen when a turn ends. */
+function expirePendingApprovals(outcome: "expired" | "stopped" = "expired"): void {
   for (const pending of Array.from(pendingApprovals.values())) {
-    pending.settle("expired");
+    pending.settle(outcome);
   }
   pendingApprovals.clear();
 }
@@ -1576,7 +1688,7 @@ function bullet(): HTMLElement {
 }
 
 /** Two inline icons, drawn rather than pulled from an icon font. */
-function glyph(kind: "shield" | "alert"): SVGSVGElement {
+function glyph(kind: "shield" | "alert" | "stop"): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "glyph");
   svg.setAttribute("viewBox", "0 0 24 24");
@@ -1587,17 +1699,26 @@ function glyph(kind: "shield" | "alert"): SVGSVGElement {
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
 
+  // An outline and a mark inside it, for each of the three. The stop glyph is
+  // the composer button's square inside a ring, so the card and the control
+  // that produced it read as the same idea.
+  const outline: Record<typeof kind, string> = {
+    shield: "M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z",
+    alert: "M12 4.5l8.5 15h-17l8.5-15z",
+    stop: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17z",
+  };
+  const inner: Record<typeof kind, string> = {
+    shield: "M12 8.5v4m0 3h.01",
+    alert: "M12 10v3.5m0 3h.01",
+    stop: "M9.75 9.75h4.5v4.5h-4.5z",
+  };
+
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute(
-    "d",
-    kind === "shield"
-      ? "M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z"
-      : "M12 4.5l8.5 15h-17l8.5-15z",
-  );
+  path.setAttribute("d", outline[kind]);
   svg.append(path);
 
   const mark = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  mark.setAttribute("d", kind === "shield" ? "M12 8.5v4m0 3h.01" : "M12 10v3.5m0 3h.01");
+  mark.setAttribute("d", inner[kind]);
   svg.append(mark);
 
   return svg;

@@ -75,6 +75,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id", get(get_session))
         .route("/api/sessions/:id/turn", post(start_turn))
+        .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
         .route(
@@ -201,6 +202,30 @@ async fn start_turn(
     }
     turn::spawn_turn(session, id, body.message, state.settings.clone());
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Stop the turn that is running on this session.
+///
+/// 202 rather than 200: the stop is a request, not a completed act. The run
+/// ends on its own thread a moment later, and the browser learns that it did
+/// from the `stopped` and `done` events on the stream, the same place it
+/// learns about every other way a turn can end. Answering 200 here would
+/// invite a caller to treat the response as the end of the turn, and it is
+/// not: an in-flight tool call still has to unwind first.
+///
+/// The 409 for a session with nothing running is not pedantry. The browser
+/// only shows a stop control while it believes a turn is live, so a 409 means
+/// its belief is stale, and it can use the answer to put itself back to idle
+/// instead of waiting for a `done` that already came and went.
+async fn stop_turn(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let Some(session) = state.get(&id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    if session.lock().unwrap().stop() {
+        StatusCode::ACCEPTED.into_response()
+    } else {
+        (StatusCode::CONFLICT, "no turn is running").into_response()
+    }
 }
 
 #[derive(Deserialize)]
