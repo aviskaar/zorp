@@ -34,6 +34,33 @@ async fn get_json(url: String) -> serde_json::Value {
     serde_json::from_str(&body).unwrap()
 }
 
+/// Status only. These calls are about whether the server will take the
+/// request at all, not about what comes back.
+async fn post_status(url: String, body: &'static str) -> u16 {
+    tokio::task::spawn_blocking(move || {
+        match ureq::post(&url)
+            .set("content-type", "application/json")
+            .send_string(body)
+        {
+            Ok(response) => response.status(),
+            Err(ureq::Error::Status(code, _)) => code,
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn get_status(url: String) -> u16 {
+    tokio::task::spawn_blocking(move || match ureq::get(&url).call() {
+        Ok(response) => response.status(),
+        Err(ureq::Error::Status(code, _)) => code,
+        Err(e) => panic!("{e}"),
+    })
+    .await
+    .unwrap()
+}
+
 /// A session shaped like the one a real tool-using turn leaves behind: the
 /// user's request, an assistant turn carrying only a tool call, the tool's
 /// result, and then the answer.
@@ -110,4 +137,67 @@ async fn the_replay_still_carries_both_sides_of_the_conversation() {
     assert_eq!(messages[0]["content"], "write hello.txt");
     assert_eq!(messages[1]["role"], "assistant");
     assert_eq!(messages[1]["content"], "Done.");
+}
+
+/// Reopening a session from the sidebar after a restart and carrying on.
+///
+/// Live session state is held in a process-local map. The store outlives the
+/// process and the map does not, so after a restart a session read straight
+/// out of the sidebar had no entry, and both the turn endpoint and the event
+/// stream answered "no such session". The transcript rendered fine and the
+/// composer was dead, which reads as the server having lost the conversation
+/// it is visibly showing you. A session the store knows about is adopted on
+/// first use instead.
+#[tokio::test]
+async fn a_stored_session_can_be_continued_after_a_restart() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    let id = seed(&db);
+
+    // A server that has never seen this session, which is what a restart is.
+    let addr = spawn().await;
+
+    let turn = post_status(
+        format!("http://{addr}/api/sessions/{id}/turn"),
+        r#"{"message":"carry on"}"#,
+    )
+    .await;
+    assert_eq!(
+        turn, 202,
+        "a session the store knows about was refused after a restart"
+    );
+    assert_eq!(
+        get_status(format!("http://{addr}/api/sessions/{id}/events")).await,
+        200,
+        "the reopened session's event stream was refused"
+    );
+}
+
+/// The other half: an id nobody has ever heard of stays a 404. The event
+/// stream in particular must keep refusing those, because an empty stream
+/// that ends at once is a reconnect loop by another name.
+#[tokio::test]
+async fn an_unknown_session_is_still_not_found() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    seed(&db);
+
+    let addr = spawn().await;
+
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/not-a-session/turn"),
+            r#"{"message":"hello"}"#,
+        )
+        .await,
+        404
+    );
+    assert_eq!(
+        get_status(format!("http://{addr}/api/sessions/not-a-session/events")).await,
+        404
+    );
 }

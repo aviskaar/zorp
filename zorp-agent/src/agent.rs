@@ -1,4 +1,7 @@
 use crate::approval::ApprovalMode;
+use crate::context_window::{
+    compact_tool_results, estimate_tokens, ContextBudget, ContextUsage, UsageSource,
+};
 use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, Model};
 use crate::policy::{Decision, Policy};
 use crate::render::{stderr_renderer, Renderer};
@@ -186,14 +189,6 @@ const DENIAL_STREAK_LIMIT: usize = 3;
 /// trip the repeat guard and end a run early.
 const REPEAT_STREAK_LIMIT: usize = 3;
 
-/// Total bytes of tool-result content the transcript may accumulate before
-/// the oldest tool-result bodies are elided. Generous on purpose: below this
-/// threshold the transcript is sent verbatim, exactly as before.
-const TOOL_RESULT_HISTORY_BUDGET_BYTES: usize = 512 * 1024;
-
-/// Marker prefix left in place of an elided tool-result body.
-const ELIDED_MARKER_PREFIX: &str = "[tool result elided:";
-
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
@@ -252,6 +247,9 @@ pub struct Agent {
     recorded_changes: usize,
     renderer: Box<dyn Renderer>,
     cancel: CancelToken,
+    /// How large the context window is, when anybody has said, and how much of
+    /// it the transcript may fill. Unknown by default; see `context_window`.
+    context_budget: ContextBudget,
 }
 
 #[derive(Clone)]
@@ -320,7 +318,17 @@ impl Agent {
             recorded_changes: 0,
             renderer: stderr_renderer(),
             cancel,
+            context_budget: ContextBudget::from_env(),
         }
+    }
+
+    /// Say how large the context window is. The default reads
+    /// `ZORP_CONTEXT_TOKENS` and, failing that, leaves the window unknown,
+    /// which disables every token-driven decision and falls back to the byte
+    /// cap on tool results. Tests and callers that know better pass their own.
+    pub fn with_context_budget(mut self, budget: ContextBudget) -> Self {
+        self.context_budget = budget;
+        self
     }
 
     /// Attach a completion-gate verifier. Its commands run (bypassing approval)
@@ -629,45 +637,64 @@ impl Agent {
         }
     }
 
-    /// Keep the transcript's accumulated tool-result bytes under a budget by
-    /// replacing the oldest tool-result bodies with a short elision marker.
-    /// Tool results of the most recent assistant turn are never elided, and
-    /// below the budget the transcript is untouched.
+    /// Keep the transcript inside the context budget by replacing the oldest
+    /// tool-result bodies with a short elision marker.
+    ///
+    /// This is the same mechanism the byte cap has always used, now driven by
+    /// two triggers instead of one: the 512 KiB cap on accumulated tool
+    /// results, which is always on, and a token target derived from the
+    /// context window when anybody has said how large it is. One mechanism,
+    /// two triggers, deliberately: a second pass eliding the same bodies for
+    /// its own reasons would double-count what it freed and the two would
+    /// disagree about what is left.
+    ///
+    /// Messages are rewritten in place and never removed. `sync` tracks how
+    /// much of the transcript has been persisted by index, so a shifting
+    /// index would re-record or skip. Dropping whole messages is only safe
+    /// before a run starts, which is where `plan_seed` does it.
+    ///
+    /// The elision never reaches the store. What the model is sent shrinks;
+    /// what was said does not.
     fn enforce_history_budget(&mut self) {
-        self.enforce_history_budget_with(TOOL_RESULT_HISTORY_BUDGET_BYTES);
+        let budget = self.context_budget.clone();
+        let report = compact_tool_results(&mut self.messages, &budget);
+        // Silent context loss is how an agent starts confidently
+        // contradicting itself, so the user is told each time it happens.
+        if let Some(text) = report.notice() {
+            self.renderer.notice(&text);
+        }
     }
 
-    fn enforce_history_budget_with(&mut self, budget: usize) {
-        let mut total: usize = self
-            .messages
-            .iter()
-            .filter(|m| m.role == "tool")
-            .map(|m| m.text().len())
-            .sum();
-        if total <= budget {
-            return;
-        }
-        // Tool results after the most recent assistant message belong to the
-        // current turn and are never elided.
-        let last_assistant = self
-            .messages
-            .iter()
-            .rposition(|m| m.role == "assistant")
-            .unwrap_or(0);
-        for i in 0..last_assistant {
-            if total <= budget {
-                break;
-            }
-            let m = &mut self.messages[i];
-            if m.role != "tool" || m.text().starts_with(ELIDED_MARKER_PREFIX) {
-                continue;
-            }
-            let body_len = m.text().len();
-            let marker = format!("{ELIDED_MARKER_PREFIX} {body_len} bytes]");
-            total = total - body_len + marker.len();
-            m.content = vec![ContentPart::Text(marker)];
-            m.invalidate_body_cache();
-        }
+    #[cfg(test)]
+    fn enforce_history_budget_with(&mut self, tool_result_bytes: usize) {
+        let budget = ContextBudget {
+            tool_result_bytes,
+            ..ContextBudget::default()
+        };
+        compact_tool_results(&mut self.messages, &budget);
+    }
+
+    /// What the request that just went out cost, and how sure we are.
+    ///
+    /// Reported usage is preferred over the estimator wherever the provider
+    /// gives it, because it is a fact about a request that happened rather
+    /// than arithmetic on string lengths. The two are labelled differently
+    /// all the way to the browser.
+    fn report_context(&mut self, telemetry: &crate::reasoning::CompletionTelemetry) {
+        let limit_tokens = self.context_budget.limit_tokens;
+        let usage = match telemetry.usage.and_then(|u| u.input_tokens) {
+            Some(used_tokens) => ContextUsage {
+                used_tokens,
+                source: UsageSource::Reported,
+                limit_tokens,
+            },
+            None => ContextUsage {
+                used_tokens: estimate_tokens(&self.messages),
+                source: UsageSource::Estimated,
+                limit_tokens,
+            },
+        };
+        self.renderer.context(&usage);
     }
 
     fn run_loop(&mut self) -> Outcome {
@@ -729,6 +756,11 @@ impl Agent {
                 duration_ms: duration,
                 identity,
             });
+
+            // Before the reply is appended, so the number describes the
+            // request that was actually sent rather than the transcript that
+            // exists a line later.
+            self.report_context(&telemetry);
 
             let mut assistant_msg =
                 Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone());
@@ -1121,6 +1153,163 @@ mod tests {
         fn verify(&mut self, _command: &str, _passed: bool) {}
         fn notice(&mut self, _text: &str) {}
         fn assistant(&mut self, _text: &str) {}
+    }
+
+    /// Collects what a surface would draw a context meter and a compaction
+    /// warning from.
+    #[derive(Default)]
+    struct ContextRenderer {
+        usage: Arc<Mutex<Vec<ContextUsage>>>,
+        notices: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::render::Renderer for ContextRenderer {
+        fn tool(&mut self, _name: &str, _summary: &str) {}
+        fn verify(&mut self, _command: &str, _passed: bool) {}
+        fn notice(&mut self, text: &str) {
+            self.notices.lock().unwrap().push(text.to_string());
+        }
+        fn assistant(&mut self, _text: &str) {}
+        fn context(&mut self, usage: &ContextUsage) {
+            self.usage.lock().unwrap().push(*usage);
+        }
+    }
+
+    fn completion_with_usage(content: &str, input_tokens: u64) -> ModelCompletion {
+        let mut completion = ModelCompletion::from(text(content));
+        completion.telemetry.usage = Some(crate::context_window::TokenUsage {
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(7),
+        });
+        completion
+    }
+
+    /// The meter must prefer what the provider said over what zorp guessed.
+    #[test]
+    fn a_run_reports_the_providers_own_token_count() {
+        let usage = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new_with_completions(vec![completion_with_usage("done", 4321)]);
+        let mut a = agent(model)
+            .with_context_budget(ContextBudget::default().with_limit(Some(8192)))
+            .with_renderer(Box::new(ContextRenderer {
+                usage: usage.clone(),
+                ..ContextRenderer::default()
+            }));
+
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+
+        let seen = usage.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].used_tokens, 4321);
+        assert_eq!(seen[0].source, UsageSource::Reported);
+        assert_eq!(seen[0].limit_tokens, Some(8192));
+    }
+
+    /// A provider that reports nothing still gets a meter, labelled as the
+    /// guess it is. Ollama and friends often say nothing at all.
+    #[test]
+    fn a_run_falls_back_to_an_estimate_and_says_so() {
+        let usage = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![text("done")]);
+        let mut a = agent(model).with_renderer(Box::new(ContextRenderer {
+            usage: usage.clone(),
+            ..ContextRenderer::default()
+        }));
+
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+
+        let seen = usage.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].source, UsageSource::Estimated);
+        assert!(seen[0].used_tokens > 0);
+        assert_eq!(
+            seen[0].limit_tokens, None,
+            "an unconfigured window must stay unknown rather than be guessed"
+        );
+    }
+
+    /// Compaction that nobody is told about is indistinguishable from a model
+    /// that has started making things up.
+    #[test]
+    fn compaction_tells_the_user_it_happened() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget {
+                tool_result_bytes: 50,
+                ..ContextBudget::default()
+            })
+            .with_renderer(Box::new(ContextRenderer {
+                notices: notices.clone(),
+                ..ContextRenderer::default()
+            }));
+        a.messages.push(Message::user("task"));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c1", "x".repeat(200)));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+
+        a.enforce_history_budget();
+
+        let said = notices.lock().unwrap().clone();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("context compaction"), "{said:?}");
+        assert!(said[0].contains("still on disk"), "{said:?}");
+    }
+
+    /// The transcript below the budget is sent verbatim and nobody is warned
+    /// about nothing.
+    #[test]
+    fn no_compaction_means_no_warning() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![])).with_renderer(Box::new(ContextRenderer {
+            notices: notices.clone(),
+            ..ContextRenderer::default()
+        }));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c1", "small"));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+
+        a.enforce_history_budget();
+
+        assert!(notices.lock().unwrap().is_empty());
+    }
+
+    /// Compaction affects what is sent. The recorder has already been handed
+    /// the original, and must not be handed the elided copy afterwards.
+    #[test]
+    fn compaction_does_not_re_record_the_elided_transcript() {
+        #[derive(Default)]
+        struct Recorded(Arc<Mutex<Vec<String>>>);
+        impl RunRecorder for Recorded {
+            fn message(&mut self, m: &Message) {
+                self.0.lock().unwrap().push(m.text().into_owned());
+            }
+            fn change(&mut self, _c: &FileChange) {}
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget {
+                tool_result_bytes: 50,
+                ..ContextBudget::default()
+            })
+            .with_recorder(Box::new(Recorded(seen.clone())));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+        a.messages.push(Message::tool_result("c1", "x".repeat(200)));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+
+        a.sync();
+        a.enforce_history_budget();
+        a.sync();
+
+        let recorded = seen.lock().unwrap().clone();
+        assert!(
+            recorded.iter().any(|t| t == &"x".repeat(200)),
+            "the original never reached the recorder: {recorded:?}"
+        );
+        assert!(
+            !recorded
+                .iter()
+                .any(|t| t.starts_with(crate::context_window::ELIDED_MARKER_PREFIX)),
+            "an elided body was written to the record: {recorded:?}"
+        );
     }
 
     #[test]
@@ -1964,6 +2153,7 @@ mod tests {
                 reasoning_parameters_sent: true,
                 reasoning_content_available: true,
                 actual_reasoning_tokens: Some(17),
+                usage: None,
             },
         }]);
         let mut a = configured_agent(model, ApprovalMode::NonInteractive);

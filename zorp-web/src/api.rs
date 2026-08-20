@@ -150,6 +150,34 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
+/// A session's live state, adopting one the store knows about but this
+/// process has not seen.
+///
+/// Live state is a process-local map and the store outlives the process, so
+/// after a restart every session in the sidebar had no entry here. Both the
+/// turn endpoint and the event stream answered "no such session", which meant
+/// the transcript rendered perfectly and the composer was dead: the server
+/// refusing to talk about the conversation it was visibly showing you.
+///
+/// Only sessions the store recognizes are adopted. An id nobody has heard of
+/// still gets a 404, which matters most on the event stream: a browser stops
+/// retrying on a 404 and an empty stream that ends at once is a reconnect
+/// loop by another name.
+fn session_or_adopt(
+    state: &AppState,
+    id: &str,
+) -> Option<std::sync::Arc<std::sync::Mutex<crate::state::SessionState>>> {
+    if let Some(session) = state.get(id) {
+        return Some(session);
+    }
+    let stored = zorp_agent::Store::open_default()
+        .ok()
+        .and_then(|store| store.session_status(id).ok())
+        .flatten()
+        .is_some();
+    stored.then(|| state.create(id))
+}
+
 #[derive(Deserialize)]
 struct TurnBody {
     message: String,
@@ -160,7 +188,7 @@ async fn start_turn(
     Path(id): Path<String>,
     Json(body): Json<TurnBody>,
 ) -> impl IntoResponse {
-    let Some(session) = state.get(&id) else {
+    let Some(session) = session_or_adopt(&state, &id) else {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     };
     // Two turns on one agent would interleave into a corrupt transcript.
@@ -218,10 +246,10 @@ async fn stream_events(
         .unwrap_or(0);
 
     // An unknown session is not an empty stream. An empty stream that ends at
-    // once is a reconnect loop by another name, which is what opening a stored
-    // session from the sidebar used to be after a restart. Say plainly that
-    // there is nothing to stream: a browser stops retrying on a 404.
-    let Some(session) = state.get(&id) else {
+    // once is a reconnect loop by another name. Say plainly that there is
+    // nothing to stream: a browser stops retrying on a 404. A session the
+    // store knows about is not unknown, only unopened, so it is adopted.
+    let Some(session) = session_or_adopt(&state, &id) else {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     };
 

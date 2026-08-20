@@ -10,6 +10,7 @@
 import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { copyButton } from "./copy-response";
+import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import {
   needsText,
   producedSince,
@@ -83,6 +84,9 @@ interface Elements {
   modelBtnLabel: HTMLElement;
   status: HTMLElement;
   statusText: HTMLElement;
+  contextMeter: HTMLElement;
+  contextBarFill: HTMLElement;
+  contextMeterText: HTMLElement;
   scroller: HTMLElement;
   transcript: HTMLElement;
   working: HTMLElement;
@@ -233,6 +237,9 @@ function collectElements(): Elements {
     modelBtnLabel: byId("model-btn-label"),
     status: byId("status"),
     statusText: byId("status-text"),
+    contextMeter: byId("context-meter"),
+    contextBarFill: byId("context-bar-fill"),
+    contextMeterText: byId("context-meter-text"),
     scroller: byId("scroller"),
     transcript: byId("transcript"),
     working: byId("working"),
@@ -530,6 +537,14 @@ function applyEvent(event: ZorpEvent): void {
       appendApproval(event.id, event.tool, event.arguments);
       break;
 
+    case "context":
+      showMeter(meterElements(), {
+        used_tokens: event.used_tokens,
+        limit_tokens: event.limit_tokens,
+        source: event.source,
+      });
+      break;
+
     case "error":
       appendError(event.message);
       // A turn that failed is still a turn that ran, and the server sends
@@ -577,6 +592,26 @@ function setTurnRunning(running: boolean): void {
 
 function updateWorking(): void {
   dom.working.hidden = !(turnRunning || workingDepth > 0);
+}
+
+function meterElements(): MeterElements {
+  return {
+    root: dom.contextMeter,
+    fill: dom.contextBarFill,
+    text: dom.contextMeterText,
+  };
+}
+
+/**
+ * Put the meter away.
+ *
+ * Called whenever the conversation on screen changes. A reading belongs to
+ * one session's transcript, and leaving the last one up while a different
+ * session loads would state a number about a conversation it was never
+ * measured on. The next turn puts it back within a second.
+ */
+function forgetContextReading(): void {
+  clearMeter(meterElements());
 }
 
 function startSpinner(): void {
@@ -990,6 +1025,9 @@ function resetTranscript(): void {
   // the marks into another session would claim a run wrote files it never
   // touched.
   forgetProducedArtifacts();
+  // Same argument for the context meter: a token count measured on one
+  // conversation says nothing about the next one.
+  forgetContextReading();
 }
 
 /* ------------------------------------------------------------------ */

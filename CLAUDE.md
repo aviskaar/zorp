@@ -89,6 +89,16 @@ resulting artifact, deliver it in the right form.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.
+- `zorp-agent/src/context_window.rs` is the one place that decides how large
+  the context window is, how full it is, and what to drop when it fills.
+  Compaction there is deterministic: it elides the oldest tool-result bodies
+  and, on the seed path only, drops the oldest whole exchanges. No model
+  writes a summary, and nothing in it ever writes to the store. The window is
+  unknown unless `ZORP_CONTEXT_TOKENS` says otherwise, on purpose: no endpoint
+  can be asked and no default is right for everyone. `zorp-web` and the CLI's
+  `resume` both seed a turn through its `plan_seed`, which is what gives the
+  browser conversational memory. See `docs/DECISIONS.md` (2026-08-19) before
+  changing any of that.
 - `web/` is TypeScript and no Rust job compiles a line of it. After
   changing anything in there run `npm run check`, `npm test` and
   `npm run build` from `web/`. The tests are jsdom plus `node:test`, and

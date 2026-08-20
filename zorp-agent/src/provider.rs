@@ -240,6 +240,7 @@ pub fn parse_anthropic_completion(
         telemetry: crate::reasoning::CompletionTelemetry {
             reasoning_content_available,
             actual_reasoning_tokens,
+            usage: crate::context_window::parse_token_usage(resp),
             ..Default::default()
         },
     })

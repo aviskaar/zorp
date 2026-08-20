@@ -171,6 +171,30 @@ export interface ApprovalRequestEvent {
   arguments: string;
 }
 
+/** Where a context token count came from. */
+export type ContextUsageSource = "reported" | "estimated";
+
+/**
+ * How full the model's context window is.
+ *
+ * `source` is not decoration. `reported` is what the provider said the last
+ * request actually cost. `estimated` is zorp dividing byte lengths by four
+ * because the provider said nothing. Showing them the same way would claim a
+ * precision one of them does not have, so the meter marks the estimate.
+ *
+ * `limit_tokens` is absent when nobody has told zorp how large the window is,
+ * which is the default: it talks to arbitrary OpenAI-compatible and Anthropic
+ * endpoints, local Ollama included, and none of them can be asked. There is
+ * then no denominator and the meter says so rather than inventing one.
+ */
+export interface ContextEvent {
+  seq: number;
+  type: "context";
+  used_tokens: number;
+  limit_tokens?: number;
+  source: ContextUsageSource;
+}
+
 /** The turn failed. Always shown, never swallowed. */
 export interface ErrorEvent {
   seq: number;
@@ -197,6 +221,7 @@ export type ZorpEvent =
   | AssistantDeltaEvent
   | AssistantEvent
   | ApprovalRequestEvent
+  | ContextEvent
   | ErrorEvent
   | DoneEvent;
 
@@ -512,6 +537,7 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   assistant_delta: true,
   assistant: true,
   approval_request: true,
+  context: true,
   error: true,
   done: true,
 };

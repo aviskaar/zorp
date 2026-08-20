@@ -367,6 +367,79 @@ button {
   background: var(--text-faint);
 }
 
+/*
+ * The context meter. Deliberately quiet until it is not: an agent with room
+ * to think should not be nagging about it, and one that is nearly out should
+ * be impossible to miss.
+ */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* `display: inline-flex` above outranks the user agent's
+   `[hidden] { display: none }`, so hiding the meter has to be spelled out.
+   Without this the empty meter sits in the topbar from the first paint,
+   saying nothing, which reads as a broken widget. Same trap as
+   `.artifacts[hidden]` below. */
+.context-meter[hidden] {
+  display: none;
+}
+
+.context-bar {
+  display: block;
+  width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.context-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--text-faint);
+  transition: width 220ms ease;
+}
+
+/* No window configured, so there is nothing to fill a bar against. */
+.context-meter[data-state="unknown"] .context-bar {
+  display: none;
+}
+
+.context-meter[data-state="ok"] .context-bar i {
+  background: var(--ok);
+}
+
+.context-meter[data-state="warn"] {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
+.context-meter[data-state="warn"] .context-bar i {
+  background: var(--warn);
+}
+
+.context-meter[data-state="full"] {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+
+.context-meter[data-state="full"] .context-bar i {
+  background: var(--danger);
+}
+
 .status[data-state="live"] .status-dot {
   background: var(--ok);
   box-shadow: 0 0 8px rgba(74, 222, 128, 0.55);
