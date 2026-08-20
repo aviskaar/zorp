@@ -77,6 +77,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
+        .route(
+            "/api/sessions/:id/auto-approve",
+            get(get_auto_approve).post(set_auto_approve),
+        )
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/models", get(list_models))
         .route("/api/settings/test", post(test_connection))
@@ -219,6 +223,69 @@ async fn approve(
         // this, and it is not an error worth failing the request over.
         _ => (StatusCode::CONFLICT, "nothing is awaiting approval").into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct AutoApproveBody {
+    on: bool,
+}
+
+/// Stand this session's approvals down, or put them back up.
+///
+/// Off for every new session, on only because this request said so, and gone
+/// when the session is. It is the same standing yes the CLI's `/approve`
+/// command gives a chat session, with the difference that this one can be
+/// taken back in the middle of a run: the flag is read at each approval rather
+/// than baked into the agent when the turn started.
+///
+/// What it cannot do is widen the policy. `Policy::decide` runs first and its
+/// `Deny` never reaches the approver at all, so the hard denylist refuses
+/// exactly the same commands with this on as with it off. This changes who
+/// answers the questions the policy asks, not which questions get asked.
+///
+/// A pending approval is deliberately left pending. Turning the mode on is not
+/// a decision about the specific call already on the user's screen; the
+/// browser sends that decision itself, as a separate and visible act.
+///
+/// Like every route here it sits behind the token gate, which means on
+/// loopback it is reachable by anything already able to reach the API. That
+/// grants nothing new: the same caller can `POST .../turn` and drive the agent
+/// directly, which is strictly more than standing one session's approvals
+/// down. The narrower worry is the agent turning this on for itself with an
+/// approved `run_command`, and the answer is that it cannot do it unseen. The
+/// approval card shows the whole command, and the moment the flag flips the
+/// page it flipped is wearing a red banner nobody asked for.
+async fn set_auto_approve(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AutoApproveBody>,
+) -> impl IntoResponse {
+    let Some(session) = state.get(&id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let flag = session.lock().unwrap().auto_approve.clone();
+    flag.store(body.on, std::sync::atomic::Ordering::SeqCst);
+    Json(json!({"auto_approve": body.on})).into_response()
+}
+
+/// What this session is currently doing about approvals.
+///
+/// The browser asks on every reconnect and every session switch, because a
+/// mode that is on has to be visible on the page and a reloaded tab knows
+/// nothing until it asks.
+async fn get_auto_approve(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(session) = state.get(&id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let on = session
+        .lock()
+        .unwrap()
+        .auto_approve
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Json(json!({"auto_approve": on})).into_response()
 }
 
 /// Stream a session's events for as long as the browser is listening.

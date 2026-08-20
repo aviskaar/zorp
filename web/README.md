@@ -15,8 +15,20 @@ approvals to whoever runs it.
 
 Approvals are the boundary. When the agent reaches a tool that needs one, the
 turn stops and an approval card appears with the tool name and its arguments.
-Nothing in this UI answers that card for you. There is no auto approve, no
-remembered decision, and no way to skip it.
+Nothing in this UI answers that card for you unless you have said, in so many
+words, that it should.
+
+That is auto-approve, and it is the one way to stop being asked. It is off for
+every new chat, it is turned on only by the pill in the toolbar or the "Allow
+all for this chat" button on an approval card, and while it is on the toolbar
+says so in red and a banner sits over the composer until you turn it back off.
+It belongs to one chat, it is never written to disk, and a restarted server or
+a new chat starts asking again. Each tool it lets through leaves an
+"auto-approved" line in the transcript.
+
+What it does not do is widen what the agent may attempt. The server's policy
+decides before anyone is asked anything, so the hard denylist refuses exactly
+what it always refused, auto-approve or not, and says so in the transcript.
 
 ## Build
 

@@ -1,6 +1,7 @@
 use crate::approval::WebApprover;
 use crate::event::Event;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 /// Everything one conversation needs while it is alive.
@@ -23,6 +24,19 @@ pub struct SessionState {
     /// Last-Event-ID resume is keyed on this, so restarting it per turn makes
     /// a reconnecting browser silently drop every later turn.
     pub seq: Arc<Mutex<u64>>,
+    /// The session's standing answer to every approval it is asked.
+    ///
+    /// False unless this browser turned it on for this session, and it is
+    /// deliberately not written anywhere: it lives here, in memory, beside a
+    /// session that only exists while the server does. There is no config file
+    /// and no database column for it, so no future session can inherit it and
+    /// no restart can bring it back. Turning the approval gate down is a thing
+    /// you do to the run in front of you, not a preference.
+    ///
+    /// Shared with each turn's `WebApprover` rather than copied into it, which
+    /// is what makes it revocable while a turn is running and what carries it
+    /// from one turn to the next in the same conversation.
+    pub auto_approve: Arc<AtomicBool>,
 }
 
 impl SessionState {
@@ -32,6 +46,7 @@ impl SessionState {
             running: false,
             approver: None,
             seq: Arc::new(Mutex::new(0)),
+            auto_approve: Arc::new(AtomicBool::new(false)),
         }
     }
 }

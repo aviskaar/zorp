@@ -11,6 +11,7 @@ import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { copyButton } from "./copy-response";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
+import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
 import {
   needsText,
   producedSince,
@@ -22,6 +23,8 @@ import {
   ApiError,
   TurnBusyError,
   approve,
+  getAutoApprove,
+  setAutoApprove,
   getSession,
   getSettings,
   listModels,
@@ -146,6 +149,17 @@ let activityGroup: HTMLElement | null = null;
 let spinnerTimer: number | null = null;
 let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
+const approvalMode: AutoApproveView = autoApproveView(document);
+/**
+ * Whether this session has stood its approvals down.
+ *
+ * A cache of the server's answer, never a decision of its own. It is set from
+ * a server response and from nowhere else, so the banner cannot claim a state
+ * the server does not hold. The one moment it leads is between the user asking
+ * for the mode and a session existing to hold it, and the request is sent the
+ * instant one does.
+ */
+let autoApprove = false;
 /** The last settings the server reported. Null until the first successful
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
@@ -158,6 +172,8 @@ function start(): void {
   wireScroller();
   wireSettings();
   wireArtifacts();
+  wireApprovalMode();
+  paintApprovalMode();
   showEmptyState();
   setStatus("idle", "idle");
   void connectOrExplain();
@@ -348,6 +364,74 @@ function wireSettings(): void {
 }
 
 /* ------------------------------------------------------------------ */
+/* approval mode                                                       */
+/*                                                                      */
+/* One switch, two places it shows, and the server is the only thing    */
+/* that decides what it currently is. See src/approval-mode.ts.         */
+/* ------------------------------------------------------------------ */
+
+function wireApprovalMode(): void {
+  approvalMode.button.addEventListener("click", () => void changeApprovalMode(!autoApprove));
+  approvalMode.bannerOff.addEventListener("click", () => void changeApprovalMode(false));
+}
+
+/** Draw the mode, and keep the empty state from contradicting it. */
+function paintApprovalMode(): void {
+  renderAutoApprove(approvalMode, autoApprove);
+  if (dom.transcript.querySelector(".empty")) {
+    showEmptyState();
+  }
+}
+
+/**
+ * Ask the server to change the mode, then show whatever it answers.
+ *
+ * A failed request leaves the page showing the state the server still holds,
+ * which is the only honest thing to draw. Turning it off is the direction that
+ * matters most here: if that request fails the banner stays up, because the
+ * gate really is still down.
+ */
+async function changeApprovalMode(on: boolean): Promise<boolean> {
+  if (!sessionId) {
+    // Nothing to tell yet. `submitMessage` sends this the moment a session
+    // exists, before the first turn starts.
+    autoApprove = on;
+    paintApprovalMode();
+    return autoApprove;
+  }
+  try {
+    autoApprove = await setAutoApprove(sessionId, on);
+  } catch (error) {
+    appendError(`Could not change the approval mode: ${describeError(error)}`);
+  }
+  paintApprovalMode();
+  return autoApprove;
+}
+
+/**
+ * Read the mode back from the server.
+ *
+ * A reloaded tab and a switched session both know nothing until they ask, and
+ * a gate that is down has to be visible from the first paint rather than from
+ * the first approval that does not arrive.
+ */
+async function refreshApprovalMode(): Promise<void> {
+  if (!sessionId) {
+    autoApprove = false;
+    paintApprovalMode();
+    return;
+  }
+  try {
+    autoApprove = await getAutoApprove(sessionId);
+  } catch {
+    // The status pill already reports a server that cannot be reached. What
+    // is on the page is the last thing the server said, which is the best
+    // available answer.
+  }
+  paintApprovalMode();
+}
+
+/* ------------------------------------------------------------------ */
 /* sending a turn                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -374,6 +458,17 @@ async function submitMessage(): Promise<void> {
       setTitle("New chat");
       await refreshSessions();
       markActiveSession();
+      if (autoApprove) {
+        // The switch was thrown before there was a session to hold it. Tell
+        // the server now, before the first tool runs, and if that does not
+        // land, say so and put the page back to asking rather than leave a
+        // banner claiming a mode the server never took.
+        autoApprove = await setAutoApprove(sessionId, true).catch(() => false);
+        paintApprovalMode();
+        if (!autoApprove) {
+          appendError("Could not stand approvals down for this chat, so it will keep asking.");
+        }
+      }
     }
     // The stream for this session is already open and stays open, so the
     // turn's events arrive on it. The replay guard deliberately keeps its high
@@ -780,15 +875,30 @@ function appendApproval(id: string, tool: string, args: string): void {
   const denyButton = el("button", "btn btn-deny") as HTMLButtonElement;
   denyButton.type = "button";
   denyButton.textContent = "Deny";
-  actions.append(allowButton, denyButton);
+  // The third choice, offered here because this is the moment a long run
+  // becomes a click per step. It is spelled out rather than abbreviated, it
+  // is not the primary button, and taking it puts a banner over the composer
+  // that stays there until the mode is turned off.
+  const allowAllButton = el("button", "btn btn-allow-all") as HTMLButtonElement;
+  allowAllButton.type = "button";
+  allowAllButton.textContent = "Allow all for this chat";
+  allowAllButton.title =
+    "Stop asking for the rest of this chat. The hard denylist still applies.";
+  actions.append(allowButton, denyButton, allowAllButton);
 
   const note = el("p", "card-note");
   card.append(head, lead, toolField, argsField, actions, note);
   dom.transcript.append(card);
 
+  const buttons = [allowButton, denyButton, allowAllButton];
+  const enable = (on: boolean): void => {
+    for (const button of buttons) {
+      button.disabled = !on;
+    }
+  };
+
   const settle = (outcome: ApprovalOutcome): void => {
-    allowButton.disabled = true;
-    denyButton.disabled = true;
+    enable(false);
     actions.remove();
     lead.remove();
     card.classList.add(`is-${outcome}`);
@@ -808,21 +918,38 @@ function appendApproval(id: string, tool: string, args: string): void {
     if (!sessionId) {
       return;
     }
-    allowButton.disabled = true;
-    denyButton.disabled = true;
+    enable(false);
     note.textContent = "Sending your decision…";
     try {
       await approve(sessionId, id, allow);
       settle(allow ? "allowed" : "denied");
     } catch (error) {
-      allowButton.disabled = false;
-      denyButton.disabled = false;
+      enable(true);
       note.textContent = `Could not send the decision: ${describeError(error)}`;
     }
   };
 
+  /**
+   * Allow this one and stop asking about the rest.
+   *
+   * Two steps in one click, and the mode goes first on purpose: if the server
+   * will not take it, this call stays parked and the card goes back to three
+   * buttons rather than approving something under a promise that was not kept.
+   */
+  const decideAll = async (): Promise<void> => {
+    enable(false);
+    note.textContent = "Standing approvals down for this chat…";
+    if (!(await changeApprovalMode(true))) {
+      enable(true);
+      note.textContent = "The approval mode did not change, so this is still your decision.";
+      return;
+    }
+    await decide(true);
+  };
+
   allowButton.addEventListener("click", () => void decide(true));
   denyButton.addEventListener("click", () => void decide(false));
+  allowAllButton.addEventListener("click", () => void decideAll());
 
   pendingApprovals.set(id, { settle });
 }
@@ -970,6 +1097,11 @@ async function openSession(session: SessionSummary): Promise<void> {
   sessionId = session.id;
   setTitle(session.title || "Untitled session");
   markActiveSession();
+  // Approval mode belongs to the session being opened, not to the one being
+  // left. Until the server answers, the page shows the careful state.
+  autoApprove = false;
+  paintApprovalMode();
+  void refreshApprovalMode();
 
   try {
     const transcript = await getSession(session.id);
@@ -998,6 +1130,10 @@ function startNewChat(): void {
   sessionId = null;
   setTitle("New chat");
   markActiveSession();
+  // A new chat asks again. Standing approvals down is something you do to a
+  // run, and it does not follow you into the next one.
+  autoApprove = false;
+  paintApprovalMode();
   showEmptyState();
   setStatus("idle", "idle");
 }
@@ -1320,7 +1456,9 @@ function showEmptyState(): void {
   const list = el("ul", "empty-list");
   for (const line of [
     "Every tool the agent runs shows up here as it runs.",
-    "Anything that changes your machine stops for your approval first.",
+    autoApprove
+      ? "Auto-approve is on for this chat, so nothing will stop and ask you."
+      : "Anything that changes your machine stops for your approval first.",
     "The agent works on the directory the server was started in.",
   ]) {
     list.append(textNode("li", "", line));
