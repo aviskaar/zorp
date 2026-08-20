@@ -50,6 +50,10 @@ pub struct Policy {
     /// denylist allow absolute targets under it. Without a root, every
     /// absolute destructive or redirect target denies (fail closed).
     repo_root: Option<PathBuf>,
+    /// The port zorp-web is listening on, when the agent is running under it.
+    /// Commands that call this port are denied. `None` for the CLI, which has
+    /// no server to call.
+    own_server_port: Option<u16>,
 }
 
 impl Default for Policy {
@@ -74,16 +78,19 @@ impl Policy {
                 edit: Decision::Ask,
                 run: Decision::Ask,
                 repo_root: None,
+                own_server_port: None,
             },
             Preset::Editor => Policy {
                 edit: Decision::Allow,
                 run: Decision::Ask,
                 repo_root: None,
+                own_server_port: None,
             },
             Preset::Full => Policy {
                 edit: Decision::Allow,
                 run: Decision::Allow,
                 repo_root: None,
+                own_server_port: None,
             },
         }
     }
@@ -104,6 +111,28 @@ impl Policy {
     /// production an absolute target under the root is approval-gated
     /// rather than denied. A policy built without a root, as in some
     /// tests, denies every absolute destructive or redirect target.
+    /// Deny commands that call the zorp-web instance this agent runs under.
+    ///
+    /// The escalation is small and specific: one approved `run_command` is
+    /// enough to `curl` the API and stand the approval gate down, and every
+    /// call after that goes through unreviewed. That turns a single approval
+    /// into a standing one.
+    ///
+    /// This is not a boundary against an adversary, and it should not be read
+    /// as one. A shell is a shell: anything holding one can obfuscate a URL
+    /// past this check without trying hard, and can do far worse things than
+    /// call an HTTP endpoint. What it guards against is the model doing it,
+    /// which is the case that actually happens. A curl to an address sitting
+    /// in its own context is an obvious next step for a model that has been
+    /// told, or has talked itself into, wanting fewer prompts.
+    ///
+    /// The real control for the endpoint is authentication that a local
+    /// process cannot replay. That is a larger change and is not this.
+    pub fn with_own_server(mut self, port: u16) -> Policy {
+        self.own_server_port = Some(port);
+        self
+    }
+
     pub fn with_repo_root(mut self, root: impl Into<PathBuf>) -> Policy {
         let root = root.into();
         self.repo_root = Some(root.canonicalize().unwrap_or(root));
@@ -153,7 +182,9 @@ impl Policy {
                     .get("command")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                if let Some(reason) = deny_reason(command, self.repo_root.as_deref()) {
+                if let Some(reason) =
+                    deny_reason_with(command, self.repo_root.as_deref(), self.own_server_port)
+                {
                     Decision::Deny(reason)
                 } else {
                     self.run.clone()
@@ -171,9 +202,35 @@ impl Policy {
     }
 }
 
-fn deny_reason(command: &str, repo_root: Option<&Path>) -> Option<String> {
+/// Whether a command names the loopback address and port zorp-web is on.
+///
+/// Deliberately literal. It catches the spellings a model writes, not the
+/// ones an adversary would reach for, and the doc comment on
+/// `Policy::with_own_server` says so rather than implying more.
+fn calls_own_server(normalized: &str, port: u16) -> bool {
+    ["127.0.0.1", "localhost", "[::1]", "0.0.0.0"]
+        .iter()
+        .any(|host| normalized.contains(&format!("{host}:{port}")))
+}
+
+fn deny_reason_with(
+    command: &str,
+    repo_root: Option<&Path>,
+    own_server_port: Option<u16>,
+) -> Option<String> {
     let normalized = command.to_ascii_lowercase();
     let denied = "command matches the hard denylist".to_string();
+    if let Some(port) = own_server_port {
+        if calls_own_server(&normalized, port) {
+            // No "denied" prefix here: the caller already formats this as
+            // "denied: {reason}", and saying it twice reads as a stutter.
+            return Some(
+                "this calls the zorp server the agent is running under, \
+                 which is how one approval becomes a standing one"
+                    .to_string(),
+            );
+        }
+    }
     if normalized.contains('`') {
         return Some(denied);
     }
@@ -184,7 +241,7 @@ fn deny_reason(command: &str, repo_root: Option<&Path>) -> Option<String> {
         Err(()) => return Some(denied),
         Ok(bodies) => {
             for body in bodies {
-                if deny_reason(&body, repo_root).is_some() {
+                if deny_reason_with(&body, repo_root, own_server_port).is_some() {
                     return Some(denied);
                 }
             }
@@ -194,7 +251,7 @@ fn deny_reason(command: &str, repo_root: Option<&Path>) -> Option<String> {
         .map(|segments| {
             segments
                 .iter()
-                .any(|words| segment_is_forbidden(words, repo_root))
+                .any(|words| segment_is_forbidden(words, repo_root, own_server_port))
         })
         .unwrap_or(true);
     forbidden.then_some(denied)
@@ -202,7 +259,7 @@ fn deny_reason(command: &str, repo_root: Option<&Path>) -> Option<String> {
 
 /// Collect the bodies of `$(...)`, `<(...)`, and `>(...)` substitutions.
 /// Nested substitutions inside a body are handled by the recursive
-/// `deny_reason` call on that body. Returns `Err` on unbalanced syntax.
+/// `deny_reason_with` call on that body. Returns `Err` on unbalanced syntax.
 fn substitution_bodies(command: &str) -> Result<Vec<String>, ()> {
     let chars: Vec<char> = command.chars().collect();
     let mut bodies = Vec::new();
@@ -232,7 +289,11 @@ fn substitution_bodies(command: &str) -> Result<Vec<String>, ()> {
     Ok(bodies)
 }
 
-fn segment_is_forbidden(words: &[String], repo_root: Option<&Path>) -> bool {
+fn segment_is_forbidden(
+    words: &[String],
+    repo_root: Option<&Path>,
+    own_server_port: Option<u16>,
+) -> bool {
     if redirects_escape_repo(words, repo_root) {
         return true;
     }
@@ -254,7 +315,7 @@ fn segment_is_forbidden(words: &[String], repo_root: Option<&Path>) -> bool {
             let Some(payload) = words.get(index + 1) else {
                 return true;
             };
-            return deny_reason(payload, repo_root).is_some();
+            return deny_reason_with(payload, repo_root, own_server_port).is_some();
         }
     }
     let destructive_rm = executable == "rm"
@@ -1083,5 +1144,90 @@ mod tests {
             arguments: serde_json::json!({}),
         };
         assert!(matches!(p.decide(&call), Decision::Deny(_)));
+    }
+}
+
+#[cfg(test)]
+mod own_server_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A `run_command` call, the way the model actually sends one.
+    fn run(command: &str) -> ToolCall {
+        ToolCall {
+            id: "c1".into(),
+            name: "run_command".into(),
+            arguments: json!({ "command": command }),
+        }
+    }
+
+    /// The escalation this closes: an agent that gets one `run_command`
+    /// approved uses it to call zorp-web's own API and stand its approval
+    /// gate down, after which nothing else it does is reviewed.
+    ///
+    /// This is not a boundary against an adversary. A shell is a shell, and
+    /// anyone holding one has already won. It is a guard against the model
+    /// doing it, which is the realistic case: a curl to a URL sitting in its
+    /// own context is an obvious next action for a model that has been told,
+    /// or has talked itself into, needing fewer prompts.
+    #[test]
+    fn a_command_calling_the_server_it_runs_under_is_denied() {
+        let p = Policy::from_preset(Preset::Full).with_own_server(7777);
+        for command in [
+            "curl -X POST http://127.0.0.1:7777/api/sessions/abc/auto-approve",
+            "curl http://localhost:7777/api/sessions",
+            "wget http://[::1]:7777/api/health",
+            "curl http://0.0.0.0:7777/api/settings",
+        ] {
+            assert!(
+                matches!(p.decide(&run(command)), Decision::Deny(_)),
+                "not denied: {command}",
+            );
+        }
+    }
+
+    /// Everything else on the machine is still reachable. A rule that denied
+    /// every loopback call would break talking to a local model, which is how
+    /// most of zorp is actually run.
+    #[test]
+    fn another_local_port_is_left_alone() {
+        let p = Policy::from_preset(Preset::Full).with_own_server(7777);
+        for command in [
+            "curl http://localhost:11434/api/tags",
+            "curl http://127.0.0.1:8080/health",
+        ] {
+            assert!(
+                !matches!(p.decide(&run(command)), Decision::Deny(_)),
+                "wrongly denied: {command}",
+            );
+        }
+    }
+
+    /// The CLI has no server to call, so it configures none and nothing here
+    /// applies.
+    #[test]
+    fn with_no_server_configured_nothing_extra_is_denied() {
+        let p = Policy::from_preset(Preset::Full);
+        assert!(!matches!(
+            p.decide(&run("curl http://127.0.0.1:7777/api/sessions")),
+            Decision::Deny(_)
+        ));
+    }
+
+    /// The existing denylist recurses into `sh -c` payloads and `$(...)`
+    /// bodies. This check has to ride along, or wrapping the call in a shell
+    /// is the whole bypass.
+    #[test]
+    fn wrapping_the_call_in_a_shell_does_not_get_it_through() {
+        let p = Policy::from_preset(Preset::Full).with_own_server(7777);
+        for command in [
+            "sh -c 'curl http://127.0.0.1:7777/api/sessions/a/auto-approve'",
+            "echo $(curl http://localhost:7777/api/health)",
+        ] {
+            assert!(
+                matches!(p.decide(&run(command)), Decision::Deny(_)),
+                "not denied: {command}",
+            );
+        }
     }
 }

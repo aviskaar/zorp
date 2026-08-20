@@ -108,6 +108,7 @@ pub fn spawn_turn(
     session_id: String,
     message: String,
     settings: SettingsHandle,
+    own_port: Option<u16>,
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     // One token per turn, held by the session so the stop endpoint can reach
@@ -150,6 +151,7 @@ pub fn spawn_turn(
             approver,
             Arc::clone(&cancel),
             &settings,
+            own_port,
         );
 
         // Read after the run, not before, so a stop that lands during the
@@ -176,6 +178,7 @@ fn run_agent(
     approver: Arc<WebApprover>,
     cancel: zorp_agent::CancelToken,
     settings: &SettingsHandle,
+    own_port: Option<u16>,
 ) -> Result<Outcome, String> {
     let resolved = settings.lock().unwrap().effective_model();
     if !resolved.configured {
@@ -254,6 +257,14 @@ fn run_agent(
     .with_context_budget(budget)
     .register_builtins_filtered(None)
     .with_renderer(renderer);
+
+    // Same policy the agent already defaults to, plus the one thing only the
+    // server knows: its own port. Commands that call back into this server
+    // are denied, because one approved `run_command` is otherwise enough to
+    // stand the approval gate down and leave every later call unreviewed.
+    if let Some(port) = own_port {
+        agent = agent.with_policy(zorp_agent::Policy::default().with_own_server(port));
+    }
 
     // The seed replaces the transcript wholesale, so it has to land before
     // the recorder: `with_message_records` sets how much the agent believes

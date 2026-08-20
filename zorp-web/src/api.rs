@@ -232,7 +232,13 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
-    turn::spawn_turn(session, id, body.message, state.settings.clone());
+    turn::spawn_turn(
+        session,
+        id,
+        body.message,
+        state.settings.clone(),
+        state.own_port,
+    );
     StatusCode::ACCEPTED.into_response()
 }
 
