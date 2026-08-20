@@ -5,6 +5,7 @@
 //! hidden behind an internal `tokio::Runtime::block_on`, the same
 //! pattern `zorp-mcp` already uses for its own async transport.
 
+pub mod anomalies;
 pub mod calibration;
 pub mod checkpoint;
 pub mod conditions;
@@ -19,7 +20,10 @@ pub mod library;
 pub mod partition;
 pub mod prereg;
 pub mod project;
+pub mod rerun;
 mod schema;
+#[cfg(test)]
+mod test_support;
 pub mod track;
 pub mod validation;
 
