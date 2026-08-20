@@ -96,12 +96,14 @@ pub fn spawn_turn(
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     // The counter lives on the session so numbering continues across turns.
-    let seq = {
+    // So does the standing approval answer: a user who stood approvals down
+    // did it for this conversation, not for one message of it.
+    let (seq, auto_approve) = {
         let mut guard = session.lock().unwrap();
         guard.running = true;
-        Arc::clone(&guard.seq)
+        (Arc::clone(&guard.seq), Arc::clone(&guard.auto_approve))
     };
-    let approver = Arc::new(WebApprover::new(tx.clone(), Arc::clone(&seq)));
+    let approver = Arc::new(WebApprover::new(tx.clone(), Arc::clone(&seq), auto_approve));
     session.lock().unwrap().approver = Some(Arc::clone(&approver));
 
     // Drain into the backlog on its own thread so a slow browser cannot

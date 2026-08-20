@@ -426,6 +426,35 @@ export async function approve(
   });
 }
 
+/**
+ * Stand this session's approvals down, or put them back up.
+ *
+ * The server owns this: it answers with the state it now holds, and that
+ * answer is what the page draws. Nothing here assumes the request worked.
+ *
+ * It is per session and it is not stored anywhere, so a new chat asks again
+ * and so does a restarted server. What it never does is widen what the agent
+ * is allowed to attempt: the hard denylist refuses the same commands either
+ * way, because the policy decides before anyone is asked anything.
+ */
+export async function setAutoApprove(sessionId: string, on: boolean): Promise<boolean> {
+  const result = await request<{ auto_approve?: unknown }>(
+    "POST",
+    `/api/sessions/${segment(sessionId)}/auto-approve`,
+    { on },
+  );
+  return result?.auto_approve === true;
+}
+
+/** What the server says this session is currently doing about approvals. */
+export async function getAutoApprove(sessionId: string): Promise<boolean> {
+  const result = await request<{ auto_approve?: unknown }>(
+    "GET",
+    `/api/sessions/${segment(sessionId)}/auto-approve`,
+  );
+  return result?.auto_approve === true;
+}
+
 export type StreamStatus = "connecting" | "open" | "reconnecting" | "closed";
 
 export interface EventStream {

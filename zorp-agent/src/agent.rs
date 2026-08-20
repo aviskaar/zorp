@@ -1099,6 +1099,19 @@ mod tests {
         }
     }
 
+    fn wants_tool_with(name: &str, arguments: Value) -> AssistantMessage {
+        AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".to_string(),
+                name: name.to_string(),
+                arguments,
+            }],
+            finish_reason: "tool_calls".to_string(),
+            reasoning_content: None,
+        }
+    }
+
     fn configured_agent(model: Scripted, approval: ApprovalMode) -> Agent {
         Agent::new(
             Box::new(model),
@@ -1330,6 +1343,50 @@ mod tests {
         assert_eq!(
             tools.lock().unwrap().clone(),
             vec!["read_file:ok".to_string()]
+        );
+    }
+
+    /// The ordering the whole approval story rests on: policy first, human
+    /// second. `AutoApprove` is the most permissive answer a human can give,
+    /// and it is still only an answer to a question the policy chose to ask.
+    /// A denylisted command is not one of those questions.
+    ///
+    /// Asserted on the tool, not just on the transcript. "Denied" in the
+    /// summary would also be printed by a dispatch that ran and then failed,
+    /// and what has to be true here is that `run` was never entered at all.
+    /// The command is a compound one on purpose: `sudo id` is what the
+    /// denylist matches, and `touch pwned.txt` is the half that must not run
+    /// either.
+    #[test]
+    fn a_denylisted_command_is_refused_even_under_auto_approve() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let tools = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![
+            wants_tool_with(
+                "run_command",
+                json!({"command": "touch pwned.txt && sudo id"}),
+            ),
+            text("that was refused"),
+        ]);
+        let mut a = configured_agent(model, ApprovalMode::AutoApprove)
+            .register(Box::new(RecordingNamed {
+                name: "run_command",
+                ran: Arc::clone(&ran),
+            }))
+            .with_renderer(Box::new(CaptureRenderer {
+                tools: Arc::clone(&tools),
+                events: Arc::new(Mutex::new(Vec::new())),
+            }));
+
+        assert!(matches!(a.run("go"), Outcome::Complete(_)));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a denylisted command ran because approval was standing"
+        );
+        let seen = tools.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|line| line.ends_with(":denied")),
+            "the refusal was never shown to the user: {seen:?}"
         );
     }
 

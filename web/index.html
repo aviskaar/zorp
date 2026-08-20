@@ -126,6 +126,26 @@
             ></span>
             <span id="context-meter-text"></span>
           </div>
+          <!--
+            The approval mode, shown as state rather than as an action, the
+            same way the model pill is. It is in the toolbar and not buried in
+            settings because a session that has stopped asking has to say so
+            from wherever the reader happens to be looking.
+          -->
+          <button
+            class="model-btn auto-approve-btn"
+            id="auto-approve-btn"
+            type="button"
+            data-state="asking"
+            aria-pressed="false"
+            title="Every tool that can change this machine asks first. Click to stop asking."
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3l7 3v5.5c0 4.2-2.9 7.9-7 9.5-4.1-1.6-7-5.3-7-9.5V6l7-3z" />
+              <path d="M12 8.5v4m0 3h.01" />
+            </svg>
+            <span id="auto-approve-label">Auto-approve off</span>
+          </button>
           <div class="status" id="status" data-state="idle">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="status-text">idle</span>
@@ -145,6 +165,21 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6" /></svg>
           Jump to latest
         </button>
+
+        <!--
+          The second half of saying so. The toolbar pill is small and this is
+          not: it sits between the reader and the box they type into, for as
+          long as the gate is down, and the way back up is the button in it.
+        -->
+        <div class="auto-approve-banner" id="auto-approve-banner" hidden>
+          <span>
+            Auto-approve is on. Every tool the agent asks for runs without asking you, for
+            the rest of this session. The hard denylist still refuses what it always refused.
+          </span>
+          <button class="auto-approve-off" id="auto-approve-off" type="button">
+            Start asking again
+          </button>
+        </div>
 
         <div class="composer-warning" id="composer-warning" hidden>
           <span>No model is configured yet, so nothing typed here can be sent.</span>

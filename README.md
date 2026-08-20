@@ -254,7 +254,10 @@ Two things worth knowing:
 ### Web UI
 
 A chat interface for the agent, with tool activity streamed as it happens and
-an approval prompt before anything is written or run.
+an approval prompt before anything is written or run. A long run can stand
+those prompts down for one chat with auto-approve, which says so in the
+toolbar the whole time it is on and still cannot get a denylisted command
+past the policy. See [`web/README.md`](web/README.md).
 
 ```bash
 cargo run -p zorp-web            # http://127.0.0.1:7777

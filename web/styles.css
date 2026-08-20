@@ -896,6 +896,22 @@ button {
   color: var(--danger);
 }
 
+/* Deliberately the quietest button on the card, and pushed to the far end of
+   it. Allowing one tool is the ordinary answer; standing every future
+   approval down is not, and it should not be the thing a fast hand hits. */
+.btn-allow-all {
+  margin-left: auto;
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.btn-allow-all:hover:not(:disabled) {
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
 .card-error {
   border-color: var(--danger-line);
   background: linear-gradient(180deg, var(--danger-soft) 0%, rgba(248, 113, 113, 0) 90px),
@@ -1283,6 +1299,54 @@ button {
   color: var(--warn);
 }
 
+/* ---------------------------------------------------------------- auto approve */
+
+/* On, this is the loudest thing in the toolbar, and deliberately: it is the
+   one state in this UI where the product has agreed to be less careful. */
+.auto-approve-btn[data-state="on"] {
+  color: var(--danger);
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+.auto-approve-btn[data-state="on"] svg {
+  color: var(--danger);
+}
+
+.auto-approve-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  max-width: var(--reading);
+  margin: 0 auto 12px;
+  padding: 10px 16px;
+  border: 1px solid var(--danger-line);
+  border-radius: 12px;
+  background: var(--danger-soft);
+  color: #f8c7c7;
+  font-size: 13px;
+}
+
+.auto-approve-banner[hidden] {
+  display: none;
+}
+
+.auto-approve-off {
+  flex: none;
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--danger-line);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 120ms ease;
+}
+
+.auto-approve-off:hover {
+  background: rgba(248, 113, 113, 0.16);
+}
+
 /* ---------------------------------------------------------------- composer warning */
 
 .composer-warning {
@@ -1488,6 +1552,13 @@ button {
 
   .model-btn {
     padding: 6px;
+  }
+
+  /* Every other pill can shrink to its glyph on a narrow screen. This one
+     keeps its words while the gate is down, because a red shield on its own
+     is not a sentence and this state has to be readable, not guessable. */
+  .auto-approve-btn[data-state="on"] span {
+    display: inline;
   }
 }
 
