@@ -31,6 +31,28 @@ resulting artifact, deliver it in the right form.
   co-write, deliver) sit on top of it as `zorp-agent` subcommands,
   behind the `research` feature. All four are built and tested
   (deliver most recently).
+- `aryabhatta` is zorp's discovery layer, and it lives in `zorp-track`
+  as five modules: `conditions`, `expectations`, `calibration`,
+  `detectors`, `partition`. It is record plus readers, not a fifth
+  capability, and it ships no CLI command on purpose. Two rules hold the
+  whole thing up and neither is negotiable. Detection is code and the
+  model only interprets, the same split `critique` already uses. And no
+  detector, and nothing in the search layer, may read a column holding
+  model-authored text, or the agent's own speculation becomes tomorrow's
+  observation. `expectations` refuses a forecast once its outcome
+  exists, which is the one guarantee that stops a prediction being a
+  postdiction; it has a mutation test and that test is the point of it.
+  `calibration` is a go/no-go: if the stated intervals do not have real
+  coverage, stop and do not build the ledger. See
+  `docs/superpowers/specs/2026-08-19-anomaly-driven-inquiry-design.md`
+  and `docs/DECISIONS.md` (2026-08-19, 2026-08-20) before changing any
+  of it.
+- `erbga` is wired into `zorp-track` as the large-graph backend of the
+  search layer. That reverses part of the 2026-08-15 decision, so read
+  the 2026-08-19 entry first. The exact backend is a standing regression
+  check on it wherever both can run, and above the crossover a reported
+  bundle is a floor on the confounding rather than the whole of it,
+  because the search can split a true bundle but never invent one.
 - `critique` (`zorp-agent/src/critique/`) is a gate on co-write's
   artifact, not a fifth capability. It audits `draft.md` against the
   track's own evidence record and revises what the record does not
@@ -68,9 +90,12 @@ resulting artifact, deliver it in the right form.
   detection, validated against that work's four benchmarks. It knows
   nothing about zorp and nothing depends on it. It came out of a design
   that was then rejected (`docs/DECISIONS.md`, 2026-08-15) and is kept
-  on its own terms as a validated artifact. Don't wire it into the
-  research stack without a decision that says to, and don't delete it as
-  dead code.
+  on its own terms as a validated artifact. As of 2026-08-19 it is also
+  the large-graph backend of aryabhatta's search layer, so it is no
+  longer true that nothing depends on it. The four benchmarks certify
+  ERBGA on graphs and nothing else: a consumer reusing only its
+  representation-agnostic scaffolding is running a new algorithm and
+  needs its own validation.
 - `reference/` is gitignored, local-only material (e.g. AI-Scientist-v2)
   used for design inspiration. Never copy code from it into tracked files;
   its license doesn't permit redistribution under zorp's terms. Read it

@@ -39,6 +39,36 @@ CREATE TABLE IF NOT EXISTS metrics (
     recorded_at BIGINT NOT NULL,
     seq BIGINT NOT NULL
 );
+-- aryabhatta, step 1. The inputs a run was performed under. Same value
+-- encoding as `metrics` so the two are symmetric: outputs were recorded
+-- from the start, inputs were not.
+CREATE TABLE IF NOT EXISTS conditions (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    condition_key TEXT NOT NULL,
+    value_type TEXT NOT NULL,
+    value_number DOUBLE,
+    value_string TEXT,
+    value_bool BOOLEAN,
+    recorded_at BIGINT NOT NULL,
+    seq BIGINT NOT NULL
+);
+-- aryabhatta, step 2. A quantitative forecast about one metric of one
+-- experiment, recorded before that experiment produces the metric. Not a
+-- pre-registration: that is one git-pinned commitment for a whole track,
+-- this is a per-experiment forecast and there will be many.
+CREATE TABLE IF NOT EXISTS expectations (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    expected_value DOUBLE NOT NULL,
+    interval_low DOUBLE NOT NULL,
+    interval_high DOUBLE NOT NULL,
+    confidence DOUBLE NOT NULL,
+    assumptions TEXT,
+    recorded_at BIGINT NOT NULL,
+    seq BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS checkpoints (
     id TEXT PRIMARY KEY,
     track_id TEXT NOT NULL,
@@ -85,4 +115,6 @@ CREATE INDEX IF NOT EXISTS idx_experiments_track_id ON experiments(track_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_experiment_id ON metrics(experiment_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_track_id ON checkpoints(track_id);
 CREATE INDEX IF NOT EXISTS idx_validations_track_id ON validations(track_id);
-CREATE INDEX IF NOT EXISTS idx_critiques_track_id ON critiques(track_id);";
+CREATE INDEX IF NOT EXISTS idx_critiques_track_id ON critiques(track_id);
+CREATE INDEX IF NOT EXISTS idx_conditions_experiment_id ON conditions(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_expectations_experiment_id ON expectations(experiment_id);";

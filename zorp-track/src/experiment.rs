@@ -66,7 +66,13 @@ pub enum MetricValue {
 }
 
 impl MetricValue {
-    fn type_str(&self) -> &'static str {
+    /// The `value_type` string this value is stored under.
+    ///
+    /// `pub(crate)` because `conditions` writes the same four-column
+    /// encoding. Spelling the strings again in a second module is a
+    /// drift waiting to happen: change one and the other reads back
+    /// wrong, silently.
+    pub(crate) fn type_str(&self) -> &'static str {
         match self {
             MetricValue::Number(_) => "number",
             MetricValue::Text(_) => "string",

@@ -10,6 +10,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+# The search layer's backend for graphs too large to answer exactly.
+# See docs/DECISIONS.md, 2026-08-19, which is the entry that permits this
+# and partly reverses 2026-08-15. erbga is a standalone implementation of
+# published prior work and has no dependencies of its own, so this adds
+# one path crate to the tree and nothing else.
+erbga   = { path = "../erbga" }
 duckdb  = { version = "1", features = ["bundled"] }
 lancedb = { version = "0.33", optional = true }
 tokio   = { version = "1", features = ["rt"], optional = true }
