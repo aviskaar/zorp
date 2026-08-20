@@ -111,8 +111,8 @@ plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
-# Figure 2: the four capabilities as a checkpointed sequence, from
-# docs/ARCHITECTURE.md and the per-capability specs. Detail lives in the
+# Figure 2: the four capabilities as a checkpointed sequence, from the
+# per-capability specs in docs/superpowers/specs/. Detail lives in the
 # caption and body text, not crammed into the boxes.
 # ---------------------------------------------------------------------------
 fig, ax = plt.subplots(figsize=(TEXTWIDTH, 1.95))

@@ -547,9 +547,10 @@ Deferred deliberately, each large enough for its own spec:
 4. Information gain as a reward signal.
 5. Automatic ranking of invariants.
 6. Any autonomous action taken in response to a finding.
-7. A `boredom` or `observe` CLI capability. `docs/ARCHITECTURE.md` says
-   four capabilities is the whole set. This is record plus readers, the
-   way `critique` is a gate rather than a fifth capability.
+7. A `boredom` or `observe` CLI capability. The four capabilities are the
+   whole set, and the one attempt at a fifth was not approved: see
+   `docs/DECISIONS.md`, 2026-08-14 and 2026-08-15. This is record plus
+   readers, the way `critique` is a gate rather than a fifth capability.
 
 ## Prior art
 

@@ -183,8 +183,8 @@ Two of the four need an MCP tool connected first (behind `zorp-agent`'s
 name carries a search verb (search, fetch, query, browse, find, lookup,
 retrieve), to search for evidence before scoring a question; `deliver`
 specifically needs a huiban-prefixed tool, to match a draft against real
-venues (see
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)). Connect one with
+venues (see the per-capability specs in
+[`docs/superpowers/specs/`](docs/superpowers/specs/)). Connect one with
 `--mcp`, or configure it once in `.zorp/mcp.toml`:
 
 ```bash

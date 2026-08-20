@@ -83,9 +83,11 @@ resulting artifact, deliver it in the right form.
   short entry whenever a real decision gets made (not every change; use
   judgment), and check it before re-deriving a decision that's already
   there.
-- `docs/ARCHITECTURE.md` points at the current, approved architecture and
-  scope specs. Check there before assuming what zorp's capabilities are
-  called or what they cover; both have changed at least once already.
+- `docs/superpowers/specs/` holds the approved designs, one per
+  capability. Check the relevant spec before assuming what zorp's
+  capabilities are called or what they cover; both have changed at least
+  once already. There is no separate architecture index; there was one and
+  it drifted, see `docs/DECISIONS.md` (2026-08-20).
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.
