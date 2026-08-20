@@ -11,6 +11,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod documents;
 pub mod event;
+pub mod pdf;
 pub mod renderer;
 pub mod settings;
 pub mod state;

@@ -182,11 +182,11 @@
           <p class="artifact-empty" id="artifact-empty">Pick a file to read it here.</p>
           <div class="artifact-doc" id="artifact-doc" hidden></div>
           <!--
-            The sandbox. PDFs, SVGs and HTML files load here by URL and never
-            into the page above, because all three can carry script. The
-            server sends them with a bare `Content-Security-Policy: sandbox`,
-            which is what stops that script running or reaching this page. The
-            sandbox attribute below says the same thing from this side.
+            The sandbox. SVGs and HTML files load here by URL and never into
+            the page above, because both can carry script. The server sends
+            them with a bare `Content-Security-Policy: sandbox`, which is what
+            stops that script running or reaching this page. The sandbox
+            attribute below says the same thing from this side.
           -->
           <iframe
             class="artifact-frame"

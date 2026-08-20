@@ -25,7 +25,11 @@ impl Workspace {
         )
         .unwrap();
         std::fs::write(root.join("notes.md"), "hello\n").unwrap();
-        std::fs::write(root.join("paper.pdf"), b"%PDF-1.4\nfake\n").unwrap();
+        std::fs::write(
+            root.join("paper.pdf"),
+            pdf("BT /F1 12 Tf 72 720 Td (Findings) Tj ET"),
+        )
+        .unwrap();
         std::fs::write(root.join("secret.env"), "TOKEN=hunter2\n").unwrap();
         // The thing traversal would be after: outside the workspace root.
         std::fs::write(dir.path().join("outside.md"), "you should not see this\n").unwrap();
@@ -156,32 +160,40 @@ async fn a_file_type_that_is_not_on_the_allowlist_is_refused() {
 
 /// A served file must not be able to act as a document in this origin. Both
 /// headers matter: `nosniff` stops the browser second-guessing the declared
-/// type, and the sandbox CSP stops a hostile PDF reaching the rest of the
-/// page.
+/// type, and a bare sandbox CSP stops a served document reaching the rest of
+/// the page.
+///
+/// Every type, not one of them. The header is set once for the whole
+/// endpoint and that is the property worth pinning: the moment it becomes a
+/// per-type decision, a type that gets it wrong is a hole, and this test is
+/// what would notice.
 #[tokio::test]
 async fn served_files_carry_the_headers_that_stop_them_becoming_active() {
     let ws = Workspace::new();
+    std::fs::write(ws.root().join("chart.svg"), "<svg/>").unwrap();
+    std::fs::write(ws.root().join("report.html"), "<html>hi</html>").unwrap();
+    std::fs::write(ws.root().join("shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
     let addr = spawn(&ws.root()).await;
-    let url = format!("http://{addr}/api/artifacts/raw?path=paper.pdf");
 
-    let (content_type, nosniff, csp) = tokio::task::spawn_blocking(move || {
-        let r = ureq::get(&url).call().unwrap();
-        (
-            r.header("content-type").unwrap_or_default().to_string(),
-            r.header("x-content-type-options")
-                .unwrap_or_default()
-                .to_string(),
-            r.header("content-security-policy")
-                .unwrap_or_default()
-                .to_string(),
-        )
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(content_type, "application/pdf");
-    assert_eq!(nosniff, "nosniff");
-    assert!(csp.contains("sandbox"), "csp was {csp:?}");
+    for name in [
+        "notes.md",
+        "paper.pdf",
+        "chart.svg",
+        "report.html",
+        "shot.png",
+    ] {
+        let headers = headers_of(format!("http://{addr}/api/artifacts/raw?path={name}")).await;
+        assert_eq!(headers.nosniff, "nosniff", "{name}");
+        assert_eq!(
+            headers.csp, "sandbox",
+            "{name} was served with a widened sandbox"
+        );
+        assert!(
+            !headers.csp.contains("allow-"),
+            "{name} csp was {:?}",
+            headers.csp
+        );
+    }
 }
 
 /// The listing is what the pane's file list is built from. It finds the
@@ -380,6 +392,100 @@ async fn a_docx_is_served_as_the_markdown_it_extracts_to() {
         "the archive itself was served: {body:?}"
     );
 }
+
+/* ------------------------------------------------------------------ */
+/* pdf                                                                 */
+/* ------------------------------------------------------------------ */
+
+/// A one page PDF holding the given content stream operators.
+///
+/// The same fixture as the one in `zorp-web/src/pdf.rs`, written out here
+/// because an integration test cannot reach into the crate's own test module.
+/// Built in code rather than checked in as bytes, so it can be read.
+fn pdf(content: &str) -> Vec<u8> {
+    let objects = [
+        "<</Type/Catalog/Pages 2 0 R>>".to_string(),
+        "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_string(),
+        "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]\
+         /Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>"
+            .to_string(),
+        "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>".to_string(),
+        format!(
+            "<</Length {}>>\nstream\n{content}\nendstream",
+            content.len() + 1
+        ),
+    ];
+
+    let mut out = Vec::from(&b"%PDF-1.4\n"[..]);
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<</Size {}/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// The file itself is never what goes on the wire. A PDF used to be handed to
+/// the browser as `application/pdf` for its own viewer to render inside the
+/// sandboxed iframe, and no viewer starts in a sandbox that strict, so the
+/// pane showed a broken-document icon. Now the text comes out on the server
+/// and the browser gets markdown, like a `.docx`.
+#[tokio::test]
+async fn a_pdf_is_served_as_the_text_it_holds_and_not_as_a_pdf() {
+    let ws = Workspace::new();
+    std::fs::write(
+        ws.root().join("report.pdf"),
+        pdf("BT /F1 18 Tf 72 720 Td (Findings) Tj ET\n\
+             BT /F1 12 Tf 72 700 Td (Latency fell by 40 percent.) Tj ET"),
+    )
+    .unwrap();
+    let addr = spawn(&ws.root()).await;
+
+    let url = format!("http://{addr}/api/artifacts/raw?path=report.pdf");
+    let headers = headers_of(url.clone()).await;
+    assert_eq!(headers.content_type, "text/markdown; charset=utf-8");
+
+    let (status, body) = get_async(url).await;
+    assert_eq!(status, 200, "body: {body}");
+    assert!(body.contains("Findings"), "body: {body}");
+    assert!(body.contains("Latency fell by 40 percent."), "body: {body}");
+    assert!(
+        !body.contains("%PDF"),
+        "the file itself was served: {body:?}"
+    );
+}
+
+/// A model wrote this file, or downloaded it, so "it is not really a PDF" is
+/// an ordinary case. It gets a message, not a blank pane and not a 500.
+#[tokio::test]
+async fn a_pdf_that_is_not_a_pdf_is_refused_with_a_reason() {
+    let ws = Workspace::new();
+    std::fs::write(ws.root().join("broken.pdf"), b"not a pdf at all").unwrap();
+    let addr = spawn(&ws.root()).await;
+
+    let (status, body) =
+        get_async(format!("http://{addr}/api/artifacts/raw?path=broken.pdf")).await;
+    assert_eq!(status, 422, "body: {body}");
+    assert!(body.contains("not a readable PDF"), "body: {body}");
+}
+
+/* ------------------------------------------------------------------ */
+/* office formats, continued                                           */
+/* ------------------------------------------------------------------ */
 
 /// A model wrote this file, so "it is not really a docx" is an ordinary case.
 /// It gets a message, not a blank pane and not a 500.

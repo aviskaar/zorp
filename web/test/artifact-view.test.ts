@@ -13,7 +13,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import { showArtifact, viewMode, type Pane } from "../src/artifact-view.ts";
+import { needsText, showArtifact, viewMode, type Pane } from "../src/artifact-view.ts";
 import { renderMarkdown } from "../src/markdown.ts";
 
 const dom = new JSDOM("<!doctype html><body></body>");
@@ -98,15 +98,54 @@ for (const [what, path, bytes] of [
  * to matter.
  */
 test("every format that can execute is classified as sandboxed", () => {
-  for (const path of ["a.svg", "a.SVG", "a.html", "a.HTML", "a.pdf", "deep/dir/x.svg"]) {
+  for (const path of ["a.svg", "a.SVG", "a.html", "a.HTML", "deep/dir/x.svg"]) {
     assert.equal(viewMode(path), "sandboxed", path);
   }
 });
 
 test("text formats are never classified as sandboxed", () => {
-  for (const path of ["a.md", "a.markdown", "a.txt", "a.json", "a.csv", "a.docx", "a.xlsx"]) {
+  for (const path of [
+    "a.md",
+    "a.markdown",
+    "a.txt",
+    "a.json",
+    "a.csv",
+    "a.docx",
+    "a.xlsx",
+    "a.pdf",
+  ]) {
     assert.notEqual(viewMode(path), "sandboxed", path);
   }
+});
+
+/**
+ * A PDF is read on the server now, so what arrives here is markdown and it
+ * goes on the page like any other document. The iframe was the old answer and
+ * it did not work: the raw endpoint sends a bare `Content-Security-Policy:
+ * sandbox`, which is an opaque origin with no scripting, and no browser's PDF
+ * viewer starts under one, so the pane showed a broken-document icon.
+ *
+ * Only `.svg` and `.html` still go into the iframe, and the tests above are
+ * what says so. Nothing here loosens that.
+ */
+test("a pdf is read as text and rendered, not framed", () => {
+  assert.equal(viewMode("paper.pdf"), "markdown");
+  assert.equal(viewMode("out/PAPER.PDF"), "markdown");
+  assert.equal(needsText("paper.pdf"), true);
+
+  const surfaces = pane();
+  showArtifact(
+    surfaces,
+    "paper.pdf",
+    "/raw?path=paper.pdf",
+    "Findings\n\nLatency fell by 40 percent.",
+    renderMarkdown,
+  );
+
+  assert.equal(surfaces.doc.hidden, false);
+  assert.equal(surfaces.doc.querySelector("p")?.textContent, "Findings");
+  assert.equal(surfaces.frame.hidden, true, "a pdf was put in the iframe");
+  assert.equal(surfaces.frame.getAttribute("src"), null);
 });
 
 /**

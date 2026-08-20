@@ -59,6 +59,18 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # workspace's floor is 1.82.
 zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 quick-xml = "0.41"
+# A PDF records where each glyph was drawn, not what it said, so reading one
+# back means font encodings, ToUnicode CMaps and Type1 tables. That machinery
+# is the whole reason this is a dependency and not another hand-rolled reader
+# next to `documents.rs`: the cheap version of it is what makes the difference
+# between zorp's own paper reading as prose and reading as one unbroken word.
+# It is pulled in for a single call. lopdf comes with it, and pdf-extract
+# already asks for lopdf with default features off, so lopdf's chrono, jiff,
+# rayon and time stay out; the rest of lopdf's tree, AES and friends, is its
+# support for encrypted files and lopdf does not put that behind a feature.
+# Nineteen crates arrive that the workspace did not have and every one of
+# them is MIT or MIT/Apache-2.0.
+pdf-extract = "0.12"
 
 [workspace.lints.rust]
 unsafe_code = "warn"

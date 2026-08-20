@@ -309,17 +309,22 @@ this is a window on the workspace rather than a file server.
 | `.docx`, `.odt` | Extracted to markdown: headings, paragraphs, lists, tables |
 | `.xlsx` | One markdown table per sheet |
 | `.pptx` | One heading per slide, plus that slide's text |
+| `.pdf` | Its text, extracted to markdown |
 | `.png`, `.jpg`, `.gif`, `.webp` | Inline image |
-| `.pdf`, `.svg`, `.html` | Inside a sandboxed iframe |
+| `.svg`, `.html` | Inside a sandboxed iframe |
 
-The office formats are extracted on the server and rendered by the same
-markdown renderer the chat uses. The extraction is deliberately plain:
-text structure comes across, and images, fonts, colours and page layout do
-not. It is for reading what a run produced, not for rendering a document.
+The office formats and PDFs are read on the server and rendered by the same
+markdown renderer the chat uses. The reading is deliberately plain: text
+structure comes across, and images, fonts, colours and page layout do not.
+It is for reading what a run produced, not for rendering a document. A PDF
+gives up more than the rest, because it records where each glyph was drawn
+rather than what the document said, so what comes back is the words and the
+breaks between them and no headings at all. A scanned PDF holds pictures of
+words and no words, and the pane says so instead of showing nothing.
 
-`.pdf`, `.svg` and `.html` are the three that can execute. They load into
-the pane's iframe by URL and never into the page, because every served
-file carries `X-Content-Type-Options: nosniff` and a bare
+`.svg` and `.html` are the two that can execute. They load into the pane's
+iframe by URL and never into the page, because every served file carries
+`X-Content-Type-Options: nosniff` and a bare
 `Content-Security-Policy: sandbox`. That is a unique origin with scripting
 off, so script inside one of these neither runs nor reaches the page that
 framed it.

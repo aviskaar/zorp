@@ -550,9 +550,9 @@ export async function listArtifacts(): Promise<ArtifactListing> {
 }
 
 /**
- * The URL a PDF iframe points at. A URL rather than fetched bytes because
- * the browser's own PDF viewer is what renders it, and it needs something to
- * navigate to. The token, if there is one, rides along via `url`.
+ * The address of one artifact. Also what the sandboxed iframe navigates to
+ * for the types that only ever load there. The token, if there is one, rides
+ * along via `url`.
  */
 export function artifactUrl(path: string): string {
   return url(`/api/artifacts/raw?path=${encodeURIComponent(path)}`);
@@ -561,10 +561,12 @@ export function artifactUrl(path: string): string {
 /**
  * The text of an artifact, for the markdown renderer.
  *
- * Only ever called for the types the pane renders itself. A `.svg`, a `.html`
- * or a `.pdf` is never fetched into the page: those are addressed by URL from
- * the sandboxed iframe, so the browser loads them somewhere this page cannot
- * be reached from. See `artifact-view.ts`.
+ * Only ever called for the types the pane renders itself. A `.svg` or a
+ * `.html` is never fetched into the page: those are addressed by URL from the
+ * sandboxed iframe, so the browser loads them somewhere this page cannot be
+ * reached from. A `.pdf` and the office formats are read on the server, so
+ * what this fetches for them is text and never the file. See
+ * `artifact-view.ts`.
  */
 export async function readArtifact(path: string): Promise<string> {
   const response = await fetch(artifactUrl(path), { headers: authHeaders() });

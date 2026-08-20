@@ -1667,9 +1667,9 @@ button {
   line-height: 1.65;
 }
 
-/* PDFs, SVGs and HTML files render inside this and nowhere else. The sandbox
-   CSP the server sends with the file, and the sandbox attribute on the
-   element, are what keep them from reaching this page. */
+/* SVGs and HTML files render inside this and nowhere else. The sandbox CSP
+   the server sends with the file, and the sandbox attribute on the element,
+   are what keep them from reaching this page. */
 .artifact-frame {
   flex: 1;
   min-height: 0;
