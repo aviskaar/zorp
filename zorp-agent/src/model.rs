@@ -487,13 +487,21 @@ pub trait Model: Send + Sync {
     ///
     /// `on_delta` receives text a user may see. Reasoning never arrives here;
     /// see `streaming::ThinkGate` for why that distinction is load bearing.
+    ///
+    /// `cancel` lets a provider that genuinely streams give up on a response
+    /// that is still arriving. The default ignores it, which is honest: a
+    /// buffered call is one blocking request with nothing to check between,
+    /// so there is no point in the middle of it to notice anything. See
+    /// `streaming::stream_sse`.
     fn complete_streaming(
         &self,
         messages: &[Message],
         tools: &[Value],
         options: &crate::reasoning::CompletionOptions,
+        cancel: Option<&crate::sandbox::CancelToken>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelCompletion, BoxErr> {
+        let _ = cancel;
         let completion = self.complete_with_options(messages, tools, options)?;
         if !completion.message.content.is_empty() {
             on_delta(&completion.message.content);
@@ -670,12 +678,14 @@ impl Model for HttpModel {
         messages: &[Message],
         tools: &[Value],
         options: &crate::reasoning::CompletionOptions,
+        cancel: Option<&crate::sandbox::CancelToken>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelCompletion, BoxErr> {
         // Anthropic's streaming protocol is a different set of events and is
         // its own piece of work. Until it exists, that provider takes the
         // buffered path and behaves exactly as it does today rather than
-        // half-streaming.
+        // half-streaming. It is therefore not interruptible either; the run
+        // stops when the call returns.
         if !matches!(self.provider, crate::provider::Provider::OpenAiCompatible) {
             let completion = self.complete_with_options(messages, tools, options)?;
             if !completion.message.content.is_empty() {
@@ -705,11 +715,12 @@ impl Model for HttpModel {
         }
 
         let mut accumulator = crate::streaming::DeltaAccumulator::new();
-        let outcome = crate::streaming::stream_sse(&self.url, &headers, body, &mut |payload| {
-            if let Some(visible) = accumulator.apply(payload) {
-                on_delta(&visible);
-            }
-        })?;
+        let outcome =
+            crate::streaming::stream_sse(&self.url, &headers, body, cancel, &mut |payload| {
+                if let Some(visible) = accumulator.apply(payload) {
+                    on_delta(&visible);
+                }
+            })?;
         let mut completion = match outcome {
             crate::streaming::StreamOutcome::Streamed => accumulator.finish()?,
             // The endpoint ignored `stream` and answered with a document.
@@ -875,13 +886,14 @@ impl Model for ConfiguredHttpModel {
         messages: &[Message],
         tools: &[Value],
         options: &crate::reasoning::CompletionOptions,
+        cancel: Option<&crate::sandbox::CancelToken>,
         on_delta: &mut dyn FnMut(&str),
     ) -> Result<ModelCompletion, BoxErr> {
         let options = crate::reasoning::CompletionOptions {
             reasoning_mode: effective_reasoning_mode(self.default_reasoning_mode, options),
         };
         self.inner
-            .complete_streaming(messages, tools, &options, on_delta)
+            .complete_streaming(messages, tools, &options, cancel, on_delta)
     }
 
     fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
@@ -1775,6 +1787,7 @@ mod tests {
                 &[Message::user("hi")],
                 &[],
                 &crate::reasoning::CompletionOptions::default(),
+                None,
                 &mut |chunk| deltas.push(chunk.to_string()),
             )
             .unwrap();
@@ -1816,6 +1829,7 @@ mod tests {
                 &[Message::user("hi")],
                 &[],
                 &crate::reasoning::CompletionOptions::default(),
+                None,
                 &mut |chunk| deltas.push(chunk.to_string()),
             )
             .unwrap();
@@ -1849,6 +1863,7 @@ mod tests {
                 &[Message::user("hi")],
                 &[],
                 &crate::reasoning::CompletionOptions::default(),
+                None,
                 &mut |chunk| deltas.push(chunk.to_string()),
             )
             .unwrap();
@@ -1885,6 +1900,7 @@ mod tests {
                 &[Message::user("hi")],
                 &[],
                 &crate::reasoning::CompletionOptions::default(),
+                None,
                 &mut |chunk| deltas.push(chunk.to_string()),
             )
             .unwrap();
@@ -1952,6 +1968,7 @@ mod tests {
                 &[Message::user("hi")],
                 &[],
                 &crate::reasoning::CompletionOptions::default(),
+                None,
                 &mut |chunk| deltas.push(chunk.to_string()),
             )
             .unwrap();

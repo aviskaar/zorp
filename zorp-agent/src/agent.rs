@@ -731,6 +731,7 @@ impl Agent {
                 &self.messages,
                 &schemas,
                 &crate::reasoning::CompletionOptions::default(),
+                Some(&self.cancel),
                 &mut |chunk| renderer.assistant_delta(chunk),
             );
             let duration = start.elapsed().as_millis() as u64;
@@ -738,6 +739,22 @@ impl Agent {
             let completion = match completed {
                 Ok(completion) => completion,
                 Err(e) => {
+                    // A cancel raised while the model was replying surfaces
+                    // here, because abandoning a half-arrived response is a
+                    // read that stopped early and that is what a transport
+                    // failure looks like from below. The token says which it
+                    // was, not the message.
+                    //
+                    // Nothing is pushed for the abandoned response, and that
+                    // is the point. A message cut off partway has text that
+                    // stops mid-sentence and tool calls that may be half
+                    // parsed, and recording one would leave an assistant turn
+                    // with calls that no tool result ever answers. The next
+                    // turn would then send the provider a transcript it is
+                    // entitled to reject. Better to have not spoken.
+                    if self.cancel.load(Ordering::SeqCst) {
+                        break Outcome::Cancelled;
+                    }
                     self.trace(|seq, identity| TraceEvent::InfrastructureError {
                         seq,
                         message: e.to_string(),
@@ -1125,6 +1142,121 @@ mod tests {
 
     fn agent(model: Scripted) -> Agent {
         configured_agent(model, ApprovalMode::NonInteractive)
+    }
+
+    /// An endpoint that answers slowly and at length, over a real socket.
+    ///
+    /// The point of going through a socket rather than a `Model` double is
+    /// that the cancel has to travel the whole way: agent, configured model,
+    /// http model, the SSE read loop, and back. A double would prove that a
+    /// double returns what it was told to.
+    fn slow_sse_endpoint() -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let content_length = String::from_utf8_lossy(&request[..header_end])
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.flush();
+            // A long answer, delivered the way a local model delivers one.
+            for i in 0..400 {
+                let frame = json!({"choices":[{"delta":{"content": format!("word{i} ")}}]});
+                if write!(stream, "data: {frame}\n\n").is_err() || stream.flush().is_err() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        });
+        format!("http://{address}/v1/chat/completions")
+    }
+
+    /// Stopping a run while the model is mid-answer.
+    ///
+    /// Before the read loop watched the token, this was the ordinary case
+    /// that did not work: the agent only looked between steps and around tool
+    /// calls, so a stop pressed during a long answer did nothing until the
+    /// answer finished. Against a local model that is minutes.
+    ///
+    /// Two things are asserted, and the second matters as much as the first.
+    /// The run has to end as `Cancelled` rather than as an error, because a
+    /// deliberate stop is not a failure. And the abandoned response must
+    /// leave nothing behind: a half-arrived assistant message would have text
+    /// that stops mid-word and, on a different reply, tool calls with no
+    /// results to pair with, which is a transcript the next turn has to send
+    /// back to the provider.
+    #[test]
+    fn a_cancel_during_a_long_answer_ends_the_run_without_recording_a_half_message() {
+        let model = crate::model::HttpModel {
+            url: slow_sse_endpoint(),
+            api_key: None,
+            model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
+        }
+        .with_default_reasoning_mode(None);
+
+        let cancel = cancel_token();
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            PathBuf::from("."),
+            Arc::clone(&cancel),
+            ApprovalMode::NonInteractive,
+        );
+
+        // The stop, pressed a moment into the answer.
+        let pressed = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            pressed.store(true, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        let outcome = a.run("write me something long");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(outcome, Outcome::Cancelled),
+            "a stopped run reported \"{}\", so the surface above cannot tell a \
+             deliberate stop from a broken model",
+            outcome.describe()
+        );
+        // The endpoint has eight seconds of answer to give.
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "the run waited {elapsed:?} for an answer nobody wanted"
+        );
+        assert_eq!(
+            a.messages.iter().filter(|m| m.role == "assistant").count(),
+            0,
+            "a half-arrived answer was recorded as something the model said"
+        );
     }
 
     struct RecordingNamed {

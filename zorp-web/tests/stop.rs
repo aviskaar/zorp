@@ -159,9 +159,19 @@ async fn stopping_when_no_turn_is_running_is_a_conflict() {
     assert_eq!(status, 409);
 }
 
+/// The status alone proves nothing here: a request that reached no route at
+/// all is also a 404, so a handler that was never registered would pass a
+/// bare `assert_eq!(status, 404)`. The body is what separates "this server
+/// has no such session" from "this server has no such endpoint", and it is
+/// the second one that would mean the stop button posts into the void.
 #[tokio::test]
-async fn stopping_an_unknown_session_is_not_found() {
+async fn stopping_an_unknown_session_is_answered_by_the_stop_route_itself() {
     let addr = spawn().await;
-    let (status, _) = stop_turn(addr, "no-such-session").await;
+    let (status, body) = stop_turn(addr, "no-such-session").await;
     assert_eq!(status, 404);
+    assert_eq!(
+        body, "no such session",
+        "the 404 came from the router, not from the stop handler, so the \
+         route is not wired up at all"
+    );
 }
