@@ -14,7 +14,9 @@ pub mod detectors;
 pub mod error;
 pub mod expectations;
 pub mod experiment;
+pub mod families;
 pub mod id;
+pub mod inquiry;
 #[cfg(feature = "library")]
 pub mod library;
 pub mod partition;
