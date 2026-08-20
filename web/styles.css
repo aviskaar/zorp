@@ -830,8 +830,12 @@ button {
   color: var(--ok);
 }
 
+/* Every settled outcome that is not "allowed" looks the same: quiet. The
+   tag says which one it was. A card that keeps its waiting highlight after
+   it has been answered goes on asking a question nobody has to answer. */
 .card-approval.is-denied,
-.card-approval.is-expired {
+.card-approval.is-expired,
+.card-approval.is-stopped {
   border-color: var(--line);
   background: var(--bg-raised);
   box-shadow: none;
@@ -842,7 +846,10 @@ button {
 .card-approval.is-denied .card-tag,
 .card-approval.is-expired .glyph,
 .card-approval.is-expired .card-title,
-.card-approval.is-expired .card-tag {
+.card-approval.is-expired .card-tag,
+.card-approval.is-stopped .glyph,
+.card-approval.is-stopped .card-title,
+.card-approval.is-stopped .card-tag {
   color: var(--text-faint);
 }
 
@@ -929,6 +936,24 @@ button {
   color: #f0c2c2;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* A stop is not a failure, so it does not get the failure's red. It is still
+   a card rather than an activity line, because the reason the answer is
+   missing is the most important thing on the screen at that moment. */
+.card-stopped {
+  border-color: var(--warn-line);
+  background: linear-gradient(180deg, var(--warn-soft) 0%, rgba(245, 181, 68, 0) 90px),
+    var(--bg-raised);
+}
+
+.card-stopped .glyph,
+.card-stopped .card-title {
+  color: var(--warn);
+}
+
+.card-stopped .card-body {
+  color: var(--text-dim);
 }
 
 /* ---------------------------------------------------------------- working */
@@ -1126,6 +1151,25 @@ button {
 
 .send svg {
   stroke-width: 2.1;
+}
+
+/* One control, two icons, exactly one of them displayed. The button keeps its
+   accent pill in both states: it is the same control in the same place doing
+   the thing the composer is currently for, and a button that moves or changes
+   colour under the hand reaching for it is harder to hit, not easier to
+   understand. The square says the rest. See `src/send-control.ts`. */
+.send .stop-icon {
+  display: none;
+  fill: currentColor;
+  stroke: none;
+}
+
+.send.is-stop .send-icon {
+  display: none;
+}
+
+.send.is-stop .stop-icon {
+  display: block;
 }
 
 .send:hover:not(:disabled) {

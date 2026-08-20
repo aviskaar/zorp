@@ -47,6 +47,7 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "notice":
     case "approval_request":
     case "error":
+    case "stopped":
     case "done":
       return true;
     default: {

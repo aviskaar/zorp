@@ -69,5 +69,13 @@ pub enum EventKind {
     Error {
         message: String,
     },
+    /// A human pressed stop and the run ended because of it.
+    ///
+    /// Separate from `Error` because it is not one. The agent reports a
+    /// cancelled run as an outcome like any other, and sending that down as an
+    /// error card put "cancelled" under a "Something went wrong" heading for
+    /// something the user did on purpose. `Done` still follows: a stopped turn
+    /// is still a turn that ended.
+    Stopped,
     Done,
 }
