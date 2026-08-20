@@ -117,7 +117,8 @@ async fn main() {
         ),
     }
     let mut state = zorp_web::state::AppState::with_token(cli.token.clone())
-        .with_allowed_origins(cli.allow_origin.clone());
+        .with_allowed_origins(cli.allow_origin.clone())
+        .with_own_port(cli.port);
     if let Some(dir) = workspace {
         state = state.with_workspace(dir);
     }

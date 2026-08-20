@@ -110,6 +110,11 @@ pub struct AppState {
     /// anything that lands outside. `None` turns the artifact endpoints off
     /// entirely rather than defaulting to somewhere surprising.
     pub workspace: Option<std::path::PathBuf>,
+    /// The port this server listens on, when it is known. The turn hands it
+    /// to `Policy`, which denies commands that call back into this server:
+    /// one approved `run_command` is otherwise enough to stand the approval
+    /// gate down and make every later call unreviewed.
+    pub own_port: Option<u16>,
     /// Origins allowed to call the API from a browser. Empty means none, and
     /// empty is the default.
     ///
@@ -144,6 +149,12 @@ impl AppState {
     /// sends. It has to be asked for by name, because `null` is also the
     /// origin of a sandboxed iframe, so allowing it by default would reopen
     /// the hole this list exists to close.
+    /// Tell the state which port it is being served on.
+    pub fn with_own_port(mut self, port: u16) -> Self {
+        self.own_port = Some(port);
+        self
+    }
+
     pub fn with_allowed_origins(mut self, origins: Vec<String>) -> Self {
         self.allowed_origins = origins;
         self
