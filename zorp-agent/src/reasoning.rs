@@ -68,6 +68,10 @@ pub struct CompletionTelemetry {
     pub reasoning_parameters_sent: bool,
     pub reasoning_content_available: bool,
     pub actual_reasoning_tokens: Option<u64>,
+    /// What the provider said the request cost, when it said anything. This
+    /// is the honest input to a context meter: it describes a request that
+    /// happened, unlike `context_window::estimate_tokens`.
+    pub usage: Option<crate::context_window::TokenUsage>,
 }
 
 pub fn apply_reasoning_mode(

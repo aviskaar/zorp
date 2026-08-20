@@ -8,6 +8,7 @@ mod chat;
 #[cfg(feature = "research")]
 pub mod co_write;
 mod context;
+pub mod context_window;
 #[cfg(feature = "research")]
 pub mod critique;
 #[cfg(feature = "research")]
@@ -44,6 +45,10 @@ pub use capsule::{
 };
 pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
+pub use context_window::{
+    compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, repair_tool_calls,
+    CompactionReport, ContextBudget, ContextUsage, SeedPlan, TokenUsage, UsageSource,
+};
 pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
 pub use flavor::{
     content_hash, is_valid_flavor_name, layer_paths, named_flavor_exists, project_raw, resolve,

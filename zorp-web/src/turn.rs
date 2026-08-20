@@ -4,9 +4,30 @@ use crate::renderer::WebRenderer;
 use crate::state::{SessionState, SettingsHandle};
 use std::sync::{Arc, Mutex};
 use zorp_agent::{
-    cancel_token, Agent, ApprovalMode, HttpModel, Outcome, SqliteRecorder, Store,
-    DEFAULT_SYSTEM_PROMPT,
+    cancel_token, plan_seed, Agent, ApprovalMode, ContextBudget, HttpModel, Outcome, SeedPlan,
+    SqliteRecorder, Store, DEFAULT_SYSTEM_PROMPT,
 };
+
+/// The transcript a turn on this session starts from.
+///
+/// This function is the fix for the bug that the browser had no memory. A
+/// turn used to be a brand new `Agent` handed one message, with a recorder
+/// attached that wrote the conversation to the store and nothing that ever
+/// read it back. The sidebar and the replay endpoint read the store for
+/// display, so the transcript looked right on screen while the model was
+/// being told, every single turn, that the conversation had just started. Ask
+/// it to convert a file and then ask what it just converted and it answered
+/// "this is the start of our session".
+///
+/// The store is the source, not an in-memory agent kept alive per session.
+/// The store outlives the process; a live agent does not. Rebuilding from the
+/// record means reopening a session from the sidebar after a restart
+/// continues it, which is the same code path as continuing it a second after
+/// the last turn.
+fn seed_transcript(store: &Store, session_id: &str, budget: &ContextBudget) -> SeedPlan {
+    let stored = store.load_message_records(session_id).unwrap_or_default();
+    plan_seed(stored, system_prompt(), budget)
+}
 
 /// The system prompt this server hands the agent.
 ///
@@ -123,7 +144,7 @@ pub fn spawn_turn(
 fn run_agent(
     session_id: &str,
     message: &str,
-    renderer: Box<dyn zorp_agent::Renderer>,
+    mut renderer: Box<dyn zorp_agent::Renderer>,
     approver: Arc<WebApprover>,
     settings: &SettingsHandle,
 ) -> Result<Outcome, String> {
@@ -151,6 +172,44 @@ fn run_agent(
         .unwrap_or(30);
 
     let cwd_display = cwd.display().to_string();
+    let budget = ContextBudget::from_env();
+
+    // Persist the conversation the same way the CLI does, so the sidebar and
+    // replay survive a restart, and seed this turn from what is already
+    // there. Without a recorder the agent runs fine and remembers nothing,
+    // which is what the first version did; with a recorder and no seed it
+    // remembered nothing either, which is what the second version did.
+    let mut seed: Option<SeedPlan> = None;
+    let mut recorder: Option<Box<dyn zorp_agent::RunRecorder>> = None;
+    if let Ok(store) = Store::open_default() {
+        let seq = store.message_count(session_id).unwrap_or(0);
+        if seq == 0 {
+            let _ = store.create_session(session_id, message, &cwd_display, "");
+        }
+        seed = Some(seed_transcript(&store, session_id, &budget));
+        recorder = Some(Box::new(SqliteRecorder::new(
+            store,
+            session_id.to_string(),
+            seq,
+            0,
+        )));
+    }
+
+    // Say what compaction took before the turn starts, not after, so it reads
+    // as a fact about this request rather than as commentary on the answer.
+    if let Some(plan) = &seed {
+        if let Some(text) = plan.report.notice() {
+            renderer.notice(&text);
+        }
+        let messages: Vec<zorp_agent::Message> =
+            plan.records.iter().map(|r| r.message.clone()).collect();
+        renderer.context(&zorp_agent::ContextUsage {
+            used_tokens: zorp_agent::estimate_tokens(&messages),
+            source: zorp_agent::UsageSource::Estimated,
+            limit_tokens: budget.limit_tokens,
+        });
+    }
+
     let mut agent = Agent::new(
         Box::new(model),
         system_prompt(),
@@ -159,23 +218,20 @@ fn run_agent(
         cancel_token(),
         ApprovalMode::Interactive(approver),
     )
+    .with_context_budget(budget)
     .register_builtins_filtered(None)
     .with_renderer(renderer);
 
-    // Persist the conversation the same way the CLI does, so the sidebar and
-    // replay survive a restart. Without a recorder the agent runs fine and
-    // remembers nothing, which is what the first version did.
-    if let Ok(store) = Store::open_default() {
-        let seq = store.message_count(session_id).unwrap_or(0);
-        if seq == 0 {
-            let _ = store.create_session(session_id, message, &cwd_display, "");
-        }
-        agent = agent.with_recorder(Box::new(SqliteRecorder::new(
-            store,
-            session_id.to_string(),
-            seq,
-            0,
-        )));
+    // The seed replaces the transcript wholesale, so it has to land before
+    // the recorder: `with_message_records` sets how much the agent believes
+    // is already persisted, and the recorder's own counter starts from what
+    // the store actually holds. Attaching the recorder first would leave the
+    // agent recording the whole replayed history a second time.
+    if let Some(plan) = seed {
+        agent = agent.with_message_records(plan.records);
+    }
+    if let Some(recorder) = recorder {
+        agent = agent.with_recorder(recorder);
     }
 
     Ok(agent.run(message))
@@ -184,6 +240,200 @@ fn run_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zorp_agent::{Message, ToolCall};
+
+    /// A store on disk in a fresh directory, so tests never touch the
+    /// developer's real session database.
+    fn temp_store(name: &str) -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "zorp-web-turn-{name}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.db");
+        let store = Store::open_at(&path).unwrap();
+        (store, dir)
+    }
+
+    fn record_all(store: &mut Store, id: &str, messages: &[Message]) {
+        store.create_session(id, "a task", "/tmp", "m").unwrap();
+        for (seq, m) in messages.iter().enumerate() {
+            store.record_message(id, seq as i64, m).unwrap();
+        }
+    }
+
+    fn texts(plan: &SeedPlan) -> Vec<String> {
+        plan.records
+            .iter()
+            .map(|r| r.message.text().into_owned())
+            .collect()
+    }
+
+    /// The bug, as a test.
+    ///
+    /// A user asked zorp to convert a file, it did, and the very next turn it
+    /// said "I haven't converted any file. This is the start of our session."
+    /// A turn must see the conversation that came before it.
+    #[test]
+    fn a_turn_sees_the_previous_turns_of_its_session() {
+        let (mut store, dir) = temp_store("history");
+        record_all(
+            &mut store,
+            "s1",
+            &[
+                Message::system("an older prompt"),
+                Message::user("convert notes.md to notes.pdf with pandoc"),
+                Message::assistant("Converted notes.md to notes.pdf."),
+            ],
+        );
+
+        let plan = seed_transcript(&store, "s1", &ContextBudget::default());
+
+        let seen = texts(&plan);
+        assert!(
+            seen.iter()
+                .any(|t| t.contains("convert notes.md to notes.pdf")),
+            "the turn cannot see what the user asked for last time: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|t| t.contains("Converted notes.md")),
+            "the turn cannot see what it answered last time: {seen:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The prompt is the harness's to set. A session recorded before a prompt
+    /// change must not keep re-sending the old one, and the several stored
+    /// copies the server used to write must collapse back to one.
+    #[test]
+    fn a_seeded_turn_leads_with_the_current_system_prompt_once() {
+        let (mut store, dir) = temp_store("prompt");
+        record_all(
+            &mut store,
+            "s1",
+            &[
+                Message::system("a careful assistant"),
+                Message::user("hello"),
+                Message::assistant("hi"),
+                Message::system("a careful assistant"),
+                Message::user("still there?"),
+            ],
+        );
+
+        let plan = seed_transcript(&store, "s1", &ContextBudget::default());
+
+        let roles: Vec<&str> = plan
+            .records
+            .iter()
+            .map(|r| r.message.role.as_str())
+            .collect();
+        assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
+        assert_eq!(plan.records[0].message.text(), system_prompt());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A stored transcript can be cut off between an assistant turn that
+    /// announced a tool call and the result of that call: kill the server at
+    /// the wrong moment and that is exactly what is on disk. Replayed
+    /// unrepaired, providers reject the whole request, so reopening the
+    /// session would fail with nothing on screen to explain it.
+    #[test]
+    fn a_seeded_turn_never_replays_a_dangling_tool_call() {
+        let (mut store, dir) = temp_store("dangling");
+        record_all(
+            &mut store,
+            "s1",
+            &[
+                Message::system("prompt"),
+                Message::user("convert notes.md"),
+                Message::assistant_with_calls(
+                    "running pandoc",
+                    vec![ToolCall {
+                        id: "call_1".into(),
+                        name: "run_command".into(),
+                        arguments: serde_json::json!({"command": "pandoc notes.md"}),
+                    }],
+                ),
+            ],
+        );
+
+        let plan = seed_transcript(&store, "s1", &ContextBudget::default());
+
+        let messages: Vec<Message> = plan.records.iter().map(|r| r.message.clone()).collect();
+        let announced: Vec<&str> = messages
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.id.as_str()))
+            .collect();
+        for id in announced {
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(id)),
+                "tool call {id} has no result and the provider will refuse the request"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A session that has never run yet still gets a system message, and
+    /// nothing else.
+    #[test]
+    fn a_brand_new_session_seeds_only_the_system_prompt() {
+        let (store, dir) = temp_store("fresh");
+
+        let plan = seed_transcript(&store, "unknown", &ContextBudget::default());
+
+        assert_eq!(plan.records.len(), 1);
+        assert_eq!(plan.records[0].message.role, "system");
+        assert!(plan.report.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Compaction changes what is sent. It must never change what was said:
+    /// the store is the durable record and `zorp-track` treats a record as
+    /// evidence.
+    #[test]
+    fn seeding_never_rewrites_the_stored_record() {
+        let (mut store, dir) = temp_store("record");
+        let stored = vec![
+            Message::system("prompt"),
+            Message::user("old question ".repeat(80)),
+            Message::assistant_with_calls(
+                "working",
+                vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "a"}),
+                }],
+            ),
+            Message::tool_result("c1", "a very long tool result ".repeat(200)),
+            Message::assistant("old answer"),
+            Message::user("the newest question"),
+        ];
+        record_all(&mut store, "s1", &stored);
+        let before = store.load_messages("s1").unwrap();
+
+        let plan = seed_transcript(
+            &store,
+            "s1",
+            &ContextBudget::default().with_limit(Some(500)),
+        );
+
+        assert!(
+            !plan.report.is_empty(),
+            "this case is meant to force compaction"
+        );
+        assert_eq!(
+            store.load_messages("s1").unwrap(),
+            before,
+            "compaction rewrote the durable transcript"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// The browser is where this went wrong in front of a user, so the
     /// browser's own prompt gets its own test rather than relying on the

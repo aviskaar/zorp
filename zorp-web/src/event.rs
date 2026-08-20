@@ -48,6 +48,24 @@ pub enum EventKind {
         tool: String,
         arguments: String,
     },
+    /// How full the context window is.
+    ///
+    /// `source` is load bearing and must reach the page: `reported` is what
+    /// the provider said the last request cost, `estimated` is zorp counting
+    /// bytes over four. A meter that draws them identically is claiming a
+    /// precision it does not have.
+    ///
+    /// `limit_tokens` is absent when nobody has said how large the window is,
+    /// which is the default. zorp talks to arbitrary endpoints and there is no
+    /// reliable way to ask one, so it never guesses; the browser then shows
+    /// what was used and says the window is unset instead of inventing a
+    /// denominator.
+    Context {
+        used_tokens: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit_tokens: Option<u64>,
+        source: String,
+    },
     Error {
         message: String,
     },

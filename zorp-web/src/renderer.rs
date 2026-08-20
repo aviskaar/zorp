@@ -92,6 +92,14 @@ impl Renderer for WebRenderer {
             text: text.to_string(),
         });
     }
+
+    fn context(&mut self, usage: &zorp_agent::ContextUsage) {
+        self.emit(EventKind::Context {
+            used_tokens: usage.used_tokens,
+            limit_tokens: usage.limit_tokens,
+            source: usage.source.as_str().to_string(),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +167,40 @@ mod tests {
         let mut r = WebRenderer::new(tx);
         drop(rx);
         r.assistant("nobody is listening");
+    }
+
+    /// The browser must be able to tell a measurement from a guess, so the
+    /// source travels with the number rather than being inferred from it.
+    #[test]
+    fn context_usage_carries_where_its_number_came_from() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut r = WebRenderer::new(tx);
+        r.context(&zorp_agent::ContextUsage {
+            used_tokens: 1234,
+            source: zorp_agent::UsageSource::Reported,
+            limit_tokens: Some(8192),
+        });
+        r.context(&zorp_agent::ContextUsage {
+            used_tokens: 99,
+            source: zorp_agent::UsageSource::Estimated,
+            limit_tokens: None,
+        });
+        drop(r);
+
+        let events: Vec<Event> = rx.iter().collect();
+        let json: Vec<String> = events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        assert!(json[0].contains("\"type\":\"context\""), "{}", json[0]);
+        assert!(json[0].contains("\"source\":\"reported\""), "{}", json[0]);
+        assert!(json[0].contains("\"limit_tokens\":8192"), "{}", json[0]);
+        assert!(json[1].contains("\"source\":\"estimated\""), "{}", json[1]);
+        assert!(
+            !json[1].contains("limit_tokens"),
+            "an unknown window must not arrive as a number: {}",
+            json[1]
+        );
     }
 
     #[test]

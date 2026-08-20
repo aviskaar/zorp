@@ -34,9 +34,12 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "assistant_delta":
     case "assistant":
       return false;
-    // Status, not content.
+    // Status, not content. The context meter lives in the topbar and puts
+    // nothing in the transcript, so an answer arriving while it updates must
+    // not be cut in two.
     case "working":
     case "working_done":
+    case "context":
       return false;
     // Anything a reader can see.
     case "tool":

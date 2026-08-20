@@ -104,6 +104,7 @@ is agent driven shell access to the machine it runs on.
 |---|---|
 | `src/api.ts` | Typed client for every endpoint, plus `streamEvents` over `EventSource`. Exports the event union |
 | `src/main.ts` | The UI. Message list, composer, sidebar, activity lines, approval cards |
+| `src/context-meter.ts` | The context meter's wording and thresholds. Pure, so the honesty rules are testable |
 | `styles.css` | One hand written stylesheet. No framework |
 | `index.html` | The shell, and the config block for `ZORP_API_BASE` |
 
@@ -120,8 +121,28 @@ a `type`. The UI renders them like this:
 | `notice` | A dim activity line |
 | `assistant` | A message block. Fenced code blocks and inline code are picked out |
 | `approval_request` | The approval card |
+| `context` | The context meter in the topbar. See below |
 | `error` | An error block in the transcript. Never swallowed |
 | `done` | Ends the turn |
+
+### The context meter
+
+`context` frames carry `used_tokens`, an optional `limit_tokens`, and a
+`source` of `reported` or `estimated`. All three matter.
+
+`reported` is what the provider said the last request cost. `estimated` is
+zorp dividing byte lengths by four, which is what happens when the endpoint
+reports no usage at all, as many local ones do. The meter marks an estimate
+with a tilde and says so in full on hover, because a measurement and a guess
+must not be drawn the same way.
+
+`limit_tokens` is absent unless `ZORP_CONTEXT_TOKENS` is set on the server.
+zorp talks to arbitrary OpenAI-compatible and Anthropic endpoints and none of
+them can be asked how large their window is, so it never guesses one. With no
+window configured the meter shows the token count, no percentage and no bar,
+and names the variable to set. Setting it also turns on token driven
+compaction; without it the 512 KiB cap on accumulated tool results is the only
+thing keeping a long run inside the window.
 
 Every frame's SSE event id is its `seq`, so a dropped connection resumes with
 `Last-Event-ID` and `EventSource` handles the retry itself. Frames at or below

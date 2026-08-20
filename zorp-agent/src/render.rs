@@ -305,6 +305,14 @@ pub trait Renderer: Send {
     fn verify(&mut self, command: &str, passed: bool);
     fn notice(&mut self, text: &str);
     fn assistant(&mut self, text: &str);
+    /// How full the context window is after the request that just went out.
+    ///
+    /// Empty by default. A terminal renderer that says nothing about it is
+    /// unaffected; the browser draws a meter from it. Read `usage.source`
+    /// before showing the number: it is either what the provider reported for
+    /// a request that happened, or zorp's own arithmetic on string lengths,
+    /// and those two must not be shown as the same kind of fact.
+    fn context(&mut self, _usage: &crate::context_window::ContextUsage) {}
 }
 
 /// Discards all activity. Used for subagents running on a background thread,

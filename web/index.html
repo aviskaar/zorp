@@ -113,6 +113,19 @@
             </svg>
             <span>Files</span>
           </button>
+          <!--
+            How much of the model's context window is left. Hidden until a
+            turn has actually told us something: an empty meter reading zero
+            would be a claim, and there is nothing to claim yet. The wording,
+            including whether the number is a measurement or an estimate,
+            comes from web/src/context-meter.ts.
+          -->
+          <div class="context-meter" id="context-meter" data-state="unknown" hidden>
+            <span class="context-bar" aria-hidden="true"
+              ><i id="context-bar-fill"></i
+            ></span>
+            <span id="context-meter-text"></span>
+          </div>
           <div class="status" id="status" data-state="idle">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="status-text">idle</span>

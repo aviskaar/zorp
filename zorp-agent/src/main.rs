@@ -2248,6 +2248,16 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
 
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
+    // The record is replayed through the same planner the browser uses, so
+    // both surfaces resume a session the same way: the current system prompt
+    // rather than whatever one was in force when the session started, no
+    // dangling tool call for the provider to refuse, and the oldest material
+    // dropped first when the window will not hold it.
+    let budget = zorp_agent::ContextBudget::from_env();
+    let plan = zorp_agent::plan_seed(messages, &system, &budget);
+    if let Some(notice) = plan.report.notice() {
+        eprintln!("zorp-agent: {notice}");
+    }
     let mut agent = Agent::new(
         Box::new(model),
         system,
@@ -2256,9 +2266,10 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         cancel,
         approval,
     )
+    .with_context_budget(budget)
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
-    .with_message_records(messages);
+    .with_message_records(plan.records);
 
     agent = attach_mcp_tools(agent, overrides, false);
 
