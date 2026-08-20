@@ -110,6 +110,16 @@ pub struct AppState {
     /// anything that lands outside. `None` turns the artifact endpoints off
     /// entirely rather than defaulting to somewhere surprising.
     pub workspace: Option<std::path::PathBuf>,
+    /// Origins allowed to call the API from a browser. Empty means none, and
+    /// empty is the default.
+    ///
+    /// Same-origin is unaffected either way: when this server also serves the
+    /// UI, the page and the API share an origin and no CORS check happens.
+    /// This exists for the container split, where the UI comes from nginx and
+    /// its origin has to be named. It used to be "any origin", which on the
+    /// ordinary loopback install, where there is no token, meant any page the
+    /// user visited could drive the agent and read what it produced.
+    pub allowed_origins: Vec<String>,
 }
 
 impl AppState {
@@ -126,6 +136,17 @@ impl AppState {
             settings: Arc::new(Mutex::new(crate::settings::SettingsState::seeded_from_env())),
             ..AppState::default()
         }
+    }
+
+    /// Name the origins a browser may call the API from.
+    ///
+    /// `null` is accepted and is what `index.html` opened straight off disk
+    /// sends. It has to be asked for by name, because `null` is also the
+    /// origin of a sandboxed iframe, so allowing it by default would reopen
+    /// the hole this list exists to close.
+    pub fn with_allowed_origins(mut self, origins: Vec<String>) -> Self {
+        self.allowed_origins = origins;
+        self
     }
 
     /// Point the artifact endpoints at a directory. `main.rs` passes the

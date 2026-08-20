@@ -20,6 +20,16 @@ struct Cli {
     /// install.sh uses to choose where to put them.
     #[arg(long)]
     ui_dir: Option<PathBuf>,
+    /// Origin a browser may call the API from, repeatable. Needed only when
+    /// the UI is served from somewhere other than this server, which is the
+    /// container split. Pass `null` for an index.html opened off disk.
+    ///
+    /// Nothing is allowed by default. A page served by this server shares
+    /// its origin and needs no entry here; naming an origin is how a
+    /// different one gets in, and until it is named it cannot drive the
+    /// agent.
+    #[arg(long = "allow-origin", value_name = "ORIGIN")]
+    allow_origin: Vec<String>,
 }
 
 fn is_loopback(bind: &str) -> bool {
@@ -106,7 +116,8 @@ async fn main() {
              so the artifact pane is switched off"
         ),
     }
-    let mut state = zorp_web::state::AppState::with_token(cli.token.clone());
+    let mut state = zorp_web::state::AppState::with_token(cli.token.clone())
+        .with_allowed_origins(cli.allow_origin.clone());
     if let Some(dir) = workspace {
         state = state.with_workspace(dir);
     }

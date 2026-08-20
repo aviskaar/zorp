@@ -41,6 +41,48 @@ jobs:
       - name: Test workspace (excluding zorp-track)
         run: cargo test --workspace --exclude zorp-track --locked
 
+  msrv:
+    # `rust-version` in the root manifest is a promise, and until this job
+    # existed nothing checked it. Every other job here installs `stable`, so
+    # the declared floor sat at 1.82 while the dependency tree had walked to
+    # 1.95: `cargo +1.82 check --workspace --locked` failed on `hashbrown`
+    # wanting Cargo's `edition2024` feature, and no build ever went red.
+    #
+    # This installs exactly the declared version and compiles against it, so
+    # a dependency that raises the floor fails here instead of failing on a
+    # user's machine. It reads the version out of the manifest rather than
+    # hardcoding it, so the two cannot disagree.
+    #
+    # `check`, not `test`: this asks whether the workspace compiles on the
+    # oldest supported toolchain, and running the suite a second time buys
+    # nothing the other jobs do not already cover. zorp-track is excluded
+    # for the same reason as the jobs above, it builds DuckDB from source.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the declared MSRV
+        id: msrv
+        run: |
+          set -eu
+          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "no rust-version in Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check the workspace on the declared MSRV
+        run: cargo check --workspace --exclude zorp-track --all-targets --locked
+
   clippy:
     # Clippy had never run here. Eleven warnings had accumulated by the time
     # anyone looked, including dead test scaffolding and a lock held across

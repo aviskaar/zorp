@@ -73,8 +73,9 @@ UI defaults to talking to its own origin.
 
 You can also open `web/index.html` straight off disk. A page loaded over
 `file:` has no origin to call, so it falls back to `http://127.0.0.1:7777`.
-That is a cross origin request, so the server has to send permissive CORS
-headers for it to work.
+That is a cross origin request, and the server allows no cross origin caller
+unless you name it, so start it with `--allow-origin null`. A `file:` page
+sends `Origin: null`.
 
 ## Pointing it at a server on another origin
 
@@ -88,8 +89,18 @@ in `index.html` for exactly this:
 ```
 
 Then serve `index.html`, `styles.css`, and `dist/` from wherever you like: an
-nginx container, a static bucket, Cloudflare Pages. The server needs to allow
-that origin in its CORS headers.
+nginx container, a static bucket, Cloudflare Pages. Start the server with that
+origin named, repeating the flag for each one:
+
+```bash
+zorp-web --allow-origin https://zorp-ui.example
+```
+
+Nothing is allowed by default, and that is deliberate. `POST /turn` runs an
+agent that executes commands on the machine the server is on, and on a
+loopback bind there is no token, so an API that answered any origin meant any
+page in the browser could drive it. A page this server serves itself shares
+its origin and needs no flag.
 
 The server itself cannot move to a Workers style runtime. It needs a filesystem
 and the ability to spawn processes, which is the whole point of the agent. The

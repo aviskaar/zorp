@@ -31,9 +31,20 @@ license = "MIT"
 # tag and manifest disagree. erbga is deliberately not on this version;
 # it is standalone prior-work and versions on its own terms.
 version = "0.3.2"
-# Floor is set by Option::is_none_or (stable 1.82), used in zorp-agent
-# and zorp-eval. Raise deliberately, not by accident.
-rust-version = "1.82"
+# The floor is set by the dependency tree, not by the code. `merman`, a
+# non-optional dependency of zorp-agent, declares 1.95, and below that
+# `globset` and `icu_collections` want 1.88 while `hashbrown` needs Cargo's
+# `edition2024` feature (stable in 1.85). The code itself would still build
+# on 1.82, which is what this said for a long time while nothing checked it:
+# `cargo +1.82 check --workspace --locked` failed on `hashbrown` and every
+# CI job used `stable`, so the number drifted thirteen minor versions
+# without a single build going red.
+#
+# The `msrv` job in CI now builds with exactly this toolchain, so raising it
+# is a deliberate edit rather than something that happens quietly when a
+# dependency does it for us. Note there is no headroom left: 1.95 is current
+# stable, so anyone on an older Rust cannot build zorp at all.
+rust-version = "1.95"
 
 # Shared dependencies. Declared once here so feature lists cannot drift
 # apart between crates; members refer to them with `workspace = true`.
