@@ -450,13 +450,19 @@ pub struct PairEvidence {
 
 /// The one interface, with its two backends behind it.
 ///
+/// `pub(crate)` because the layer has two callers by design, one on
+/// each side of the calibration gate: confounded conditions here, and
+/// anomaly families in `families`. Community detection entering the
+/// subsystem once is the point of the layer, and a second
+/// implementation would be two things that drift.
+///
 /// Groups come back sorted inside and out, whichever backend ran, so a
 /// caller cannot tell them apart by shape alone. That is what makes the
 /// two comparable in the band where both can run, and comparing them is
 /// the point: the exact result is a continuous regression check on the
 /// search against proven optimality, which four fixed benchmark networks
 /// cannot give.
-fn partition_graph(
+pub(crate) fn partition_graph(
     n_vertices: usize,
     edges: &[(usize, usize)],
     backend: Backend,
