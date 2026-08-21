@@ -100,7 +100,15 @@ fn a_local_models_intervals_are_scored_against_measured_truth() {
         )
         .unwrap();
 
-    let files = subjects(&root, 60);
+    // Size the corpus from the environment, so a paid endpoint can be
+    // smoke tested for a few cents before committing to the full run.
+    // Below 50 the verdict is NotEnoughEvidence by design, which is the
+    // correct answer and not a reason to raise it.
+    let want: usize = std::env::var("ZORP_CAL_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+    let files = subjects(&root, want);
     println!("asking about {} files, model {model_name}\n", files.len());
 
     let mut asked = 0usize;
