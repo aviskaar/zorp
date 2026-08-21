@@ -533,6 +533,18 @@ pub trait Model: Send + Sync {
 
     fn clone_box(&self) -> Box<dyn Model>;
 
+    /// The model this client talks to, for the record.
+    ///
+    /// `None` when there is nothing meaningful to name, which is the
+    /// default and covers every test double. aryabhatta records this as
+    /// a condition, and a condition it invents would be worse than a
+    /// condition it lacks: an experiment tagged with a model that was
+    /// not used makes two runs look different when they were the same,
+    /// and confounding is exactly what the search layer is looking for.
+    fn identity(&self) -> Option<&str> {
+        None
+    }
+
     fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
         None
     }
@@ -662,6 +674,14 @@ fn record_reasoning_request_fields(
 impl Model for HttpModel {
     fn clone_box(&self) -> Box<dyn Model> {
         Box::new(self.clone())
+    }
+
+    fn identity(&self) -> Option<&str> {
+        // Empty is not a name. An endpoint that was configured without
+        // one records no condition rather than a blank one, because a
+        // blank string would group every such run together as though
+        // they shared a model.
+        Some(self.model.as_str()).filter(|m| !m.trim().is_empty())
     }
 
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
@@ -856,6 +876,13 @@ impl Model for ConfiguredHttpModel {
         Box::new(self.clone())
     }
 
+    /// Delegated, because this only adds a reasoning default. Answering
+    /// for itself would make the same endpoint record two different
+    /// model names depending on how it was wrapped.
+    fn identity(&self) -> Option<&str> {
+        self.inner.identity()
+    }
+
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
         self.complete_with_options(
             messages,
@@ -915,6 +942,63 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn named(model: &str) -> HttpModel {
+        HttpModel {
+            url: "http://localhost/v1/chat/completions".into(),
+            api_key: None,
+            model: model.into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
+        }
+    }
+
+    /// aryabhatta records this as a condition, so a blank name would
+    /// group every unnamed endpoint's runs together as though they
+    /// shared a model. Removing the emptiness filter makes the second
+    /// half of this fail.
+    #[test]
+    fn a_model_identity_is_a_name_or_nothing() {
+        assert_eq!(named("claude-opus-5").identity(), Some("claude-opus-5"));
+
+        for blank in ["", "   ", "\t\n"] {
+            assert_eq!(
+                named(blank).identity(),
+                None,
+                "{blank:?} is not a model name"
+            );
+        }
+    }
+
+    /// The reasoning wrapper only adds a default, so it must not answer
+    /// for itself. Two runs against one endpoint recording two
+    /// different model names would be invented confounding, which is
+    /// exactly what the search layer hunts for.
+    #[test]
+    fn the_configured_wrapper_reports_the_model_it_wraps() {
+        let wrapped = ConfiguredHttpModel {
+            inner: named("claude-opus-5"),
+            default_reasoning_mode: None,
+        };
+
+        assert_eq!(wrapped.identity(), named("claude-opus-5").identity());
+    }
+
+    /// A test double names nothing, so nothing is recorded for it.
+    #[test]
+    fn a_model_that_names_nothing_reports_none() {
+        struct Anonymous;
+        impl Model for Anonymous {
+            fn complete(&self, _: &[Message], _: &[Value]) -> Result<AssistantMessage, BoxErr> {
+                unreachable!("identity only")
+            }
+            fn clone_box(&self) -> Box<dyn Model> {
+                Box::new(Anonymous)
+            }
+        }
+
+        assert_eq!(Anonymous.identity(), None);
+    }
 
     struct EnvGuard(Vec<(String, Option<String>)>);
 
