@@ -436,3 +436,37 @@ fn checkpoint_hard_error_still_applies_inside_a_real_project() {
         .unwrap();
     assert!(approved);
 }
+
+/// The WAL is as much a local artifact as the database it belongs to,
+/// but `zorp.duckdb` as a gitignore pattern matches that one name and
+/// nothing else. A real `investigate` run left `zorp.duckdb.wal`
+/// sitting in `git status` as untracked, which is how this was found.
+///
+/// Asserted through git itself rather than by matching strings in the
+/// ignore file: the question is whether git ignores the file, and only
+/// git answers that.
+#[test]
+fn the_run_record_and_its_wal_are_both_ignored() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    let _project = Project::open(dir.path()).unwrap();
+
+    // Written directly rather than by provoking DuckDB, so the test does
+    // not depend on when DuckDB decides a checkpoint is due. The
+    // quarantine name is the one `open_store_recovering_from_corruption`
+    // builds, and it leaks the same way.
+    std::fs::write(dir.path().join(".zorp/zorp.duckdb.wal"), b"").unwrap();
+    std::fs::write(dir.path().join(".zorp/zorp.duckdb.corrupted-1234"), b"").unwrap();
+
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    let status = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !status.contains("zorp.duckdb"),
+        "git sees a local store artifact as untracked:\n{status}"
+    );
+}

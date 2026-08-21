@@ -5,7 +5,13 @@ use crate::TrackError;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const GITIGNORE_CONTENT: &str = "zorp.duckdb\nlancedb/\n";
+// A glob, not the bare name: DuckDB writes `zorp.duckdb.wal` beside the
+// database, and `open_store_recovering_from_corruption` renames a bad
+// one to `zorp.duckdb.corrupted-<millis>`. `zorp.duckdb` as a pattern
+// matches that one name and neither of those, so both used to surface
+// as untracked in a real run. `tracks/*/prereg.md` stays tracked, which
+// is the point of ignoring by name rather than ignoring `.zorp/`.
+const GITIGNORE_CONTENT: &str = "zorp.duckdb*\nlancedb/\n";
 
 /// Substrings that show up in DuckDB's error message when `Store::open`
 /// fails because another connection already holds the file's lock (a
