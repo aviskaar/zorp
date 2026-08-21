@@ -69,6 +69,44 @@ CREATE TABLE IF NOT EXISTS expectations (
     recorded_at BIGINT NOT NULL,
     seq BIGINT NOT NULL
 );
+-- aryabhatta, step 6. The ledger. One row per anomaly that cleared the
+-- re-run gate, never deleted, and never written except through
+-- `record_gate_verdict`, so nothing reaches it without being gated.
+-- `explanation` is model-authored text; integrity rule 5 forbids any
+-- detector and anything in the search layer from reading it.
+CREATE TABLE IF NOT EXISTS anomalies (
+    id TEXT PRIMARY KEY,
+    track_id TEXT NOT NULL,
+    experiment_id TEXT NOT NULL,
+    expectation_id TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    expected_value DOUBLE NOT NULL,
+    interval_low DOUBLE NOT NULL,
+    interval_high DOUBLE NOT NULL,
+    observed_value DOUBLE NOT NULL,
+    surprise_sigma DOUBLE NOT NULL,
+    gate_outcome TEXT NOT NULL,
+    status TEXT NOT NULL,
+    explanation TEXT,
+    created_at BIGINT NOT NULL,
+    seq BIGINT NOT NULL
+);
+-- aryabhatta, step 6. Every gate run, admitted or not. Rejected
+-- anomalies are counted rather than discarded silently, which is the
+-- only way the noisy TV rate becomes measurable: a rejection that
+-- leaves no row cannot be counted later.
+CREATE TABLE IF NOT EXISTS gate_runs (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    expectation_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    repeats BIGINT NOT NULL,
+    admitted BOOLEAN NOT NULL,
+    anomaly_id TEXT,
+    created_at BIGINT NOT NULL,
+    seq BIGINT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS checkpoints (
     id TEXT PRIMARY KEY,
     track_id TEXT NOT NULL,
@@ -117,4 +155,6 @@ CREATE INDEX IF NOT EXISTS idx_checkpoints_track_id ON checkpoints(track_id);
 CREATE INDEX IF NOT EXISTS idx_validations_track_id ON validations(track_id);
 CREATE INDEX IF NOT EXISTS idx_critiques_track_id ON critiques(track_id);
 CREATE INDEX IF NOT EXISTS idx_conditions_experiment_id ON conditions(experiment_id);
-CREATE INDEX IF NOT EXISTS idx_expectations_experiment_id ON expectations(experiment_id);";
+CREATE INDEX IF NOT EXISTS idx_expectations_experiment_id ON expectations(experiment_id);
+CREATE INDEX IF NOT EXISTS idx_anomalies_track_id ON anomalies(track_id);
+CREATE INDEX IF NOT EXISTS idx_gate_runs_experiment_id ON gate_runs(experiment_id);";

@@ -35,6 +35,18 @@ pub const CHECKPOINT_HABITUATION_MIN_SUPPORT: u64 = 8;
 /// claim.
 pub const EXPERIMENT_MIN_SUPPORT: u64 = 12;
 
+/// Columns holding model-authored text.
+///
+/// Integrity rule 5: no detector, and nothing in the search layer, may
+/// read one of these. Without the rule the agent's own speculation
+/// becomes tomorrow's observation, and the system develops the ability
+/// to be surprised by itself.
+///
+/// One list, in one place, because the rule binds three modules. A
+/// second copy would drift the first time a model-authored column was
+/// added, and the drift would be silent.
+pub const MODEL_AUTHORED_COLUMNS: [&str; 3] = ["decision_notes", "prompt_shown", "explanation"];
+
 /// Something the record shows has never varied, with the evidence for
 /// saying so.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +247,7 @@ mod tests {
     use crate::checkpoint::{CheckpointMode, Decider};
     use crate::experiment::MetricValue;
     use crate::prereg::ThresholdDirection;
+    use crate::test_support::table_counts;
     use crate::track::Store;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -565,33 +578,6 @@ mod tests {
         assert!(store.boredom_findings().unwrap().is_empty());
     }
 
-    /// Every table in the store and how many rows it holds, so a test
-    /// can compare the whole database before and after.
-    fn table_counts(store: &Store) -> Vec<(String, i64)> {
-        let mut stmt = store
-            .conn
-            .prepare(
-                "SELECT table_name FROM information_schema.tables \
-                 WHERE table_schema = 'main' ORDER BY table_name",
-            )
-            .unwrap();
-        let names: Vec<String> = stmt
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(|r| r.unwrap())
-            .collect();
-        names
-            .into_iter()
-            .map(|name| {
-                let count: i64 = store
-                    .conn
-                    .query_row(&format!("SELECT COUNT(*) FROM {name}"), [], |r| r.get(0))
-                    .unwrap();
-                (name, count)
-            })
-            .collect()
-    }
-
     /// Integrity rule 4. Detectors perform reads only. Nothing in this
     /// module inserts, updates, deletes or creates, and the cheapest way
     /// to hold it to that is to weigh the whole database twice.
@@ -624,7 +610,7 @@ mod tests {
         for (detector, _, sql) in
             every_query(CHECKPOINT_HABITUATION_MIN_SUPPORT, EXPERIMENT_MIN_SUPPORT)
         {
-            for forbidden in ["decision_notes", "prompt_shown"] {
+            for forbidden in MODEL_AUTHORED_COLUMNS {
                 assert!(
                     !sql.contains(forbidden),
                     "{detector} names {forbidden}: {sql}"

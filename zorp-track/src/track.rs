@@ -420,11 +420,13 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "anomalies",
                 "checkpoints",
                 "conditions",
                 "critiques",
                 "expectations",
                 "experiments",
+                "gate_runs",
                 "metrics",
                 "preregistrations",
                 "tracks",
