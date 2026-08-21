@@ -36,6 +36,10 @@
 //!
 //! `ZORP_CAL_N` caps how many directories are asked about.
 //! `ZORP_CAL_STEPS` caps agent steps per forecast, default 12.
+//!
+//! Compiles to nothing outside the `research` feature, like every
+//! other test here that reaches for `investigate` or `zorp-track`.
+#![cfg(feature = "research")]
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

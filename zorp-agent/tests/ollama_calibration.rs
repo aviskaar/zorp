@@ -24,6 +24,10 @@
 //!   ZORP_BASE_URL=http://localhost:11434/v1 ZORP_MODEL=qwen3:4b \
 //!     cargo test -p zorp-agent --release --features research \
 //!       --test ollama_calibration -- --ignored --nocapture
+//!
+//! Compiles to nothing outside the `research` feature, like every
+//! other test here that reaches for `investigate` or `zorp-track`.
+#![cfg(feature = "research")]
 
 use zorp_agent::investigate::forecast;
 use zorp_agent::HttpModel;
