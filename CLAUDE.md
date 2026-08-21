@@ -32,18 +32,24 @@ resulting artifact, deliver it in the right form.
   behind the `research` feature. All four are built and tested
   (deliver most recently).
 - `aryabhatta` is zorp's discovery layer, and it lives in `zorp-track`
-  as five modules: `conditions`, `expectations`, `calibration`,
-  `detectors`, `partition`. It is record plus readers, not a fifth
-  capability, and it ships no CLI command on purpose. Two rules hold the
-  whole thing up and neither is negotiable. Detection is code and the
-  model only interprets, the same split `critique` already uses. And no
-  detector, and nothing in the search layer, may read a column holding
+  as nine modules: `conditions`, `expectations`, `calibration`,
+  `detectors`, `partition`, `rerun`, `anomalies`, `families`, and
+  `inquiry`. It is record plus readers, not a fifth capability, and it
+  ships no CLI command on purpose. Two rules hold the whole thing up and
+  neither is negotiable. Detection is code and the model only
+  interprets, the same split `critique` already uses. And no detector,
+  and nothing in the search layer, may read a column holding
   model-authored text, or the agent's own speculation becomes tomorrow's
   observation. `expectations` refuses a forecast once its outcome
   exists, which is the one guarantee that stops a prediction being a
   postdiction; it has a mutation test and that test is the point of it.
-  `calibration` is a go/no-go: if the stated intervals do not have real
-  coverage, stop and do not build the ledger. See
+  `calibration` is a go/no-go for whoever builds on the ledger, and no
+  code enforces it. Nothing consults a calibration result before the
+  anomaly ledger gets written, so bad coverage will not stop anything on
+  its own. `CalibrationReport::verdict` turns a report into a go/no-go,
+  but a caller still has to choose to ask for it. If the stated
+  intervals do not have real coverage, the right move is to stop and not
+  build the ledger, and that is a decision a person makes. See
   `docs/superpowers/specs/2026-08-19-anomaly-driven-inquiry-design.md`
   and `docs/DECISIONS.md` (2026-08-19, 2026-08-20) before changing any
   of it.
@@ -97,17 +103,15 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that. Skills are not capsules; the same entry says why both exist.
-- `erbga/` is neither inherited harness code nor a zorp capability, so
-  none of the bullets above applies to it. It is a standalone,
-  zero-dependency implementation of published prior work (Rao, Janikow,
-  Bhatia, Climer, MWAIS 2018): a genetic algorithm for graph community
-  detection, validated against that work's four benchmarks. It knows
-  nothing about zorp and nothing depends on it. It came out of a design
-  that was then rejected (`docs/DECISIONS.md`, 2026-08-15) and is kept
-  on its own terms as a validated artifact. As of 2026-08-19 it is also
-  the large-graph backend of aryabhatta's search layer, so it is no
-  longer true that nothing depends on it. The four benchmarks certify
-  ERBGA on graphs and nothing else: a consumer reusing only its
+- `erbga/` is a standalone, zero-dependency implementation of published
+  prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
+  algorithm for graph community detection, validated against that work's
+  four benchmarks. It knows nothing about zorp. The dependency points
+  from `zorp-track` to `erbga` and never the other way, as the search
+  layer bullet above describes. It came out of a design that was then
+  rejected (`docs/DECISIONS.md`, 2026-08-15) and is kept on its own
+  terms as a validated artifact. The four benchmarks certify ERBGA on
+  graphs and nothing else: a consumer reusing only its
   representation-agnostic scaffolding is running a new algorithm and
   needs its own validation.
 - `reference/` is gitignored, local-only material (e.g. AI-Scientist-v2)
@@ -175,4 +179,8 @@ word instead. Prefer short, direct sentences over stacked clauses.
 
 Early/pre-alpha. The base harness and the research foundation
 (`zorp-track`) are built and tested. All four capabilities, validate,
-investigate, co-write, and deliver, are built and tested.
+investigate, co-write, and deliver, are built and tested. aryabhatta,
+the discovery layer, is built and tested as nine modules inside
+`zorp-track`. It is record plus readers, not a fifth capability, and it
+ships no CLI command on purpose, so the only way to reach it is to write
+Rust against the library. It has not been run against real data yet.

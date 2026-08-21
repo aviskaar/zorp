@@ -15,8 +15,9 @@ claims in `draft.md` that are uncited or that rest on something the
 record does not contain, revises them, and records what it found and what
 it changed.
 
-This is **not a fifth capability**. `docs/ARCHITECTURE.md` says four is
-the whole set, and that still holds. `critique` has no scope of its own,
+This is **not a fifth capability**. The per-capability specs in
+`docs/superpowers/specs/` are the architecture record, and four is the
+whole set there. That still holds. `critique` has no scope of its own,
 gathers nothing, and produces no evidence. It reads the record and edits
 the artifact `co-write` produced. It is a gate on that artifact, sitting
 in the seam between `co-write` and `deliver`.

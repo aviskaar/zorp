@@ -124,8 +124,9 @@ elsewhere and still correct:
   currently names "validate / experiment / co-write / find a venue"),
   and its tagline need updating to match this spec. Small, mechanical,
   can happen immediately.
-- `docs/ARCHITECTURE.md` should point at this spec alongside the
-  architecture spec.
+- The architecture record, which is the per-capability specs in
+  `docs/superpowers/specs/` rather than a single index, should point at
+  this spec alongside the architecture spec.
 - The individual capability specs (still unwritten; each of the four
   gets its own spec once `zorp-track` exists, which it now does) should
   be written against this broader scope from the start, not written

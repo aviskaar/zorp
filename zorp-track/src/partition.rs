@@ -1044,8 +1044,19 @@ mod tests {
     /// Integrity rule 7. The search layer reads code-visible columns and
     /// nothing a model wrote. This is the whole of the layer's SQL, so
     /// checking it is checking the rule.
+    ///
+    /// The list of prose columns is the detector module's. It used to be
+    /// a second copy written out here, and the copy had drifted two
+    /// columns ahead of the shared one without anything failing, which
+    /// is exactly what the shared constant's doc comment warned would
+    /// happen.
+    ///
+    /// Fails if the query names a column that is not on its allowlist,
+    /// if it names a prose column, or if it selects a bare `*`, which
+    /// the word-by-word check below cannot see: splitting on
+    /// non-alphanumerics throws the star away.
     #[test]
-    fn the_query_names_no_model_authored_column() {
+    fn the_query_can_read_no_model_authored_column() {
         let allowed = [
             "experiment_id",
             "condition_key",
@@ -1071,21 +1082,20 @@ mod tests {
         }
 
         // The columns that hold model-authored text live on other
-        // tables. Naming them here would be the failure, so name them
-        // here once, in the test, to be sure the check above would see
-        // them.
-        for forbidden in [
-            "explanation",
-            "hypothesis",
-            "decision_notes",
-            "prompt_shown",
-            "assumptions",
-        ] {
+        // tables, and a bare `*` would reach them without naming one.
+        // The shared check covers both.
+        if let Some(why) = crate::detectors::breaks_model_authored_rule(CONDITIONS_QUERY) {
+            panic!("the search layer's query {why}: {CONDITIONS_QUERY}");
+        }
+
+        // And the allowlist above must not quietly readmit one of them.
+        // Two checks that disagree would let a column through whichever
+        // one it was added to.
+        for forbidden in crate::detectors::MODEL_AUTHORED_COLUMNS {
             assert!(
-                !CONDITIONS_QUERY.contains(forbidden),
-                "the search layer's query names {forbidden:?}"
+                !allowed.contains(&forbidden),
+                "{forbidden:?} is on the allowlist"
             );
-            assert!(!allowed.contains(&forbidden), "{forbidden:?} is allowed");
         }
     }
 

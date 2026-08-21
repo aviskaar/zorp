@@ -406,19 +406,157 @@ mod tests {
         assert!(brief.contains("share no recorded condition"), "{brief}");
     }
 
-    /// Integrity rule 5 at the last step before a model sees anything.
-    /// A brief is assembled from code-derived fields only, so a stored
-    /// explanation cannot travel to the model through this path and
-    /// come back as an observation.
+    /// Every model-authored column in the schema, with the table it
+    /// sits on. Written out here because the shared list carries the
+    /// column names only, and the fixture below has to find a row to
+    /// write into.
+    const PROSE_COLUMNS: [(&str, &str); 9] = [
+        ("checkpoints", "prompt_shown"),
+        ("checkpoints", "decision_notes"),
+        ("tracks", "hypothesis"),
+        ("preregistrations", "hypothesis_snapshot"),
+        ("expectations", "assumptions"),
+        ("validations", "redundancy_citations"),
+        ("validations", "feasibility_citations"),
+        ("anomalies", "explanation"),
+        ("critiques", "findings"),
+    ];
+
+    /// One admitted anomaly, through the gate, because that is the only
+    /// way into the ledger. Two calls with the same conditions give a
+    /// family. Trimmed from the same helper in `families`.
+    fn admit(store: &Store, observed: f64, repeat: f64) {
+        let original = store.create_experiment("t1", "prereg").unwrap();
+        let replay = store.create_experiment("t1", "prereg").unwrap();
+        for experiment in [&original, &replay] {
+            store
+                .record_condition(&experiment.id, "model", &MetricValue::Text("opus".into()))
+                .unwrap();
+        }
+        store
+            .record_expectation(&original.id, "accuracy", 0.80, 0.70, 0.90, 0.80, &[])
+            .unwrap();
+        store
+            .record_metric(&original.id, "accuracy", MetricValue::Number(observed))
+            .unwrap();
+        store
+            .record_metric(&replay.id, "accuracy", MetricValue::Number(repeat))
+            .unwrap();
+        let verdict = store
+            .rerun_gate(&original.id, "accuracy", &[replay.id.as_str()])
+            .unwrap();
+        store.record_gate_verdict(&verdict).unwrap().unwrap();
+    }
+
+    /// A store with a row in every table that holds prose, so the
+    /// sentinel below has somewhere to land in each of them.
+    fn a_row_in_every_prose_table(store: &Store) {
+        habituate(store, 8);
+        crate::prereg::insert_preregistration_row(
+            store,
+            "t1",
+            "hyp",
+            "accuracy",
+            0.9,
+            Some(crate::prereg::ThresholdDirection::HigherIsBetter),
+            std::path::Path::new("prereg.md"),
+            "hash",
+            None,
+            0,
+        )
+        .unwrap();
+        admit(store, 0.50, 0.51);
+        admit(store, 0.52, 0.53);
+        store
+            .record_validation("t1", 0.1, &[], 0.9, &[], "proceed")
+            .unwrap();
+        store
+            .record_critique_round("t1", 1, "draft", &[], true)
+            .unwrap();
+    }
+
+    /// Integrity rule 5 at the last step before a model sees anything,
+    /// checked against the prose itself rather than against the names
+    /// of the columns holding it.
+    ///
+    /// The earlier version of this test asserted a brief did not
+    /// contain the strings "explanation", "prompt_shown" and
+    /// "decision_notes". Those are column names. A brief that
+    /// interpolated the actual sentences stored in those columns passed
+    /// it, which is the leak the rule exists to stop and the one thing
+    /// the test could not see. So write a sentence nothing else could
+    /// produce into every prose column the schema has, then read every
+    /// brief the record can generate and require the sentence to be
+    /// absent from all of them.
+    ///
+    /// The production change that makes this fail: have `from_finding`
+    /// or `from_family` carry any stored string a person or a model
+    /// wrote. Put a checkpoint's `decision_notes` in a fact line, or
+    /// the track's `hypothesis` in the subject, and it goes red. It
+    /// also goes red if a detector starts selecting one of those
+    /// columns, since the value would arrive as a finding's
+    /// `invariant_value`.
     #[test]
-    fn no_brief_can_carry_a_stored_explanation() {
+    fn no_brief_can_carry_model_authored_prose() {
+        const SENTINEL: &str = "SENTINEL_MODEL_PROSE_DO_NOT_LEAK";
+
         let (_dir, store) = open();
-        habituate(&store, 8);
-        for candidate in store.boredom_candidates().unwrap() {
-            let brief = candidate.brief();
-            for forbidden in crate::detectors::MODEL_AUTHORED_COLUMNS {
-                assert!(!brief.contains(forbidden), "{brief}");
-            }
+        a_row_in_every_prose_table(&store);
+
+        // Widening the shared list without extending the fixture would
+        // leave the new column untested and this test still green, so
+        // fail on that instead.
+        for column in crate::detectors::MODEL_AUTHORED_COLUMNS {
+            assert!(
+                PROSE_COLUMNS.iter().any(|(_, c)| *c == column),
+                "{column} is on the model-authored list but has no fixture row here"
+            );
+        }
+
+        for (table, column) in PROSE_COLUMNS {
+            store
+                .conn
+                .execute_batch(&format!("UPDATE {table} SET {column} = '{SENTINEL}';"))
+                .unwrap();
+            // An UPDATE over an empty table succeeds and changes
+            // nothing, which would make every assertion below pass for
+            // the wrong reason. Count the rows that actually hold the
+            // sentinel.
+            let planted: i64 = store
+                .conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = '{SENTINEL}'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(planted > 0, "{table}.{column} had no row to write into");
+        }
+
+        let boredom = store.boredom_candidates().unwrap();
+        assert!(
+            !boredom.is_empty(),
+            "the fixture must propose something or this proves nothing"
+        );
+        for candidate in &boredom {
+            assert!(
+                !candidate.brief().contains(SENTINEL),
+                "a boredom brief carries stored prose: {}",
+                candidate.brief()
+            );
+        }
+
+        let families = store.anomaly_families("t1", 2).unwrap();
+        assert!(
+            !families.families.is_empty(),
+            "the fixture must group something or the family path is untested"
+        );
+        for candidate in store.family_candidates(&families) {
+            assert!(
+                !candidate.brief().contains(SENTINEL),
+                "a family brief carries stored prose: {}",
+                candidate.brief()
+            );
         }
     }
 }

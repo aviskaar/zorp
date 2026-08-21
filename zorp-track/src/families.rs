@@ -173,11 +173,20 @@ const DEVIATION_SQL: &str = "SELECT id, experiment_id, metric_key, observed_valu
 /// `conditions` is append-only, so a key recorded more than once has a
 /// history and the last value is the one in force. The window picks it
 /// without a second round trip.
+///
+/// The inner select names its columns too. It used to be `SELECT *`,
+/// which was harmless only because `conditions` happens to hold no
+/// prose, and a rule that holds by luck holds until the next column.
+/// Naming them also lets the test below refuse a bare star outright
+/// rather than carve out an exception for this query. `seq` and `id`
+/// are not in the list and do not need to be: the window's ORDER BY
+/// reads them from `conditions` directly.
 const CONDITION_SQL: &str = "SELECT experiment_id, condition_key, value_type, value_number, \
      value_string, value_bool FROM ( \
-       SELECT *, ROW_NUMBER() OVER ( \
-         PARTITION BY experiment_id, condition_key ORDER BY seq DESC, id DESC \
-       ) AS rn FROM conditions \
+       SELECT experiment_id, condition_key, value_type, value_number, value_string, \
+              value_bool, ROW_NUMBER() OVER ( \
+                PARTITION BY experiment_id, condition_key ORDER BY seq DESC, id DESC \
+              ) AS rn FROM conditions \
      ) WHERE rn = 1";
 
 /// How alike two deviations are, in [0, 1].
@@ -744,14 +753,19 @@ mod tests {
     }
 
     /// Integrity rule 5, from the search layer's side. Neither query
-    /// this module can issue may name a column holding model-authored
+    /// this module can issue may reach a column holding model-authored
     /// text. Checked against the SQL itself rather than against the
     /// result, since a query that returned nothing still ran.
+    ///
+    /// The check is the detector module's, not a copy of it, and it
+    /// refuses a bare `*` as well as a named column. Put `explanation`
+    /// back in `DEVIATION_SQL`, or restore the `SELECT *` the inner
+    /// half of `CONDITION_SQL` used to have, and this goes red.
     #[test]
-    fn no_family_query_names_a_model_authored_column() {
+    fn no_family_query_can_read_a_model_authored_column() {
         for (name, sql) in [("deviations", DEVIATION_SQL), ("conditions", CONDITION_SQL)] {
-            for forbidden in crate::detectors::MODEL_AUTHORED_COLUMNS {
-                assert!(!sql.contains(forbidden), "{name} names {forbidden}: {sql}");
+            if let Some(why) = crate::detectors::breaks_model_authored_rule(sql) {
+                panic!("{name} {why}: {sql}");
             }
         }
     }
