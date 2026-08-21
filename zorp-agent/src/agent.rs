@@ -539,6 +539,17 @@ impl Agent {
         self.registry.tool_names()
     }
 
+    /// The model this agent talks to.
+    ///
+    /// Exposed so a caller can start a second, separate agent against
+    /// the same endpoint without inheriting this one's history or
+    /// tools. `investigate` uses it for the forecast, which has to be a
+    /// clean call: an agent that had already read the task would be
+    /// forecasting with knowledge it is meant to be predicting from.
+    pub fn model(&self) -> &dyn Model {
+        self.model.as_ref()
+    }
+
     pub fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
         self.model.session_reasoning_mode()
     }

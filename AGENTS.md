@@ -35,7 +35,15 @@ resulting artifact, deliver it in the right form.
   as nine modules: `conditions`, `expectations`, `calibration`,
   `detectors`, `partition`, `rerun`, `anomalies`, `families`, and
   `inquiry`. It is record plus readers, not a fifth capability, and it
-  ships no CLI command on purpose. Two rules hold the whole thing up and
+  ships no CLI command on purpose. `investigate` is what writes to it:
+  every attempt records the conditions it ran under, and, when
+  `ZORP_FORECAST` is set, asks for a forecast before doing the work and
+  records that too. Both happen before the attempt runs, which is not a
+  detail: a condition recorded afterwards describes a different run, and
+  an expectation recorded afterwards is a postdiction. Forecasting is
+  off by default because it costs a model call on every attempt. Leave
+  it off and the ledger stays empty, which is the honest state for a
+  record nobody has fed. Two rules hold the whole thing up and
   neither is negotiable. Detection is code and the model only
   interprets, the same split `critique` already uses. And no detector,
   and nothing in the search layer, may read a column holding
@@ -182,5 +190,7 @@ Early/pre-alpha. The base harness and the research foundation
 investigate, co-write, and deliver, are built and tested. aryabhatta,
 the discovery layer, is built and tested as nine modules inside
 `zorp-track`. It is record plus readers, not a fifth capability, and it
-ships no CLI command on purpose, so the only way to reach it is to write
-Rust against the library. It has not been run against real data yet.
+ships no CLI command on purpose. `investigate` records conditions on
+every attempt and, behind `ZORP_FORECAST`, a forecast before each one,
+so the record now has a producer. Reading it back is still Rust against
+the library. It has not been run against real data yet.
