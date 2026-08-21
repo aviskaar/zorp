@@ -6,10 +6,28 @@ pub enum TrackError {
     Io(String),
     Db(String),
     Library(String),
-    NotFound { kind: &'static str, id: String },
-    IntegrityMismatch { track_id: String, detail: String },
-    CheckpointBlocked { kind: String },
-    AlreadyRegistered { track_id: String },
+    NotFound {
+        kind: &'static str,
+        id: String,
+    },
+    IntegrityMismatch {
+        track_id: String,
+        detail: String,
+    },
+    CheckpointBlocked {
+        kind: String,
+    },
+    AlreadyRegistered {
+        track_id: String,
+    },
+    ExpectationAfterOutcome {
+        experiment_id: String,
+        metric_key: String,
+    },
+    Malformed {
+        what: &'static str,
+        detail: String,
+    },
 }
 
 impl fmt::Display for TrackError {
@@ -30,6 +48,13 @@ impl fmt::Display for TrackError {
                 f,
                 "track '{track_id}' is already pre-registered; write_prereg cannot be called twice for the same track"
             ),
+            TrackError::ExpectationAfterOutcome { experiment_id, metric_key } => write!(
+                f,
+                "experiment '{experiment_id}' already recorded metric '{metric_key}'; an expectation written now would be a postdiction"
+            ),
+            TrackError::Malformed { what, detail } => {
+                write!(f, "malformed {what}: {detail}")
+            }
         }
     }
 }

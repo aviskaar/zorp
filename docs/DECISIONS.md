@@ -12,6 +12,39 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-08-20: the calibration report scores the last forecast, not every draft
+
+**Decision:** where several expectations exist for one experiment and metric,
+the calibration report counts only the last one written before the outcome.
+The metrics side already took the first recorded value; this is its mirror,
+so one prediction is scored against one result.
+
+**Why:** `expectations` deliberately allows a forecast to be rewritten while
+no outcome exists, because revising a belief before observing anything is
+legitimate. Scoring every version undoes that. Nine absurdly wide drafts and
+one real forecast would read as nine tenths covered, which is precisely the
+"buy coverage with wide intervals" failure the report exists to expose. The
+mean interval width would have made the padding visible, but visible is not
+the same as excluded, and the coverage figure is the number people will
+quote.
+
+Found during integration rather than by either author: the module that allows
+revision and the module that scores it were written in parallel and neither
+could see the other. Caught by a test written to fail first, which counted
+2 where it should have counted 1.
+
+**Second decision, recorded because it bounds a claim:** above the |V|
+crossover the search backend answers a slightly different question from the
+exact one. Confounding is transitive, so the exact answer is a connected
+component; modularity rewards assortativity, and a long thin chain scores
+better cut in half. Because `erbga` only removes edges, its partition is
+always a refinement of the components: it can split a true bundle, never
+invent one. So a bundle reported above the crossover is a floor on the
+confounding, not the whole of it. This is documented on the function. The fix,
+if it ever matters, is a component-preserving objective, not dropping erbga.
+
+---
+
 ## 2026-08-20: a command may not call the server it is running under
 
 **Decision:** when `zorp-agent` runs under `zorp-web`, `Policy` is given the
@@ -45,6 +78,36 @@ written to disk. That is a larger change and deliberately not this one.
 **Deliberately still allowed:** every other loopback port. Denying all of
 them would break talking to a local model, which is how most of zorp is run.
 `http://localhost:11434` has a test saying so.
+
+---
+
+## 2026-08-20: the architecture index is deleted, the specs are the index
+
+**Decision:** `docs/ARCHITECTURE.md` is removed. The per-capability specs in
+`docs/superpowers/specs/` are the architecture record, and this log is the
+decision record. There is no third document summarizing them.
+
+**Why:** it was a summary of things that each already had a durable home, so
+it could only ever be a second copy going stale. It had started to: it still
+described `erbga` as off any critical path the day after 2026-08-19 wired it
+in. A pointer file that lies is worse than no pointer file, and the failure
+mode is built in rather than accidental, because nothing makes a summary
+update when the thing it summarizes changes.
+
+**What went with it, honestly:** the only index of which spec covers which
+capability, and the only place recording that the systems paper is written
+but unposted and that hand-checked runs live in `uat/`. Nothing else stated
+those. If the paper and UAT status need a home, it is `README.md` or their
+own directories, not a revived index.
+
+**What did not go:** the constraint that four capabilities is the whole set.
+That is recorded here, 2026-08-14 and 2026-08-15, where the fifth was
+designed and turned down. The 2026-08-19 entry below refers to
+`docs/ARCHITECTURE.md` in the present tense; per this log's convention that
+entry is left as written, and this one supersedes the pointer.
+
+**Superseded by this entry:** the `docs/ARCHITECTURE.md` references in the
+2026-08-19 entry below.
 
 ---
 
@@ -98,6 +161,96 @@ The job reads the version out of the manifest rather than hardcoding it, so
 the two cannot disagree. Note there is no headroom left: 1.95 is current
 stable, so anyone on an older Rust cannot build zorp at all. That is worth
 revisiting, and it is a dependency question rather than a code one.
+
+---
+
+## 2026-08-19: the discovery layer is called aryabhatta, and erbga is wired into it
+
+**Decision, part one:** the anomaly-driven inquiry subsystem is named
+**aryabhatta**, and it is the home for discovery ideas generally. New ideas
+about how zorp derives its own questions land there rather than becoming
+capabilities of their own. It stays record-and-readers, the way `critique` is
+a gate, so it is not a fifth capability. `docs/ARCHITECTURE.md` still says
+four is the whole set.
+
+**Decision, part two:** ideas live in aryabhatta at a state, not at a
+yes or no. The registry in the spec has four: Proposed, Gated, Building,
+Retired. An idea advances on stated evidence, never on enthusiasm, and
+nothing is deleted for failing. The point is that everything can belong
+while each part stays independently killable, because step 3 of the
+implementation order is a stop sign and a monolith cannot be stopped.
+
+**Decision, part three:** `erbga` is integrated as the backend of the
+subsystem's community detection service, for graphs too large to solve
+exactly. This reverses part of 2026-08-15, which shipped it off any critical
+path, and `CLAUDE.md` requires an entry saying so before it is wired in.
+This is that entry.
+
+**Why erbga now, and not later:** it has a caller that does not depend on
+the anomaly ledger. Bundling confounded conditions reads the `conditions`
+table from step 1, sits on the ungated side, and answers a real question:
+when two conditions never vary independently, no effect can be attributed
+to either alone. That is aliasing in the design of experiments sense, and
+it strengthens `invariant_condition`, which is blind to a pair that always
+moves together while both vary.
+
+**What the integration had to solve, rather than wave through:**
+
+- **The threshold.** `erbga` takes unweighted edges, so a continuous
+  similarity has to be cut somewhere, and an unpriced cut is exactly the
+  defect that sank `evolve` (the blob-maximizing score, with edge addition
+  free). The service does not price θ, it refuses to pick one: it sweeps a
+  range and keeps only communities surviving a contiguous band, recording
+  the band. Nobody chooses θ, so nobody can choose it to reach an answer.
+- **The scale.** 2026-08-15 observed that at `V = 20` an exact
+  clique-partitioning ILP finishes in about 0.2 seconds. That stands, so the
+  backend is chosen by graph size: exact below the crossover, `erbga` above.
+  In the band where both run, the exact result is a continuous regression
+  check on the search against proven optimality, which the four fixed
+  benchmark networks cannot give.
+- **The stochasticity.** Seed, island count and parameters are recorded
+  beside the partition, so a clustering is reproducible like any other
+  recorded result.
+
+**What may not be claimed.** Reading the source rather than the module
+names: `chromosome.rs`, `rng.rs`, `selection.rs` and three of the five
+operators are representation-agnostic and transfer. `RepairTargets` and
+`gene_repair` use `graph.degree()` and `graph.incident()` and do not. Both
+things that make erbga *erbga* are graph-specific: the reduced-bias encoding
+solves a `k!` label-permutation blowup a non-graph genome does not have, and
+Gene Repair needs a vertex degree a `condition_key` does not have. The four
+benchmarks certify ERBGA on graphs and nothing else, so any future consumer
+reusing only the scaffolding is running a new algorithm and needs its own
+validation. Calling such a thing validated prior work would be false.
+
+**Rejected:** spawning an agent per population member, each holding a
+hypothesis, with the unfit eliminated. That is `evolve` again, and the first
+of its three findings applies unchanged: there is no free inner search,
+because variation is model-proposed. erbga's own thesis parameters are
+250,000 fitness evaluations per island across 25 islands, which is fine for
+bit flips and impossible for model calls. A few hundred calls is a
+tournament, not evolution. Two further objections also carry over: a
+population drawn from one model is one model sampled many times, and
+selecting on a metric that is then reported is biased upward twice. The
+structured-genome version, where the model proposes the vocabulary once and
+the search over combinations runs in code, is recorded as Proposed in the
+registry rather than built.
+
+**Also folded into the spec:** the prior art pass
+(`docs/superpowers/specs/2026-08-19-anomaly-driven-inquiry-prior-art.md`).
+Its findings change what the design may claim, not what it builds. The
+architecture is substantially AutoDiscovery (arXiv 2507.00310), which must be
+cited and distinguished. The calibration question is answered next door for
+the exogenous case, and badly: FermiEval reports 65% coverage at a nominal
+99%, so the step 3 stop sign is now more likely to fire than not, which is an
+argument for keeping it exactly where it is. What survives is the endogenous
+case, where the quantity being measured is manipulable by the thing being
+measured.
+
+**Full writeup:**
+`docs/superpowers/specs/2026-08-19-anomaly-driven-inquiry-design.md`, kept in
+sync with `designs/` in the kb repo. The subsystem as a whole is still
+proposed and not approved; these three decisions inside it are taken.
 
 ---
 
