@@ -450,6 +450,86 @@ pub fn fetch_models(base_url: &str) -> ModelsResult {
     }
 }
 
+/// A reasoning model can think for a while before emitting its first
+/// token, and this probe waits for a whole (tiny) completion rather than
+/// a listing. Longer than `PROBE_READ_TIMEOUT` on purpose.
+const PROBE_COMPLETION_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Ask the configured endpoint for the smallest possible completion, with
+/// the configured credentials, and report whether it worked.
+///
+/// This is what "test connection" has to mean. The previous probe listed
+/// models over an unauthenticated `GET /models`, which cannot fail for a
+/// bad key on any provider whose listing is public, and OpenRouter's is:
+/// a deliberately invalid key returned `{"ok": true}`. Listing also says
+/// nothing about whether the *configured model* can actually be called.
+///
+/// One request covers all four things that are usually wrong: the address,
+/// the credentials, the model name, and the provider's wire format.
+///
+/// The body is deliberately minimal. `max_tokens: 1` keeps a paid endpoint
+/// to a fraction of a cent, and the prompt is one character because
+/// nothing reads the answer; only the status code is inspected.
+pub fn probe_completion(
+    base_url: &str,
+    provider: Provider,
+    model: &str,
+    api_key: Option<&str>,
+) -> Result<(), String> {
+    let base_url = validate_scheme(base_url)?;
+    let url = zorp_agent::join_url(&base_url, provider.path_suffix());
+
+    let body = match provider {
+        Provider::OpenAiCompatible => serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }),
+        // Anthropic requires max_tokens and takes no system role here.
+        Provider::Anthropic => serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+        }),
+    };
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(PROBE_CONNECT_TIMEOUT)
+        .timeout_read(PROBE_COMPLETION_READ_TIMEOUT)
+        .build();
+
+    let mut req = agent.post(&url).set("content-type", "application/json");
+    // Sent per provider, matching what `HttpModel` puts on a real turn. A
+    // probe that authenticates differently from the thing it is probing
+    // would be testing the wrong request.
+    match provider {
+        Provider::OpenAiCompatible => {
+            if let Some(key) = api_key {
+                req = req.set("Authorization", &format!("Bearer {key}"));
+            }
+        }
+        Provider::Anthropic => {
+            if let Some(key) = api_key {
+                req = req.set("x-api-key", key);
+            }
+            req = req.set("anthropic-version", "2023-06-01");
+        }
+    }
+
+    match req.send_json(body) {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, resp)) => {
+            let detail = resp.into_string().unwrap_or_default();
+            // Truncated: a provider can answer an error with an HTML page,
+            // and the whole of it in a toast helps nobody.
+            let detail: String = detail.chars().take(300).collect();
+            Err(format!("{url}: status code {code}: {detail}"))
+        }
+        // ureq's transport errors already begin with the URL.
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn validate_scheme(base_url: &str) -> Result<String, String> {
     let trimmed = base_url.trim();
     if trimmed.is_empty() {

@@ -556,34 +556,41 @@ async fn test_connection(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Json<serde_json::Value> {
-    let candidate = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| {
-            v.get("base_url")
-                .and_then(|u| u.as_str())
-                .map(str::to_string)
-        })
-        .filter(|u| !u.trim().is_empty());
-
-    let base_url = match candidate {
-        Some(url) => url,
-        None => {
-            let resolved = state.settings.lock().unwrap().resolve();
-            if !resolved.configured {
-                return Json(json!({"ok": false, "reason": "no model is configured yet"}));
-            }
-            resolved.base_url
-        }
+    let sent = serde_json::from_slice::<serde_json::Value>(&body).ok();
+    let field = |name: &str| {
+        sent.as_ref()
+            .and_then(|v| v.get(name))
+            .and_then(|u| u.as_str())
+            .map(str::to_string)
+            .filter(|u| !u.trim().is_empty())
     };
-    let result = tokio::task::spawn_blocking(move || settings::fetch_models(&base_url))
-        .await
-        .unwrap_or_else(|e| settings::ModelsResult {
-            models: Vec::new(),
-            error: Some(format!("internal error: {e}")),
-        });
-    match result.error {
-        None => Json(json!({"ok": true})),
-        Some(reason) => Json(json!({"ok": false, "reason": reason})),
+
+    // Resolved once, so a field the caller did not send falls back to the
+    // configured value rather than to a hardcoded default. The whole point
+    // is to test the settings that would actually be used.
+    let resolved = state.settings.lock().unwrap().resolve();
+    let candidate_base = field("base_url");
+    if candidate_base.is_none() && !resolved.configured {
+        return Json(json!({"ok": false, "reason": "no model is configured yet"}));
+    }
+    let base_url = candidate_base.unwrap_or(resolved.base_url);
+    let model = field("model").unwrap_or(resolved.model);
+    let provider = field("provider")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(resolved.provider);
+    // The stored key is never returned by `resolve`, on purpose, so it is
+    // read from the settings state directly here.
+    let api_key = field("api_key").or_else(|| state.settings.lock().unwrap().api_key.clone());
+
+    let outcome = tokio::task::spawn_blocking(move || {
+        settings::probe_completion(&base_url, provider, &model, api_key.as_deref())
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("internal error: {e}")));
+
+    match outcome {
+        Ok(()) => Json(json!({"ok": true})),
+        Err(reason) => Json(json!({"ok": false, "reason": reason})),
     }
 }
 

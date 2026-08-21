@@ -389,3 +389,98 @@ async fn testing_with_no_body_still_checks_the_saved_endpoint() {
     let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
     assert_eq!(json["ok"], true, "body: {body}");
 }
+
+/// Test Connection used to answer `ok` for any key, including none.
+///
+/// It probed `GET /models` with no Authorization header at all, and a
+/// provider whose listing is public (OpenRouter's is) answers 200 to an
+/// anonymous request. So the one button whose whole job is "are these
+/// settings right" could not fail on the most common way for them to be
+/// wrong. Verified against the real endpoint with a deliberately invalid
+/// key before this was changed: `{"ok": true}`.
+///
+/// The probe now makes a real, minimal completion, because that is the
+/// only request that exercises what the button claims to check: the key,
+/// the address, the model name, and the provider all at once.
+#[tokio::test]
+async fn test_connection_sends_the_api_key() {
+    let _guard = ENV.lock().await;
+    let _iso = Isolated::new();
+    let (base, requests) = common::mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"role":"assistant","content":"hi"}}]}"#,
+    );
+    let addr = spawn().await;
+
+    let body = format!(
+        r#"{{"base_url":"{base}","model":"m","api_key":"sk-secret-probe","provider":"openai"}}"#
+    );
+    let _ = tokio::task::spawn_blocking(move || {
+        ureq::post(&format!("http://{addr}/api/settings/test"))
+            .set("content-type", "application/json")
+            .send_string(&body)
+            .map(|r| r.into_string().unwrap_or_default())
+            .unwrap_or_else(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    let seen = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the probe never reached the upstream");
+    assert!(
+        seen.contains("sk-secret-probe"),
+        "the probe did not send the api key, so it cannot tell a good one from a bad one:\n{seen}"
+    );
+    assert!(
+        seen.to_lowercase().contains("authorization: bearer"),
+        "the key was not sent as a bearer token:\n{seen}"
+    );
+    // The endpoint matters as much as the header. A listing endpoint that
+    // answers anonymously (OpenRouter's does) cannot validate a key no
+    // matter what is sent with it, so the probe has to call the thing it
+    // is claiming to have tested.
+    assert!(
+        seen.starts_with("POST /chat/completions"),
+        "the probe hit a listing endpoint instead of the completion one, \
+         so a public listing would still report success:\n{seen}"
+    );
+}
+
+/// The other half, and the one that actually bit: an upstream that rejects
+/// the credentials has to turn into `ok: false`. A probe that reports
+/// success on a 401 is worse than no probe, because it tells the operator
+/// the thing they just got wrong is right.
+#[tokio::test]
+async fn test_connection_fails_when_the_upstream_rejects_the_key() {
+    let _guard = ENV.lock().await;
+    let _iso = Isolated::new();
+    let (base, _requests) = common::mock_capture(
+        401,
+        "application/json",
+        r#"{"error":{"message":"invalid api key"}}"#,
+    );
+    let addr = spawn().await;
+
+    let body =
+        format!(r#"{{"base_url":"{base}","model":"m","api_key":"wrong","provider":"openai"}}"#);
+    let answer = tokio::task::spawn_blocking(move || {
+        ureq::post(&format!("http://{addr}/api/settings/test"))
+            .set("content-type", "application/json")
+            .send_string(&body)
+            .map(|r| r.into_string().unwrap_or_default())
+            .unwrap_or_else(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        answer.contains("\"ok\":false"),
+        "a 401 from the model endpoint was reported as a working connection: {answer}"
+    );
+    assert!(
+        answer.contains("401"),
+        "the failure did not say what went wrong: {answer}"
+    );
+}
