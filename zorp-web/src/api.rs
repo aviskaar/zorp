@@ -108,6 +108,8 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id", get(get_session))
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/stop", post(stop_turn))
+        .route("/api/sessions/:id/panel", post(start_panel))
+        .route("/api/panel/lenses", get(list_lenses))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
         .route(
@@ -218,6 +220,74 @@ fn session_or_adopt(
 #[derive(Deserialize)]
 struct TurnBody {
     message: String,
+}
+
+#[derive(Deserialize)]
+struct PanelBody {
+    /// A short name for what is under review, shown in the report.
+    label: String,
+    /// The material itself.
+    body: String,
+    /// Which lenses to run, by name. Absent or empty runs the whole
+    /// default panel.
+    #[serde(default)]
+    lenses: Vec<String>,
+}
+
+/// The lenses a panel can be built from.
+///
+/// A read of a code-defined list, so the browser can offer the choice
+/// without being the thing that decides what a reviewer is told. A
+/// browser that could send instructions could send one reviewer the
+/// answer it wanted.
+async fn list_lenses() -> Json<serde_json::Value> {
+    let lenses: Vec<serde_json::Value> = zorp_agent::default_lenses()
+        .iter()
+        .map(|l| serde_json::json!({"name": l.name, "instruction": l.instruction}))
+        .collect();
+    Json(serde_json::json!({ "lenses": lenses }))
+}
+
+/// Launch a review panel on this session.
+///
+/// 202 and the same 409 as `start_turn`, for the same reason: a panel
+/// occupies the session, and a panel interleaved with a turn would put
+/// two conversations under one sequence counter. It answers the
+/// existing stop endpoint too, so a panel is stoppable with the control
+/// that is already on the page.
+///
+/// An empty body is refused rather than sent to five reviewers. Five
+/// agents asked to review nothing produce five confident answers about
+/// nothing, which costs five requests and reads exactly like a real
+/// panel.
+async fn start_panel(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PanelBody>,
+) -> impl IntoResponse {
+    let Some(session) = session_or_adopt(&state, &id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    if body.body.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "nothing to review: the material is empty",
+        )
+            .into_response();
+    }
+    if session.lock().unwrap().running {
+        return (StatusCode::CONFLICT, "a turn is already running").into_response();
+    }
+    crate::panel::spawn_panel(
+        session,
+        crate::panel::PanelRequest {
+            label: body.label,
+            body: body.body,
+            lenses: body.lenses,
+        },
+        state.settings.clone(),
+    );
+    StatusCode::ACCEPTED.into_response()
 }
 
 async fn start_turn(

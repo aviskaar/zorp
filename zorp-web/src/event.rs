@@ -1,5 +1,45 @@
 use serde::Serialize;
 
+/// One finding, flattened for the wire.
+///
+/// A separate type from `zorp_agent::PanelFinding` so the JSON the browser
+/// parses is this crate's contract rather than whatever shape the agent
+/// crate happens to have today.
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelFindingFrame {
+    pub severity: String,
+    pub claim: String,
+    pub locus: String,
+}
+
+impl From<&zorp_agent::PanelFinding> for PanelFindingFrame {
+    fn from(f: &zorp_agent::PanelFinding) -> Self {
+        PanelFindingFrame {
+            severity: f.severity.as_str().to_string(),
+            claim: f.claim.clone(),
+            locus: f.locus.clone(),
+        }
+    }
+}
+
+/// One locus and the lenses that raised it.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgreementFrame {
+    pub locus: String,
+    pub lenses: Vec<String>,
+    pub highest: String,
+}
+
+impl From<&zorp_agent::Agreement> for AgreementFrame {
+    fn from(a: &zorp_agent::Agreement) -> Self {
+        AgreementFrame {
+            locus: a.locus.clone(),
+            lenses: a.lenses.clone(),
+            highest: a.highest.as_str().to_string(),
+        }
+    }
+}
+
 /// One frame on the SSE stream.
 ///
 /// `seq` is monotonic per session so a browser that reconnects can send
@@ -65,6 +105,47 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         limit_tokens: Option<u64>,
         source: String,
+    },
+    /// One reviewer on a review panel has started.
+    ///
+    /// A panel is several agents working at once, so the browser needs a
+    /// per reviewer signal rather than the single `Working` a turn emits.
+    /// Without it a five reviewer panel shows one spinner for two minutes
+    /// and no sign that four of them already finished.
+    ReviewerStarted {
+        lens: String,
+    },
+    /// One reviewer came back with a readable verdict.
+    ///
+    /// `findings` is already parsed, so the browser never sees the raw
+    /// answer unless it asks. The count is what the live view shows.
+    ReviewerFinished {
+        lens: String,
+        findings: Vec<PanelFindingFrame>,
+        answer: String,
+    },
+    /// One reviewer did not come back with anything countable.
+    ///
+    /// Sent, not swallowed. A panel of five where two failed is not a
+    /// panel of three, and a browser that only hears about successes
+    /// would draw it as one.
+    ReviewerFailed {
+        lens: String,
+        why: String,
+    },
+    /// The panel finished. Carries what only the whole set can say.
+    PanelDone {
+        target: String,
+        lenses_requested: usize,
+        verdicts: usize,
+        /// True only when every requested reviewer returned a verdict.
+        /// The browser must show a partial panel as partial: two of two
+        /// agreeing is a weaker claim than two of five.
+        complete: bool,
+        /// Loci more than one lens raised, computed in code. Never asked
+        /// of a model, because reviewers that negotiate agreement are one
+        /// reviewer.
+        agreements: Vec<AgreementFrame>,
     },
     Error {
         message: String,

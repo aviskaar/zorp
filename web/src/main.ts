@@ -13,6 +13,7 @@ import { copyButton } from "./copy-response";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
 import { setSendControl } from "./send-control";
+import { PanelView } from "./panel-view";
 import {
   needsText,
   producedSince,
@@ -34,6 +35,7 @@ import {
   newSession,
   putSettings,
   sendTurn,
+  startPanel,
   stopTurn,
   streamEvents,
   testConnection,
@@ -104,6 +106,7 @@ interface Elements {
   composer: HTMLFormElement;
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
+  reviewPanel: HTMLButtonElement;
   settingsOverlay: HTMLElement;
   settingsClose: HTMLButtonElement;
   settingsForm: HTMLFormElement;
@@ -139,6 +142,14 @@ interface PendingApproval {
 }
 
 const dom = collectElements();
+/**
+ * The open panel block, if any.
+ *
+ * One per page rather than one per panel: only one panel can run on a
+ * session at a time, because a panel occupies the session exactly as a
+ * turn does.
+ */
+const panelView = new PanelView(document, dom.transcript);
 
 let sessionId: string | null = null;
 let stream: EventStream | null = null;
@@ -273,6 +284,7 @@ function collectElements(): Elements {
     workingSpinner: byId("working-spinner"),
     workingVerb: byId("working-verb"),
     jump: byId<HTMLButtonElement>("jump"),
+    reviewPanel: byId<HTMLButtonElement>("review-panel"),
     composerWarning: byId("composer-warning"),
     composerWarningSettings: byId<HTMLButtonElement>("composer-warning-settings"),
     composer: byId<HTMLFormElement>("composer"),
@@ -324,6 +336,10 @@ function wireComposer(): void {
     }
     event.preventDefault();
     void stopRunningTurn();
+  });
+
+  dom.reviewPanel.addEventListener("click", () => {
+    void submitPanel();
   });
 
   dom.input.addEventListener("keydown", (event) => {
@@ -500,6 +516,60 @@ async function submitMessage(): Promise<void> {
     // here would let a reconnect mid-turn render the backlog twice.
     await ensureStream(sessionId);
     await sendTurn(sessionId, message);
+  } catch (error) {
+    setTurnRunning(false);
+    if (error instanceof TurnBusyError) {
+      appendError("A turn is already running on this session. Wait for it to finish.");
+    } else {
+      appendError(describeError(error));
+    }
+    scrollToBottomIfFollowing(true);
+  }
+}
+
+/**
+ * Launch a review panel over whatever is in the composer.
+ *
+ * The composer, not a file picker, and not the transcript. The material
+ * has to be something the reader chose and can see, because a panel that
+ * quietly reviewed "the last answer" would produce five confident
+ * verdicts about a target the reader never confirmed.
+ *
+ * The whole default panel every time. Choosing lenses is deliberately not
+ * offered yet: a reader who can pick the reviewers can pick the ones
+ * likely to agree with them, which is the opposite of adversarial. The
+ * server accepts a subset, so this is a decision about the page and not a
+ * limit of the API.
+ */
+async function submitPanel(): Promise<void> {
+  const body = dom.input.value.trim();
+  if (turnRunning) {
+    return;
+  }
+  if (!body) {
+    appendError(
+      "Put the material to review in the composer first. A panel over an empty target is five agents confidently reviewing nothing.",
+    );
+    scrollToBottomIfFollowing(true);
+    return;
+  }
+
+  dom.input.value = "";
+  autoGrowInput();
+  clearEmptyState();
+  appendMessage("user", body);
+  scrollToBottomIfFollowing(true);
+  setTurnRunning(true);
+
+  try {
+    if (!sessionId) {
+      sessionId = await newSession();
+      setTitle("Review panel");
+      await refreshSessions();
+      markActiveSession();
+    }
+    await ensureStream(sessionId);
+    await startPanel(sessionId, "the text you sent", body, []);
   } catch (error) {
     setTurnRunning(false);
     if (error instanceof TurnBusyError) {
@@ -714,7 +784,35 @@ function applyEvent(event: ZorpEvent): void {
       void checkForProducedArtifacts(true);
       break;
 
+    case "reviewer_started":
+      // Activity grouping is for consecutive tool lines and a panel block
+      // is not one, so the group is broken here or the next tool line
+      // would try to join a group the panel already interrupted.
+      activityGroup = null;
+      panelView.start(event.lens);
+      break;
+
+    case "reviewer_finished":
+      activityGroup = null;
+      panelView.finish(event.lens, event.findings);
+      break;
+
+    case "reviewer_failed":
+      activityGroup = null;
+      panelView.fail(event.lens, event.why);
+      break;
+
+    case "panel_done":
+      activityGroup = null;
+      panelView.done(event);
+      break;
+
     case "done":
+      // A panel that ended without a `panel_done`, which is what a stop
+      // or an error looks like, leaves its block on the page with its
+      // reviewers in whatever state they reached. Forgetting it here is
+      // what stops the next panel appending to a stale block.
+      panelView.close();
       finishTurn();
       break;
   }
@@ -742,6 +840,9 @@ function setTurnRunning(running: boolean): void {
   // turn runs. It used to be disabled for the length of the run, which is why
   // there was no way to stop anything.
   setSendControl(dom.send, running ? "stop" : "send");
+  // A second panel while one is running would be refused by the server
+  // anyway; disabling it says so before the click rather than after.
+  dom.reviewPanel.disabled = running;
   dom.composer.classList.toggle("is-busy", running);
   if (running) {
     turnStopped = false;

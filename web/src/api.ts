@@ -223,6 +223,89 @@ export interface DoneEvent {
   type: "done";
 }
 
+/** How bad a reviewer thinks something is. */
+export type Severity = "note" | "concern" | "blocking";
+
+/** One thing one reviewer objected to. */
+export interface PanelFinding {
+  severity: Severity;
+  claim: string;
+  /**
+   * Where in the material it applies. Free text, because a panel may be
+   * reviewing a document, a diff or a record and a line number does not
+   * fit all three. Corroboration is computed by matching these, server
+   * side, so a reviewer that leaves it vague makes its own finding
+   * harder to corroborate.
+   */
+  locus: string;
+}
+
+/** One locus and every lens that raised something about it. */
+export interface Agreement {
+  locus: string;
+  /**
+   * The lenses that raised it. Its length is the corroboration count,
+   * and it counts lenses rather than findings so one reviewer listing
+   * the same objection three times cannot corroborate itself.
+   */
+  lenses: string[];
+  highest: Severity;
+}
+
+/**
+ * One reviewer on a panel has started.
+ *
+ * A panel is several agents at once, so the page needs a per reviewer
+ * signal rather than the single `working` a turn emits. Without it a
+ * five reviewer panel shows one spinner and no sign that four already
+ * finished.
+ */
+export interface ReviewerStartedEvent {
+  seq: number;
+  type: "reviewer_started";
+  lens: string;
+}
+
+/** One reviewer came back with a readable verdict. */
+export interface ReviewerFinishedEvent {
+  seq: number;
+  type: "reviewer_finished";
+  lens: string;
+  findings: PanelFinding[];
+  /** The reviewer's whole answer, so a reader can see the reasoning. */
+  answer: string;
+}
+
+/**
+ * One reviewer did not come back with anything countable.
+ *
+ * Shown, never swallowed. A panel of five where two failed is not a
+ * panel of three, and a page that only draws successes draws it as one.
+ */
+export interface ReviewerFailedEvent {
+  seq: number;
+  type: "reviewer_failed";
+  lens: string;
+  why: string;
+}
+
+/**
+ * The panel finished.
+ *
+ * `complete` is the field that must reach the reader. Two of two
+ * reviewers agreeing is a weaker claim than two of five, and the
+ * corroboration count alone cannot tell them apart.
+ */
+export interface PanelDoneEvent {
+  seq: number;
+  type: "panel_done";
+  target: string;
+  lenses_requested: number;
+  verdicts: number;
+  complete: boolean;
+  agreements: Agreement[];
+}
+
 export type ZorpEvent =
   | WorkingEvent
   | WorkingDoneEvent
@@ -235,6 +318,10 @@ export type ZorpEvent =
   | ContextEvent
   | ErrorEvent
   | StoppedEvent
+  | ReviewerStartedEvent
+  | ReviewerFinishedEvent
+  | ReviewerFailedEvent
+  | PanelDoneEvent
   | DoneEvent;
 
 export type ZorpEventType = ZorpEvent["type"];
@@ -409,6 +496,58 @@ export async function stopTurn(id: string): Promise<void> {
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       throw new NothingRunningError("no turn is running on this session");
+    }
+    throw error;
+  }
+}
+
+/** One reviewing angle a panel can be built from. */
+export interface PanelLens {
+  name: string;
+  /** What a reviewer on this lens is told. Shown so the reader can see
+   * what they are asking for rather than only its name. */
+  instruction: string;
+}
+
+/**
+ * The lenses a panel can be built from.
+ *
+ * Read from the server, never composed here. The browser chooses from a
+ * code-defined set and cannot define a lens: a page that could send
+ * instructions could send one reviewer the answer it wanted, and the
+ * reviewers are supposed to be independent of everything except the
+ * material.
+ */
+export async function getLenses(): Promise<PanelLens[]> {
+  const body = await request<{ lenses: PanelLens[] }>("GET", "/api/panel/lenses");
+  return body.lenses;
+}
+
+/**
+ * Launch a review panel over `body`.
+ *
+ * Answers 202 and the reviewers report on the event stream, the same one
+ * a turn uses, ending with `panel_done` and then `done`. Like a turn, it
+ * occupies the session: a 409 means one is already running.
+ *
+ * An empty target is a 400 rather than five agents confidently reviewing
+ * nothing at the cost of five requests.
+ */
+export async function startPanel(
+  id: string,
+  label: string,
+  body: string,
+  lenses: string[],
+): Promise<void> {
+  try {
+    await request<void>("POST", `/api/sessions/${segment(id)}/panel`, {
+      label,
+      body,
+      lenses,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      throw new TurnBusyError("a turn is already running on this session");
     }
     throw error;
   }
@@ -612,6 +751,10 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   context: true,
   error: true,
   stopped: true,
+  reviewer_started: true,
+  reviewer_finished: true,
+  reviewer_failed: true,
+  panel_done: true,
   done: true,
 };
 

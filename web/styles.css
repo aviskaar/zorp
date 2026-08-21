@@ -1204,6 +1204,207 @@ button {
   margin: 0 2px;
 }
 
+/* ------------------------------------------------------------- review panel */
+
+/* A panel block fills in as its reviewers report, so every row has to read
+   as one of three states at a glance. Colour alone does not carry it: each
+   row also says what it is in words, because a reviewer that failed and one
+   that is still going are different facts and a reader must not have to
+   compare two greys to tell them apart. */
+
+.composer-actions {
+  max-width: var(--reading);
+  margin: 6px auto 0;
+  text-align: center;
+}
+
+.composer-action-btn {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+
+.composer-action-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.composer-action-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.card-panel {
+  border-color: var(--line);
+}
+
+.panel-reviewers {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel-reviewer {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.panel-reviewer-name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.panel-reviewer-status {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.panel-reviewer[data-state="finished"] .panel-reviewer-status {
+  color: var(--ok);
+}
+
+.panel-reviewer[data-state="failed"] .panel-reviewer-status {
+  color: var(--warn);
+}
+
+.panel-findings {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  padding: 0 0 0 14px;
+  list-style: none;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.panel-finding {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.panel-finding-severity {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  align-self: start;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.panel-finding[data-severity="blocking"] .panel-finding-severity {
+  color: var(--danger);
+}
+
+.panel-finding[data-severity="concern"] .panel-finding-severity {
+  color: var(--warn);
+}
+
+.panel-finding[data-severity="note"] .panel-finding-severity {
+  color: var(--text-faint);
+}
+
+.panel-finding-claim {
+  color: var(--text);
+}
+
+.panel-finding-locus {
+  grid-column: 2;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.panel-finding-none .panel-finding-claim,
+.panel-finding-failed .panel-finding-claim {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.panel-summary {
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.panel-summary-count {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* An incomplete panel is marked, not merely worded. The sentence says the
+   shortfall, and this makes it visible before the sentence is read: a
+   corroboration count from a partial panel is the number most likely to be
+   quoted out of context. */
+.panel-summary[data-complete="false"] {
+  border-left: 2px solid var(--warn-line);
+  padding-left: 11px;
+}
+
+.panel-summary[data-complete="false"] .panel-summary-count {
+  color: var(--warn);
+}
+
+.panel-summary-heading {
+  margin: 14px 0 7px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.panel-agreements {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.panel-agreement {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px 10px;
+  font-size: 13px;
+}
+
+.panel-agreement-locus {
+  color: var(--text);
+}
+
+.panel-agreement[data-severity="blocking"] .panel-agreement-locus {
+  color: var(--danger);
+}
+
+.panel-agreement-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-agreement-lenses {
+  grid-column: 1 / -1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 /* ---------------------------------------------------------------- scrollbars */
 
 .scroller::-webkit-scrollbar,

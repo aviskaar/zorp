@@ -53,6 +53,20 @@ resulting artifact, deliver it in the right form.
   check on it wherever both can run, and above the crossover a reported
   bundle is a floor on the confounding rather than the whole of it,
   because the search can split a true bundle but never invent one.
+- `panel` (`zorp-agent/src/panel/`) is adversarial review: several
+  reviewers read one target at once from code-defined lenses, none of
+  them sees what the others said, and agreement is counted in code
+  afterwards. It is a reader, not a gate, and it is not `critique`;
+  critique audits a draft against a track's evidence record and refuses
+  if the record moved, this produces opinions and changes nothing. Two
+  rules are not negotiable. A reviewer gets strictly less than the panel
+  that launched it: a read-only allow-list of tools, so an opinion can
+  never edit what it is reviewing. And a panel is launched by a person,
+  from the browser, never by a model; there is no `spawn_subagent` tool
+  and `agent.rs` has a test saying so. `zorp-web` exposes it at
+  `POST /api/sessions/:id/panel` on the existing event stream, and it
+  occupies the session exactly as a turn does. See `docs/DECISIONS.md`
+  (2026-08-20) before changing any of that.
 - `critique` (`zorp-agent/src/critique/`) is a gate on co-write's
   artifact, not a fifth capability. It audits `draft.md` against the
   track's own evidence record and revises what the record does not
