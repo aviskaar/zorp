@@ -14,6 +14,7 @@ import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
 import { setSendControl } from "./send-control";
 import { PanelView } from "./panel-view";
+import { sessionFromSearch, searchForSession } from "./session-url";
 import {
   needsText,
   producedSince,
@@ -212,7 +213,7 @@ function start(): void {
 async function connectOrExplain(): Promise<void> {
   if (await serverIsReachable()) {
     setStatus("idle", "idle");
-    void refreshSessions();
+    void refreshSessions().then(restoreSessionFromUrl);
     void refreshSettingsBadge();
     dom.input.focus();
     return;
@@ -220,6 +221,40 @@ async function connectOrExplain(): Promise<void> {
   setStatus("idle", "no server");
   showServerMissing();
 }
+
+/** Open whatever conversation the URL names, on load and on back/forward.
+ *
+ * Called after the session list has been read, so a stale link names a
+ * session that is simply not in the list and falls through to a new chat
+ * rather than to an error card. A link to a deleted conversation is a
+ * normal thing to click, not a fault.
+ */
+function restoreSessionFromUrl(): void {
+  const wanted = sessionFromSearch(window.location.search);
+  if (wanted === sessionId) {
+    return;
+  }
+  if (wanted === null) {
+    startNewChat();
+    return;
+  }
+  const session = sessions.find((candidate) => candidate.id === wanted);
+  if (!session) {
+    startNewChat();
+    return;
+  }
+  void openSession(session);
+}
+
+/** Back and forward move between conversations.
+ *
+ * Without this the URL changes and the page does not, which is a worse
+ * bug than the one the URL was added to fix: the address bar would be
+ * telling you about a conversation you are not looking at.
+ */
+window.addEventListener("popstate", () => {
+  restoreSessionFromUrl();
+});
 
 function showServerMissing(): void {
   dom.transcript.replaceChildren();
@@ -1301,10 +1336,25 @@ function markActiveSession(): void {
   }
 }
 
+/** Put the selected conversation in the address bar, so a reload comes back
+ * to it. `replaceState` when the URL already names this session, which is the
+ * boot case: restoring what the URL asked for is not a navigation and should
+ * not leave an extra entry behind for the back button to walk through.
+ */
+function rememberSessionInUrl(id: string | null): void {
+  const next = searchForSession(window.location.search, id);
+  if (next === window.location.search) {
+    return;
+  }
+  const url = `${window.location.pathname}${next}${window.location.hash}`;
+  window.history.pushState({ session: id }, "", url);
+}
+
 async function openSession(session: SessionSummary): Promise<void> {
   if (session.id === sessionId) {
     return;
   }
+  rememberSessionInUrl(session.id);
   closeStream();
   resetTranscript();
   sessionId = session.id;
@@ -1340,6 +1390,7 @@ async function openSession(session: SessionSummary): Promise<void> {
 function startNewChat(): void {
   closeStream();
   resetTranscript();
+  rememberSessionInUrl(null);
   sessionId = null;
   setTitle("New chat");
   markActiveSession();
