@@ -122,8 +122,23 @@ fn subjects(root: &std::path::Path, want: usize) -> Vec<(String, usize)> {
         }
     }
     out.sort();
-    out.truncate(want);
-    out
+    if out.len() <= want {
+        return out;
+    }
+    // Every nth, not the first n. Sorted paths mean truncation would take
+    // an alphabetical prefix, which on a registry checkout is one letter's
+    // worth of crates and on any tree is whatever sorts early. Striding
+    // spans the corpus and is still deterministic, so the sample is the
+    // same on every machine and the run reproduces.
+    let stride = out.len() / want;
+    let sampled: Vec<(String, usize)> = out.iter().step_by(stride).take(want).cloned().collect();
+    println!(
+        "corpus: {} eligible directories, sampling every {}th for {}",
+        out.len(),
+        stride,
+        sampled.len()
+    );
+    sampled
 }
 
 #[test]
@@ -140,10 +155,24 @@ fn a_forecaster_with_tools_is_scored_on_what_it_gathered() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(12);
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .to_path_buf();
+    // The corpus this repo can offer is 22 directories, and the report
+    // needs 50 before it will return anything but NotEnoughEvidence, so
+    // the interesting runs point somewhere larger. The cargo registry is
+    // the obvious one: thousands of directories of real third-party Rust
+    // that nobody here wrote, which is a better corpus than our own code
+    // for the same reason a held-out set is better than a training one.
+    let root = match std::env::var("ZORP_CAL_ROOT") {
+        Ok(dir) if !dir.trim().is_empty() => std::path::PathBuf::from(dir),
+        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .to_path_buf(),
+    };
+    assert!(
+        root.is_dir(),
+        "ZORP_CAL_ROOT is not a directory: {}",
+        root.display()
+    );
 
     let model = HttpModel {
         url: format!("{}/chat/completions", base.trim_end_matches('/')),
