@@ -27,8 +27,10 @@
 //! # What is deliberately absent
 //!
 //! There is no model-callable tool to spawn a reviewer. A panel is
-//! launched by a person, from the CLI or the browser, and a reviewer
-//! runs with no panel of its own. A model that can spawn agents can
+//! launched by a person, from the browser, and a reviewer runs with no
+//! panel of its own. There is no CLI subcommand either, so the browser
+//! and a direct call to `run` are the only two ways in. A model that
+//! can spawn agents can
 //! spawn agents that spawn agents, and nothing in the loop bounds that.
 //! `agent.rs` already carries a test asserting a filtered agent has no
 //! `spawn_subagent`; this module does not add one.

@@ -235,6 +235,24 @@ for (const payload of HOSTILE) {
     assert.equal(claim.textContent, payload);
   });
 
+  // The locus a reviewer attaches to a finding is model text too, and it
+  // reaches a different element than the agreement locus below. Covering
+  // only one of the two would leave the other free to regress.
+  test(`a finding locus containing ${payload.slice(0, 24)} is text, not markup`, () => {
+    const { view, transcript } = page();
+    view.start("evidence");
+    view.finish("evidence", [
+      { severity: "blocking", claim: "unsupported", locus: payload },
+    ]);
+
+    assert.equal(transcript.querySelectorAll("script").length, 0);
+    assert.equal(transcript.querySelectorAll("img").length, 0);
+    assert.equal(transcript.querySelectorAll("iframe").length, 0);
+    assert.equal(transcript.querySelectorAll("svg").length, 0);
+    const locus = transcript.querySelector(".panel-finding-locus") as HTMLElement;
+    assert.equal(locus.textContent, payload);
+  });
+
   test(`a lens name containing ${payload.slice(0, 24)} is text, not markup`, () => {
     const { view, transcript } = page();
     view.start(payload);
