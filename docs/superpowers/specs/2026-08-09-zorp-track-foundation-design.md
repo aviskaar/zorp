@@ -14,7 +14,8 @@ at critical steps so a human stays in control.
 
 This spec covers that foundation only. It does not design validate,
 experiment, co-write, or find a venue themselves; each of those gets its
-own spec once this foundation exists. See `docs/ARCHITECTURE.md` for how
+own spec once this foundation exists. See the per-capability specs in
+`docs/superpowers/specs/`, which are the architecture record, for how
 this fits the larger proposal, and `docs/DECISIONS.md` for the decisions
 this spec builds on rather than re-derives (one binary, pre-registration
 always required, no hard experiment budget, interactive checkpoints by

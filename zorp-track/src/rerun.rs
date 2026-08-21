@@ -223,9 +223,15 @@ fn classify(
         return Ok(GateOutcome::Transient);
     }
 
-    // Finiteness is established by the callers above this function, so
-    // fold plainly rather than through a partial comparison that would
-    // quietly swallow a NaN.
+    // Finiteness comes from the write side, not from anything here.
+    // The original value is checked by `record_expectation`, and the
+    // repeats are read back out of `metrics`, which `record_metric`
+    // refuses to put a non-finite number into. Naming the writers
+    // matters: this fold is `f64::min`/`f64::max`, which swallow a NaN
+    // silently, and `side_of` calls a NaN `Inside`. Together those
+    // would report an all-NaN rerun as `Transient`, which is the safe
+    // answer arrived at for the wrong reason. The guarantee has to hold
+    // upstream because it is not recoverable here.
     let lowest = repeats.iter().copied().fold(f64::INFINITY, f64::min);
     let highest = repeats.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let agree = highest - lowest <= interval_high - interval_low;

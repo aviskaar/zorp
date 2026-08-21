@@ -44,8 +44,70 @@ pub const EXPERIMENT_MIN_SUPPORT: u64 = 12;
 ///
 /// One list, in one place, because the rule binds three modules. A
 /// second copy would drift the first time a model-authored column was
-/// added, and the drift would be silent.
-pub const MODEL_AUTHORED_COLUMNS: [&str; 3] = ["decision_notes", "prompt_shown", "explanation"];
+/// added, and the drift would be silent. That is not a worry, it is a
+/// report: a second copy did exist in `partition`, it had drifted two
+/// columns ahead of this one, and nothing failed. Every module now
+/// reads this array and no module keeps its own.
+///
+/// Human prose counts as model-authored here. `decision_notes` is
+/// usually a person's and `redundancy_citations` is a mix of both. The
+/// rule is about what may be read, not about who typed it: a detector
+/// that groups on any of these groups on language rather than on
+/// measurement, and language is the one thing in the record that
+/// argues back.
+///
+/// Each entry is a real column in `schema.rs`, and the table it lives
+/// on is named beside it so the next person can check that claim
+/// without a grep.
+pub const MODEL_AUTHORED_COLUMNS: [&str; 9] = [
+    "prompt_shown",          // checkpoints
+    "decision_notes",        // checkpoints
+    "hypothesis",            // tracks
+    "hypothesis_snapshot",   // preregistrations
+    "assumptions",           // expectations
+    "redundancy_citations",  // validations
+    "feasibility_citations", // validations
+    "explanation",           // anomalies
+    "findings",              // critiques
+];
+
+/// Why `sql` breaks integrity rule 5, or `None` if it does not.
+///
+/// There are two ways to read a column of prose and a substring match
+/// on the names above catches only one of them. Name the column, or
+/// select a bare `*`, which names every column of the table including
+/// the prose ones and sails past a name check. Both are refused here.
+///
+/// `COUNT(*)` is a count of rows and reads no column, so a star whose
+/// nearest neighbour to the left is an open paren is allowed. That is
+/// the whole of the exception, which makes it blunt: `a * b` would be
+/// reported as well. No query in this crate multiplies, and for this
+/// rule a check that errs toward refusing is the right way round.
+///
+/// Test-only, because the rule is a property of the SQL this crate
+/// ships rather than of any input it handles at run time.
+#[cfg(test)]
+pub(crate) fn breaks_model_authored_rule(sql: &str) -> Option<String> {
+    for forbidden in MODEL_AUTHORED_COLUMNS {
+        if sql.contains(forbidden) {
+            return Some(format!("names the model-authored column {forbidden}"));
+        }
+    }
+    if let Some(at) = first_bare_star(sql) {
+        return Some(format!(
+            "selects a bare * at byte {at}, which reads every column the table has"
+        ));
+    }
+    None
+}
+
+/// Where the first star that is not an aggregate's star sits.
+#[cfg(test)]
+fn first_bare_star(sql: &str) -> Option<usize> {
+    sql.char_indices()
+        .find(|&(at, c)| c == '*' && !sql[..at].trim_end().ends_with('('))
+        .map(|(at, _)| at)
+}
 
 /// Something the record shows has never varied, with the evidence for
 /// saying so.
@@ -605,17 +667,107 @@ mod tests {
     /// model-authored text. Checked against every query the module can
     /// issue, not only the ones that fired, since a silent detector
     /// still ran its SQL.
+    ///
+    /// Fails if a detector query names one of those columns, and now
+    /// also if a detector reaches them with a bare `*`, which the old
+    /// substring check waved through. Point any of these queries at
+    /// `checkpoints.decision_notes`, or rewrite one as `SELECT *`, and
+    /// this goes red.
     #[test]
-    fn no_detector_query_names_a_model_authored_column() {
+    fn no_detector_query_can_read_a_model_authored_column() {
         for (detector, _, sql) in
             every_query(CHECKPOINT_HABITUATION_MIN_SUPPORT, EXPERIMENT_MIN_SUPPORT)
         {
-            for forbidden in MODEL_AUTHORED_COLUMNS {
-                assert!(
-                    !sql.contains(forbidden),
-                    "{detector} names {forbidden}: {sql}"
-                );
+            if let Some(why) = breaks_model_authored_rule(&sql) {
+                panic!("{detector} {why}: {sql}");
             }
+        }
+    }
+
+    /// The check itself, held to both halves of its job. A checker that
+    /// let a bare `*` past would be useless and one that refused
+    /// `COUNT(*)` would be unusable, and every detector above counts.
+    ///
+    /// Fails if `first_bare_star` stops looking at stars, and fails the
+    /// other way if it stops making the aggregate exception.
+    #[test]
+    fn the_rule_5_check_refuses_a_bare_star_and_allows_a_count() {
+        for refused in [
+            "SELECT * FROM checkpoints",
+            "SELECT *, 1 FROM checkpoints",
+            "SELECT c.* FROM checkpoints c",
+            "SELECT MIN(status) FROM ( SELECT * FROM checkpoints )",
+            "SELECT decision_notes FROM checkpoints",
+            "SELECT hypothesis FROM tracks",
+            "SELECT findings FROM critiques",
+        ] {
+            assert!(
+                breaks_model_authored_rule(refused).is_some(),
+                "{refused} should be refused"
+            );
+        }
+        for allowed in [
+            "SELECT kind, COUNT(*) FROM checkpoints GROUP BY kind",
+            "SELECT COUNT( * ) FROM checkpoints",
+            "SELECT COUNT(DISTINCT status) FROM checkpoints",
+        ] {
+            assert_eq!(
+                breaks_model_authored_rule(allowed),
+                None,
+                "{allowed} should be allowed"
+            );
+        }
+    }
+
+    /// Every column the schema holds prose in is on the list, pinned by
+    /// name rather than by count. A length assertion alone passes when
+    /// one entry is swapped for a harmless string, and that was the
+    /// state of this check before: only `explanation` was pinned, over
+    /// in `anomalies`.
+    ///
+    /// Fails if any member is dropped or renamed. It does not fail when
+    /// a member is added, on purpose: adding one tightens the rule, and
+    /// the tests that consume the list are what would catch a bad
+    /// addition.
+    #[test]
+    fn every_model_authored_column_is_on_the_list() {
+        for expected in [
+            "prompt_shown",
+            "decision_notes",
+            "hypothesis",
+            "hypothesis_snapshot",
+            "assumptions",
+            "redundancy_citations",
+            "feasibility_citations",
+            "explanation",
+            "findings",
+        ] {
+            assert!(
+                MODEL_AUTHORED_COLUMNS.contains(&expected),
+                "{expected} fell off the model-authored list"
+            );
+        }
+    }
+
+    /// Every entry names a column that exists. A list guarding a column
+    /// the schema does not have guards nothing, and would read as
+    /// coverage.
+    ///
+    /// Fails the moment an entry is invented, or a real column is
+    /// renamed in `schema.rs` without the list following it.
+    #[test]
+    fn every_listed_column_exists_in_the_schema() {
+        let (_dir, store) = open();
+        for column in MODEL_AUTHORED_COLUMNS {
+            let found: i64 = store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM duckdb_columns() WHERE column_name = ?",
+                    duckdb::params![column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(found > 0, "no table has a column named {column}");
         }
     }
 

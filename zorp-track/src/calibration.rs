@@ -395,6 +395,175 @@ fn probit(p: f64) -> f64 {
     }
 }
 
+/// Forecasts with outcomes below which the question is not yet
+/// answerable.
+///
+/// From the spec: "coverage within tolerance of the stated band, over n
+/// of at least 50." The number is in the design, so it is a constant
+/// here. The tolerance beside it is not, and `Tolerance` says why.
+pub const MIN_CALIBRATION_N: usize = 50;
+
+/// The tolerance a verdict is judged against.
+///
+/// A newtype rather than a bare `f64` because the design refuses to fix
+/// this number: "the specific tolerance is deliberately left to the
+/// implementation plan, since it should be set from the first observed
+/// curve rather than guessed here." So there is no default, no
+/// constant, and nothing to reach for absent-mindedly. Whoever asks for
+/// a verdict has to state the number they are judging against, and a
+/// number that could only produce one answer is refused rather than
+/// quietly accepted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tolerance(f64);
+
+impl Tolerance {
+    /// A tolerance in (0.0, 1.0].
+    ///
+    /// Zero is refused because no forecaster lands on its stated
+    /// coverage exactly, so a zero tolerance is a no-go wearing the
+    /// costume of a measurement. Anything above one is refused because
+    /// it admits every curve that can exist, including 80% intervals
+    /// holding the truth never, which is a go wearing the same costume.
+    pub fn new(value: f64) -> Result<Self, TrackError> {
+        if !value.is_finite() || value <= 0.0 || value > 1.0 {
+            return Err(TrackError::Malformed {
+                what: "calibration tolerance",
+                detail: format!("expected a finite value in (0.0, 1.0], got {value}"),
+            });
+        }
+        Ok(Tolerance(value))
+    }
+
+    /// The number, so a report can say what it was judged against.
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// Whether surprise can be trusted, and if not, why not.
+///
+/// This is the go/no-go the design calls the decision point. It is
+/// computed, not enforced: nothing in `rerun` or `anomalies` consults
+/// it, and it cannot, because the ledger has to be buildable in order
+/// to be measured. It exists so the decision is made against a number
+/// instead of a feeling, and so "we checked" means something a reader
+/// can re-run.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalibrationVerdict {
+    /// Every band sits within tolerance, over enough forecasts to say so.
+    Go,
+    /// Do not trust surprise. Never empty: a no-go always says why.
+    NoGo(Vec<NoGoReason>),
+}
+
+impl CalibrationVerdict {
+    /// True only for `Go`. A helper so callers do not pattern-match
+    /// and accidentally treat a no-go with an empty reason list as a
+    /// pass; `verdict` never builds one, and this cannot be fooled.
+    pub fn is_go(&self) -> bool {
+        matches!(self, CalibrationVerdict::Go)
+    }
+
+    /// Why the answer was no. Empty for `Go`.
+    pub fn reasons(&self) -> &[NoGoReason] {
+        match self {
+            CalibrationVerdict::Go => &[],
+            CalibrationVerdict::NoGo(reasons) => reasons,
+        }
+    }
+}
+
+/// One reason surprise cannot be trusted.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NoGoReason {
+    /// Too few scored forecasts to answer the question either way.
+    ///
+    /// Distinct from a demonstrated miss on purpose. "We have not
+    /// measured this yet" and "we measured it and it failed" are
+    /// different states, and collapsing them would let an empty record
+    /// read as a failing one, or worse, a passing one.
+    NotEnoughEvidence { n: usize, required: usize },
+    /// A band's observed coverage is further from its stated
+    /// confidence than the tolerance allows. The spec's example, 80%
+    /// intervals holding the truth 45% of the time, is this reason
+    /// with a gap of 0.35.
+    BandOutOfTolerance {
+        confidence: f64,
+        observed_coverage: f64,
+        gap: f64,
+        tolerance: f64,
+    },
+    /// The report carries a number that cannot be compared, so no
+    /// answer is possible. Never silently treated as a pass: a NaN
+    /// loses every comparison, including the one that would have
+    /// caught it, which is exactly how a corrupt record would
+    /// otherwise report as well calibrated.
+    Unjudgeable { detail: String },
+}
+
+impl CalibrationReport {
+    /// The go/no-go, judged against a tolerance the caller states.
+    ///
+    /// Both conditions from the design have to hold: every band within
+    /// tolerance, and `n` at least `MIN_CALIBRATION_N`. Every failing
+    /// band is reported rather than the first one, because a curve that
+    /// misses at 80% and at 99% is a different problem from one that
+    /// misses at 80% alone, and the caller cannot see that from a
+    /// single reason.
+    ///
+    /// An empty report is `NotEnoughEvidence`, never `Go`. A report
+    /// nothing has been written to is the case most likely to be asked
+    /// about by accident, and answering "well calibrated" to it would
+    /// be the worst possible wrong answer.
+    pub fn verdict(&self, tolerance: Tolerance) -> CalibrationVerdict {
+        let mut reasons = Vec::new();
+
+        if self.n < MIN_CALIBRATION_N {
+            reasons.push(NoGoReason::NotEnoughEvidence {
+                n: self.n,
+                required: MIN_CALIBRATION_N,
+            });
+        }
+
+        if let Some(width) = self.mean_interval_width {
+            if !width.is_finite() {
+                reasons.push(NoGoReason::Unjudgeable {
+                    detail: format!("mean interval width is {width}"),
+                });
+            }
+        }
+
+        for band in &self.bands {
+            let gap = (band.observed_coverage - band.confidence).abs();
+            // Finiteness is checked before the comparison, not after.
+            // `NaN > tolerance` is false, so a NaN band would slip past
+            // the tolerance test and contribute nothing to `reasons`,
+            // and a report made entirely of NaN bands would return Go.
+            if !gap.is_finite() {
+                reasons.push(NoGoReason::Unjudgeable {
+                    detail: format!(
+                        "band at stated confidence {} has an uncomparable gap",
+                        band.confidence
+                    ),
+                });
+            } else if gap > tolerance.get() {
+                reasons.push(NoGoReason::BandOutOfTolerance {
+                    confidence: band.confidence,
+                    observed_coverage: band.observed_coverage,
+                    gap,
+                    tolerance: tolerance.get(),
+                });
+            }
+        }
+
+        if reasons.is_empty() {
+            CalibrationVerdict::Go
+        } else {
+            CalibrationVerdict::NoGo(reasons)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,5 +1189,185 @@ mod tests {
 
         assert_eq!(report.n, 1, "one forecast, one row");
         assert_eq!(report.covered, 0, "the first value, 0.9, is outside");
+    }
+
+    // ----- the go/no-go verdict -----
+
+    /// A report with the bands and counts a caller would have, built
+    /// directly rather than through the store. The verdict is
+    /// arithmetic over a report, so driving it through DuckDB would be
+    /// testing the reader instead of the thing under test.
+    fn report(n: usize, covered: usize, bands: Vec<(f64, usize, usize, f64)>) -> CalibrationReport {
+        CalibrationReport {
+            n,
+            covered,
+            mean_interval_width: Some(0.2),
+            bands: bands
+                .into_iter()
+                .map(
+                    |(confidence, bn, bcov, observed_coverage)| CalibrationBand {
+                        confidence,
+                        n: bn,
+                        covered: bcov,
+                        observed_coverage,
+                        mean_interval_width: 0.2,
+                    },
+                )
+                .collect(),
+        }
+    }
+
+    fn tol(v: f64) -> Tolerance {
+        Tolerance::new(v).expect("test tolerance is in range")
+    }
+
+    /// Deleting the `n < MIN_CALIBRATION_N` check makes this return Go.
+    #[test]
+    fn a_report_with_too_few_forecasts_is_not_a_go() {
+        let r = report(49, 40, vec![(0.80, 49, 40, 0.80)]);
+
+        let v = r.verdict(tol(0.10));
+
+        assert!(!v.is_go(), "49 forecasts is below the stated minimum of 50");
+        assert_eq!(
+            v.reasons(),
+            [NoGoReason::NotEnoughEvidence {
+                n: 49,
+                required: 50
+            }]
+        );
+    }
+
+    /// The boundary is inclusive, so exactly the minimum passes. Paired
+    /// with the test above: together they pin the comparison to `<`,
+    /// and widening it to `<=` fails this one.
+    #[test]
+    fn exactly_the_minimum_number_of_forecasts_is_enough() {
+        let r = report(50, 40, vec![(0.80, 50, 40, 0.80)]);
+
+        assert!(r.verdict(tol(0.10)).is_go());
+    }
+
+    /// The design's own failure case: 80% intervals holding the truth
+    /// 45% of the time. Deleting the tolerance comparison makes this a
+    /// Go.
+    #[test]
+    fn the_designs_failure_case_is_a_no_go() {
+        let r = report(60, 27, vec![(0.80, 60, 27, 0.45)]);
+
+        let v = r.verdict(tol(0.10));
+
+        assert!(!v.is_go());
+        match &v.reasons()[0] {
+            NoGoReason::BandOutOfTolerance {
+                gap, confidence, ..
+            } => {
+                assert_eq!(*confidence, 0.80);
+                assert!((gap - 0.35).abs() < 1e-12, "gap was {gap}");
+            }
+            other => panic!("wrong reason: {other:?}"),
+        }
+    }
+
+    /// A gap exactly on the tolerance is inside it. The gap is taken
+    /// from the same subtraction the code performs, so this really does
+    /// sit on the boundary rather than near it, and the second half
+    /// proves it by moving one representable step and failing.
+    #[test]
+    fn a_gap_exactly_on_the_tolerance_is_allowed() {
+        let r = report(60, 42, vec![(0.75, 60, 42, 0.70)]);
+        let gap = 0.75_f64 - 0.70_f64;
+
+        assert!(
+            r.verdict(Tolerance::new(gap).unwrap()).is_go(),
+            "a gap equal to the tolerance is within it"
+        );
+        assert!(
+            !r.verdict(Tolerance::new(gap - f64::EPSILON).unwrap())
+                .is_go(),
+            "one step tighter and the same report fails"
+        );
+    }
+
+    /// Every failing band is reported, not just the first one.
+    #[test]
+    fn each_band_out_of_tolerance_gets_its_own_reason() {
+        let r = report(90, 30, vec![(0.80, 45, 20, 0.44), (0.95, 45, 10, 0.22)]);
+
+        let v = r.verdict(tol(0.10));
+
+        assert_eq!(v.reasons().len(), 2, "two bands missed, two reasons");
+    }
+
+    /// The case the finiteness check exists for. A NaN gap loses every
+    /// comparison, so without that check this returns Go on a report
+    /// made entirely of uncomparable numbers.
+    #[test]
+    fn a_band_that_cannot_be_compared_is_never_a_go() {
+        let r = report(60, 30, vec![(0.80, 60, 30, f64::NAN)]);
+
+        let v = r.verdict(tol(0.10));
+
+        assert!(
+            !v.is_go(),
+            "a NaN coverage must not slip past the tolerance test"
+        );
+        assert!(matches!(v.reasons()[0], NoGoReason::Unjudgeable { .. }));
+    }
+
+    /// Coverage can be bought with uselessly wide intervals, so a mean
+    /// width that is not a number is not something to pass a verdict
+    /// over.
+    #[test]
+    fn a_non_finite_mean_interval_width_is_not_a_go() {
+        let mut r = report(60, 48, vec![(0.80, 60, 48, 0.80)]);
+        r.mean_interval_width = Some(f64::INFINITY);
+
+        let v = r.verdict(tol(0.10));
+
+        assert!(!v.is_go());
+        assert!(matches!(v.reasons()[0], NoGoReason::Unjudgeable { .. }));
+    }
+
+    /// The worst available wrong answer. An empty record is what
+    /// somebody asking the question by accident will be holding.
+    #[test]
+    fn an_empty_report_is_not_a_go() {
+        let v = CalibrationReport::default().verdict(tol(0.10));
+
+        assert!(
+            !v.is_go(),
+            "nothing measured is not the same as measured and fine"
+        );
+        assert_eq!(
+            v.reasons(),
+            [NoGoReason::NotEnoughEvidence { n: 0, required: 50 }]
+        );
+    }
+
+    /// A tolerance that could only ever produce one answer is refused,
+    /// so it cannot be smuggled in wearing the costume of a
+    /// measurement.
+    #[test]
+    fn a_tolerance_that_decides_nothing_is_refused() {
+        for bad in [0.0, -0.1, 1.5, f64::NAN, f64::INFINITY] {
+            assert!(
+                Tolerance::new(bad).is_err(),
+                "{bad} should not be usable as a tolerance"
+            );
+        }
+        for good in [f64::EPSILON, 0.05, 1.0] {
+            assert!(Tolerance::new(good).is_ok(), "{good} should be usable");
+        }
+    }
+
+    /// `reasons()` is empty for a Go, so a caller iterating reasons
+    /// cannot read a pass as a failure that forgot to explain itself.
+    #[test]
+    fn a_go_carries_no_reasons() {
+        let v = report(50, 40, vec![(0.80, 50, 40, 0.80)]).verdict(tol(0.10));
+
+        assert!(v.is_go());
+        assert!(v.reasons().is_empty());
     }
 }

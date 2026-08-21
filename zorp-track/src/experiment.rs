@@ -144,12 +144,34 @@ impl Store {
         Ok(())
     }
 
+    /// Record an outcome.
+    ///
+    /// A non-finite number is refused, the same way a forecast carrying
+    /// one is. The two refusals are a pair and neither works alone.
+    /// Without this one, a stored NaN counts as a miss in every
+    /// calibration report forever, because `observed >= low` is false
+    /// for NaN, so it drags observed coverage down and no amount of
+    /// good forecasting can pull it back. It also cannot be
+    /// distinguished later from a forecast that genuinely missed. This
+    /// is the same rule as the 2026-08-14 decision that measurement
+    /// code fails loudly instead of guessing: a measurement that is not
+    /// a number is not a measurement.
     pub fn record_metric(
         &self,
         experiment_id: &str,
         key: &str,
         value: MetricValue,
     ) -> Result<(), TrackError> {
+        if let MetricValue::Number(n) = &value {
+            if !n.is_finite() {
+                return Err(TrackError::Malformed {
+                    what: "metric value",
+                    detail: format!(
+                        "{key} on experiment {experiment_id} must be a finite number, got {n}"
+                    ),
+                });
+            }
+        }
         self.assert_experiment_exists(experiment_id)?;
         let metric_id = format!(
             "{experiment_id}-{key}-{}-{:06}",
@@ -560,5 +582,60 @@ mod tests {
             .record_metric("nope", "accuracy", MetricValue::Number(1.0))
             .unwrap_err();
         assert!(matches!(err, TrackError::NotFound { kind: "experiment", id } if id == "nope"));
+    }
+
+    /// Deleting the finiteness check in `record_metric` makes every one
+    /// of these return Ok and store a number that no comparison can
+    /// ever answer.
+    #[test]
+    fn a_non_finite_outcome_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let exp = store.create_experiment("t1", "e").unwrap();
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = store
+                .record_metric(&exp.id, "accuracy", MetricValue::Number(bad))
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TrackError::Malformed {
+                        what: "metric value",
+                        ..
+                    }
+                ),
+                "{bad} should be refused, got {err:?}"
+            );
+        }
+
+        assert!(
+            store.metrics_for(&exp.id).unwrap().is_empty(),
+            "a refused outcome must leave no row behind"
+        );
+    }
+
+    /// The refusal is about numbers only. Text and boolean outcomes
+    /// have no finiteness to speak of, and refusing them would break
+    /// every non-numeric metric in the record.
+    #[test]
+    fn a_finite_number_and_the_other_kinds_still_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let exp = store.create_experiment("t1", "e").unwrap();
+
+        store
+            .record_metric(&exp.id, "accuracy", MetricValue::Number(0.5))
+            .unwrap();
+        store
+            .record_metric(&exp.id, "notes", MetricValue::Text("fine".into()))
+            .unwrap();
+        store
+            .record_metric(&exp.id, "converged", MetricValue::Bool(true))
+            .unwrap();
+
+        assert_eq!(store.metrics_for(&exp.id).unwrap().len(), 3);
     }
 }
