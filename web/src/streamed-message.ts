@@ -50,6 +50,15 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "stopped":
     case "done":
       return true;
+    // Panel frames are all reader visible, so they close a streamed
+    // message the same way a tool line does. A panel does not stream an
+    // assistant message today, so nothing is currently cut in two by
+    // this; it is the right answer if one ever does.
+    case "reviewer_started":
+    case "reviewer_finished":
+    case "reviewer_failed":
+    case "panel_done":
+      return true;
     default: {
       // A new event type has to make this decision on purpose.
       const unreachable: never = type;

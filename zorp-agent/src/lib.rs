@@ -20,6 +20,7 @@ mod instructions;
 #[cfg(feature = "research")]
 pub mod investigate;
 mod model;
+pub mod panel;
 mod policy;
 mod provider;
 mod reasoning;
@@ -61,6 +62,10 @@ pub use model::{
     messages_to_body, parse_assistant, parse_assistant_completion, AssistantMessage,
     ConfiguredHttpModel, ContentPart, HttpModel, Message, MessageMetadata, MessageRecord, Model,
     ModelCompletion, ToolCall,
+};
+pub use panel::{
+    default_lenses, reviewer_tools, Agreement, Lens, PanelConfig, PanelFinding, PanelObserver,
+    PanelReport, ReviewerFailure, ReviewerVerdict, Severity, SilentObserver, Target,
 };
 pub use policy::{Decision, Policy, Preset};
 pub use provider::Provider;
