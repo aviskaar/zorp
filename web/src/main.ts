@@ -9,7 +9,7 @@
 
 import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
-import { copyButton } from "./copy-response";
+import { answerActions } from "./copy-response";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
 import {
@@ -960,7 +960,7 @@ const streamed = new StreamedMessage(
   renderMarkdown,
   undefined,
   undefined,
-  (row, text) => row.append(answerCopyButton(text)),
+  (row, text) => row.append(answerControls(text)),
 );
 
 function appendStreamDelta(chunk: string): void {
@@ -991,21 +991,22 @@ function appendMessage(role: "user" | "assistant", text: string): void {
   }
   row.append(label, body);
   if (role === "assistant") {
-    row.append(answerCopyButton(text));
+    row.append(answerControls(text));
   }
   dom.transcript.append(row);
 }
 
 /**
- * A copy button for one answer.
+ * The controls under one answer: copy it, or copy it framed for another
+ * assistant.
  *
  * `navigator.clipboard` is absent outside a secure context, and a browser can
  * refuse the write even inside one. Both arrive at the button as a rejected
  * promise, which is what makes it say "Copy failed" rather than appear to
  * work. Loopback counts as secure, so the ordinary case is fine.
  */
-function answerCopyButton(text: string): HTMLButtonElement {
-  return copyButton(document, () => text, (value) =>
+function answerControls(text: string): HTMLElement {
+  return answerActions(document, () => text, (value) =>
     navigator.clipboard
       ? navigator.clipboard.writeText(value)
       : Promise.reject(new Error("this browser offers no clipboard here")),
