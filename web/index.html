@@ -56,8 +56,25 @@
             </svg>
             <span class="brand-name">zorp</span>
           </div>
-          <button class="icon-btn sidebar-close" id="sidebar-close" type="button" aria-label="Hide sessions">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          <!--
+            One button, two jobs, and they are the same job seen from two
+            widths. On a phone this shuts the drawer. On a wide window it
+            collapses the column and hands the space to the conversation,
+            and the hamburger in the topbar appears to bring it back.
+          -->
+          <button
+            class="icon-btn sidebar-close"
+            id="sidebar-close"
+            type="button"
+            aria-label="Hide the sessions sidebar"
+            aria-controls="sidebar"
+            title="Hide the sessions sidebar"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 4v16" />
+              <path d="M13 8l-4 4 4 4" />
+              <path d="M4 12h5" />
+            </svg>
           </button>
         </div>
 
@@ -107,11 +124,40 @@
             files on the machine it was started on.
           </p>
         </div>
+
+        <!--
+          The sidebar's inner edge, made draggable. `separator` with a
+          tabindex is the window splitter pattern: arrow keys move it, Home
+          and End take it to its limits, Enter or a double click gives the
+          default width back. A control only a pointer can reach is a control
+          some people do not have.
+        -->
+        <div
+          class="pane-resizer pane-resizer-sidebar"
+          id="sidebar-resizer"
+          role="separator"
+          tabindex="0"
+          aria-orientation="vertical"
+          aria-label="Resize the sessions sidebar"
+          title="Drag to resize. Double click to reset."
+        ></div>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <button class="icon-btn menu-btn" id="menu" type="button" aria-label="Show sessions">
+          <!--
+            The way back. On a phone this opens the drawer; on a wide window
+            it is hidden until the sidebar is collapsed, and then it is the
+            only thing on screen that can bring the sessions back.
+          -->
+          <button
+            class="icon-btn menu-btn"
+            id="menu"
+            type="button"
+            aria-label="Show the sessions sidebar"
+            aria-controls="sidebar"
+            aria-expanded="true"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
           <h1 class="topbar-title" id="session-title">New chat</h1>
@@ -131,20 +177,53 @@
             </svg>
             <span id="model-btn-label">Model</span>
           </button>
-          <button
-            class="model-btn artifacts-btn"
-            id="artifacts-btn"
-            type="button"
-            aria-expanded="false"
-            aria-controls="artifacts"
-            title="Show files this workspace has produced"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
-              <path d="M14 3v5h5" />
-            </svg>
-            <span>Files</span>
-          </button>
+          <!--
+            The file listing used to sit at the top of the artifact pane and
+            eat a third of it, which is the half of that pane a document
+            wanted. It is a picker, and a picker belongs on the control that
+            opens it: this button drops the list down, choosing a file puts
+            it in the pane, and the pane is left to be a document reader.
+          -->
+          <div class="files-menu" id="files-menu">
+            <button
+              class="model-btn artifacts-btn"
+              id="artifacts-btn"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="files-popover"
+              title="List the files this workspace has produced"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" />
+                <path d="M14 3v5h5" />
+              </svg>
+              <span>Files</span>
+            </button>
+            <div
+              class="files-popover"
+              id="files-popover"
+              role="dialog"
+              aria-label="Files in this workspace"
+              hidden
+            >
+              <div class="files-popover-head">
+                <span class="files-popover-title">Workspace files</span>
+                <button
+                  class="icon-btn"
+                  id="artifacts-refresh"
+                  type="button"
+                  aria-label="Refresh the file list"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 11a8 8 0 1 0-.6 3" />
+                    <path d="M20 4v7h-7" />
+                  </svg>
+                </button>
+              </div>
+              <ul class="artifact-list" id="artifact-list"></ul>
+            </div>
+          </div>
           <!--
             How much of the model's context window is left. Hidden until a
             turn has actually told us something: an empty meter reading zero
@@ -401,21 +480,39 @@
         The artifact pane. A run ends in a file, and until this existed the
         only way to read that file was to leave the browser. Read only: it
         shows what the workspace already contains and never writes.
+
+        Preview and nothing else. The listing that used to sit on top of it
+        moved to the Files button in the topbar, so a document gets the whole
+        column and the pane can be dragged out to half the window.
       -->
-      <aside class="artifacts" id="artifacts" aria-label="Artifacts" hidden>
+      <aside class="artifacts" id="artifacts" aria-label="Artifact preview" hidden>
+        <!-- The artifact pane's inner edge. Same control as the sidebar's. -->
+        <div
+          class="pane-resizer pane-resizer-artifacts"
+          id="artifacts-resizer"
+          role="separator"
+          tabindex="0"
+          aria-orientation="vertical"
+          aria-label="Resize the artifact pane"
+          title="Drag to resize. Double click to reset."
+        ></div>
+
         <div class="artifacts-head">
-          <h2 class="artifacts-title">Files</h2>
-          <button class="icon-btn" id="artifacts-refresh" type="button" aria-label="Refresh file list">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 11a8 8 0 1 0-.6 3" />
-              <path d="M20 4v7h-7" />
-            </svg>
-          </button>
-          <button class="icon-btn" id="artifacts-close" type="button" aria-label="Hide files">
+          <!--
+            The name of the file on screen. Workspace data, so it is set with
+            textContent like everything else the agent had a hand in.
+          -->
+          <h2 class="artifacts-title" id="artifact-title" data-empty="yes">Preview</h2>
+          <button
+            class="icon-btn"
+            id="artifacts-close"
+            type="button"
+            aria-label="Close the preview"
+            title="Close the preview"
+          >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </div>
-        <ul class="artifact-list" id="artifact-list"></ul>
         <div class="artifact-view" id="artifact-view">
           <p class="artifact-empty" id="artifact-empty">Pick a file to read it here.</p>
           <div class="artifact-doc" id="artifact-doc" hidden></div>

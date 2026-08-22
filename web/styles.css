@@ -68,9 +68,15 @@
 
   --reading: 46rem;
   --sidebar-w: 264px;
-  /* The artifact pane. Wide enough for a rendered document line length
-     without taking the conversation down to a column. */
-  --artifacts-w: 420px;
+  /* The artifact pane, as a real half of the window rather than a strip
+     down the side. A document is a thing to read, and 420px was a column.
+     The clamp is what keeps the conversation readable at both ends: never
+     under 320px on a laptop, never past 760px on a very wide screen, where
+     an unbounded half would leave the messages swimming.
+
+     Both of these are overwritten with a plain pixel value the moment
+     somebody drags a handle; see web/src/layout.ts for the limits. */
+  --artifacts-w: clamp(320px, 42vw, 760px);
   --radius: 12px;
 }
 
@@ -130,15 +136,74 @@ button {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100%;
+  /* Collapsing the sidebar should look like a move rather than a jump. The
+     reduced-motion block near the bottom of this file turns it off, and so
+     does a drag: following a pointer through a transition lags behind it. */
+  transition: grid-template-columns 160ms ease;
+}
+
+.app[data-resizing="yes"] {
+  transition: none;
+  /* A drag that crosses a paragraph should not select it. */
+  user-select: none;
+  cursor: col-resize;
 }
 
 .scrim {
   display: none;
 }
 
+/* ---------------------------------------------------------------- resizers */
+
+/* The draggable inner edge of a side pane. Absolutely positioned so it takes
+   no room in the flex column it sits in, and straddling the border so the
+   grab area is a comfortable few pixels rather than the border's one. */
+.pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.pane-resizer-sidebar {
+  right: -4px;
+}
+
+.pane-resizer-artifacts {
+  left: -4px;
+}
+
+/* The visible part: a hairline that thickens and lights up under the pointer
+   or a focus ring, so the edge reads as something you can take hold of. */
+.pane-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.pane-resizer:hover::after,
+.pane-resizer:focus-visible::after,
+.pane-resizer[data-dragging="yes"]::after {
+  background: var(--accent-dim);
+}
+
+.pane-resizer:focus-visible {
+  outline: none;
+}
+
 /* ---------------------------------------------------------------- sidebar */
 
 .sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -200,9 +265,9 @@ button {
   transition: background 120ms ease, color 120ms ease;
 }
 
-/* Both of these are for the narrow layout only. The media query below turns
-   them back on. */
-.sidebar-close,
+/* The hamburger is for the narrow layout, and for the one wide case where
+   the sidebar has been collapsed and something has to bring it back. Both
+   are turned on further down. */
 .menu-btn {
   display: none;
 }
@@ -1960,9 +2025,15 @@ button {
     transform: none;
   }
 
-  .sidebar-close,
   .menu-btn {
     display: inline-flex;
+  }
+
+  /* No dragging a drawer wider. Down here the sidebar is a fixed overlay
+     and `--sidebar-w` is the only thing sizing it, so a handle would move a
+     number nothing is reading. */
+  .pane-resizer-sidebar {
+    display: none;
   }
 
   .app.sidebar-open .scrim {
@@ -2444,6 +2515,7 @@ button {
    anything to clip, so the document would not scroll, and the stretched grid
    row dragged the conversation column down with it. */
 .artifacts {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -2464,15 +2536,93 @@ button {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 14px 12px 12px 18px;
+  padding: 10px 10px 10px 18px;
   border-bottom: 1px solid var(--line-soft);
 }
 
+/* The name of the file on screen. It used to say "Files" over a list; the
+   list moved to the topbar and the header can now say which document this
+   is, which is the question somebody looking at the pane actually has. */
 .artifacts-title {
   flex: 1;
+  min-width: 0;
   margin: 0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nothing open yet, so it is a label again rather than a name. */
+.artifacts-title[data-empty="yes"] {
   font-family: var(--display);
-  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* -------------------------------------------------- the file list popover */
+
+.files-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.files-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  max-height: min(60vh, 460px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+}
+
+/* Spelled out for the same reason `.artifacts[hidden]` is: the `display`
+   above outranks the user agent's `[hidden] { display: none }`. */
+.files-popover[hidden] {
+  display: none;
+}
+
+/* Anchored to a topbar button there is not room for at this width, so the
+   list becomes a sheet pinned under the topbar instead. This has to sit
+   after the rule it overrides rather than up in the narrow block near the
+   top of the file: same specificity, so the later one wins, and up there it
+   lost and the popover hung off the right edge of a phone. */
+@media (max-width: 820px) {
+  .files-popover {
+    position: fixed;
+    top: 58px;
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-width: none;
+  }
+}
+
+.files-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 8px 8px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.files-popover-title {
+  flex: 1;
+  font-family: var(--display);
+  font-size: 0.72rem;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2480,13 +2630,12 @@ button {
 }
 
 .artifact-list {
-  flex: 0 0 auto;
-  max-height: 34%;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   margin: 0;
-  padding: 8px;
+  padding: 6px;
   list-style: none;
-  border-bottom: 1px solid var(--line-soft);
 }
 
 .artifact-item {
@@ -2613,5 +2762,67 @@ button {
     inset: 0 0 0 auto;
     z-index: 40;
     width: min(520px, 100vw);
+  }
+
+  /* An overlay is not a column, so there is no column edge to drag. */
+  .pane-resizer-artifacts {
+    display: none;
+  }
+}
+
+/* At phone width the pane covers the page, so the grid underneath it should
+   go back to one column. Without this the rule above still leaves a sidebar
+   column standing and the conversation behind the overlay is squeezed into
+   whatever is left, which is what the reader comes back to when they close
+   the pane. After the block above rather than up with the other narrow
+   rules: same specificity, so the later one wins. */
+@media (max-width: 820px) {
+  .app[data-artifacts="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ------------------------------------------------- the collapsed sidebar */
+
+/* Scoped to the wide layout on purpose. Below 820px the sidebar is already a
+   drawer that opens and shuts, and collapsing a shut drawer means nothing;
+   keeping these rules inside a min-width query is what stops the two ideas
+   fighting over the same element.
+
+   Every selector here carries both attributes where it needs to, so the
+   result does not depend on which of these blocks the browser reads last. */
+@media (min-width: 821px) {
+  .app[data-sidebar="collapsed"] {
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+
+  .app[data-sidebar="collapsed"][data-artifacts="open"] {
+    grid-template-columns: 0 minmax(0, 1fr) var(--artifacts-w);
+  }
+
+  /* `visibility` and not `display`, and that is the whole trick. A grid item
+     set to `display: none` stops being an item, so the conversation
+     auto-places into the first column, which is the 0px one this rule just
+     created: the collapsed sidebar took the conversation with it. Hidden
+     this way the sidebar keeps its slot at zero width, and `visibility`
+     still takes it out of the tab order and out of the accessibility tree,
+     which `overflow: hidden` and a zero width on their own would not. */
+  .app[data-sidebar="collapsed"] .sidebar {
+    visibility: hidden;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  /* The way back, and the only one on screen once the column is gone. */
+  .app[data-sidebar="collapsed"] .menu-btn {
+    display: inline-flex;
+  }
+}
+
+@media (min-width: 821px) and (max-width: 1100px) {
+  .app[data-sidebar="collapsed"][data-artifacts="open"] {
+    grid-template-columns: 0 minmax(0, 1fr);
   }
 }

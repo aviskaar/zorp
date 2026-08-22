@@ -21,6 +21,17 @@ import { setSendControl } from "./send-control";
 import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
+import {
+  PaneResizer,
+  artifactsBounds,
+  layoutStore,
+  readLayout,
+  saveCollapsed,
+  saveWidth,
+  setSidebarCollapsed,
+  sidebarBounds,
+  sidebarIsCollapsed,
+} from "./layout";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
 import {
@@ -102,6 +113,9 @@ const STICK_TO_BOTTOM_PX = 120;
 interface Elements {
   app: HTMLElement;
   scrim: HTMLElement;
+  sidebar: HTMLElement;
+  sidebarResizer: HTMLElement;
+  artifactsResizer: HTMLElement;
   sessionList: HTMLElement;
   recall: HTMLElement;
   composerMemory: HTMLElement;
@@ -160,7 +174,10 @@ interface Elements {
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
   artifactsBtn: HTMLButtonElement;
+  filesMenu: HTMLElement;
+  filesPopover: HTMLElement;
   artifacts: HTMLElement;
+  artifactTitle: HTMLElement;
   artifactsClose: HTMLButtonElement;
   artifactsRefresh: HTMLButtonElement;
   artifactList: HTMLElement;
@@ -227,11 +244,27 @@ let autoApprove = false;
 /** The last settings the server reported. Null until the first successful
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
+/**
+ * Where the pane widths and the collapsed flag are kept, or null if nowhere,
+ * and the two handles once they exist.
+ *
+ * Up here rather than beside `wireLayout`, and that is not tidiness. `start()`
+ * is called partway down this file, so anything declared below it is still
+ * uninitialised while the wiring runs: the bundler turns a top-level `let`
+ * into a `var`, and a `var` initialiser that runs after the wiring quietly
+ * puts the resizers back to null. The first version of this shipped that way
+ * and the two handles could not see each other's width, so neither knew how
+ * much room was left for the conversation.
+ */
+const layoutStorage = layoutStore();
+let sidebarResizer: PaneResizer | null = null;
+let artifactsResizer: PaneResizer | null = null;
 
 start();
 
 function start(): void {
   wireComposer();
+  wireLayout();
   wireSidebar();
   wireRecall();
   wireScroller();
@@ -346,6 +379,9 @@ function collectElements(): Elements {
   return {
     app: byId("app"),
     scrim: byId("scrim"),
+    sidebar: byId("sidebar"),
+    sidebarResizer: byId("sidebar-resizer"),
+    artifactsResizer: byId("artifacts-resizer"),
     sessionList: byId("session-list"),
     recall: byId("recall"),
     composerMemory: byId("composer-memory"),
@@ -403,7 +439,10 @@ function collectElements(): Elements {
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     artifactsBtn: byId<HTMLButtonElement>("artifacts-btn"),
+    filesMenu: byId<HTMLElement>("files-menu"),
+    filesPopover: byId<HTMLElement>("files-popover"),
     artifacts: byId<HTMLElement>("artifacts"),
+    artifactTitle: byId<HTMLElement>("artifact-title"),
     artifactsClose: byId<HTMLButtonElement>("artifacts-close"),
     artifactsRefresh: byId<HTMLButtonElement>("artifacts-refresh"),
     artifactList: byId<HTMLElement>("artifact-list"),
@@ -462,8 +501,8 @@ function wireSidebar(): void {
     closeSidebar();
     dom.input.focus();
   });
-  dom.menu.addEventListener("click", openSidebar);
-  dom.sidebarClose.addEventListener("click", closeSidebar);
+  dom.menu.addEventListener("click", showSidebar);
+  dom.sidebarClose.addEventListener("click", hideSidebar);
   dom.scrim.addEventListener("click", closeSidebar);
 }
 
@@ -2155,12 +2194,47 @@ function setStatus(state: "idle" | "wait" | "live", text: string): void {
   dom.statusText.textContent = text;
 }
 
-function openSidebar(): void {
+/**
+ * Bring the sessions back, whichever way they went away.
+ *
+ * There are two of those and one button for both. On a phone the sidebar is
+ * a drawer held by a class; on a wide window it is a grid column held by a
+ * dataset key. Undoing only the one that applies would leave the other
+ * waiting to surprise somebody who resized their window.
+ */
+function showSidebar(): void {
   dom.app.classList.add("sidebar-open");
+  setSidebarCollapsed(dom.app, false, dom.menu);
+  saveCollapsed(layoutStorage, false);
+  describeHandles();
 }
 
+/**
+ * Put them away.
+ *
+ * On a narrow window this shuts the drawer and stops there, because down
+ * there the drawer being shut is the resting state and remembering it as a
+ * collapse would hide the sidebar on the next wide window too.
+ */
+function hideSidebar(): void {
+  closeSidebar();
+  if (!isNarrow()) {
+    setSidebarCollapsed(dom.app, true, dom.menu);
+    saveCollapsed(layoutStorage, true);
+    describeHandles();
+  }
+}
+
+/** Shut the drawer and nothing else. What picking a session should do. */
 function closeSidebar(): void {
   dom.app.classList.remove("sidebar-open");
+}
+
+/** Whether the stylesheet has the sidebar as a drawer rather than a column. */
+function isNarrow(): boolean {
+  return typeof window.matchMedia === "function"
+    ? window.matchMedia("(max-width: 820px)").matches
+    : false;
 }
 
 function isNearBottom(): boolean {
@@ -2288,6 +2362,88 @@ function glyph(kind: "shield" | "alert" | "stop"): SVGSVGElement {
 }
 
 /* ------------------------------------------------------------------ */
+/* pane sizes and the collapsed sidebar                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Hand both pane edges to the reader.
+ *
+ * The two handles are aware of each other: how wide either pane may be
+ * depends on how wide the other one is, because what they are really
+ * dividing up is the room left over once the conversation has kept its
+ * minimum. That is why the bounds are functions and not numbers.
+ */
+function wireLayout(): void {
+  const saved = readLayout(layoutStorage);
+  const root = dom.app;
+
+  sidebarResizer = new PaneResizer({
+    handle: dom.sidebarResizer,
+    root,
+    property: "--sidebar-w",
+    sign: 1,
+    bounds: () =>
+      sidebarBounds({
+        viewport: window.innerWidth,
+        other: dom.artifacts.hidden ? 0 : (artifactsResizer?.current ?? 0),
+      }),
+    measure: () => dom.sidebar.getBoundingClientRect().width,
+    onCommit: (px) => {
+      saveWidth(layoutStorage, "sidebar", px);
+      describeHandles();
+    },
+  });
+
+  artifactsResizer = new PaneResizer({
+    handle: dom.artifactsResizer,
+    root,
+    property: "--artifacts-w",
+    sign: -1,
+    bounds: () =>
+      artifactsBounds({
+        viewport: window.innerWidth,
+        other: sidebarIsCollapsed(root) ? 0 : (sidebarResizer?.current ?? 0),
+      }),
+    measure: () => dom.artifacts.getBoundingClientRect().width,
+    onCommit: (px) => {
+      saveWidth(layoutStorage, "artifacts", px);
+      describeHandles();
+    },
+  });
+
+  if (saved.sidebar !== null) {
+    sidebarResizer.set(saved.sidebar);
+  }
+  if (saved.artifacts !== null) {
+    artifactsResizer.set(saved.artifacts);
+  }
+  setSidebarCollapsed(root, saved.collapsed, dom.menu);
+  describeHandles();
+
+  // A window that got smaller can leave a saved pane sitting over the
+  // conversation, so both widths are put back inside their limits whenever
+  // the window changes size.
+  window.addEventListener("resize", () => {
+    sidebarResizer?.reclamp();
+    artifactsResizer?.reclamp();
+  });
+}
+
+/**
+ * Both handles, told where they stand.
+ *
+ * Both and not just the one that moved. Moving either edge changes how far
+ * the other may go, and a gesture is a run of events rather than one, so the
+ * only way to be sure the pair is right when the run ends is to write both
+ * every time. A stale `aria-valuemax` is a limit announced to somebody that
+ * is not the limit they will hit.
+ */
+function describeHandles(): void {
+  sidebarResizer?.describe();
+  artifactsResizer?.describe();
+}
+
+/* ------------------------------------------------------------------ */
 /* artifact pane                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -2325,36 +2481,63 @@ const pane: Pane = {
 };
 
 function wireArtifacts(): void {
+  // The Files button is a picker now, not a pane switch. The listing used to
+  // sit on top of the pane and take a third of it, which was the third the
+  // document wanted; the pane is a document reader and this is how you
+  // choose the document.
   dom.artifactsBtn.addEventListener("click", () => {
-    const showing = !dom.artifacts.hidden;
-    if (showing) {
-      closeArtifacts();
+    if (dom.filesPopover.hidden) {
+      void openFilesMenu();
     } else {
-      openArtifactsPane();
+      closeFilesMenu();
     }
   });
   dom.artifactsClose.addEventListener("click", closeArtifacts);
   dom.artifactsRefresh.addEventListener("click", () => {
     void refreshArtifacts();
   });
-}
-
-function openArtifactsPane(): void {
-  dom.artifacts.hidden = false;
-  dom.artifactsBtn.setAttribute("aria-expanded", "true");
-  dom.app.dataset.artifacts = "open";
-  const newest = newestProducedPath;
-  void refreshArtifacts().then(() => {
-    if (newest) {
-      void showArtifact(newest);
+  document.addEventListener("click", (event) => {
+    if (dom.filesPopover.hidden) {
+      return;
+    }
+    // The button is inside the menu, so its own click is handled above and
+    // this one sees it as inside and leaves it alone.
+    const target = event.target;
+    if (target instanceof Node && dom.filesMenu.contains(target)) {
+      return;
+    }
+    closeFilesMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.filesPopover.hidden) {
+      closeFilesMenu();
+      dom.artifactsBtn.focus();
     }
   });
 }
 
+async function openFilesMenu(): Promise<void> {
+  dom.filesPopover.hidden = false;
+  dom.artifactsBtn.setAttribute("aria-expanded", "true");
+  await refreshArtifacts();
+}
+
+function closeFilesMenu(): void {
+  dom.filesPopover.hidden = true;
+  dom.artifactsBtn.setAttribute("aria-expanded", "false");
+}
+
+/** Give the preview its column. Says nothing about which file is in it. */
+function showArtifactsPane(): void {
+  dom.artifacts.hidden = false;
+  dom.app.dataset.artifacts = "open";
+  describeHandles();
+}
+
 function closeArtifacts(): void {
   dom.artifacts.hidden = true;
-  dom.artifactsBtn.setAttribute("aria-expanded", "false");
   delete dom.app.dataset.artifacts;
+  describeHandles();
 }
 
 /** The most recently written file this turn produced, if any. */
@@ -2425,13 +2608,8 @@ async function checkForProducedArtifacts(force = false): Promise<void> {
   }
   newestProducedPath = fresh[0].path;
 
-  if (dom.artifacts.hidden) {
-    // Opening it also refreshes the listing and shows the newest file, so
-    // there is nothing to do after this.
-    openArtifactsPane();
-    return;
-  }
   renderArtifactList(files, truncated);
+  showArtifactsPane();
   await showArtifact(newestProducedPath);
 }
 
@@ -2478,6 +2656,8 @@ function renderArtifactList(files: Artifact[], truncated: boolean): void {
       button.append(textNode("span", "artifact-fresh", "new"));
     }
     button.addEventListener("click", () => {
+      closeFilesMenu();
+      showArtifactsPane();
       void showArtifact(file.path);
     });
     row.append(button);
@@ -2500,6 +2680,7 @@ function renderArtifactList(files: Artifact[], truncated: boolean): void {
  */
 async function showArtifact(path: string): Promise<void> {
   openArtifact = path;
+  setArtifactTitle(path);
   for (const node of dom.artifactList.querySelectorAll<HTMLElement>(".artifact-item")) {
     if (node.dataset.path === path) {
       node.dataset.open = "yes";
@@ -2521,6 +2702,26 @@ async function showArtifact(path: string): Promise<void> {
     // pane and an empty file look identical, and they are not the same.
     setArtifactMessage(describeError(error));
   }
+}
+
+/**
+ * Put the open file's name in the pane header.
+ *
+ * `textContent`, like everything else on this page that came out of the
+ * workspace. A path is a name the agent chose, and a name the agent chose is
+ * model output by another route.
+ */
+function setArtifactTitle(path: string | null): void {
+  if (path === null) {
+    dom.artifactTitle.dataset.empty = "yes";
+    dom.artifactTitle.textContent = "Preview";
+    dom.artifactTitle.removeAttribute("title");
+    return;
+  }
+  delete dom.artifactTitle.dataset.empty;
+  dom.artifactTitle.textContent = path;
+  // The header ellipsises a long path, so the whole of it lives here too.
+  dom.artifactTitle.title = path;
 }
 
 function setArtifactMessage(text: string): void {
