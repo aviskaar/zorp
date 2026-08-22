@@ -206,9 +206,18 @@ fn a_local_models_intervals_are_scored_against_measured_truth() {
     println!("mean interval width = {:?}", report.mean_interval_width);
     for band in &report.bands {
         println!(
-            "  stated {:.2}: n={:>3} covered={:>3} observed={:.4} mean width={:.1}",
+            "  mean stated {:.4}: n={:>3} covered={:>3} observed={:.4} mean width={:.1}",
             band.confidence, band.n, band.covered, band.observed_coverage, band.mean_interval_width
         );
+        // What got pooled into that mean. Printed because pooling
+        // averages, and an average of two opposite errors reads as no
+        // error at all unless both halves are on the page.
+        for part in &band.parts {
+            println!(
+                "      stated {:.4}: n={:>3} covered={:>3}",
+                part.confidence, part.n, part.covered
+            );
+        }
     }
     println!("curve: {:?}", report.curve());
 

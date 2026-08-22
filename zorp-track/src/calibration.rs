@@ -10,15 +10,47 @@
 use crate::track::Store;
 use crate::TrackError;
 
-/// One stated confidence and what the outcomes inside it actually did.
+/// One distinct stated confidence inside a band, and what its own
+/// outcomes did.
 ///
-/// A band exists only when at least one forecast was made at that
-/// stated confidence and has an outcome, so `n` is never zero here.
+/// A band pools adjacent stated confidences until it holds enough rows
+/// to be judged, so the number the verdict compares is a mean. These
+/// are what went into that mean. Nothing is hidden from a reader:
+/// pooling averages, and the only defence against an average that
+/// cancels two opposite errors is being able to see both.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CalibrationBand {
+pub struct BandPart {
     /// The coverage the forecaster stated, for example 0.80.
     pub confidence: f64,
-    /// Forecasts at this stated confidence that have an outcome.
+    /// Forecasts at exactly that stated confidence that have an
+    /// outcome.
+    pub n: usize,
+    /// How many of those outcomes fell inside their interval.
+    pub covered: usize,
+}
+
+/// A bin of adjacent stated confidences and what the outcomes inside it
+/// actually did.
+///
+/// Not one band per distinct stated confidence. A forecaster free to
+/// write any number spreads a run over confidences that individually
+/// hold three or four rows, and `required_band_n` can then be met by
+/// none of them, so nothing at all can be concluded from data that says
+/// something perfectly clearly once it is pooled. Adjacent stated
+/// confidences are gathered until the bin holds the rows its own mean
+/// asks for, and not one group further.
+///
+/// A band exists only when at least one forecast in it has an outcome,
+/// so `n` is never zero here and `parts` is never empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalibrationBand {
+    /// The mean of the confidences this bin's forecasts stated.
+    ///
+    /// The mean, and never a bin edge, because the comparison has to be
+    /// against what was actually claimed. A bin holding one distinct
+    /// stated confidence reports exactly that number.
+    pub confidence: f64,
+    /// Forecasts in this bin that have an outcome.
     pub n: usize,
     /// How many of those outcomes fell inside their interval.
     pub covered: usize,
@@ -27,6 +59,9 @@ pub struct CalibrationBand {
     /// Mean width of the intervals in this band. Coverage alone can be
     /// bought by predicting everything, so it is never reported alone.
     pub mean_interval_width: f64,
+    /// The distinct stated confidences pooled into this bin, ascending.
+    /// Never empty, so `first` and `last` are the bin's span.
+    pub parts: Vec<BandPart>,
 }
 
 /// Empirical coverage against stated confidence, over every forecast in
@@ -39,7 +74,8 @@ pub struct CalibrationReport {
     pub covered: usize,
     /// Mean interval width across all bands, `None` when `n` is zero.
     pub mean_interval_width: Option<f64>,
-    /// One entry per distinct stated confidence, in ascending order.
+    /// One entry per bin of adjacent stated confidences, ascending. Not
+    /// one per distinct stated confidence; `CalibrationBand` says why.
     pub bands: Vec<CalibrationBand>,
 }
 
@@ -56,8 +92,8 @@ impl CalibrationReport {
         Some(self.covered as f64 / self.n as f64)
     }
 
-    /// The calibration curve: stated confidence against observed
-    /// coverage, ascending by stated confidence.
+    /// The calibration curve: mean stated confidence against observed
+    /// coverage, one point per bin, ascending.
     ///
     /// A well calibrated forecaster puts these points on the diagonal.
     /// The spec's failure case, 80% intervals holding the truth 45% of
@@ -73,35 +109,154 @@ impl CalibrationReport {
     }
 }
 
-/// A band still accumulating rows. Kept out of the public API because
-/// a half-counted band is not a result.
-struct OpenBand {
+/// One scored forecast: what was claimed, whether the outcome landed
+/// inside, and how wide the interval was. Kept out of the public API
+/// because a row on its own is not a result.
+struct ScoredRow {
     confidence: f64,
-    n: usize,
-    covered: usize,
-    width_sum: f64,
+    covered: bool,
+    width: f64,
 }
 
-impl OpenBand {
-    fn new(confidence: f64) -> Self {
-        OpenBand {
-            confidence,
-            n: 0,
-            covered: 0,
-            width_sum: 0.0,
+/// The distinct stated confidences in a run of rows, ascending, each
+/// with the number of rows that stated it.
+///
+/// Grouped on the bit pattern rather than with `==`, so a stored NaN
+/// groups with itself instead of opening a fresh group on every row.
+fn group_confidences(confidences: &[f64]) -> Vec<(f64, usize)> {
+    let mut groups: Vec<(f64, usize)> = Vec::new();
+    for &confidence in confidences {
+        match groups.last_mut() {
+            Some((value, count)) if value.to_bits() == confidence.to_bits() => *count += 1,
+            _ => groups.push((confidence, 1)),
         }
     }
+    groups
+}
 
-    /// Divide once, at the end. A band is only ever closed with at
-    /// least one row in it, so neither division is 0/0.
-    fn close(self) -> CalibrationBand {
-        CalibrationBand {
-            confidence: self.confidence,
-            n: self.n,
-            covered: self.covered,
-            observed_coverage: self.covered as f64 / self.n as f64,
-            mean_interval_width: self.width_sum / self.n as f64,
+/// The mean stated confidence over a run of groups.
+///
+/// A single group answers with its own value instead of dividing a sum
+/// by a count. The mean of one number repeated is that number, and a
+/// float sum does not always agree: 0.80 added four hundred times and
+/// divided by four hundred is not 0.80 bit for bit. `required_band_n`
+/// is a step function of this value, so one ulp can move what a band is
+/// asked for by a whole row, and a bin holding one stated confidence
+/// has to be judged against exactly the number that was stated.
+///
+/// Never called with no groups. A band is built only from rows that
+/// exist.
+fn mean_stated(groups: &[(f64, usize)]) -> f64 {
+    if let [(only, _)] = groups {
+        return *only;
+    }
+    let mut sum = 0.0_f64;
+    let mut n = 0usize;
+    for (confidence, count) in groups {
+        sum += confidence * *count as f64;
+        n += count;
+    }
+    sum / n as f64
+}
+
+/// Where the bins end, decided from the stated confidences alone.
+///
+/// The outcomes are not a parameter, and that is the point. A boundary
+/// chosen with the hits in view would be fitted to the answer, and the
+/// coverage it then reported would be a property of the fit rather than
+/// of the forecaster.
+///
+/// Rows arrive ascending by stated confidence. Adjacent rows accumulate
+/// until the bin holds what `required_band_n` asks of its own mean, and
+/// then it closes. Nothing narrower can be judged and nothing wider is
+/// taken, so the pooling is the least the requirement allows. That
+/// bound is the only thing standing between this and a single bin over
+/// the whole run, which would average every stated confidence together
+/// and report the result as one point.
+///
+/// Two rules keep it honest. A whole group of identical stated
+/// confidences moves together, so every forecast claiming the same
+/// number is judged in one place and no boundary depends on the order
+/// rows happened to be written in. And a leftover tail too small to
+/// close joins the bin before it rather than being dropped: dropping
+/// would quietly bias the curve, and the rows it would drop are the
+/// ones a forecaster reached for least often.
+///
+/// The merge cannot reopen the bin it joins. Written out, `n >= ceil(n
+/// / (n - S))` for a bin of `n` rows whose stated confidences sum to
+/// `S` is just `n - S >= 1`, which says a correct forecaster expects at
+/// least one miss in the bin. Every row added states a confidence below
+/// 1, so that expected miss count only rises, and `MIN_BAND_N` is a
+/// count of rows, which only rises too.
+///
+/// Returns the exclusive end index of each bin, so the last one is
+/// always `confidences.len()` and no row is left out. A confidence that
+/// is not a confidence, NaN included, asks for `usize::MAX` rows and so
+/// never closes a bin; everything from there on lands in one bin that
+/// `verdict` then refuses to judge, which is the safe direction.
+fn bin_boundaries(confidences: &[f64]) -> Vec<usize> {
+    let groups = group_confidences(confidences);
+    let mut ends: Vec<usize> = Vec::new();
+    // The first group of the bin still filling, how many rows are in
+    // it, and how many rows have been consumed altogether.
+    let mut open = 0usize;
+    let mut n = 0usize;
+    let mut end = 0usize;
+    for (g, (_, count)) in groups.iter().enumerate() {
+        n += count;
+        end += count;
+        if n >= required_band_n(mean_stated(&groups[open..=g])) {
+            ends.push(end);
+            open = g + 1;
+            n = 0;
         }
+    }
+    if n > 0 {
+        match ends.last_mut() {
+            Some(last) => *last = confidences.len(),
+            None => ends.push(confidences.len()),
+        }
+    }
+    ends
+}
+
+/// One band over the run of rows the binner decided belong together.
+///
+/// The mean goes through `mean_stated` over the same groups the binner
+/// used, so the confidence a band reports is the one its own closing
+/// test was made against. If those two ever drifted apart, a bin the
+/// binner called finished could come back from `verdict` as too thin.
+///
+/// Divide once, at the end. A band is only ever built from at least one
+/// row, so neither division is 0/0.
+fn band_from_rows(rows: &[ScoredRow]) -> CalibrationBand {
+    let mut parts: Vec<BandPart> = Vec::new();
+    let mut covered = 0usize;
+    let mut width_sum = 0.0_f64;
+    for row in rows {
+        match parts.last_mut() {
+            Some(part) if part.confidence.to_bits() == row.confidence.to_bits() => {
+                part.n += 1;
+                part.covered += usize::from(row.covered);
+            }
+            _ => parts.push(BandPart {
+                confidence: row.confidence,
+                n: 1,
+                covered: usize::from(row.covered),
+            }),
+        }
+        covered += usize::from(row.covered);
+        width_sum += row.width;
+    }
+    let n = rows.len();
+    let groups: Vec<(f64, usize)> = parts.iter().map(|part| (part.confidence, part.n)).collect();
+    CalibrationBand {
+        confidence: mean_stated(&groups),
+        n,
+        covered,
+        observed_coverage: covered as f64 / n as f64,
+        mean_interval_width: width_sum / n as f64,
+        parts,
     }
 }
 
@@ -163,6 +318,10 @@ impl Store {
     /// Coverage is inclusive at both ends: an outcome landing exactly
     /// on a bound is covered. The forecaster wrote the bound, and
     /// nobody states an interval meaning to exclude its own edge.
+    ///
+    /// The rows are then cut into bins by `bin_boundaries`, which reads
+    /// the stated confidences and nothing else. Every scored row lands
+    /// in exactly one bin.
     pub fn calibration_report(&self) -> Result<CalibrationReport, TrackError> {
         let mut stmt = self.conn.prepare(CALIBRATION_SQL)?;
         let rows = stmt.query_map([], |r| {
@@ -174,49 +333,45 @@ impl Store {
             ))
         })?;
 
-        let mut report = CalibrationReport::default();
+        // Scored once, up front. The bins cannot be cut until every
+        // stated confidence is in hand, since where one bin ends
+        // depends on how many rows follow it.
+        let mut scored: Vec<ScoredRow> = Vec::new();
+        for row in rows {
+            let (confidence, interval_low, interval_high, observed) = row?;
+            scored.push(ScoredRow {
+                confidence,
+                covered: observed >= interval_low && observed <= interval_high,
+                width: interval_high - interval_low,
+            });
+        }
+
         // Counts are integers and the coverage fractions are divided
         // once at the end, so no coverage figure depends on the order
         // rows arrive in. The widths are the one running float sum
         // here, which is why the query fixes a total order rather than
         // leaving it to the planner.
+        let n = scored.len();
+        let covered = scored.iter().filter(|row| row.covered).count();
         let mut width_sum = 0.0_f64;
-        let mut open: Option<OpenBand> = None;
-
-        for row in rows {
-            let (confidence, interval_low, interval_high, observed) = row?;
-            let covered = observed >= interval_low && observed <= interval_high;
-            let width = interval_high - interval_low;
-
-            report.n += 1;
-            report.covered += usize::from(covered);
-            width_sum += width;
-
-            // Bands are compared on the bit pattern rather than with
-            // `==`, so a stored NaN confidence groups with itself
-            // instead of opening a fresh band on every row.
-            let same_band = open
-                .as_ref()
-                .is_some_and(|b| b.confidence.to_bits() == confidence.to_bits());
-            if !same_band {
-                if let Some(finished) = open.take() {
-                    report.bands.push(finished.close());
-                }
-                open = Some(OpenBand::new(confidence));
-            }
-            if let Some(b) = open.as_mut() {
-                b.n += 1;
-                b.covered += usize::from(covered);
-                b.width_sum += width;
-            }
+        for row in &scored {
+            width_sum += row.width;
         }
-        if let Some(finished) = open.take() {
-            report.bands.push(finished.close());
+
+        let confidences: Vec<f64> = scored.iter().map(|row| row.confidence).collect();
+        let mut bands = Vec::new();
+        let mut start = 0usize;
+        for end in bin_boundaries(&confidences) {
+            bands.push(band_from_rows(&scored[start..end]));
+            start = end;
         }
-        if report.n > 0 {
-            report.mean_interval_width = Some(width_sum / report.n as f64);
-        }
-        Ok(report)
+
+        Ok(CalibrationReport {
+            n,
+            covered,
+            mean_interval_width: (n > 0).then(|| width_sum / n as f64),
+            bands,
+        })
     }
 }
 
@@ -1023,20 +1178,26 @@ mod tests {
     /// answer is known in advance: two of three at 0.80, two of two at
     /// 0.95.
     #[test]
-    fn the_curve_is_one_point_per_stated_confidence_in_ascending_order() {
+    fn the_curve_is_one_point_per_band_in_ascending_order() {
         let dir = tempdir().unwrap();
         let store = open_store(dir.path());
         store.create_track("t1", "hyp").unwrap();
 
-        // (stated confidence, observed value); the interval is always
+        // Thirty at a stated 0.80 with twenty four covered, twenty at a
+        // stated 0.95 with nineteen covered. Each carries the rows its
+        // own requirement asks for, so here a bin and a stated
+        // confidence are the same thing. The interval is always
         // [0.4, 0.6], so 0.55 is covered and 0.9 is not.
-        let plan = [
-            (0.95, 0.55),
-            (0.80, 0.55),
-            (0.95, 0.55),
-            (0.80, 0.9),
-            (0.80, 0.55),
-        ];
+        let mut plan: Vec<(f64, f64)> = Vec::new();
+        for i in 0..30 {
+            plan.push((0.80, if i < 24 { 0.55 } else { 0.9 }));
+        }
+        for i in 0..20 {
+            plan.push((0.95, if i < 19 { 0.55 } else { 0.9 }));
+        }
+        // Write them out of confidence order, so this pins the query's
+        // sort too: the binner is handed ascending rows or nonsense.
+        plan.sort_by_key(|(_, observed)| observed.to_bits());
         for (confidence, observed) in plan {
             let exp = store.create_experiment("t1", "t1-prereg").unwrap();
             insert_expectation(&store, &exp.id, "accuracy", 0.5, (0.4, 0.6), confidence);
@@ -1047,18 +1208,18 @@ mod tests {
 
         let report = store.calibration_report().unwrap();
 
-        assert_eq!(report.n, 5);
-        assert_eq!(report.covered, 4);
+        assert_eq!(report.n, 50);
+        assert_eq!(report.covered, 43);
         assert_eq!(report.bands.len(), 2);
         assert_eq!(report.bands[0].confidence, 0.80);
-        assert_eq!(report.bands[0].n, 3);
-        assert_eq!(report.bands[0].covered, 2);
-        assert_eq!(report.bands[0].observed_coverage, 2.0 / 3.0);
+        assert_eq!(report.bands[0].n, 30);
+        assert_eq!(report.bands[0].covered, 24);
+        assert_eq!(report.bands[0].observed_coverage, 0.80);
         assert_eq!(report.bands[1].confidence, 0.95);
-        assert_eq!(report.bands[1].n, 2);
-        assert_eq!(report.bands[1].covered, 2);
-        assert_eq!(report.bands[1].observed_coverage, 1.0);
-        assert_eq!(report.curve(), vec![(0.80, 2.0 / 3.0), (0.95, 1.0)]);
+        assert_eq!(report.bands[1].n, 20);
+        assert_eq!(report.bands[1].covered, 19);
+        assert_eq!(report.bands[1].observed_coverage, 0.95);
+        assert_eq!(report.curve(), vec![(0.80, 0.80), (0.95, 0.95)]);
     }
 
     /// Perfect coverage, bought. One forecast is a quarter wide and the
@@ -1326,6 +1487,11 @@ mod tests {
                         covered: bcov,
                         observed_coverage,
                         mean_interval_width: 0.2,
+                        parts: vec![BandPart {
+                            confidence,
+                            n: bn,
+                            covered: bcov,
+                        }],
                     },
                 )
                 .collect(),
@@ -1496,6 +1662,12 @@ mod tests {
     /// reach to 0.96 is a perfect score, and a forecaster who is
     /// exactly right fails it 11.5% of the time by arithmetic alone.
     /// Not one band here carries the rows to demonstrate anything.
+    ///
+    /// The bands are built here rather than read out of a store,
+    /// because `calibration_report` no longer produces this shape: it
+    /// pools those six confidences into one bin that can be judged. The
+    /// rule under test is the verdict's, and it still has to hold for a
+    /// thin band however that band arrived.
     #[test]
     fn the_run_that_exposed_this_reports_thin_bands_and_no_misses() {
         let r = report(
@@ -1719,6 +1891,364 @@ mod tests {
                 required: 50
             }],
             "a band of 49 is judgeable, so the only complaint is the total"
+        );
+    }
+
+    // ----- adaptive, equal-frequency bins -----
+
+    /// Record `n` forecasts at one stated confidence, `covered` of them
+    /// landing inside the interval. The interval is always [0.4, 0.6],
+    /// so 0.55 is covered and 0.9 is not.
+    fn record_forecasts(store: &Store, confidence: f64, n: usize, covered: usize) {
+        for i in 0..n {
+            let observed = if i < covered { 0.55 } else { 0.9 };
+            let exp = store.create_experiment("t1", "t1-prereg").unwrap();
+            insert_expectation(store, &exp.id, "accuracy", 0.5, (0.4, 0.6), confidence);
+            store
+                .record_metric(&exp.id, "accuracy", MetricValue::Number(observed))
+                .unwrap();
+        }
+    }
+
+    /// The six confidences a real registry run produced, with the rows
+    /// and the covered rows each of them held.
+    const SIX_BAND_RUN: [(f64, usize, usize); 6] = [
+        (0.93, 3, 3),
+        (0.95, 5, 5),
+        (0.96, 3, 1),
+        (0.97, 11, 10),
+        (0.98, 9, 8),
+        (0.99, 4, 4),
+    ];
+
+    fn store_with(dir: &std::path::Path, plan: &[(f64, usize, usize)]) -> Store {
+        let store = open_store(dir);
+        store.create_track("t1", "hyp").unwrap();
+        for (confidence, n, covered) in plan {
+            record_forecasts(&store, *confidence, *n, *covered);
+        }
+        store
+    }
+
+    /// The run that motivated this. Thirty five scored forecasts spread
+    /// over six free-form confidences, not one of which can be judged on
+    /// its own. Pooled into the bins the requirement actually asks for,
+    /// the same rows say something: a stated 0.968 against an observed
+    /// 0.886, a forecaster overconfident by about eight points.
+    #[test]
+    fn the_six_band_run_collapses_into_a_band_that_can_be_judged() {
+        let dir = tempdir().unwrap();
+        let store = store_with(dir.path(), &SIX_BAND_RUN);
+
+        let report = store.calibration_report().unwrap();
+
+        assert_eq!(report.n, 35);
+        assert_eq!(report.covered, 31);
+        assert_eq!(report.bands.len(), 1, "{:?}", report.bands);
+        let band = &report.bands[0];
+        assert_eq!(band.n, 35);
+        assert_eq!(band.covered, 31);
+        assert!(
+            (band.confidence - 33.87 / 35.0).abs() < 1e-12,
+            "the band states the mean of what was claimed, got {}",
+            band.confidence
+        );
+        assert!(
+            band.n >= required_band_n(band.confidence),
+            "a closed bin must satisfy the rule the verdict judges it by"
+        );
+
+        // Judgeable now, and no miss at a loose tolerance. The only
+        // complaint left is the one the data really has: thirty five
+        // rows is under the overall minimum.
+        assert_eq!(
+            report.verdict(tol(0.20)).reasons(),
+            [NoGoReason::NotEnoughEvidence {
+                n: 35,
+                required: 50
+            }],
+            "no band reason survives once the rows are pooled"
+        );
+
+        // And at a tolerance tight enough to care, the overconfidence
+        // the pooled rows really show is a finding rather than silence.
+        let tight = report.verdict(tol(0.05));
+        match tight
+            .reasons()
+            .iter()
+            .find(|r| matches!(r, NoGoReason::BandOutOfTolerance { .. }))
+            .expect("the pooled band misses at a tolerance of 0.05")
+        {
+            NoGoReason::BandOutOfTolerance { gap, .. } => {
+                assert!((gap - 0.0820).abs() < 0.001, "gap was {gap}");
+            }
+            other => panic!("wrong reason: {other:?}"),
+        }
+    }
+
+    /// Never drop a forecast. Dropping the sparse rows is the tempting
+    /// bug here, and it would bias the curve without saying so, since
+    /// the rows it drops are the ones the forecaster placed on its own.
+    #[test]
+    fn every_scored_forecast_lands_in_exactly_one_bin() {
+        let plans: [&[(f64, usize, usize)]; 4] = [
+            &SIX_BAND_RUN,
+            &[(0.50, 3, 1), (0.80, 40, 32), (0.99, 2, 2)],
+            &[(0.90, 1, 0)],
+            &[
+                (0.5, 7, 4),
+                (0.7, 7, 5),
+                (0.8, 30, 24),
+                (0.9, 30, 27),
+                (0.95, 21, 20),
+            ],
+        ];
+        for plan in plans {
+            let dir = tempdir().unwrap();
+            let store = store_with(dir.path(), plan);
+
+            let report = store.calibration_report().unwrap();
+
+            let binned: usize = report.bands.iter().map(|b| b.n).sum();
+            assert_eq!(binned, report.n, "rows went missing in {plan:?}");
+            let binned_covered: usize = report.bands.iter().map(|b| b.covered).sum();
+            assert_eq!(binned_covered, report.covered, "outcomes lost in {plan:?}");
+        }
+    }
+
+    /// A record too small to fill one bin is not a pass. It is in the
+    /// same state it was before: nobody has gathered enough to say.
+    #[test]
+    fn a_report_too_small_for_one_bin_is_still_too_thin() {
+        let dir = tempdir().unwrap();
+        let store = store_with(dir.path(), &[(0.90, 5, 5)]);
+
+        let report = store.calibration_report().unwrap();
+
+        assert_eq!(report.bands.len(), 1);
+        assert_eq!(report.bands[0].n, 5);
+        let v = report.verdict(tol(0.10));
+        assert!(!v.is_go());
+        assert!(
+            v.reasons().contains(&NoGoReason::BandTooThin {
+                confidence: 0.90,
+                n: 5,
+                required: 20,
+                observed_coverage: 1.0,
+            }),
+            "{:?}",
+            v.reasons()
+        );
+    }
+
+    /// Bins are cut by counts of stated confidences and never by what
+    /// the outcomes did. Flipping every outcome is the strongest form of
+    /// that: the same rows, the opposite answers, the same bins.
+    #[test]
+    fn the_bins_do_not_move_when_every_outcome_flips() {
+        // Both plans mix hits and misses inside a stated confidence, so
+        // a binner that so much as sorted on the outcome would come
+        // back with different bins.
+        let plans: [&[(f64, usize, usize)]; 2] = [&SIX_BAND_RUN, &[(0.80, 40, 30), (0.90, 40, 20)]];
+        for plan in plans {
+            let flipped: Vec<(f64, usize, usize)> =
+                plan.iter().map(|(c, n, cov)| (*c, *n, n - cov)).collect();
+
+            let dir_a = tempdir().unwrap();
+            let a = store_with(dir_a.path(), plan).calibration_report().unwrap();
+            let dir_b = tempdir().unwrap();
+            let b = store_with(dir_b.path(), &flipped)
+                .calibration_report()
+                .unwrap();
+
+            assert_ne!(a.covered, b.covered, "the outcomes really did change");
+            let shape = |r: &CalibrationReport| -> Vec<(usize, u64)> {
+                r.bands
+                    .iter()
+                    .map(|band| (band.n, band.confidence.to_bits()))
+                    .collect()
+            };
+            assert_eq!(
+                shape(&a),
+                shape(&b),
+                "the bins followed the outcomes in {plan:?}"
+            );
+        }
+    }
+
+    /// Pooling is for rows that cannot be judged alone. A stated
+    /// confidence carrying the rows its own requirement asks for closes
+    /// its own bin and is never averaged into its neighbour.
+    #[test]
+    fn a_stated_confidence_that_can_stand_alone_is_not_pooled() {
+        let dir = tempdir().unwrap();
+        let store = store_with(dir.path(), &[(0.80, 40, 32), (0.90, 40, 36)]);
+
+        let report = store.calibration_report().unwrap();
+
+        assert_eq!(report.bands.len(), 2, "{:?}", report.bands);
+        assert_eq!(report.bands[0].confidence, 0.80);
+        assert_eq!(report.bands[0].n, 40);
+        assert_eq!(report.bands[0].parts.len(), 1);
+        assert_eq!(report.bands[1].confidence, 0.90);
+        assert_eq!(report.bands[1].n, 40);
+        assert_eq!(report.bands[1].parts.len(), 1);
+    }
+
+    /// A closed bin has to satisfy the rule the verdict judges it by. If
+    /// the binner and `verdict` ever disagreed, a bin the binner called
+    /// finished would come back as `BandTooThin`, and the report would
+    /// be contradicting itself.
+    #[test]
+    fn every_closed_bin_satisfies_the_rule_the_verdict_uses() {
+        let plans: [&[(f64, usize, usize)]; 6] = [
+            &SIX_BAND_RUN,
+            &[(0.96, 25, 24), (0.99, 4, 4)],
+            &[(0.80, 40, 32), (0.90, 40, 36)],
+            &[(0.50, 3, 1), (0.80, 40, 32), (0.99, 2, 2)],
+            // Twenty at a stated 0.98 clears the flat floor and needs
+            // fifty, so closing a bin on `MIN_BAND_N` alone leaves two
+            // bins here that the verdict then calls too thin.
+            &[(0.98, 20, 20), (0.99, 80, 79)],
+            &[
+                (0.5, 7, 4),
+                (0.7, 7, 5),
+                (0.8, 30, 24),
+                (0.9, 30, 27),
+                (0.95, 21, 20),
+            ],
+        ];
+        for plan in plans {
+            let dir = tempdir().unwrap();
+            let store = store_with(dir.path(), plan);
+
+            let report = store.calibration_report().unwrap();
+
+            for band in &report.bands {
+                assert!(
+                    band.n >= required_band_n(band.confidence),
+                    "a bin of {} at a mean stated {} needs {} in {plan:?}",
+                    band.n,
+                    band.confidence,
+                    required_band_n(band.confidence)
+                );
+            }
+            assert!(
+                !report
+                    .verdict(tol(1.0))
+                    .reasons()
+                    .iter()
+                    .any(|r| matches!(r, NoGoReason::BandTooThin { .. })),
+                "a closed bin came back too thin in {plan:?}"
+            );
+        }
+    }
+
+    /// A group that reaches the flat floor but not what its own stated
+    /// confidence asks for does not close a bin. Twenty at a stated 0.98
+    /// clears `MIN_BAND_N` and needs fifty, so the bin keeps filling and
+    /// the whole run comes back as one. Closing on `MIN_BAND_N` alone
+    /// makes this two bins, both of them too thin to judge.
+    #[test]
+    fn reaching_the_flat_floor_is_not_enough_for_a_confident_bin() {
+        let confidences = [vec![0.98; 20], vec![0.99; 80]].concat();
+
+        assert_eq!(bin_boundaries(&confidences), vec![100]);
+    }
+
+    /// The bins partition the rows: none empty, none overlapping, and
+    /// the last one ending on the final row. The shapes here include
+    /// the ones with no honest answer, a NaN and a stated 1.0, which
+    /// close no bin and so swallow what follows them into one bin the
+    /// verdict then refuses.
+    #[test]
+    fn the_bins_are_a_partition_of_every_scored_row() {
+        let cases: Vec<Vec<f64>> = vec![
+            vec![],
+            vec![0.9],
+            vec![0.5; 19],
+            vec![0.5; 20],
+            [
+                vec![0.93; 3],
+                vec![0.95; 5],
+                vec![0.96; 3],
+                vec![0.97; 11],
+                vec![0.98; 9],
+                vec![0.99; 4],
+            ]
+            .concat(),
+            [vec![0.8; 40], vec![0.9; 40]].concat(),
+            [vec![0.5; 3], vec![0.99; 200]].concat(),
+            vec![f64::NAN; 4],
+            [vec![0.8; 30], vec![1.0; 5]].concat(),
+        ];
+        for case in cases {
+            let ends = bin_boundaries(&case);
+
+            if case.is_empty() {
+                assert!(ends.is_empty(), "an empty record has no bins");
+                continue;
+            }
+            assert_eq!(
+                ends.last().copied(),
+                Some(case.len()),
+                "rows fell off the end of {case:?}"
+            );
+            let mut previous = 0usize;
+            for end in &ends {
+                assert!(*end > previous, "an empty or overlapping bin in {case:?}");
+                previous = *end;
+            }
+        }
+    }
+
+    /// A bin with the rows to demonstrate a miss still demonstrates it.
+    /// Nothing about pooling makes a real failure go quiet.
+    #[test]
+    fn a_bin_thick_enough_to_show_a_miss_still_shows_one() {
+        let dir = tempdir().unwrap();
+        let store = store_with(dir.path(), &[(0.80, 60, 27)]);
+
+        let report = store.calibration_report().unwrap();
+
+        assert_eq!(report.bands.len(), 1);
+        let v = report.verdict(tol(0.10));
+        assert_eq!(v.reasons().len(), 1, "{:?}", v.reasons());
+        match &v.reasons()[0] {
+            NoGoReason::BandOutOfTolerance { gap, .. } => {
+                assert!((gap - 0.35).abs() < 1e-12, "gap was {gap}");
+            }
+            other => panic!("wrong reason: {other:?}"),
+        }
+    }
+
+    /// The tail rule cannot reopen the bin it joins. Merging adds rows a
+    /// correct forecaster expects to sometimes miss, so the expected
+    /// miss count only rises, and the requirement is exactly that it
+    /// reach one.
+    #[test]
+    fn a_tail_that_cannot_close_never_reopens_the_bin_it_joins() {
+        let dir = tempdir().unwrap();
+        let store = store_with(dir.path(), &[(0.96, 25, 24), (0.99, 4, 4)]);
+
+        let report = store.calibration_report().unwrap();
+
+        assert_eq!(report.bands.len(), 1, "{:?}", report.bands);
+        let band = &report.bands[0];
+        assert_eq!(band.n, 29);
+        assert!(
+            band.n >= required_band_n(band.confidence),
+            "n = {} but the rule asks for {}",
+            band.n,
+            required_band_n(band.confidence)
+        );
+        assert!(
+            !report
+                .verdict(tol(0.10))
+                .reasons()
+                .iter()
+                .any(|r| matches!(r, NoGoReason::BandTooThin { .. })),
+            "a closed bin must never come back as too thin"
         );
     }
 }
