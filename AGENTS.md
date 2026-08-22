@@ -57,10 +57,13 @@ resulting artifact, deliver it in the right form.
   its own. `CalibrationReport::verdict` turns a report into a go/no-go,
   but a caller still has to choose to ask for it. If the stated
   intervals do not have real coverage, the right move is to stop and not
-  build the ledger, and that is a decision a person makes. See
+  build the ledger, and that is a decision a person makes. A band with
+  too few forecasts to judge is its own no-go and never a miss: a gap
+  computed over three rows is arithmetic about three rows, and reporting
+  it as a demonstrated miss makes it look exactly like one. See
   `docs/superpowers/specs/2026-08-19-anomaly-driven-inquiry-design.md`
-  and `docs/DECISIONS.md` (2026-08-19, 2026-08-20) before changing any
-  of it.
+  and `docs/DECISIONS.md` (2026-08-19, 2026-08-20, 2026-08-22) before
+  changing any of it.
 - `erbga` is wired into `zorp-track` as the large-graph backend of the
   search layer. That reverses part of the 2026-08-15 decision, so read
   the 2026-08-19 entry first. The exact backend is a standing regression

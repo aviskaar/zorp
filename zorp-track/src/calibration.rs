@@ -403,6 +403,60 @@ fn probit(p: f64) -> f64 {
 /// here. The tolerance beside it is not, and `Tolerance` says why.
 pub const MIN_CALIBRATION_N: usize = 50;
 
+/// The smallest a band can be and still be judged at all, whatever it
+/// states.
+///
+/// One row moves a band's observed coverage by `1/n`. At twenty rows
+/// that is five points, which is the tightest tolerance anything in
+/// this repo asks for. Below twenty a single covered-or-not moves the
+/// band by more than the whole tolerance, so the number being compared
+/// is the arithmetic of small integers and not a coverage rate.
+///
+/// Deliberately under `MIN_CALIBRATION_N`. The two minimums answer
+/// different questions and each has to be able to fail on its own. Set
+/// to fifty, no report short of the overall minimum could ever have a
+/// band that met the per-band one, the overall check would stop being
+/// reachable for anything but an empty report, and the test that
+/// guards it would stop guarding anything.
+///
+/// This is a floor, not a proof of power. A band of twenty at a stated
+/// 0.80 still fails a tolerance of 0.10 about 16% of the time when the
+/// forecaster is exactly right. Getting that under 5% takes fifty rows
+/// in that band alone, and a report is free to demand more than this
+/// floor: `n` and `covered` are on every band.
+pub const MIN_BAND_N: usize = 20;
+
+/// How many scored forecasts a band at this stated confidence needs
+/// before its coverage means anything.
+///
+/// Two floors, and the larger wins. `MIN_BAND_N` holds the low
+/// confidence end. The other is `1 / (1 - confidence)`, the size at
+/// which a perfectly calibrated forecaster expects one miss in the
+/// band. Under it the band cannot express any coverage between what it
+/// states and a perfect score: three forecasts at a stated 0.96 can
+/// only come out 0, 1/3, 2/3 or 1, so the nearest value that band can
+/// reach to 0.96 is 1.0, and a forecaster who is exactly right fails it
+/// 11.5% of the time on the arithmetic alone. Twenty five rows is where
+/// 0.96 gets something to land on. Ninety nine needs a hundred, which
+/// is the honest price of stating 99% coverage.
+///
+/// A confidence outside (0, 1) is not a confidence and gets
+/// `usize::MAX`: no number of rows makes it judgeable, and
+/// `z_for_confidence` refuses the same numbers. `verdict` never asks,
+/// because it rejects such a band before it gets here.
+pub fn required_band_n(confidence: f64) -> usize {
+    // Written so NaN fails it rather than falling through, the same way
+    // `z_for_confidence` is written.
+    if !(confidence > 0.0 && confidence < 1.0) {
+        return usize::MAX;
+    }
+    // A float to integer cast saturates at the bounds, which is the
+    // answer wanted here: a confidence one representable step below 1.0
+    // asks for more rows than a record will ever hold.
+    let one_expected_miss = (1.0 / (1.0 - confidence)).ceil() as usize;
+    one_expected_miss.max(MIN_BAND_N)
+}
+
 /// The tolerance a verdict is judged against.
 ///
 /// A newtype rather than a bare `f64` because the design refuses to fix
@@ -450,7 +504,8 @@ impl Tolerance {
 /// can re-run.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CalibrationVerdict {
-    /// Every band sits within tolerance, over enough forecasts to say so.
+    /// Every band sits within tolerance, over enough forecasts overall
+    /// and enough in every band to say so.
     Go,
     /// Do not trust surprise. Never empty: a no-go always says why.
     NoGo(Vec<NoGoReason>),
@@ -493,6 +548,24 @@ pub enum NoGoReason {
         gap: f64,
         tolerance: f64,
     },
+    /// A band does not hold enough forecasts for its coverage to be
+    /// judged, so no claim is made about it in either direction.
+    ///
+    /// The same distinction `NotEnoughEvidence` draws, one band down.
+    /// "We measured this band and it missed" and "this band is three
+    /// rows" are different states, and a report that calls the second
+    /// one a miss is manufacturing findings its own data cannot carry.
+    /// This is not a pass: it blocks the go exactly as a miss does.
+    ///
+    /// `observed_coverage` is carried so nothing is hidden. A caller
+    /// can still see that a thin band looks terrible. What the report
+    /// refuses to do is call that a finding.
+    BandTooThin {
+        confidence: f64,
+        n: usize,
+        required: usize,
+        observed_coverage: f64,
+    },
     /// The report carries a number that cannot be compared, so no
     /// answer is possible. Never silently treated as a pass: a NaN
     /// loses every comparison, including the one that would have
@@ -510,6 +583,16 @@ impl CalibrationReport {
     /// misses at 80% and at 99% is a different problem from one that
     /// misses at 80% alone, and the caller cannot see that from a
     /// single reason.
+    ///
+    /// A third condition sits under the first, because the design's own
+    /// reason for `MIN_CALIBRATION_N` applies to a band as much as to a
+    /// report. A band holding fewer rows than `required_band_n` asks
+    /// for is `BandTooThin` and never `BandOutOfTolerance`, whatever
+    /// its gap. Both block the go. The distinction is the point: a gap
+    /// computed over three rows is arithmetic about three rows, and
+    /// reporting it as a demonstrated miss makes it look exactly like
+    /// one. This can only add reasons, never remove them, so it makes a
+    /// go harder to reach and never easier.
     ///
     /// An empty report is `NotEnoughEvidence`, never `Go`. A report
     /// nothing has been written to is the case most likely to be asked
@@ -546,7 +629,39 @@ impl CalibrationReport {
                         band.confidence
                     ),
                 });
-            } else if gap > tolerance.get() {
+                continue;
+            }
+            // A stated confidence outside (0, 1) is not a coverage
+            // anything can be measured against, and `z_for_confidence`
+            // refuses the same numbers. Left alone such a band passes
+            // on a gap of zero: one stating 1.0 with every outcome
+            // inside its own interval would read as perfect
+            // calibration.
+            if !(band.confidence > 0.0 && band.confidence < 1.0) {
+                reasons.push(NoGoReason::Unjudgeable {
+                    detail: format!(
+                        "band states a confidence of {}, which is not in (0, 1)",
+                        band.confidence
+                    ),
+                });
+                continue;
+            }
+            // Thinness is checked before the tolerance, because a band
+            // too thin to judge cannot demonstrate a miss either. The
+            // gap is still arithmetic, it is just arithmetic about
+            // three rows, and reporting it as a finding makes it
+            // indistinguishable from a real one.
+            let required = required_band_n(band.confidence);
+            if band.n < required {
+                reasons.push(NoGoReason::BandTooThin {
+                    confidence: band.confidence,
+                    n: band.n,
+                    required,
+                    observed_coverage: band.observed_coverage,
+                });
+                continue;
+            }
+            if gap > tolerance.get() {
                 reasons.push(NoGoReason::BandOutOfTolerance {
                     confidence: band.confidence,
                     observed_coverage: band.observed_coverage,
@@ -1369,5 +1484,241 @@ mod tests {
 
         assert!(v.is_go());
         assert!(v.reasons().is_empty());
+    }
+
+    // ----- bands too thin to judge -----
+
+    /// The six band run that exposed this, scored at the loosest
+    /// tolerance a verdict can be asked for. Three forecasts at a
+    /// stated 0.96 with one covered used to come back as a
+    /// demonstrated miss with a gap of 0.627. Three rows can only ever
+    /// read 0, 1/3, 2/3 or 1, so the nearest coverage that band can
+    /// reach to 0.96 is a perfect score, and a forecaster who is
+    /// exactly right fails it 11.5% of the time by arithmetic alone.
+    /// Not one band here carries the rows to demonstrate anything.
+    #[test]
+    fn the_run_that_exposed_this_reports_thin_bands_and_no_misses() {
+        let r = report(
+            35,
+            31,
+            vec![
+                (0.93, 3, 3, 1.0),
+                (0.95, 5, 5, 1.0),
+                (0.96, 3, 1, 1.0 / 3.0),
+                (0.97, 11, 10, 10.0 / 11.0),
+                (0.98, 9, 8, 8.0 / 9.0),
+                (0.99, 4, 4, 1.0),
+            ],
+        );
+
+        let v = r.verdict(tol(0.20));
+
+        assert!(!v.is_go());
+        assert!(
+            !v.reasons()
+                .iter()
+                .any(|r| matches!(r, NoGoReason::BandOutOfTolerance { .. })),
+            "no band here has the rows to show a miss: {:?}",
+            v.reasons()
+        );
+        assert_eq!(
+            v.reasons()
+                .iter()
+                .filter(|r| matches!(r, NoGoReason::BandTooThin { .. }))
+                .count(),
+            6,
+            "every band is too thin to judge"
+        );
+        assert!(
+            v.reasons().contains(&NoGoReason::BandTooThin {
+                confidence: 0.96,
+                n: 3,
+                required: 25,
+                observed_coverage: 1.0 / 3.0,
+            }),
+            "the thin band says how many rows it would have taken: {:?}",
+            v.reasons()
+        );
+    }
+
+    /// Thin is not a pass and thick is not a reprieve. The band with
+    /// the rows to show a miss still shows one, in the same report as
+    /// the band without them.
+    #[test]
+    fn a_band_with_the_rows_to_show_a_miss_still_shows_one() {
+        let r = report(63, 28, vec![(0.80, 60, 27, 0.45), (0.96, 3, 1, 1.0 / 3.0)]);
+
+        let v = r.verdict(tol(0.20));
+
+        assert_eq!(v.reasons().len(), 2, "{:?}", v.reasons());
+        assert!(matches!(
+            v.reasons()[0],
+            NoGoReason::BandOutOfTolerance {
+                confidence: 0.80,
+                ..
+            }
+        ));
+        assert!(matches!(
+            v.reasons()[1],
+            NoGoReason::BandTooThin {
+                confidence: 0.96,
+                ..
+            }
+        ));
+    }
+
+    /// Deleting the per-band minimum in `verdict` makes this return Go.
+    /// Fifty forecasts, so the overall minimum is met, spread over five
+    /// bands of ten that each land exactly on their stated confidence.
+    /// Every gap is zero and none of it means anything: at ten rows the
+    /// coverage moves in tenths, and landing on the diagonal is what a
+    /// coarse grid does, not what a calibrated forecaster proves.
+    #[test]
+    fn a_report_made_entirely_of_thin_bands_is_not_a_go() {
+        let r = report(
+            50,
+            35,
+            vec![
+                (0.50, 10, 5, 0.50),
+                (0.60, 10, 6, 0.60),
+                (0.70, 10, 7, 0.70),
+                (0.80, 10, 8, 0.80),
+                (0.90, 10, 9, 0.90),
+            ],
+        );
+
+        let v = r.verdict(tol(0.10));
+
+        assert!(!v.is_go(), "five bands of ten prove nothing at all");
+        assert_eq!(v.reasons().len(), 5);
+        assert!(v
+            .reasons()
+            .iter()
+            .all(|r| matches!(r, NoGoReason::BandTooThin { required: 20, .. })));
+    }
+
+    /// The per-band boundary is inclusive, so a band carrying exactly
+    /// the rows required is judged and can fail. Paired with the test
+    /// below: together they pin the comparison to `<`, and widening it
+    /// to `<=` fails this one.
+    #[test]
+    fn a_band_with_exactly_the_rows_required_is_judged() {
+        let r = report(60, 32, vec![(0.60, 40, 24, 0.60), (0.80, 20, 8, 0.40)]);
+
+        let v = r.verdict(tol(0.10));
+
+        assert_eq!(v.reasons().len(), 1, "{:?}", v.reasons());
+        assert!(
+            matches!(v.reasons()[0], NoGoReason::BandOutOfTolerance { .. }),
+            "twenty rows at a stated 0.80 is enough to show a miss"
+        );
+    }
+
+    /// One row short of the requirement and the same miss is no longer
+    /// a finding. This is the case the fix suppresses: a gap of 0.43
+    /// that used to read as a demonstrated miss now reads as a band
+    /// nobody has gathered enough of. It still blocks the go.
+    #[test]
+    fn one_row_short_and_the_same_band_is_not_judged() {
+        let r = report(
+            59,
+            31,
+            vec![(0.60, 40, 24, 0.60), (0.80, 19, 7, 7.0 / 19.0)],
+        );
+
+        let v = r.verdict(tol(0.10));
+
+        assert!(!v.is_go());
+        assert_eq!(
+            v.reasons(),
+            [NoGoReason::BandTooThin {
+                confidence: 0.80,
+                n: 19,
+                required: 20,
+                observed_coverage: 7.0 / 19.0,
+            }]
+        );
+    }
+
+    /// Deleting the `1 / (1 - confidence)` half of `required_band_n`
+    /// makes this return Go. Sixty forecasts clears both flat minimums
+    /// and every outcome landed inside its interval, but a 0.99 band at
+    /// sixty rows can only read 59/60 or 1.0, and the stated 0.99 falls
+    /// between them. A hundred rows is where one expected miss fits.
+    #[test]
+    fn a_high_confidence_band_needs_more_rows_than_the_flat_floor() {
+        let r = report(60, 60, vec![(0.99, 60, 60, 1.0)]);
+
+        let v = r.verdict(tol(0.10));
+
+        assert_eq!(
+            v.reasons(),
+            [NoGoReason::BandTooThin {
+                confidence: 0.99,
+                n: 60,
+                required: 100,
+                observed_coverage: 1.0,
+            }]
+        );
+    }
+
+    /// Deleting the range check on the stated confidence makes this
+    /// return Go. A band claiming coverage of 1.0 with every outcome
+    /// inside its own interval has a gap of zero, so it passes the
+    /// tolerance test while asserting something no interval can mean.
+    /// `z_for_confidence` refuses the same number.
+    #[test]
+    fn a_stated_confidence_that_is_not_a_confidence_is_never_a_go() {
+        for bad in [1.0, 0.0, -0.5, 2.0] {
+            let r = report(60, 60, vec![(bad, 60, 60, bad)]);
+
+            let v = r.verdict(tol(0.10));
+
+            assert!(!v.is_go(), "{bad} is not a stated confidence");
+            assert!(
+                matches!(v.reasons()[0], NoGoReason::Unjudgeable { .. }),
+                "{bad} gave {:?}",
+                v.reasons()
+            );
+        }
+    }
+
+    /// What a band needs rises with what it claims. The numbers are
+    /// written out rather than derived, so a change to the formula has
+    /// to be argued for here.
+    #[test]
+    fn the_rows_a_band_needs_rise_with_its_stated_confidence() {
+        assert_eq!(required_band_n(0.50), MIN_BAND_N);
+        assert_eq!(required_band_n(0.90), MIN_BAND_N);
+        assert_eq!(required_band_n(0.95), 20);
+        assert_eq!(required_band_n(0.96), 25);
+        assert_eq!(required_band_n(0.97), 34);
+        assert_eq!(required_band_n(0.98), 50);
+        assert_eq!(required_band_n(0.99), 100);
+        assert_eq!(required_band_n(0.999), 1000);
+        for not_a_confidence in [0.0, 1.0, -0.1, 1.5, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                required_band_n(not_a_confidence),
+                usize::MAX,
+                "{not_a_confidence} is not a stated confidence"
+            );
+        }
+    }
+
+    /// The per-band rule is additional, not a replacement. A report
+    /// short of the overall minimum still says so, and says it on its
+    /// own when every band in it is thick enough to judge.
+    #[test]
+    fn the_overall_minimum_still_stands_on_its_own() {
+        let r = report(49, 40, vec![(0.80, 49, 40, 0.80)]);
+
+        assert_eq!(
+            r.verdict(tol(0.10)).reasons(),
+            [NoGoReason::NotEnoughEvidence {
+                n: 49,
+                required: 50
+            }],
+            "a band of 49 is judgeable, so the only complaint is the total"
+        );
     }
 }
