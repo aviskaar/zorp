@@ -21,7 +21,7 @@
 //! nothing has to remember to divide.
 
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS conversations (
     id          TEXT PRIMARY KEY,
     title       TEXT NOT NULL,
-    fingerprint TEXT NOT NULL
+    fingerprint TEXT NOT NULL,
+    updated     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS chunks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +60,48 @@ pub struct Chunk {
     pub role: String,
     /// The text that was embedded.
     pub text: String,
+}
+
+/// The header of one indexed conversation.
+///
+/// A struct rather than four positional arguments to `replace`, because two
+/// of the four are strings that read alike at a call site and one of them
+/// is the fingerprint that decides whether anything gets re-embedded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conversation {
+    pub id: String,
+    pub title: String,
+    /// When the conversation was last touched, in epoch milliseconds, as
+    /// the store recorded it. This is the "when" of a recalled passage, and
+    /// it is the reason a reader can tell a note from March from a
+    /// correction made in July.
+    pub updated: i64,
+    /// What the conversation looked like when it was indexed.
+    pub fingerprint: String,
+}
+
+/// One message that matched, with everything needed to say where it came
+/// from.
+///
+/// Distinct from [`Hit`], which is one row per conversation for a result
+/// list. A passage is the unit that gets quoted back into a live thread, so
+/// it carries its own provenance rather than a snippet and a title: the
+/// conversation, the position in it, who wrote it, and when. `role` is the
+/// load bearing one. `assistant` means a model wrote this, and a model's
+/// earlier output is not evidence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Passage {
+    pub conversation_id: String,
+    pub title: String,
+    /// Epoch milliseconds, from the conversation's own record.
+    pub updated: i64,
+    pub seq: i64,
+    /// `user` or `assistant`.
+    pub role: String,
+    /// The text as it was stored, which is the text that was said. Never a
+    /// summary of it: nothing in this crate writes a derived claim.
+    pub text: String,
+    pub score: f32,
 }
 
 /// One conversation that matched, and the message in it that matched best.
@@ -154,6 +197,7 @@ impl Index {
 
     fn init(conn: Connection) -> Result<Index, IndexError> {
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Index { conn })
     }
 
@@ -205,14 +249,25 @@ impl Index {
     /// index twice. A conversation with no indexable text is still
     /// recorded, so the next reindex skips it instead of asking the model
     /// about nothing again.
+    ///
+    /// Replacing is also the whole of this index's answer to going stale.
+    /// It holds no claim that outlives its source: edit a conversation and
+    /// its rows are rewritten, delete it and [`Index::retain`] takes them
+    /// away. Nothing in here can disagree with the store, because nothing
+    /// in here was derived from anything but the store.
     pub fn replace(
         &mut self,
-        id: &str,
-        title: &str,
-        fingerprint: &str,
+        conversation: Conversation,
         embedder: &str,
         chunks: &[(Chunk, Vec<f32>)],
     ) -> Result<(), IndexError> {
+        let Conversation {
+            id,
+            title,
+            updated,
+            fingerprint,
+        } = conversation;
+        let (id, title, fingerprint) = (id.as_str(), title.as_str(), fingerprint.as_str());
         let current = self.meta(EMBEDDER_KEY)?;
         if current.as_deref() != Some(embedder) {
             return Err(IndexError::EmbedderMismatch {
@@ -235,10 +290,11 @@ impl Index {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM chunks WHERE conversation_id = ?1", [id])?;
         tx.execute(
-            "INSERT INTO conversations (id, title, fingerprint) VALUES (?1, ?2, ?3) \
+            "INSERT INTO conversations (id, title, fingerprint, updated) \
+             VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT(id) DO UPDATE SET title = excluded.title, \
-             fingerprint = excluded.fingerprint",
-            [id, title, fingerprint],
+             fingerprint = excluded.fingerprint, updated = excluded.updated",
+            rusqlite::params![id, title, fingerprint, updated],
         )?;
         {
             let mut insert = tx.prepare(
@@ -266,6 +322,36 @@ impl Index {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// The vector already held for each distinct piece of text in one
+    /// conversation.
+    ///
+    /// This is what stops a growing conversation costing more every turn.
+    /// `replace` rewrites a conversation whole, which is the only way to
+    /// keep the index honest when a message is edited, but whole does not
+    /// have to mean re-embedded: a message whose text is unchanged has an
+    /// unchanged vector, and the caller can hand the old one straight back.
+    /// Without this a fiftieth turn pays for fifty embeddings to add one.
+    ///
+    /// Keyed by text and not by position, because position is exactly what
+    /// moves when a transcript is repaired, and the text is the only input
+    /// the embedding had.
+    pub fn vectors_by_text(
+        &self,
+        conversation_id: &str,
+    ) -> Result<HashMap<String, Vec<f32>>, IndexError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT text, vector FROM chunks WHERE conversation_id = ?1")?;
+        let rows = stmt.query_map([conversation_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                from_blob(&row.get::<_, Vec<u8>>(1)?),
+            ))
+        })?;
+        rows.collect::<Result<HashMap<_, _>, _>>()
+            .map_err(IndexError::from)
     }
 
     /// Drop everything except the conversations named. Returns how many
@@ -300,61 +386,37 @@ impl Index {
     /// are not filtered here: what counts as too weak to show is a question
     /// about a user interface, and this is not one.
     pub fn search(&self, query: &[f32], limit: usize) -> Result<Vec<Hit>, IndexError> {
-        let Some(stored) = self.dimensions()? else {
-            return Ok(Vec::new());
-        };
-        if stored != query.len() {
-            return Err(IndexError::Dimensions {
-                stored,
-                query: query.len(),
-            });
-        }
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let query = normalized(query);
-
-        let mut stmt = self.conn.prepare(
-            "SELECT c.conversation_id, v.title, c.seq, c.role, c.text, c.vector \
-             FROM chunks c JOIN conversations v ON v.id = c.conversation_id",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-            ))
-        })?;
+        let scored = self.scan(query)?;
 
         // Best chunk per conversation, ties going to the earlier message.
         // An arbitrary tie-break would make the same search show a
         // different snippet on a reload.
         let mut best: Vec<Hit> = Vec::new();
-        for row in rows {
-            let (conversation_id, title, seq, role, text, blob) = row?;
-            let score = dot(&query, &from_blob(&blob));
+        for passage in scored {
             match best
                 .iter_mut()
-                .find(|h| h.conversation_id == conversation_id)
+                .find(|h| h.conversation_id == passage.conversation_id)
             {
                 Some(existing) => {
-                    if score > existing.score || (score == existing.score && seq < existing.seq) {
-                        existing.seq = seq;
-                        existing.role = role;
-                        existing.snippet = text;
-                        existing.score = score;
+                    if passage.score > existing.score
+                        || (passage.score == existing.score && passage.seq < existing.seq)
+                    {
+                        existing.seq = passage.seq;
+                        existing.role = passage.role;
+                        existing.snippet = passage.text;
+                        existing.score = passage.score;
                     }
                 }
                 None => best.push(Hit {
-                    conversation_id,
-                    title,
-                    seq,
-                    role,
-                    snippet: text,
-                    score,
+                    conversation_id: passage.conversation_id,
+                    title: passage.title,
+                    seq: passage.seq,
+                    role: passage.role,
+                    snippet: passage.text,
+                    score: passage.score,
                 }),
             }
         }
@@ -365,6 +427,67 @@ impl Index {
         });
         best.truncate(limit);
         Ok(best)
+    }
+
+    /// The best `limit` messages for this query vector, best first, with no
+    /// roll-up.
+    ///
+    /// This is what a recall into a live thread reads. It differs from
+    /// [`Index::search`] in the unit and in nothing else: the same scan, the
+    /// same scores, one row per message rather than one per conversation,
+    /// because two messages of the same conversation are often exactly what
+    /// somebody is trying to remember.
+    ///
+    /// Every row carries its own provenance. Nothing here filters by score,
+    /// for the same reason `search` does not: what is too weak to show is a
+    /// question for the caller that has to display it.
+    pub fn search_passages(&self, query: &[f32], limit: usize) -> Result<Vec<Passage>, IndexError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut scored = self.scan(query)?;
+        scored.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.conversation_id.cmp(&b.conversation_id))
+                .then_with(|| a.seq.cmp(&b.seq))
+        });
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Score every chunk against the query, in no particular order.
+    ///
+    /// The one place that reads vectors out of the file, so the two search
+    /// shapes above cannot drift apart on what a score means.
+    fn scan(&self, query: &[f32]) -> Result<Vec<Passage>, IndexError> {
+        let Some(stored) = self.dimensions()? else {
+            return Ok(Vec::new());
+        };
+        if stored != query.len() {
+            return Err(IndexError::Dimensions {
+                stored,
+                query: query.len(),
+            });
+        }
+        let query = normalized(query);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT c.conversation_id, v.title, v.updated, c.seq, c.role, c.text, c.vector \
+             FROM chunks c JOIN conversations v ON v.id = c.conversation_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Passage {
+                conversation_id: row.get(0)?,
+                title: row.get(1)?,
+                updated: row.get(2)?,
+                seq: row.get(3)?,
+                role: row.get(4)?,
+                text: row.get(5)?,
+                score: dot(&query, &from_blob(&row.get::<_, Vec<u8>>(6)?)),
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn stats(&self) -> Result<Stats, IndexError> {
@@ -394,6 +517,33 @@ impl Index {
             .meta(DIMENSIONS_KEY)?
             .and_then(|v| v.parse::<usize>().ok()))
     }
+}
+
+/// Bring an index written by an older build up to the current shape.
+///
+/// `CREATE TABLE IF NOT EXISTS` does nothing to a table that already
+/// exists, so a column added later has to be added here. The alternative
+/// was to bump a schema version and clear the index on a mismatch, the way
+/// `prepare` does for a changed model, and it is the wrong trade: that
+/// would throw away every vector in the file to gain one integer per
+/// conversation, and the vectors are the expensive part.
+///
+/// `updated` defaults to 0, which reads back as "no date recorded" rather
+/// than as a date. A conversation indexed before this column existed keeps
+/// its vectors and gets its real timestamp on the next reindex.
+fn migrate(conn: &Connection) -> Result<(), IndexError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(conversations)")?;
+    let columns: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if !columns.iter().any(|c| c == "updated") {
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN updated INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// Unit length, so similarity is a dot product. A vector with no length has

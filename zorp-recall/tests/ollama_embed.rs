@@ -53,9 +53,12 @@ fn a_real_model_finds_a_conversation_by_meaning() {
         let vector = embedder.embed(text).expect("a local embedding");
         index
             .replace(
-                id,
-                title,
-                "fp",
+                zorp_recall::Conversation {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    updated: 0,
+                    fingerprint: "fp".to_string(),
+                },
                 &embedder.identity(),
                 &[(
                     zorp_recall::Chunk {

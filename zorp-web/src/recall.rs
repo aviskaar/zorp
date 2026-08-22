@@ -42,7 +42,9 @@
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use zorp_recall::{Chunk, EmbedError, Embedder, Index, IndexError, LoopbackUrl, OllamaEmbedder};
+use zorp_recall::{
+    Chunk, Conversation, EmbedError, Embedder, Index, IndexError, LoopbackUrl, OllamaEmbedder,
+};
 
 /// Below this a message is a "yes" or an "ok" and its vector is noise.
 const MIN_CHUNK_CHARS: usize = 24;
@@ -107,6 +109,15 @@ pub struct Report {
     pub skipped: usize,
     pub removed: usize,
     pub chunks: usize,
+}
+
+impl Report {
+    fn add(&mut self, other: &Report) {
+        self.indexed += other.indexed;
+        self.skipped += other.skipped;
+        self.removed += other.removed;
+        self.chunks += other.chunks;
+    }
 }
 
 /// What the page needs to decide whether to show a search box.
@@ -201,40 +212,108 @@ pub fn reindex() -> Result<Report, RecallError> {
     let mut seen: Vec<String> = Vec::with_capacity(sessions.len());
     for session in &sessions {
         seen.push(session.id.clone());
-        let messages = match store.load_messages(&session.id) {
-            Ok(m) => m,
+        match index_one(&store, &mut index, &embedder, session) {
+            Ok(one) => report.add(&one),
             // One unreadable conversation does not stop the rest. Skipping
             // it silently would be worse than the warning, but failing the
             // whole reindex over it would be worse than both.
-            Err(e) => {
+            Err(RecallError::Store(e)) => {
                 eprintln!("zorp-web: skipping {} in the index: {e}", session.id);
-                continue;
             }
-        };
-        let chunks = chunks_for(&messages);
-        let print = fingerprint(&session.task, &chunks);
-        if index.fingerprint(&session.id)?.as_deref() == Some(print.as_str()) {
-            report.skipped += 1;
-            report.chunks += chunks.len();
-            continue;
+            Err(e) => return Err(e),
         }
-        let mut embedded = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
-            let vector = embedder.embed(&chunk.text)?;
-            embedded.push((chunk, vector));
-        }
-        index.replace(
-            &session.id,
-            &session.task,
-            &print,
-            &embedder.identity(),
-            &embedded,
-        )?;
-        report.indexed += 1;
-        report.chunks += embedded.len();
     }
     report.removed = index.retain(&seen)?;
     Ok(report)
+}
+
+/// Bring one conversation up to date, and nothing else.
+///
+/// This is what a finished turn calls, which is what makes every
+/// conversation feed the memory without anybody pressing a button. It is
+/// the same work `reindex` does per session and deliberately not a second
+/// implementation of it: one chunker, one fingerprint, one place that
+/// decides what a stored message is worth embedding.
+///
+/// It does not call `retain`. Indexing the session that just finished is
+/// not the moment to decide what the store no longer has, and reading every
+/// session header to find out would make a per turn call cost what a full
+/// reindex costs.
+///
+/// Blocking; call it off the async runtime.
+pub fn feed_session(session_id: &str) -> Result<Report, RecallError> {
+    let Ok(_guard) = REINDEXING.try_lock() else {
+        return Err(RecallError::Busy);
+    };
+    let embedder = embedder()?;
+    let mut index = Index::open_at(&index_path())?;
+    index.prepare(&embedder.identity())?;
+
+    let store = zorp_agent::Store::open_default().map_err(|e| RecallError::Store(e.to_string()))?;
+    let sessions = store
+        .sessions()
+        .map_err(|e| RecallError::Store(e.to_string()))?;
+    let Some(session) = sessions.iter().find(|s| s.id == session_id) else {
+        // Not an error. A turn can end before anything about it reached the
+        // store, and there is nothing to index in that case.
+        return Ok(Report::default());
+    };
+    index_one(&store, &mut index, &embedder, session)
+}
+
+/// Embed and write one conversation, or skip it if its text has not moved.
+fn index_one(
+    store: &zorp_agent::Store,
+    index: &mut Index,
+    embedder: &OllamaEmbedder,
+    session: &zorp_agent::SessionRow,
+) -> Result<Report, RecallError> {
+    let messages = store
+        .load_messages(&session.id)
+        .map_err(|e| RecallError::Store(e.to_string()))?;
+    let chunks = chunks_for(&messages);
+    let print = fingerprint(&session.task, &chunks);
+    if index.fingerprint(&session.id)?.as_deref() == Some(print.as_str()) {
+        return Ok(Report {
+            skipped: 1,
+            chunks: chunks.len(),
+            ..Report::default()
+        });
+    }
+    // A conversation is rewritten whole, because that is the only way an
+    // edited message stops being in the index twice. Whole does not have to
+    // mean re-embedded, though: a message whose text has not changed has a
+    // vector that has not changed either, and the old one is right there.
+    //
+    // That distinction is the difference between a feed that costs one
+    // model call per new message and one that costs the length of the
+    // conversation every turn. This runs after every turn now, so the
+    // second shape would make a long thread quadratically expensive to
+    // keep in the memory.
+    let known = index.vectors_by_text(&session.id)?;
+    let mut embedded = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let vector = match known.get(&chunk.text) {
+            Some(cached) => cached.clone(),
+            None => embedder.embed(&chunk.text)?,
+        };
+        embedded.push((chunk, vector));
+    }
+    index.replace(
+        Conversation {
+            id: session.id.clone(),
+            title: session.task.clone(),
+            updated: session.updated,
+            fingerprint: print,
+        },
+        &embedder.identity(),
+        &embedded,
+    )?;
+    Ok(Report {
+        indexed: 1,
+        chunks: embedded.len(),
+        ..Report::default()
+    })
 }
 
 /// Search. Blocking; call it off the async runtime.
@@ -247,6 +326,25 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<zorp_recall::Hit>, Recall
     let index = Index::open_at(&index_path())?;
     let vector = embedder.embed(query)?;
     Ok(index.search(&vector, limit.clamp(1, MAX_LIMIT))?)
+}
+
+/// Search, answering messages rather than conversations.
+///
+/// What `crate::memory` reads. Same index and same embedder as `search`,
+/// different unit: a recall into a live thread wants the lines themselves,
+/// with their provenance attached, and it wants two of them from one
+/// conversation when that is where the answer is.
+///
+/// Blocking; call it off the async runtime.
+pub fn passages(query: &str, limit: usize) -> Result<Vec<zorp_recall::Passage>, RecallError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(RecallError::EmptyQuery);
+    }
+    let embedder = embedder()?;
+    let index = Index::open_at(&index_path())?;
+    let vector = embedder.embed(query)?;
+    Ok(index.search_passages(&vector, limit.clamp(1, MAX_LIMIT))?)
 }
 
 /// The messages worth embedding, in order.

@@ -13,6 +13,8 @@ pub mod documents;
 pub mod event;
 #[cfg(feature = "research")]
 pub mod investigate;
+#[cfg(feature = "memory")]
+pub mod memory;
 pub mod panel;
 pub mod pdf;
 #[cfg(feature = "recall")]

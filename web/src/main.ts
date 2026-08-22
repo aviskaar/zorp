@@ -22,6 +22,7 @@ import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
+import { coerceCitations, renderMemoryNote } from "./memory-note";
 import {
   needsText,
   producedSince,
@@ -59,6 +60,7 @@ import {
   readArtifact,
   type Artifact,
   type EventStream,
+  type MemoryEvent,
   type Message,
   type Preregistration,
   type RecallStatus,
@@ -102,6 +104,8 @@ interface Elements {
   scrim: HTMLElement;
   sessionList: HTMLElement;
   recall: HTMLElement;
+  composerMemory: HTMLElement;
+  useMemory: HTMLInputElement;
   recallInput: HTMLInputElement;
   recallStatus: HTMLElement;
   recallIndex: HTMLButtonElement;
@@ -344,6 +348,8 @@ function collectElements(): Elements {
     scrim: byId("scrim"),
     sessionList: byId("session-list"),
     recall: byId("recall"),
+    composerMemory: byId("composer-memory"),
+    useMemory: byId<HTMLInputElement>("use-memory"),
     recallInput: byId("recall-input"),
     recallStatus: byId("recall-status"),
     recallIndex: byId("recall-index"),
@@ -609,7 +615,10 @@ async function submitMessage(): Promise<void> {
     // water mark: seq climbs for the life of the session, and resetting it
     // here would let a reconnect mid-turn render the backlog twice.
     await ensureStream(sessionId);
-    await sendTurn(sessionId, message);
+    // The box is read here and cleared below, so recall is a decision
+    // about this message and never a state the next one inherits.
+    await sendTurn(sessionId, message, dom.useMemory.checked);
+    dom.useMemory.checked = false;
   } catch (error) {
     setTurnRunning(false);
     if (error instanceof TurnBusyError) {
@@ -1025,6 +1034,14 @@ function applyEvent(event: ZorpEvent): void {
       });
       break;
 
+    case "memory":
+      // Above the answer, because it is the reason for the answer. An
+      // activity line would put it in with the tool calls, where it reads
+      // as something the agent did rather than as something it was told.
+      activityGroup = null;
+      appendMemoryNote(event);
+      break;
+
     case "error":
       appendError(event.message);
       // A turn that failed is still a turn that ran, and the server sends
@@ -1272,6 +1289,27 @@ function appendActivity(line: HTMLElement): void {
     dom.transcript.append(activityGroup);
   }
   activityGroup.append(line);
+}
+
+/**
+ * Draw what this turn recalled, before the answer that used it.
+ *
+ * The rendering lives in `src/memory-note.ts` and every string in it goes
+ * through `textContent`: a recalled snippet is text out of an old
+ * conversation, which can be a tool result or a page the agent fetched.
+ */
+function appendMemoryNote(event: MemoryEvent): void {
+  const card = renderMemoryNote(
+    document,
+    coerceCitations(event.used),
+    event.unavailable ?? null,
+    (id) => {
+      const known = sessions.find((session) => session.id === id);
+      void openSession(known ?? { id, title: "", updated_at: "" });
+      closeSidebar();
+    },
+  );
+  dom.transcript.append(card);
 }
 
 function appendError(message: string): void {
@@ -1552,13 +1590,26 @@ async function refreshRecallStatus(): Promise<void> {
   } catch {
     // An older server has no such endpoint. Nothing to show and nothing
     // worth an error card for a feature the page can simply not offer.
+    // The composer box goes with it: a tick that the server would answer
+    // with a 404 is worse than no tick.
     dom.recall.hidden = true;
+    dom.composerMemory.hidden = true;
+    dom.useMemory.checked = false;
     return;
   }
   dom.recall.hidden = false;
   dom.recallStatus.textContent = summarize(status);
   dom.recallInput.disabled = !status.available;
   dom.recallIndex.disabled = !status.available;
+  // Two conditions, and both have to hold. `memory` says the server was
+  // built able to read the index into a turn, `available` says there is a
+  // local embedder to read it with. Offering the box when either is false
+  // would be offering a control that answers with an apology.
+  const canRecall = status.memory && status.available;
+  dom.composerMemory.hidden = !canRecall;
+  if (!canRecall) {
+    dom.useMemory.checked = false;
+  }
 }
 
 async function runRecallSearch(query: string): Promise<void> {

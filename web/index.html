@@ -306,6 +306,29 @@
           >
             Zorp mode
           </button>
+
+          <!--
+            Read earlier conversations before answering this one.
+
+            A box you tick per message, not a mode you leave on, and it
+            starts unticked every time. Two reasons, and both of them are
+            about the reader rather than about cost. A model that quietly
+            knows things from six months ago is a model nobody can predict,
+            and the text being recalled came out of conversations that hold
+            tool results and fetched pages, so it is not text to put in
+            front of a model without meaning to.
+
+            What was recalled appears in the transcript above the answer,
+            with the date and the author of every line, so an answer that
+            leaned on something stale can be seen doing it.
+
+            Hidden until the server says it can do this: it is off unless
+            the server was built with the `memory` feature.
+          -->
+          <label class="composer-memory" id="composer-memory" hidden>
+            <input id="use-memory" type="checkbox" />
+            <span>Recall earlier conversations for this message</span>
+          </label>
         </div>
 
         <!--

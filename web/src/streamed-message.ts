@@ -50,6 +50,13 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "stopped":
     case "done":
       return true;
+    // A recall card is reader visible and lands before the model is
+    // called, so nothing is streaming when it arrives. Closing a streamed
+    // message here is the right answer anyway: the card is a block in the
+    // transcript, and a half written answer must not carry on underneath
+    // one.
+    case "memory":
+      return true;
     // Panel frames are all reader visible, so they close a streamed
     // message the same way a tool line does. A panel does not stream an
     // assistant message today, so nothing is currently cut in two by

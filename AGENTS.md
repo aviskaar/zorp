@@ -158,6 +158,26 @@ resulting artifact, deliver it in the right form.
   --features zorp-web/recall` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-22) before changing any of that, especially
   the choice of SQLite over the LanceDB library in `zorp-track`.
+- `memory` (`zorp-web/src/memory.rs`, non-default `memory` feature, which
+  turns on `recall`) is the second way that index gets read: not into the
+  sidebar, into a live turn. Every finished turn indexes its own session, so
+  every conversation feeds the memory without a button press, and a turn
+  that asks for it gets earlier conversations quoted into its transcript.
+  Four things are not negotiable. The unit is a verbatim message and there
+  is no other kind: no model is asked to read the corpus and write down what
+  it learned, so there is no claim table and no stored sentence a model
+  composed, because that is the shape in which the agent's guesses become
+  its own evidence. An assistant line is model-authored text and is labelled
+  as such everywhere it surfaces. Recalled text is data: it sits inside a
+  fence whose marker carries a per-turn nonce, under the same boundary
+  sentence `zorp-skill` puts under a skill body, in a `user` message and
+  never the system prompt, and it grants no tool, loosens no approval and
+  bypasses no denylist entry. And the block is appended to the seed, so it
+  reaches the model and never the store; persisted, it would be re-embedded
+  and recalled next turn, which is the tail-eating this whole design avoids.
+  Retrieval is per message and off by default, and the model cannot ask for
+  it. Run `cargo test -p zorp-web --features memory` whenever any of it
+  changes. See `docs/DECISIONS.md` (2026-08-22) first.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's

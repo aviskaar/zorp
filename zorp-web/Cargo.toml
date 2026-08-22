@@ -32,6 +32,13 @@ recall = ["dep:zorp-recall", "dep:sha2"]
 # 501 without it, so a browser gets told why the button is off instead of
 # a 404 it cannot explain.
 research = ["dep:zorp-track", "zorp-agent/research"]
+# Recalling those conversations into a live turn, rather than only into the
+# sidebar. Built on `recall` because it is the same index read a second way,
+# and separate from it because they are different risks: `recall` puts old
+# text in front of a person, this puts it in front of a model. Off by
+# default, and off again per turn unless the person sending it ticks the
+# box.
+memory = ["recall"]
 
 [dependencies]
 zorp-agent = { path = "../zorp-agent" }
