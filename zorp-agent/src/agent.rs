@@ -2494,6 +2494,33 @@ mod tests {
             Some(17)
         );
     }
+    /// A Zorp mode run, meaning one `investigate` attempt, is launched by
+    /// a person and never by a model. The same rule `panel` holds, and for
+    /// the same reason: an attempt writes to the pre-registered evidence
+    /// record and to the aryabhatta ledger, so a model that could start one
+    /// could feed the record it is later read against.
+    ///
+    /// Asserted against the unfiltered builtin set, which is the strongest
+    /// place to assert it: not "the filter removes it" but "there is
+    /// nothing to remove".
+    #[test]
+    fn no_builtin_tool_can_start_an_investigation() {
+        let model = Scripted::new(vec![text("done")]);
+        let names = agent(model).register_builtins().tool_names();
+        for forbidden in [
+            "investigate",
+            "start_investigate",
+            "run_investigate",
+            "zorp_mode",
+            "start_zorp_mode",
+        ] {
+            assert!(
+                !names.contains(&forbidden.to_string()),
+                "a model must not be able to start an investigation: found {forbidden}"
+            );
+        }
+    }
+
     #[test]
     fn register_builtins_includes_new_subagent_tools_by_default() {
         let model = Scripted::new(vec![text("done")]);

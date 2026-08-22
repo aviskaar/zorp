@@ -111,6 +111,9 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id/panel", post(start_panel))
         .route("/api/panel/lenses", get(list_lenses))
         .route("/api/capabilities", get(capabilities))
+        .route("/api/sessions/:id/investigate", post(start_investigate))
+        .route("/api/investigate/status", get(investigate_status))
+        .route("/api/investigate/ledger", get(investigate_ledger))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
         .route(
@@ -268,6 +271,32 @@ struct PanelBody {
     lenses: Vec<String>,
 }
 
+/// What the browser asks a Zorp mode run for.
+///
+/// The pre-registration trio is all-or-nothing, the same as the CLI's
+/// three flags: required on the first attempt for a track, and after
+/// that either left out or matching what is already on file.
+/// `investigate::run` is what enforces the match. Leaving them out here
+/// means "use what is already recorded".
+#[cfg(feature = "research")]
+#[derive(Deserialize)]
+struct InvestigateBody {
+    question: String,
+    #[serde(default)]
+    metric_name: Option<String>,
+    #[serde(default)]
+    kill_threshold: Option<f64>,
+    #[serde(default)]
+    threshold_direction: Option<String>,
+}
+
+/// The question whose ledger to read.
+#[cfg(feature = "research")]
+#[derive(Deserialize)]
+struct LedgerQuery {
+    question: String,
+}
+
 /// The lenses a panel can be built from.
 ///
 /// A read of a code-defined list, so the browser can offer the choice
@@ -322,6 +351,118 @@ async fn start_panel(
         state.settings.clone(),
     );
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Zorp mode: one pre-registered `investigate` attempt, launched from
+/// the browser.
+///
+/// There is no aryabhatta engine to call. aryabhatta is record plus
+/// readers and ships no command on purpose; `investigate` is what writes
+/// to it. So this endpoint runs one attempt, and the ledger endpoint
+/// below reads back what landed.
+///
+/// 202 and the same 409 as `start_turn`, for the same reason: an attempt
+/// occupies the session, and an attempt interleaved with a turn would
+/// put two conversations under one sequence counter. It answers the
+/// existing stop endpoint too, so the control already on the page
+/// reaches it.
+///
+/// A person presses this. There is no tool that reaches it and there
+/// must never be one: an attempt writes to a pre-registered evidence
+/// record and to the aryabhatta ledger, so a model that could start one
+/// could feed the record it is later read against.
+#[cfg(feature = "research")]
+async fn start_investigate(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<InvestigateBody>,
+) -> impl IntoResponse {
+    let Some(session) = session_or_adopt(&state, &id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let request = crate::investigate::InvestigateRequest {
+        question: body.question,
+        metric_name: body.metric_name,
+        kill_threshold: body.kill_threshold,
+        threshold_direction: body.threshold_direction,
+    };
+    // Checked before the session is occupied. A request that cannot run
+    // comes back as a refused request, not as an error frame on a stream
+    // the browser has to be watching to see.
+    if let Err(e) = crate::investigate::check_request(&request) {
+        return (StatusCode::BAD_REQUEST, e.message()).into_response();
+    }
+    if session.lock().unwrap().running {
+        return (StatusCode::CONFLICT, "a turn is already running").into_response();
+    }
+    crate::investigate::spawn_investigate(session, request, state.settings.clone());
+    StatusCode::ACCEPTED.into_response()
+}
+
+/// The same endpoint on a server built without `research`.
+///
+/// 501 rather than a missing route. A browser that gets a 404 cannot
+/// tell "this server does not do that" from "you typed the URL wrong",
+/// and the page has to be able to say which one it is.
+#[cfg(not(feature = "research"))]
+async fn start_investigate(
+    Path(_id): Path<String>,
+    body: Option<Json<serde_json::Value>>,
+) -> impl IntoResponse {
+    let _ = body;
+    (StatusCode::NOT_IMPLEMENTED, RESEARCH_ABSENT).into_response()
+}
+
+#[cfg(not(feature = "research"))]
+const RESEARCH_ABSENT: &str = "this zorp-web was built without the research feature, so it cannot \
+     run an investigation. Rebuild it with --features research.";
+
+/// Whether Zorp mode can run here, and whether it will forecast.
+///
+/// Two facts the page cannot work out for itself. `available` is what
+/// this binary was built with. `forecasting` is whether `ZORP_FORECAST`
+/// is set in the server's environment, which is what decides whether an
+/// attempt records an expectation at all.
+///
+/// Reported, never set. Forecasting costs a model call on every attempt
+/// and is off unless the person running the server turned it on. A
+/// browser control that flipped it would be one page changing what the
+/// whole server does for everyone using it.
+async fn investigate_status() -> Json<serde_json::Value> {
+    #[cfg(feature = "research")]
+    let forecasting = zorp_agent::investigate::forecasting_enabled();
+    #[cfg(not(feature = "research"))]
+    let forecasting = false;
+    Json(json!({
+        "available": cfg!(feature = "research"),
+        "forecasting": forecasting,
+    }))
+}
+
+/// Read back what a track's attempts recorded.
+///
+/// A read and nothing else. It opens no run record that is not already
+/// there, it asks no model anything, and it names no column holding
+/// model-authored text. Detection is code and interpreting is somebody
+/// else's job, which is the split the whole subsystem rests on.
+#[cfg(feature = "research")]
+async fn investigate_ledger(Query(params): Query<LedgerQuery>) -> impl IntoResponse {
+    if params.question.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "no question given").into_response();
+    }
+    let root = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match crate::investigate::read_ledger(&root, &params.question) {
+        Ok(ledger) => Json(ledger).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[cfg(not(feature = "research"))]
+async fn investigate_ledger() -> impl IntoResponse {
+    (StatusCode::NOT_IMPLEMENTED, RESEARCH_ABSENT).into_response()
 }
 
 async fn start_turn(

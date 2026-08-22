@@ -11,6 +11,8 @@ pub mod artifacts;
 pub mod auth;
 pub mod documents;
 pub mod event;
+#[cfg(feature = "research")]
+pub mod investigate;
 pub mod panel;
 pub mod pdf;
 #[cfg(feature = "recall")]

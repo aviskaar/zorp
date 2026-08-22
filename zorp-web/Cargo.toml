@@ -23,10 +23,20 @@ search = ["zorp-agent/search"]
 # refuses to have one. It also decides whether the search box appears,
 # which the operator of the server should turn on rather than discover.
 recall = ["dep:zorp-recall", "dep:sha2"]
+# Zorp mode: running one pre-registered `investigate` attempt from the
+# browser, and reading back what it recorded.
+#
+# Deliberately not a default. It pulls in zorp-track and DuckDB, which is
+# the most expensive thing in this workspace to build, and the ordinary
+# chat server has no use for it. The routes exist either way and answer
+# 501 without it, so a browser gets told why the button is off instead of
+# a 404 it cannot explain.
+research = ["dep:zorp-track", "zorp-agent/research"]
 
 [dependencies]
 zorp-agent = { path = "../zorp-agent" }
 zorp-recall = { path = "../zorp-recall", optional = true }
+zorp-track = { path = "../zorp-track", optional = true }
 sha2 = { workspace = true, optional = true }
 axum = { workspace = true }
 tokio = { workspace = true }

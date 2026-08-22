@@ -81,6 +81,26 @@ resulting artifact, deliver it in the right form.
   `POST /api/sessions/:id/panel` on the existing event stream, and it
   occupies the session exactly as a turn does. See `docs/DECISIONS.md`
   (2026-08-20) before changing any of that.
+- "Zorp mode" in the browser is one `investigate` attempt plus a read of
+  what landed in the aryabhatta ledger. It is not a fifth capability and
+  there is no aryabhatta engine behind it; `investigate` is the only
+  thing that writes to the record. It lives in
+  `zorp-web/src/investigate.rs` behind a non-default `research` feature
+  on `zorp-web`, mirrors `panel`'s shape at
+  `POST /api/sessions/:id/investigate` on the existing event stream, and
+  occupies the session exactly as a turn does. The routes are registered
+  whatever the feature says and answer 501 without it, so the page can
+  say why the button is off. Two rules are not negotiable. A run is
+  launched by a person and never by a model, because an attempt writes
+  to a pre-registered evidence record; there is no tool that starts one
+  and both `agent.rs` and `zorp-web` have tests saying so. And the
+  ledger reader names no model-authored text column, so
+  `expectations.assumptions` is not in what it returns. Checkpoints are
+  auto-approved from the browser because there is no terminal to ask,
+  and the pre-registered kill threshold is still enforced in code
+  regardless. Forecasting is reported by `GET /api/investigate/status`
+  and can never be set from the browser. See `docs/DECISIONS.md`
+  (2026-08-21) before changing any of that.
 - `critique` (`zorp-agent/src/critique/`) is a gate on co-write's
   artifact, not a fifth capability. It audits `draft.md` against the
   track's own evidence record and revises what the record does not
@@ -191,10 +211,11 @@ resulting artifact, deliver it in the right form.
   library and you have reached for `innerHTML`.
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
-  `cargo test -p zorp-agent --features research` explicitly whenever
-  research-feature code changes. CI covers it nightly and on pull
+  `cargo test -p zorp-agent --features research` and
+  `cargo test -p zorp-web --features research` explicitly whenever
+  research-feature code changes. CI covers both nightly and on pull
   requests that touch the research stack, but that is a backstop, not a
-  substitute for running it locally.
+  substitute for running them locally.
 - The LanceDB vector library is behind a non-default `library` feature
   on both `zorp-track` and `zorp-agent`. `research` does not enable it.
   Leave it off unless you are working on retrieval; it pulls in the

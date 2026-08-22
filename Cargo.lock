@@ -8511,6 +8511,7 @@ dependencies = [
  "zip 4.6.1",
  "zorp-agent",
  "zorp-recall",
+ "zorp-track",
 ]
 
 [[package]]
