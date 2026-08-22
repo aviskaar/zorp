@@ -254,12 +254,31 @@ fn child_exited_unreaped(pid: i32) -> Result<bool, ToolError> {
     Ok(unsafe { info.si_pid() } != 0)
 }
 
+/// Whether a failed group kill means the group had nothing left to kill.
+///
+/// ESRCH is the obvious one: no such process group. EPERM is the same
+/// situation wearing a different errno. Every member of this group is a
+/// process we spawned, so we are always allowed to signal it while it is
+/// alive; the kernel only refuses when there is nothing signalable there.
+/// On macOS a group whose last member is an exited-but-unreaped child
+/// answers EPERM rather than ESRCH, and both callers below reach this
+/// after the child is known to have exited.
+///
+/// Anything else is a real error and still fails the run. Getting this
+/// wrong in the forgiving direction would hide a kill that did not happen;
+/// getting it wrong in the strict direction is what produced a flaky test
+/// suite, because a command that had already succeeded failed while
+/// cleaning up something that was no longer there.
+fn kill_error_is_already_gone(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM))
+}
+
 fn kill_process_group(pgid: i32) -> io::Result<()> {
     if unsafe { libc::kill(-pgid, libc::SIGKILL) } == 0 {
         return Ok(());
     }
     let error = io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
+    if kill_error_is_already_gone(&error) {
         Ok(())
     } else {
         Err(error)
@@ -308,6 +327,33 @@ fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The three errnos that decide whether a failed group kill is a real
+    // failure. ESRCH and EPERM both mean the group had nothing left in it
+    // that we could signal, which is the outcome the kill wanted. EINVAL
+    // means the call itself was wrong and must still be reported.
+    //
+    // EPERM is the one that used to be missing, and it was not theoretical:
+    // `cargo test -p zorp-agent --lib sandbox::` failed roughly once in
+    // twenty-five runs on macOS with "kill process group: Operation not
+    // permitted (os error 1)", taking whichever sandbox test happened to
+    // lose the race. The child is already confirmed dead by
+    // `child_exited_unreaped` before this kill is attempted, so on a group
+    // holding only an unreaped zombie macOS answers EPERM where Linux
+    // answers ESRCH. Same fact, different errno, and only one of them was
+    // being forgiven.
+    #[test]
+    fn a_group_that_is_already_gone_is_not_a_failed_kill() {
+        assert!(kill_error_is_already_gone(&io::Error::from_raw_os_error(
+            libc::ESRCH
+        )));
+        assert!(kill_error_is_already_gone(&io::Error::from_raw_os_error(
+            libc::EPERM
+        )));
+        assert!(!kill_error_is_already_gone(&io::Error::from_raw_os_error(
+            libc::EINVAL
+        )));
+    }
     use std::os::unix::ffi::OsStringExt;
     use std::sync::Mutex;
     use std::thread;
