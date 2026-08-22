@@ -8450,6 +8450,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zorp-recall"
+version = "0.3.2"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
 name = "zorp-search"
 version = "0.3.2"
 dependencies = [
@@ -8489,8 +8499,10 @@ dependencies = [
  "futures-core",
  "pdf-extract",
  "quick-xml",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "toml",
@@ -8498,6 +8510,7 @@ dependencies = [
  "ureq",
  "zip 4.6.1",
  "zorp-agent",
+ "zorp-recall",
 ]
 
 [[package]]

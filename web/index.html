@@ -66,6 +66,38 @@
           New chat
         </button>
 
+        <!--
+          Search what you already said, by meaning rather than by spelling.
+          The vectors come from a model running on this machine and go into
+          a file on this machine; nothing typed here is sent anywhere else,
+          and if there is no local model the line under the box says so
+          instead of the search quietly finding one somewhere.
+
+          Hidden until the server answers that it can do this, because it
+          is off unless the server was built with the `recall` feature.
+        -->
+        <div class="recall" id="recall" hidden>
+          <label class="sidebar-label" for="recall-input">Search conversations</label>
+          <input
+            class="recall-input"
+            id="recall-input"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="What was I working on?"
+          />
+          <div class="recall-foot">
+            <!--
+              role="status" so the count, and any refusal, is announced
+              rather than only appearing. The refusal is the one that
+              matters: it names the endpoint that did not answer.
+            -->
+            <p class="recall-status" id="recall-status" role="status"></p>
+            <button class="recall-index" id="recall-index" type="button">Index</button>
+          </div>
+          <ul class="recall-results" id="recall-results" hidden></ul>
+        </div>
+
         <div class="sidebar-label">Sessions</div>
         <ul class="session-list" id="session-list"></ul>
 

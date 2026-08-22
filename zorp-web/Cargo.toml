@@ -17,9 +17,17 @@ default = []
 # side effect. `GET /api/capabilities` reports whether it is actually there,
 # so the page never has to guess.
 search = ["zorp-agent/search"]
+# Semantic search over the conversations already in the store. Off by
+# default for the same reason `search` is, and the contrast is the point:
+# `search` opts into an egress path, this one opts into a capability that
+# refuses to have one. It also decides whether the search box appears,
+# which the operator of the server should turn on rather than discover.
+recall = ["dep:zorp-recall", "dep:sha2"]
 
 [dependencies]
 zorp-agent = { path = "../zorp-agent" }
+zorp-recall = { path = "../zorp-recall", optional = true }
+sha2 = { workspace = true, optional = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -36,3 +44,6 @@ pdf-extract = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The recall tests seed and then edit a scratch session store directly, to
+# stand in for a conversation the user deleted.
+rusqlite = { workspace = true }

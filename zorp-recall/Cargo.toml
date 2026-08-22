@@ -1,0 +1,26 @@
+[package]
+name        = "zorp-recall"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "On-device semantic search over zorp's stored conversations."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependency on any other workspace member. This crate knows about a
+# loopback HTTP endpoint, a SQLite file, and cosine similarity. It knows
+# nothing about sessions, agents, or the web server, and it is handed the
+# text to index rather than reading a store itself.
+#
+# Every one of these three is already in the tree that zorp-web links.
+# That is most of the argument for SQLite over LanceDB here: this whole
+# capability adds no crates at all.
+[dependencies]
+ureq       = { workspace = true }
+serde_json = { workspace = true }
+rusqlite   = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

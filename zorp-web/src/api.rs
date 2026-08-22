@@ -122,6 +122,12 @@ fn api_router(state: AppState) -> Router {
         .route("/api/settings/test", post(test_connection))
         .route("/api/artifacts", get(list_artifacts))
         .route("/api/artifacts/raw", get(read_artifact))
+        // Conversation search. The three routes exist in every build, so a
+        // server without the `recall` feature answers "off, and here is
+        // why" rather than a 404 the page has to interpret.
+        .route("/api/recall/status", get(recall_status))
+        .route("/api/recall/index", post(recall_index))
+        .route("/api/recall/search", get(recall_search))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_token,
@@ -786,4 +792,140 @@ async fn read_artifact(
     // is what makes that safe, not the disposition.
     headers.insert("content-disposition", "inline".parse().unwrap());
     (headers, body).into_response()
+}
+
+/* ------------------------------------------------------------------ */
+/* conversation search                                                 */
+/* ------------------------------------------------------------------ */
+
+/// Whether this server can search the conversations it holds, and what it
+/// would use to do it.
+///
+/// Answered by every build. A page that got a 404 here would have to guess
+/// whether the feature is off or the server is old, and the two want
+/// different words on screen.
+#[cfg(not(feature = "recall"))]
+async fn recall_status() -> Json<serde_json::Value> {
+    Json(json!({
+        "available": false,
+        "reason": "this server was built without the `recall` feature, so conversation search is off",
+        "endpoint": null,
+        "model": null,
+        "conversations": 0,
+        "chunks": 0,
+    }))
+}
+
+#[cfg(feature = "recall")]
+async fn recall_status() -> Json<serde_json::Value> {
+    let status = tokio::task::spawn_blocking(crate::recall::status)
+        .await
+        .expect("recall status does not panic");
+    Json(json!({
+        "available": status.available,
+        "reason": status.reason,
+        "endpoint": status.endpoint,
+        "model": status.model,
+        "conversations": status.conversations,
+        "chunks": status.chunks,
+    }))
+}
+
+#[cfg(not(feature = "recall"))]
+async fn recall_index() -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        "this server was built without the `recall` feature, so there is nothing to index",
+    )
+}
+
+/// Bring the index up to date with the store.
+///
+/// Synchronous, and it can take minutes on a corpus that has never been
+/// indexed, because every message costs one call to the local model. That
+/// is the honest shape for a thing the user pressed a button to start. A
+/// second press while one is running gets a 409, the same answer a second
+/// turn on a busy session gets.
+#[cfg(feature = "recall")]
+async fn recall_index() -> impl IntoResponse {
+    match tokio::task::spawn_blocking(crate::recall::reindex).await {
+        Ok(Ok(report)) => Json(json!({
+            "indexed": report.indexed,
+            "skipped": report.skipped,
+            "removed": report.removed,
+            "chunks": report.chunks,
+        }))
+        .into_response(),
+        Ok(Err(e)) => recall_failure(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "indexing crashed".to_string(),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(feature = "recall")]
+#[derive(Deserialize)]
+struct RecallSearch {
+    #[serde(default)]
+    q: String,
+    limit: Option<usize>,
+}
+
+#[cfg(not(feature = "recall"))]
+async fn recall_search() -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        "this server was built without the `recall` feature, so there is nothing to search",
+    )
+}
+
+#[cfg(feature = "recall")]
+async fn recall_search(Query(params): Query<RecallSearch>) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(crate::recall::DEFAULT_LIMIT);
+    match tokio::task::spawn_blocking(move || crate::recall::search(&params.q, limit)).await {
+        Ok(Ok(hits)) => {
+            let rows: Vec<serde_json::Value> = hits
+                .into_iter()
+                .map(|h| {
+                    json!({
+                        "id": h.conversation_id,
+                        "title": h.title,
+                        "seq": h.seq,
+                        "role": h.role,
+                        "snippet": h.snippet,
+                        "score": h.score,
+                    })
+                })
+                .collect();
+            Json(json!({ "hits": rows })).into_response()
+        }
+        Ok(Err(e)) => recall_failure(e).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "searching crashed".to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// One place deciding what a recall failure looks like on the wire.
+///
+/// 503 for anything to do with the embedder, including a configured
+/// endpoint that is not on this machine, because in both cases the thing
+/// that would produce a vector is not available and the answer is the same:
+/// nothing was searched and nothing was sent anywhere. The message is
+/// passed through whole, since it is the only thing the page can show and
+/// it is already written to be read by a person.
+#[cfg(feature = "recall")]
+fn recall_failure(e: crate::recall::RecallError) -> (StatusCode, String) {
+    use crate::recall::RecallError;
+    let status = match e {
+        RecallError::Embed(_) => StatusCode::SERVICE_UNAVAILABLE,
+        RecallError::EmptyQuery => StatusCode::BAD_REQUEST,
+        RecallError::Busy => StatusCode::CONFLICT,
+        RecallError::Index(_) | RecallError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, e.to_string())
 }

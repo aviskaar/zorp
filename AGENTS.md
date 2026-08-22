@@ -118,6 +118,26 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that. Skills are not capsules; the same entry says why both exist.
+- `zorp-recall/` is zorp's own conversation search: a loopback guard, an
+  embedder that talks to a local Ollama, and a SQLite vector index over the
+  conversations in `zorp-agent`'s store. Like `zorp-search` and `zorp-skill`
+  it depends on no other workspace member. `zorp-web` exposes it behind the
+  non-default `recall` feature as three endpoints and a sidebar search box.
+  One rule holds the whole thing up and it is not negotiable: conversation
+  text goes to a loopback address or it goes nowhere. There is no remote
+  embedding provider, no flag that adds one, and no fallback when the local
+  model is missing, because this corpus is a person's whole history with an
+  agent that reads their files. Four layers enforce it. The endpoint must
+  pass `LoopbackUrl::parse`, which checks the written form and then the
+  resolution. `LoopbackResolver` is the only resolver the HTTP client gets,
+  it does no lookup, and it answers for one host and port. Redirects are off.
+  Proxy-from-env is off. `tests/no_remote.rs` and `tests/no_proxy.rs` pin all
+  of it by counting connections to a loopback canary, not by checking for an
+  error, because a failed request and a request never made look the same from
+  the caller's side. Run `cargo test -p zorp-web -p zorp-recall
+  --features zorp-web/recall` whenever any of it changes. See
+  `docs/DECISIONS.md` (2026-08-22) before changing any of that, especially
+  the choice of SQLite over the LanceDB library in `zorp-track`.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's
