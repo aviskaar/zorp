@@ -533,9 +533,19 @@ button {
    until the message is hovered so a long conversation is not a column of
    buttons. Kept visible at all times rather than appearing on hover only,
    because a control nobody can see is a control nobody uses. */
+.msg-actions {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  /* Wraps rather than pushing the row past the edge of a narrow phone once
+     the destinations are showing. */
+  flex-wrap: wrap;
+  gap: 2px 2px;
+  margin-top: 6px;
+}
+
 .copy-btn {
   align-self: flex-start;
-  margin-top: 6px;
   padding: 3px 8px;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -568,6 +578,54 @@ button {
   color: var(--danger);
   border-color: transparent;
   background: none;
+}
+
+/* The destinations sit behind one control rather than beside the copy
+   button, because every answer in the transcript carries this row and four
+   controls under each one is the column of buttons the styling above exists
+   to avoid. */
+.share {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Opens in the row rather than floating over it. A popup was the first try
+   and it is the wrong shape here: `.scroller` clips, and a scrollable box
+   only ever extends its overflow down and right, so a list opening upwards
+   from the first answer is cut off with no way to scroll to it, and one
+   opening downwards from the last answer is cut off at the other end.
+   Opening in the row has nothing to be clipped by. The row is the last
+   thing in the message and the entries are the same height as the button,
+   so it grows sideways and nothing below it moves. */
+.share-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+/* The default `hidden` behaviour is `display: none`, which the rule above
+   would otherwise win against. */
+.share-list[hidden] {
+  display: none;
+}
+
+.share-item {
+  padding: 3px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.share-item:hover,
+.share-item:focus-visible {
+  color: var(--text);
+  background: var(--bg-hover);
+  border-color: var(--line);
 }
 
 /* A caret while the answer is still arriving, so a pause between tokens
