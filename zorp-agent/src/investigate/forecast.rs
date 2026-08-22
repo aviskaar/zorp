@@ -73,12 +73,41 @@ an enormous interval to be safe is not caution, it is refusing to \
 answer: interval width is recorded and reported next to coverage, so a \
 forecast that cannot be wrong is visibly worthless.";
 
+/// The confidences a forecaster is asked to choose between.
+///
+/// Calibration is measured per stated confidence, and a band is only
+/// worth judging once it holds enough forecasts to have expected a
+/// miss. `zorp_track::calibration::required_band_n` puts that at the
+/// larger of a flat floor and `1 / (1 - confidence)`, so a forecaster
+/// free to write any number spreads a run across bands that can never
+/// individually be judged. A real run did exactly that: thirty scored
+/// forecasts landed on six confidences between 0.93 and 0.99, and the
+/// 0.99 band alone would have needed a hundred rows.
+///
+/// So the question is asked on a grid. This does not make a forecaster
+/// better calibrated and it is not meant to. It makes the answer
+/// measurable: every level here needs only the flat floor, which a run
+/// of ordinary size can reach. Asking instead for a free number is
+/// asking to tell 0.97 from 0.98 with evidence that cannot tell them
+/// apart.
+///
+/// Nothing enforces the grid. `parse_forecast` accepts any confidence
+/// in (0, 1), because filtering out an off-grid answer would discard a
+/// real forecast and bias the sample toward the runs where the model
+/// happened to comply.
+pub const CONFIDENCE_GRID: &[f64] = &[0.5, 0.7, 0.8, 0.9, 0.95];
+
 /// The prompt a forecaster sees.
 ///
 /// It carries the hypothesis and the metric name and nothing about how
 /// the work will be done, because a forecast conditioned on the working
 /// agent's findings is a postdiction wearing the right timestamp.
 pub fn forecast_prompt(hypothesis: &str, metric_name: &str) -> String {
+    let levels = CONFIDENCE_GRID
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "An experiment is about to be run to test this hypothesis:\n\n\
          {hypothesis}\n\n\
@@ -90,8 +119,10 @@ pub fn forecast_prompt(hypothesis: &str, metric_name: &str) -> String {
          \"interval_high\": <number>, \"confidence\": <number between 0 and 1>}}\n\
          ```\n\n\
          `confidence` is the probability you assign to the true value \
-         landing inside your interval, for example 0.80. Do not write \
-         anything after the block."
+         landing inside your interval. Choose one of: {levels}. \
+         Pick the one that honestly matches how sure you are, and widen \
+         or narrow the interval to fit it rather than reaching for a \
+         number in between. Do not write anything after the block."
     )
 }
 
@@ -449,5 +480,44 @@ mod tests {
         assert!(p.contains("caching cuts p99 latency"));
         assert!(p.contains("p99_ms"));
         assert!(p.contains("before it is measured"));
+    }
+
+    /// The prompt has to name the grid, or a forecaster has no way to
+    /// know the answer is constrained.
+    #[test]
+    fn the_prompt_offers_a_fixed_set_of_confidences() {
+        let p = forecast_prompt("caching cuts p99 latency", "p99_ms");
+
+        for level in CONFIDENCE_GRID {
+            assert!(p.contains(&level.to_string()), "prompt omits {level}");
+        }
+    }
+
+    /// Every level on the grid has to be reachable, or the grid is
+    /// asking for evidence a run can never gather. `required_band_n`
+    /// grows as `1 / (1 - confidence)`, so a level too close to 1
+    /// silently makes a go impossible.
+    #[test]
+    fn every_level_on_the_grid_is_judgeable_at_a_reachable_sample_size() {
+        for level in CONFIDENCE_GRID {
+            let needed = zorp_track::calibration::required_band_n(*level);
+            assert!(
+                needed <= zorp_track::calibration::MIN_BAND_N,
+                "a band at {level} needs {needed} rows, more than the flat floor"
+            );
+        }
+    }
+
+    /// A forecast off the grid is still read. The grid is what we ask
+    /// for, not a filter on what we accept: silently dropping an
+    /// off-grid answer would discard a real forecast and bias the
+    /// sample toward whatever the model does when it complies.
+    #[test]
+    fn a_confidence_off_the_grid_is_still_parsed() {
+        let text = block(
+            r#"{"expected_value": 5.0, "interval_low": 4.0, "interval_high": 6.0, "confidence": 0.97}"#,
+        );
+
+        assert_eq!(parse_forecast(&text).unwrap().confidence, 0.97);
     }
 }
