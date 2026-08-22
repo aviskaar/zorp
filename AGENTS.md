@@ -60,7 +60,16 @@ resulting artifact, deliver it in the right form.
   build the ledger, and that is a decision a person makes. A band with
   too few forecasts to judge is its own no-go and never a miss: a gap
   computed over three rows is arithmetic about three rows, and reporting
-  it as a demonstrated miss makes it look exactly like one. See
+  it as a demonstrated miss makes it look exactly like one. A band is a
+  bin of adjacent stated confidences, not one per distinct confidence,
+  and it is sized by `required_band_n` of its own mean so that free-form
+  confidences do not shatter a run into pieces none of which can be
+  judged. `bin_boundaries` is handed the stated confidences and never
+  the outcomes, because a boundary chosen with the hits in view is
+  fitted to the answer, and every scored row lands in exactly one bin
+  because dropping the sparse ones biases the curve in silence. Pooling
+  averages, which is why `CalibrationBand::parts` puts every stated
+  confidence that went into a bin back on the page. See
   `docs/superpowers/specs/2026-08-19-anomaly-driven-inquiry-design.md`
   and `docs/DECISIONS.md` (2026-08-19, 2026-08-20, 2026-08-22) before
   changing any of it.

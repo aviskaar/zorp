@@ -63,9 +63,18 @@ fn inspect() {
     );
     for band in &report.bands {
         println!(
-            "  stated {:.2}: n={} covered={} observed={:.4} width={:.4}",
+            "  mean stated {:.4}: n={} covered={} observed={:.4} width={:.4}",
             band.confidence, band.n, band.covered, band.observed_coverage, band.mean_interval_width
         );
+        // What got pooled into that mean. Printed because pooling
+        // averages, and an average of two opposite errors reads as no
+        // error at all unless both halves are on the page.
+        for part in &band.parts {
+            println!(
+                "      stated {:.4}: n={} covered={}",
+                part.confidence, part.n, part.covered
+            );
+        }
     }
     let verdict = report.verdict(Tolerance::new(0.10).unwrap());
     println!("verdict at tolerance 0.10 -> go: {}", verdict.is_go());
