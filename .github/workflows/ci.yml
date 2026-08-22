@@ -196,7 +196,16 @@ jobs:
     # from source and take about three minutes warm, so anything past
     # this is stuck rather than slow, and a stuck job should say so
     # while someone is still looking at the pull request.
-    timeout-minutes: 45
+    #
+    # Raised from 45 when the zorp-web research step was added. That step
+    # does not share a build with the zorp-track one: `-p zorp-web
+    # --features research` resolves a different feature set across the
+    # shared graph, so `libduckdb-sys` gets a different metadata hash and
+    # compiles again. Measured at about twelve and a half minutes on a
+    # partial cache hit, which put a warm-ish run at twenty one minutes.
+    # A genuinely cold cache would pay both builds, and 45 was no longer
+    # far enough above that to tell slow from stuck.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -242,6 +251,9 @@ jobs:
       - name: Test zorp-agent (research feature)
         run: cargo test -p zorp-agent --features research --locked
 
+      - name: Test zorp-web (research feature)
+        run: cargo test -p zorp-web --features research --locked
+
   research-pr:
     # Same coverage for pull requests, gated on paths so unrelated PRs
     # stay cheap.
@@ -251,7 +263,16 @@ jobs:
     # from source and take about three minutes warm, so anything past
     # this is stuck rather than slow, and a stuck job should say so
     # while someone is still looking at the pull request.
-    timeout-minutes: 45
+    #
+    # Raised from 45 when the zorp-web research step was added. That step
+    # does not share a build with the zorp-track one: `-p zorp-web
+    # --features research` resolves a different feature set across the
+    # shared graph, so `libduckdb-sys` gets a different metadata hash and
+    # compiles again. Measured at about twelve and a half minutes on a
+    # partial cache hit, which put a warm-ish run at twenty one minutes.
+    # A genuinely cold cache would pay both builds, and 45 was no longer
+    # far enough above that to tell slow from stuck.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -284,7 +305,7 @@ jobs:
             exit 0
           fi
           echo "$changed"
-          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|zorp-agent/src/(validate|investigate|co_write|critique|deliver)/|zorp-agent/Cargo\.toml$|Cargo\.toml$|Cargo\.lock$)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|zorp-agent/src/(validate|investigate|co_write|critique|deliver)/|zorp-agent/Cargo\.toml$|zorp-web/src/investigate\.rs$|zorp-web/tests/investigate\.rs$|zorp-web/Cargo\.toml$|Cargo\.toml$|Cargo\.lock$)'; then
             echo "research stack touched" >&2
             echo "research=true" >> "$GITHUB_OUTPUT"
           else
@@ -334,3 +355,7 @@ jobs:
       - name: Test zorp-agent (research feature)
         if: steps.filter.outputs.research == 'true'
         run: cargo test -p zorp-agent --features research --locked
+
+      - name: Test zorp-web (research feature)
+        if: steps.filter.outputs.research == 'true'
+        run: cargo test -p zorp-web --features research --locked

@@ -322,6 +322,25 @@ export interface PanelDoneEvent {
   agreements: Agreement[];
 }
 
+/**
+ * One Zorp mode attempt finished, meaning one `investigate` run.
+ *
+ * `approved` is whether the post-attempt checkpoint kept the track
+ * alive. Absent means the attempt did not get that far, and an `error`
+ * frame follows saying why. The frame is sent either way on purpose:
+ * conditions are recorded before the work starts, so an attempt that
+ * fell over still left something in the ledger.
+ *
+ * The ledger itself is not in here. It is read back through
+ * `getLedger`, which the page can call again without running anything.
+ */
+export interface InvestigateDoneEvent {
+  seq: number;
+  type: "investigate_done";
+  track_id: string;
+  approved?: boolean;
+}
+
 export type ZorpEvent =
   | WorkingEvent
   | WorkingDoneEvent
@@ -338,6 +357,7 @@ export type ZorpEvent =
   | ReviewerFinishedEvent
   | ReviewerFailedEvent
   | PanelDoneEvent
+  | InvestigateDoneEvent
   | DoneEvent;
 
 export type ZorpEventType = ZorpEvent["type"];
@@ -593,6 +613,131 @@ function toolAvailability(value: unknown): ToolAvailability {
   return { available, detail };
 }
 
+/**
+ * Whether Zorp mode can run on this server, and whether it forecasts.
+ *
+ * `available` is what the server binary was built with: the research
+ * feature is opt-in, so an ordinary chat server answers false and the
+ * page can say why the control is off.
+ *
+ * `forecasting` reads the server's `ZORP_FORECAST`. It is reported and
+ * never set from here. A forecast costs an extra model call on every
+ * attempt, it is off by default, and one browser flipping it would
+ * change what the whole server does for everyone using it.
+ */
+export interface InvestigateStatus {
+  available: boolean;
+  forecasting: boolean;
+}
+
+export async function getInvestigateStatus(): Promise<InvestigateStatus> {
+  return request<InvestigateStatus>("GET", "/api/investigate/status");
+}
+
+/** The pre-registration a first attempt on a track has to commit to. */
+export interface Preregistration {
+  metric_name: string;
+  kill_threshold: number;
+  threshold_direction: "lower-is-better" | "higher-is-better";
+}
+
+/**
+ * Run one pre-registered `investigate` attempt on this session.
+ *
+ * There is no aryabhatta engine to call: aryabhatta is a record plus
+ * readers and ships no command. `investigate` is what writes to it, so
+ * this is what Zorp mode runs, and `getLedger` is what reads back what
+ * landed.
+ *
+ * Answers 202 and reports on the event stream, the same one a turn uses,
+ * ending with `investigate_done` and then `done`. Like a turn it
+ * occupies the session: a 409 means one is already running.
+ *
+ * `prereg` is required on the first attempt for a question and must
+ * match the record on every later one. Leaving it out means "use what is
+ * already recorded".
+ */
+export async function startInvestigate(
+  id: string,
+  question: string,
+  prereg: Preregistration | null,
+): Promise<void> {
+  try {
+    await request<void>("POST", `/api/sessions/${segment(id)}/investigate`, {
+      question,
+      metric_name: prereg?.metric_name ?? null,
+      kill_threshold: prereg?.kill_threshold ?? null,
+      threshold_direction: prereg?.threshold_direction ?? null,
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      throw new TurnBusyError("a turn is already running on this session");
+    }
+    throw error;
+  }
+}
+
+/** One input an attempt was recorded as having run under. */
+export interface LedgerCondition {
+  key: string;
+  value: string;
+}
+
+/**
+ * One forecast, as recorded before the attempt ran.
+ *
+ * There is no `assumptions` field and there must not be one. It is the
+ * one model-authored text column on that table, and no read path names
+ * it, which is what keeps the subsystem's integrity rules cheap to
+ * check.
+ */
+export interface LedgerExpectation {
+  metric_key: string;
+  expected_value: number;
+  interval_low: number;
+  interval_high: number;
+  confidence: number;
+}
+
+/** One recorded outcome. */
+export interface LedgerMetric {
+  key: string;
+  value: string;
+}
+
+/** One attempt, with what went in and what came out. */
+export interface LedgerExperiment {
+  id: string;
+  status: string;
+  conditions: LedgerCondition[];
+  expectations: LedgerExpectation[];
+  metrics: LedgerMetric[];
+}
+
+/**
+ * A track's whole recorded ledger.
+ *
+ * `present` separates two things that must not look the same on the
+ * page: an empty ledger, which is the honest state for a record nobody
+ * has fed, and no run record at all.
+ */
+export interface Ledger {
+  track_id: string;
+  present: boolean;
+  forecasting: boolean;
+  experiments: LedgerExperiment[];
+}
+
+/**
+ * Read back what a question's attempts recorded.
+ *
+ * A read and nothing else. It runs no attempt, asks no model anything,
+ * and creates no run record that is not already there.
+ */
+export async function getLedger(question: string): Promise<Ledger> {
+  return request<Ledger>("GET", `/api/investigate/ledger?question=${segment(question)}`);
+}
+
 /** Read the effective model settings and where each field came from. */
 export async function getSettings(): Promise<Settings> {
   return request<Settings>("GET", "/api/settings");
@@ -795,6 +940,7 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   reviewer_finished: true,
   reviewer_failed: true,
   panel_done: true,
+  investigate_done: true,
   done: true,
 };
 

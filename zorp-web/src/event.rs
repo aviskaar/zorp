@@ -147,6 +147,28 @@ pub enum EventKind {
         /// reviewer.
         agreements: Vec<AgreementFrame>,
     },
+    /// One Zorp mode attempt finished, meaning one `investigate` run.
+    ///
+    /// `approved` is whether the post-attempt checkpoint kept the track
+    /// alive. `None` means the attempt did not get that far, and an
+    /// `Error` frame follows saying why. It matters that this frame goes
+    /// out either way: conditions are recorded before the work starts,
+    /// so an attempt that fell over still left something in the ledger,
+    /// and a browser that only heard about successes would show nothing
+    /// for it.
+    ///
+    /// The ledger itself is not in here. It is read back through
+    /// `GET /api/investigate/ledger`, which is a reader the page can ask
+    /// again without running anything.
+    ///
+    /// Declared whatever this crate was built with. The server only ever
+    /// emits it under the `research` feature, but the browser bundle is
+    /// one artifact and must know the shape either way.
+    InvestigateDone {
+        track_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        approved: Option<bool>,
+    },
     Error {
         message: String,
     },

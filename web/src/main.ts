@@ -19,6 +19,7 @@ import {
 } from "./search-indicator";
 import { setSendControl } from "./send-control";
 import { PanelView } from "./panel-view";
+import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import {
@@ -47,6 +48,9 @@ import {
   recallStatus,
   sendTurn,
   startPanel,
+  startInvestigate,
+  getInvestigateStatus,
+  getLedger,
   stopTurn,
   streamEvents,
   testConnection,
@@ -56,6 +60,7 @@ import {
   type Artifact,
   type EventStream,
   type Message,
+  type Preregistration,
   type RecallStatus,
   type Settings,
   type SettingsSource,
@@ -124,6 +129,15 @@ interface Elements {
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
   reviewPanel: HTMLButtonElement;
+  zorpMode: HTMLButtonElement;
+  zorpPanel: HTMLElement;
+  zorpStatus: HTMLElement;
+  zorpForm: HTMLFormElement;
+  zorpQuestion: HTMLTextAreaElement;
+  zorpMetric: HTMLInputElement;
+  zorpThreshold: HTMLInputElement;
+  zorpDirection: HTMLSelectElement;
+  zorpRun: HTMLButtonElement;
   settingsOverlay: HTMLElement;
   settingsClose: HTMLButtonElement;
   settingsForm: HTMLFormElement;
@@ -167,6 +181,12 @@ const dom = collectElements();
  * turn does.
  */
 const panelView = new PanelView(document, dom.transcript);
+/**
+ * The open Zorp mode block, if any. One per page, for the same reason
+ * the panel's is: an attempt occupies the session exactly as a turn
+ * does, so only one can be running.
+ */
+const zorpView = new ZorpModeView(document, dom.transcript);
 
 let sessionId: string | null = null;
 let stream: EventStream | null = null;
@@ -214,6 +234,7 @@ function start(): void {
   wireSettings();
   wireArtifacts();
   wireApprovalMode();
+  wireZorpMode();
   paintApprovalMode();
   showEmptyState();
   setStatus("idle", "idle");
@@ -345,6 +366,15 @@ function collectElements(): Elements {
     workingVerb: byId("working-verb"),
     jump: byId<HTMLButtonElement>("jump"),
     reviewPanel: byId<HTMLButtonElement>("review-panel"),
+    zorpMode: byId<HTMLButtonElement>("zorp-mode"),
+    zorpPanel: byId<HTMLElement>("zorp-panel"),
+    zorpStatus: byId("zorp-status"),
+    zorpForm: byId<HTMLFormElement>("zorp-form"),
+    zorpQuestion: byId<HTMLTextAreaElement>("zorp-question"),
+    zorpMetric: byId<HTMLInputElement>("zorp-metric"),
+    zorpThreshold: byId<HTMLInputElement>("zorp-threshold"),
+    zorpDirection: byId<HTMLSelectElement>("zorp-direction"),
+    zorpRun: byId<HTMLButtonElement>("zorp-run"),
     composerWarning: byId("composer-warning"),
     composerWarningSettings: byId<HTMLButtonElement>("composer-warning-settings"),
     composer: byId<HTMLFormElement>("composer"),
@@ -400,6 +430,10 @@ function wireComposer(): void {
 
   dom.reviewPanel.addEventListener("click", () => {
     void submitPanel();
+  });
+
+  dom.zorpMode.addEventListener("click", () => {
+    toggleZorpPanel();
   });
 
   dom.input.addEventListener("keydown", (event) => {
@@ -585,6 +619,170 @@ async function submitMessage(): Promise<void> {
     }
     scrollToBottomIfFollowing(true);
   }
+}
+
+/**
+ * Zorp mode: what the last attempt was about.
+ *
+ * Held because the ledger is read back by question, not by track id, and
+ * because a run that failed still recorded the conditions it started
+ * under. Without this the page would have nothing to ask about after an
+ * attempt that did not reach its closing frame.
+ */
+let zorpQuestion: string | null = null;
+/** Whether the running turn is a Zorp mode attempt rather than a turn. */
+let zorpRunning = false;
+
+function wireZorpMode(): void {
+  dom.zorpForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitInvestigate();
+  });
+  // Asked once, on load. Both facts are properties of the server binary
+  // and its environment, and neither changes while the page is open.
+  void refreshZorpStatus();
+}
+
+/**
+ * Open or close the Zorp mode form.
+ *
+ * A toggle rather than a modal, because the form has to sit next to the
+ * transcript the attempt will write into.
+ */
+function toggleZorpPanel(): void {
+  const open = dom.zorpPanel.hidden;
+  dom.zorpPanel.hidden = !open;
+  dom.zorpMode.setAttribute("aria-expanded", String(open));
+  if (open) {
+    dom.zorpQuestion.focus();
+  }
+}
+
+/**
+ * Say whether Zorp mode can run here, and whether it will forecast.
+ *
+ * Both come from the server. `available` is what its binary was built
+ * with: the research feature is opt-in and an ordinary chat server does
+ * not have it, so the honest thing is to say so rather than to offer a
+ * button that 501s.
+ *
+ * Forecasting is reported and never set. It costs a model call on every
+ * attempt, it is off by default, and a browser control that turned it on
+ * would be one page changing what the server does for everyone using it.
+ */
+async function refreshZorpStatus(): Promise<void> {
+  try {
+    const status = await getInvestigateStatus();
+    if (!status.available) {
+      dom.zorpStatus.textContent =
+        "This server was built without the research feature, so it cannot run an attempt. Rebuild zorp-web with --features research.";
+      dom.zorpRun.disabled = true;
+      return;
+    }
+    dom.zorpStatus.textContent = status.forecasting
+      ? "Forecasting is on, so each attempt records an expectation before it runs."
+      : "Forecasting is off, so no expectation is recorded and nothing can be scored for calibration. It is set where the server runs, not here.";
+  } catch (error) {
+    dom.zorpStatus.textContent = describeError(error);
+  }
+}
+
+/**
+ * Run one pre-registered attempt.
+ *
+ * A person presses this. There is no tool that reaches it and there must
+ * never be one: an attempt writes to a pre-registered evidence record
+ * and to the aryabhatta ledger, so a model that could start one could
+ * feed the record it is later read against.
+ *
+ * The pre-registration is all three fields or none. None means reuse
+ * what is recorded for this question, which is what a second attempt on
+ * the same track does. Half of one is refused here rather than sent, so
+ * a typo does not cost a round trip.
+ */
+async function submitInvestigate(): Promise<void> {
+  if (turnRunning) {
+    return;
+  }
+  const question = dom.zorpQuestion.value.trim();
+  if (!question) {
+    appendError("Zorp mode needs a question. There is nothing to pre-register an attempt against.");
+    scrollToBottomIfFollowing(true);
+    return;
+  }
+
+  const metric = dom.zorpMetric.value.trim();
+  const thresholdText = dom.zorpThreshold.value.trim();
+  const given = [metric, thresholdText].filter((v) => v !== "").length;
+  if (given === 1) {
+    appendError(
+      "A pre-registration is a metric and a kill threshold together. Give both, or leave both empty to reuse the one already recorded for this question.",
+    );
+    scrollToBottomIfFollowing(true);
+    return;
+  }
+
+  let prereg: Preregistration | null = null;
+  if (given === 2) {
+    const threshold = Number(thresholdText);
+    if (!Number.isFinite(threshold)) {
+      appendError("The kill threshold has to be a finite number.");
+      scrollToBottomIfFollowing(true);
+      return;
+    }
+    prereg = {
+      metric_name: metric,
+      kill_threshold: threshold,
+      threshold_direction: dom.zorpDirection.value as Preregistration["threshold_direction"],
+    };
+  }
+
+  clearEmptyState();
+  appendMessage("user", question);
+  scrollToBottomIfFollowing(true);
+  setTurnRunning(true);
+  zorpRunning = true;
+  zorpQuestion = question;
+
+  try {
+    if (!sessionId) {
+      sessionId = await newSession();
+      setTitle("Zorp mode");
+      await refreshSessions();
+      markActiveSession();
+    }
+    await ensureStream(sessionId);
+    await startInvestigate(sessionId, question, prereg);
+  } catch (error) {
+    setTurnRunning(false);
+    zorpRunning = false;
+    if (error instanceof TurnBusyError) {
+      appendError("A turn is already running on this session. Wait for it to finish.");
+    } else {
+      appendError(describeError(error));
+    }
+    scrollToBottomIfFollowing(true);
+  }
+}
+
+/**
+ * Read back what the attempt left in the ledger.
+ *
+ * A separate read rather than a payload on the closing frame, on
+ * purpose. Conditions are recorded before the work starts, so an attempt
+ * that fell over still left something worth showing, and a read the page
+ * can repeat is the only shape that covers both endings.
+ */
+async function showZorpLedger(): Promise<void> {
+  if (!zorpQuestion) {
+    return;
+  }
+  try {
+    zorpView.showLedger(await getLedger(zorpQuestion));
+  } catch (error) {
+    appendError(describeError(error));
+  }
+  scrollToBottomIfFollowing(true);
 }
 
 /**
@@ -867,12 +1065,25 @@ function applyEvent(event: ZorpEvent): void {
       panelView.done(event);
       break;
 
+    case "investigate_done":
+      activityGroup = null;
+      zorpView.done(event);
+      break;
+
     case "done":
       // A panel that ended without a `panel_done`, which is what a stop
       // or an error looks like, leaves its block on the page with its
       // reviewers in whatever state they reached. Forgetting it here is
       // what stops the next panel appending to a stale block.
       panelView.close();
+      // The ledger read happens here rather than on `investigate_done`,
+      // because an attempt that failed or was stopped never sends one
+      // and still recorded the conditions it started under. Reading on
+      // every ending is what makes those visible.
+      if (zorpRunning) {
+        zorpRunning = false;
+        void showZorpLedger().then(() => zorpView.close());
+      }
       finishTurn();
       break;
   }
@@ -903,6 +1114,10 @@ function setTurnRunning(running: boolean): void {
   // A second panel while one is running would be refused by the server
   // anyway; disabling it says so before the click rather than after.
   dom.reviewPanel.disabled = running;
+  // Same for an attempt, which occupies the session the same way. The
+  // toggle stays live so the form can be read while something runs; only
+  // the control that would start a second one goes down.
+  dom.zorpRun.disabled = running;
   dom.composer.classList.toggle("is-busy", running);
   if (running) {
     turnStopped = false;

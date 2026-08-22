@@ -13,6 +13,19 @@ use zorp_track::prereg::{get_preregistration, write_prereg, ThresholdDirection};
 use zorp_track::track::TrackStatus;
 use zorp_track::Project;
 
+/// What the model is told before it works one pre-registered attempt.
+///
+/// Lives here rather than in the CLI because the CLI is no longer the
+/// only caller. `zorp-web` runs the same attempt from the browser, and
+/// two copies of this string would drift into two different experiments
+/// wearing one name.
+pub const SYSTEM_PREAMBLE: &str = "\
+You are running one staged attempt on a hypothesis that has already been \
+pre-registered: a metric name and a kill threshold were committed before \
+this attempt started and cannot be changed by you. Work the problem, then \
+report the metric's actual value honestly, even if it misses the \
+threshold.";
+
 const TASK_PROMPT_PREFIX: &str = "\
 Work the following hypothesis using whatever tools are available to you. \
 When you're done, report the value of the metric named '";
@@ -278,7 +291,13 @@ pub enum ForecastOutcome {
 /// is what makes the record worth reading.
 pub const FORECAST_ENV: &str = "ZORP_FORECAST";
 
-fn forecasting_enabled() -> bool {
+/// Whether `ZORP_FORECAST` is set to something that means on.
+///
+/// Public so a caller that is not the CLI, such as `zorp-web`, can say
+/// what the record is about to get without guessing at the spelling.
+/// One definition of "on", so a browser cannot report a forecast the
+/// run will not make.
+pub fn forecasting_enabled() -> bool {
     matches!(
         std::env::var(FORECAST_ENV).ok().as_deref(),
         Some("1") | Some("true")

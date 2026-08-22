@@ -1615,6 +1615,215 @@ button {
   color: var(--text-faint);
 }
 
+/* ----------------------------------------------------------------- zorp mode */
+
+/* The form that launches one pre-registered attempt, and the block that
+   shows what it recorded.
+
+   Two display rules here are load bearing rather than decorative. A killed
+   track is marked as well as worded, because it is the single most
+   consequential thing this view says and it must not read as one line among
+   several. And the recorded rows are set in the monospace face, because they
+   are values off a run record and should not look like prose the page wrote. */
+
+.zorp-panel {
+  max-width: var(--reading);
+  margin: 10px auto 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+
+.zorp-panel[hidden] {
+  display: none;
+}
+
+.zorp-panel-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.zorp-panel-lead,
+.zorp-panel-status,
+.zorp-note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.zorp-panel-status {
+  color: var(--text-faint);
+}
+
+.zorp-note {
+  color: var(--text-faint);
+}
+
+.zorp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.zorp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.zorp-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.zorp-field textarea,
+.zorp-field input,
+.zorp-field select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+
+.zorp-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.card-zorp {
+  border-color: var(--line);
+}
+
+.zorp-summary {
+  padding-left: 0;
+}
+
+.zorp-verdict {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* A track the record now calls dead is marked, not only worded. */
+.zorp-summary[data-approved="false"] {
+  border-left: 2px solid var(--warn-line);
+  padding-left: 11px;
+}
+
+.zorp-summary[data-approved="false"] .zorp-verdict {
+  color: var(--warn);
+}
+
+.zorp-track {
+  margin: 4px 0 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.zorp-ledger {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.zorp-ledger-head {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.zorp-ledger-empty,
+.zorp-forecast,
+.zorp-none {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.zorp-experiments {
+  margin: 0;
+  padding: 0 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.zorp-experiment-id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.zorp-experiment-status {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.zorp-experiment[data-status="failed"] .zorp-experiment-status,
+.zorp-experiment[data-status="killed"] .zorp-experiment-status {
+  color: var(--warn);
+}
+
+.zorp-section {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.zorp-conditions,
+.zorp-expectations,
+.zorp-metrics {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.zorp-condition,
+.zorp-expectation,
+.zorp-metric {
+  display: grid;
+  grid-template-columns: minmax(8rem, auto) 1fr;
+  gap: 2px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.zorp-key {
+  color: var(--text-dim);
+}
+
+.zorp-value {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.zorp-interval {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 /* ---------------------------------------------------------------- scrollbars */
 
 .scroller::-webkit-scrollbar,

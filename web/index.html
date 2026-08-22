@@ -285,7 +285,93 @@
           <button class="composer-action-btn" id="review-panel" type="button">
             Review what you typed with a panel of reviewers
           </button>
+          <!--
+            Zorp mode: one pre-registered investigate attempt, launched by
+            a person. There is no aryabhatta engine behind this button.
+            aryabhatta is a record plus readers and ships no command;
+            investigate is what writes to it, so this runs one attempt and
+            then shows what landed.
+
+            A button, for the same reason the one above it is a button,
+            and a sharper one: an attempt writes to a pre-registered
+            evidence record, so a model that could start one could feed
+            the record it is later read against.
+          -->
+          <button
+            class="composer-action-btn"
+            id="zorp-mode"
+            type="button"
+            aria-expanded="false"
+            aria-controls="zorp-panel"
+          >
+            Zorp mode
+          </button>
         </div>
+
+        <!--
+          The Zorp mode form. Hidden until the button above opens it, and
+          outside the composer form so the composer keeps its one control.
+
+          The pre-registration is three fields and they are required
+          together on a question's first attempt: the metric, the value
+          that kills the track, and which side of it kills. There is no
+          way to run an attempt without them, because an attempt with no
+          commitment recorded before it is not evidence of anything.
+        -->
+        <section class="zorp-panel" id="zorp-panel" aria-labelledby="zorp-panel-title" hidden>
+          <h2 class="zorp-panel-title" id="zorp-panel-title">Zorp mode</h2>
+          <p class="zorp-panel-lead">
+            One pre-registered attempt on a question. The metric and the kill
+            threshold are committed before the work starts and the model
+            cannot change them. What the attempt ran under is recorded in the
+            aryabhatta ledger, and shown here when it ends.
+          </p>
+          <p class="zorp-panel-status" id="zorp-status"></p>
+
+          <form class="zorp-form" id="zorp-form">
+            <label class="zorp-field" for="zorp-question">
+              <span class="zorp-label">Question</span>
+              <textarea
+                id="zorp-question"
+                rows="2"
+                placeholder="does caching cut median latency"
+              ></textarea>
+            </label>
+
+            <label class="zorp-field" for="zorp-metric">
+              <span class="zorp-label">Metric name</span>
+              <input id="zorp-metric" type="text" placeholder="latency_ms" />
+            </label>
+
+            <label class="zorp-field" for="zorp-threshold">
+              <span class="zorp-label">Kill threshold</span>
+              <input id="zorp-threshold" type="number" step="any" placeholder="100" />
+            </label>
+
+            <label class="zorp-field" for="zorp-direction">
+              <span class="zorp-label">Which side kills</span>
+              <select id="zorp-direction">
+                <option value="lower-is-better">lower is better</option>
+                <option value="higher-is-better">higher is better</option>
+              </select>
+            </label>
+
+            <p class="zorp-note">
+              Leave the three pre-registration fields empty to reuse the one
+              already recorded for this question. On the first attempt they are
+              required, and after that they have to match.
+            </p>
+            <p class="zorp-note">
+              Checkpoints are auto-approved from the browser, because there is
+              no terminal here to ask. The pre-registered kill threshold is
+              still enforced in code and auto-approve cannot wave it through.
+            </p>
+
+            <div class="zorp-actions">
+              <button class="btn btn-allow" id="zorp-run" type="submit">Run one attempt</button>
+            </div>
+          </form>
+        </section>
       </main>
 
       <!--

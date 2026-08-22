@@ -904,14 +904,6 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
 }
 
 #[cfg(feature = "research")]
-const INVESTIGATE_SYSTEM_PREAMBLE: &str = "\
-You are running one staged attempt on a hypothesis that has already been \
-pre-registered: a metric name and a kill threshold were committed before \
-this attempt started and cannot be changed by you. Work the problem, then \
-report the metric's actual value honestly, even if it misses the \
-threshold.";
-
-#[cfg(feature = "research")]
 fn investigate(
     question: &str,
     metric_name: Option<String>,
@@ -939,7 +931,7 @@ fn investigate(
         auto_approve,
     );
     let merged = user_flavor.clone().merge(project_flavor);
-    let mut system = INVESTIGATE_SYSTEM_PREAMBLE.to_string();
+    let mut system = zorp_agent::investigate::SYSTEM_PREAMBLE.to_string();
     system.push_str("\n\n");
     system.push_str(&compose_system_with_persona(
         &cwd,

@@ -59,6 +59,11 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "reviewer_failed":
     case "panel_done":
       return true;
+    // The same for a Zorp mode attempt's closing frame. It is a reader
+    // visible block, so anything that was streaming before it is
+    // finished rather than continued underneath it.
+    case "investigate_done":
+      return true;
     default: {
       // A new event type has to make this decision on purpose.
       const unreachable: never = type;
