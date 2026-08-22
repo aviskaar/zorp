@@ -395,6 +395,34 @@ button {
   display: none;
 }
 
+/*
+ * The web search indicator. Quiet, like the meter: it is a statement of fact
+ * about the build, not a thing to act on. It is only ever on screen when the
+ * server has said the tool is really there, so its absence is the normal
+ * case and carries no styling at all.
+ */
+.search-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* Same trap as `.context-meter[hidden]` above: `display: inline-flex`
+   outranks the user agent's `[hidden] { display: none }`, and here the cost
+   of getting it wrong is a pill claiming this agent can search the web in a
+   build where it cannot. */
+.search-indicator[hidden] {
+  display: none;
+}
+
 .context-bar {
   display: block;
   width: 34px;

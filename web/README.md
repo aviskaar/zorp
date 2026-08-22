@@ -128,6 +128,7 @@ is agent driven shell access to the machine it runs on.
 | `src/api.ts` | Typed client for every endpoint, plus `streamEvents` over `EventSource`. Exports the event union |
 | `src/main.ts` | The UI. Message list, composer, sidebar, activity lines, approval cards |
 | `src/context-meter.ts` | The context meter's wording and thresholds. Pure, so the honesty rules are testable |
+| `src/search-indicator.ts` | The web search pill. Draws what the server reported and never a guess |
 | `styles.css` | One hand written stylesheet. No framework |
 | `index.html` | The shell, and the config block for `ZORP_API_BASE` |
 
@@ -184,6 +185,23 @@ first. A replay that ends in `done` describes a turn that already finished, so
 it is discarded because the stored transcript covers it. A replay that does not
 end in `done` is a turn still in flight, so it is rendered and the UI joins it.
 That is what lets you reload the page mid turn and keep watching.
+
+### The web search indicator
+
+`web_search` is the only tool that sends anything off the machine, and it is
+off in a default build. Three things have to hold for it to exist: the server
+has to be built with the `search` feature (`cargo run -p zorp-web --features
+search`), the policy has to permit the tool, and `ZORP_TAVILY_API_KEY` has to
+be set where the server can see it.
+
+The page can see none of the three, so it asks. `GET /api/capabilities`
+answers `{"web_search": {"available": bool, "detail": string}}`, read once on
+connect, and the pill appears in the topbar only when the answer is yes. The
+detail is the tooltip, and it names the missing feature or the missing
+variable when the answer is no.
+
+It is a report and not a switch. Nothing in the page can turn search on,
+because none of the three conditions is something a page gets to decide.
 
 ### Rendering and escaping
 

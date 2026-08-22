@@ -12,6 +12,11 @@ import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { copyButton } from "./copy-response";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
+import {
+  renderSearchIndicator,
+  searchIndicatorView,
+  type SearchIndicatorView,
+} from "./search-indicator";
 import { setSendControl } from "./send-control";
 import { PanelView } from "./panel-view";
 import { sessionFromSearch, searchForSession } from "./session-url";
@@ -29,6 +34,7 @@ import {
   approve,
   getAutoApprove,
   setAutoApprove,
+  getCapabilities,
   getSession,
   getSettings,
   listModels,
@@ -173,6 +179,7 @@ let spinnerTimer: number | null = null;
 let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
 const approvalMode: AutoApproveView = autoApproveView(document);
+const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
 /**
  * Whether this session has stood its approvals down.
  *
@@ -215,6 +222,7 @@ async function connectOrExplain(): Promise<void> {
     setStatus("idle", "idle");
     void refreshSessions().then(restoreSessionFromUrl);
     void refreshSettingsBadge();
+    void refreshCapabilities();
     dom.input.focus();
     return;
   }
@@ -1469,6 +1477,24 @@ async function openSettings(): Promise<void> {
 
 function closeSettings(): void {
   dom.settingsOverlay.hidden = true;
+}
+
+/**
+ * Ask the server what this build can do, and draw it.
+ *
+ * Once, on connect. The answer depends on how the server was compiled and on
+ * its environment, neither of which changes while the page is open, so
+ * polling it would be asking the same question forever. A failure leaves the
+ * indicator where it started, which is away: a capability that could not be
+ * confirmed is not one to advertise.
+ */
+async function refreshCapabilities(): Promise<void> {
+  try {
+    const capabilities = await getCapabilities();
+    renderSearchIndicator(searchIndicator, capabilities.web_search);
+  } catch {
+    renderSearchIndicator(searchIndicator, null);
+  }
 }
 
 /** Refresh just the topbar badge and composer banner, without opening the panel. */

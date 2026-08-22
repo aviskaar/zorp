@@ -495,13 +495,8 @@ impl Agent {
         // above all, then fail with their own gate message.
         #[cfg(feature = "search")]
         if allow("web_search") {
-            match zorp_search::TavilyProvider::from_env() {
-                Ok(provider) => {
-                    self.registry
-                        .register(Box::new(crate::search_tool::WebSearch::new(Box::new(
-                            provider,
-                        ))))
-                }
+            match web_search_tool() {
+                Ok(tool) => self.registry.register(Box::new(tool)),
                 Err(e) => eprintln!("zorp-agent: web_search unavailable: {e}"),
             }
         }
@@ -1044,6 +1039,82 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
     }
 }
 
+/// Build the `web_search` built-in from the environment, or say why it
+/// cannot exist.
+///
+/// One function so that registering the tool and answering whether the tool
+/// is there can never drift apart. `web_search_availability` below is the
+/// same question asked without keeping the answer.
+#[cfg(feature = "search")]
+fn web_search_tool() -> Result<crate::search_tool::WebSearch, String> {
+    zorp_search::TavilyProvider::from_env()
+        .map(|provider| crate::search_tool::WebSearch::new(Box::new(provider)))
+        .map_err(|e| e.to_string())
+}
+
+/// Whether a tool is there, and when it is not, why not.
+///
+/// `detail` is written for a person reading a tooltip or a `curl`, so it
+/// carries the provider's own words for a missing key rather than a code.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolAvailability {
+    pub available: bool,
+    pub detail: String,
+}
+
+impl ToolAvailability {
+    /// Only reachable in a build that has the tool to be available.
+    #[cfg(feature = "search")]
+    fn yes(detail: impl Into<String>) -> ToolAvailability {
+        ToolAvailability {
+            available: true,
+            detail: detail.into(),
+        }
+    }
+
+    fn no(detail: impl Into<String>) -> ToolAvailability {
+        ToolAvailability {
+            available: false,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Whether the `web_search` built-in is actually available to an agent
+/// running under `policy`, right now.
+///
+/// Three separate things have to hold, and a caller that checked only the
+/// first would be wrong most of the time. The crate has to have been built
+/// with the `search` feature, which is not on by default. The policy has to
+/// permit the tool. And the provider has to find its key, which is read from
+/// the environment every time rather than cached, so a server started
+/// without one does not have to be restarted to notice it.
+///
+/// It reports that the tool is there, not that searching will work. Whether
+/// the key is one Tavily accepts is only knowable by spending a search, and
+/// this question gets asked on page loads.
+pub fn web_search_availability(policy: &Policy) -> ToolAvailability {
+    let call = crate::model::ToolCall {
+        id: String::new(),
+        name: "web_search".to_string(),
+        arguments: serde_json::json!({}),
+    };
+    if let Decision::Deny(reason) = policy.decide(&call) {
+        return ToolAvailability::no(format!("the policy refuses web_search: {reason}"));
+    }
+    #[cfg(feature = "search")]
+    match web_search_tool() {
+        Ok(_) => ToolAvailability::yes(
+            "web_search is registered, and every search asks before it leaves this machine.",
+        ),
+        Err(e) => ToolAvailability::no(e),
+    }
+    #[cfg(not(feature = "search"))]
+    ToolAvailability::no(
+        "this zorp-agent was built without the search feature, so web_search is not compiled in.",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1153,6 +1224,44 @@ mod tests {
 
     fn agent(model: Scripted) -> Agent {
         configured_agent(model, ApprovalMode::NonInteractive)
+    }
+
+    /// The availability answer and the two gates it reports on have to
+    /// agree, in whichever build this test is compiled into.
+    ///
+    /// This is the test that makes the answer worth trusting. Anything that
+    /// re-derived the conditions by hand would be right on the day it was
+    /// written and wrong the first time registration changed, and the failure
+    /// would be silent: a browser saying search is off while the agent
+    /// happily searches, or the reverse. So the assertion is against
+    /// `tool_names()`, which is registration itself, and against the real
+    /// `Policy`, rather than against a copy of either one's reasoning.
+    #[test]
+    fn web_search_availability_agrees_with_the_gates_it_reports_on() {
+        let names = agent(Scripted::new(vec![]))
+            .register_builtins_filtered(None)
+            .tool_names();
+        let registered = names.iter().any(|name| name == "web_search");
+        let permitted = !matches!(
+            Policy::default().decide(&crate::model::ToolCall {
+                id: String::new(),
+                name: "web_search".to_string(),
+                arguments: json!({}),
+            }),
+            Decision::Deny(_)
+        );
+
+        let reported = web_search_availability(&Policy::default());
+
+        assert_eq!(
+            reported.available,
+            registered && permitted,
+            "registered {registered}, permitted {permitted}, reported {reported:?}"
+        );
+        assert!(
+            !reported.detail.trim().is_empty(),
+            "an answer with no reason is not worth showing anyone"
+        );
     }
 
     /// An endpoint that answers slowly and at length, over a real socket.

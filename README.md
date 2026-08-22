@@ -363,6 +363,20 @@ your question to a third party, and `--yes` answers that ask. A project
 flavor can withhold it entirely by leaving `web_search` out of
 `[tools] enabled`.
 
+The browser gets the same tool the same way, from `zorp-web`'s own opt-in
+`search` feature:
+
+```bash
+export ZORP_TAVILY_API_KEY="tvly-..."
+cargo run -p zorp-web --features search
+```
+
+Off by default there too, for the same reason: starting a local web UI
+should not acquire an egress path by side effect. A pill in the topbar
+says when the tool is really there, and it is the server that decides
+that, not the page. `GET /api/capabilities` reports it, and the answer
+covers all three conditions: the feature, the policy, and the key.
+
 Tavily is the first provider behind a small `SearchProvider` trait in the
 `zorp-search` crate; the API key is read from the environment and never
 from a manifest. See
