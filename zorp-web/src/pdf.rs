@@ -1,4 +1,11 @@
-//! Pulling readable text out of a PDF, as markdown.
+//! Recognising a PDF, and pulling readable text out of one, as markdown.
+//!
+//! The text is the fallback now rather than the only answer. A PDF that the
+//! browser has a viewer for is sent to that viewer as a PDF, which is what
+//! somebody opening the pane on a paper was after. What is here is for the
+//! two cases where that cannot happen: the browser has no viewer, and the
+//! file is not really a PDF at all. Both end with words on the screen rather
+//! than an empty pane, which is the whole job of this module.
 //!
 //! A PDF is not a document in the sense the office formats are. It is a
 //! program that places glyphs at coordinates, and the closest thing to a
@@ -27,6 +34,28 @@ impl std::fmt::Display for Unreadable {
 }
 
 impl std::error::Error for Unreadable {}
+
+/// How far in the header may sit. Readers tolerate junk before `%PDF-`, and
+/// so does this, up to the same sort of distance they do. A file with a
+/// megabyte of something else in front of the header is not a PDF anybody
+/// meant to write.
+const HEADER_WINDOW: usize = 1024;
+
+/// Whether these bytes are a PDF worth handing to a browser's viewer.
+///
+/// A name is not a format. A model writes `report.pdf` and puts markdown in
+/// it often enough that the pane has to cope, and what a viewer does with a
+/// file that is not a PDF is show a broken-document icon, which is exactly
+/// the thing this whole change was about. So the header is checked before the
+/// bytes go out, and a file that fails is read for its text instead.
+///
+/// The check is the header and nothing more. Whether the rest of the file is
+/// well formed is the viewer's problem, and pretending to answer it here
+/// would mean parsing the file twice.
+pub fn looks_like_pdf(bytes: &[u8]) -> bool {
+    let window = &bytes[..bytes.len().min(HEADER_WINDOW)];
+    window.windows(5).any(|candidate| candidate == b"%PDF-")
+}
 
 /// Turn one PDF into the markdown the pane renders.
 ///
@@ -176,6 +205,26 @@ mod tests {
         let clean = tidy(raw);
 
         assert_eq!(clean, "Findings\n\nLatency fell.\n\nNext page.");
+    }
+
+    /// The gate in front of the browser's viewer. A real PDF goes to it, and
+    /// a file that only has the name goes to the reader above instead, so the
+    /// pane shows words rather than a broken-document icon.
+    #[test]
+    fn a_pdf_is_recognised_by_its_header_and_not_by_its_name() {
+        assert!(looks_like_pdf(&pdf("BT ET")));
+        // Readers tolerate junk in front of the header, so this does too.
+        let mut offset = vec![b'\n'; 200];
+        offset.extend_from_slice(&pdf("BT ET"));
+        assert!(looks_like_pdf(&offset));
+
+        assert!(!looks_like_pdf(b"# Findings\n\nLatency fell."));
+        assert!(!looks_like_pdf(b""));
+        assert!(!looks_like_pdf(b"%PDF"), "a truncated header is not one");
+        // Past the window it is not a header any more, it is a coincidence.
+        let mut buried = vec![b' '; 4096];
+        buried.extend_from_slice(b"%PDF-1.4");
+        assert!(!looks_like_pdf(&buried));
     }
 
     /// A PDF with only whitespace in it has no text in it either. The check

@@ -38,12 +38,9 @@ const SKIP_DIRS: [&str; 4] = ["target", "node_modules", ".git", "dist"];
 /// The split that matters is `Sandboxed`. An SVG and an HTML file are both
 /// documents a browser will happily execute things inside, so they only ever
 /// appear in the pane's sandboxed iframe, never in the page's own DOM.
-/// Everything else is either inert bytes (`Image`) or text that goes through
-/// the markdown renderer, which builds DOM nodes and never assembles markup.
-///
-/// A PDF used to be on that list and is not any more. It is now read on the
-/// server for the text in it, which is both what somebody opening the pane
-/// wanted and one fewer file type this server asks a browser to interpret.
+/// Everything else is either inert bytes (`Image`), text that goes through
+/// the markdown renderer, which builds DOM nodes and never assembles markup,
+/// or a `Pdf`, which the browser's own viewer draws in a frame of its own.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum Served {
     /// Served as text and rendered by the page.
@@ -52,8 +49,34 @@ pub enum Served {
     Image,
     /// Served as its own type and shown only inside the sandboxed iframe.
     Sandboxed,
+    /// Handed to the browser's own PDF viewer, in the pane's PDF frame.
+    ///
+    /// This is a third framed type and not a third `Sandboxed` one, because
+    /// the two go out under different headers and the difference is the whole
+    /// point. See `crate::api::read_artifact` for the header, and
+    /// `crate::pdf` for the text this falls back to.
+    Pdf,
     /// Extracted to markdown on the server, then served and rendered as text.
     Document(Extraction),
+}
+
+/// What one response carries. Not the same question as what the file is.
+///
+/// A PDF on disk is one file and two possible responses: the bytes, for the
+/// browser's viewer, or the text read out of them, for when there is no
+/// viewer to give them to. `served_as` answers what the file is;
+/// `response_type` needs both that and this to answer what the response is.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum Form {
+    /// The file as it sits on disk, under its own type.
+    Bytes,
+    /// The readable text in it, as markdown for the page's own renderer.
+    Markdown,
+    /// The readable text in it, as plain text for a browser to lay out
+    /// itself. This is the fallback that lands inside the PDF frame, where
+    /// nothing of ours is rendering and `text/markdown` would be offered as a
+    /// download rather than shown.
+    PlainText,
 }
 
 /// Which reader turns a document into the markdown that goes on the wire.
@@ -82,13 +105,15 @@ pub fn served_as(path: &Path) -> Option<Served> {
     match ext.as_str() {
         "md" | "markdown" | "txt" | "text" | "json" | "csv" => Some(Served::Text),
         "png" | "jpg" | "jpeg" | "gif" | "webp" => Some(Served::Image),
-        // Read on the server for the text in it, like an office file. It
-        // used to be sandboxed, on the theory that the browser's own viewer
-        // would render it in the iframe, and that theory was wrong: a bare
-        // `sandbox` CSP is an opaque origin with no scripting and no viewer
-        // starts under one, so the pane showed a broken-document icon. See
-        // `crate::pdf`.
-        "pdf" => Some(Served::Document(Extraction::Pdf)),
+        // Sent as itself, for the browser's own viewer to draw. An earlier
+        // attempt at this pointed the pane's existing iframe at the file and
+        // got a broken-document icon on grey, because that response carries a
+        // bare `sandbox` CSP and no viewer starts in an opaque origin with
+        // scripting off. The answer is not to stop sending the file, it is to
+        // send one `allow-scripts` with it; `crate::api::read_artifact` has
+        // the header and what was measured. The text is still read out of it
+        // by `crate::pdf` when there is no viewer to hand it to.
+        "pdf" => Some(Served::Pdf),
         // These two execute. They are on the list because a run that draws a
         // chart or writes a report page has nowhere else to put it, and they
         // are safe only because the response headers below put them in a
@@ -98,16 +123,31 @@ pub fn served_as(path: &Path) -> Option<Served> {
     }
 }
 
-/// What a given extension is served as.
+/// The `Content-Type` of one response, given the file and what the response
+/// was asked to carry.
 ///
-/// Never sniffed, and never a fallback: a type this table does not name is
+/// Two arguments rather than one, because the file's type and the response's
+/// type stopped being the same question when a PDF got two answers. Reading
+/// the type off the extension alone is how a response full of extracted text
+/// ends up labelled `application/pdf`.
+///
+/// Never sniffed, and never a fallback: a type `served_as` does not name is
 /// refused rather than guessed at. `.svg` gets `image/svg+xml` and `.html`
 /// gets `text/html` because that is what they are; the sandbox header on the
 /// response, not a mislabelled type, is what keeps them harmless.
-pub fn content_type(path: &Path) -> Option<&'static str> {
-    match served_as(path)? {
+pub fn response_type(path: &Path, form: Form) -> Option<&'static str> {
+    let served = served_as(path)?;
+    match form {
+        Form::Markdown => return Some("text/markdown; charset=utf-8"),
+        Form::PlainText => return Some("text/plain; charset=utf-8"),
+        Form::Bytes => {}
+    }
+    match served {
+        // An office file has no `Bytes` form the pane will ask for: the
+        // archive is never what somebody opening the pane wanted.
         Served::Document(_) => Some("text/markdown; charset=utf-8"),
         Served::Text => Some("text/plain; charset=utf-8"),
+        Served::Pdf => Some("application/pdf"),
         Served::Image | Served::Sandboxed => {
             let ext = path.extension()?.to_str()?.to_ascii_lowercase();
             match ext.as_str() {
@@ -120,6 +160,19 @@ pub fn content_type(path: &Path) -> Option<&'static str> {
                 _ => None,
             }
         }
+    }
+}
+
+/// The reader that turns this file into text, when there is one.
+///
+/// Separate from `served_as` because they answer different questions now. A
+/// PDF is shown as a PDF and read for its text; an office file is only ever
+/// read for its text; an image is neither.
+pub fn extraction(path: &Path) -> Option<Extraction> {
+    match served_as(path)? {
+        Served::Document(kind) => Some(kind),
+        Served::Pdf => Some(Extraction::Pdf),
+        _ => None,
     }
 }
 
@@ -162,7 +215,7 @@ pub fn resolve(root: &Path, requested: &str) -> Result<PathBuf, Refusal> {
     if !full.is_file() {
         return Err(Refusal::Missing);
     }
-    if content_type(&full).is_none() {
+    if served_as(&full).is_none() {
         return Err(Refusal::UnsupportedType);
     }
     Ok(full)
@@ -244,7 +297,7 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<Entry>, truncated: 
             walk(root, &path, depth + 1, out, truncated);
             continue;
         }
-        if content_type(&path).is_none() {
+        if served_as(&path).is_none() {
             continue;
         }
         let metadata = entry.metadata().ok();
@@ -324,9 +377,12 @@ mod tests {
         let root = dir.path().join("workspace");
         std::fs::write(root.join("thing.env"), "TOKEN=x").unwrap();
         assert_eq!(resolve(&root, "thing.env"), Err(Refusal::UnsupportedType));
-        assert!(content_type(Path::new("x.exe")).is_none());
-        assert!(content_type(Path::new("x.xhtml")).is_none());
-        assert!(content_type(Path::new("noextension")).is_none());
+        assert!(response_type(Path::new("x.exe"), Form::Bytes).is_none());
+        assert!(response_type(Path::new("x.xhtml"), Form::Bytes).is_none());
+        assert!(response_type(Path::new("noextension"), Form::Bytes).is_none());
+        // Asking for the text of a type this endpoint will not serve does not
+        // conjure one up. The file has to be servable first.
+        assert!(response_type(Path::new("x.exe"), Form::Markdown).is_none());
     }
 
     /// The one type that must never be guessed at. `.svg` is an XML document
@@ -334,9 +390,12 @@ mod tests {
     /// as text the page might inline, is the whole hole.
     #[test]
     fn svg_and_html_are_served_as_themselves_and_only_from_the_iframe() {
-        assert_eq!(content_type(Path::new("d.svg")), Some("image/svg+xml"));
         assert_eq!(
-            content_type(Path::new("r.html")),
+            response_type(Path::new("d.svg"), Form::Bytes),
+            Some("image/svg+xml")
+        );
+        assert_eq!(
+            response_type(Path::new("r.html"), Form::Bytes),
             Some("text/html; charset=utf-8")
         );
         // These two are what the pane keys on when it decides between the
@@ -348,50 +407,100 @@ mod tests {
         assert_eq!(served_as(Path::new("p.png")), Some(Served::Image));
     }
 
-    /// A PDF is read for its text on the server, like the office formats, and
-    /// the browser never sees the file itself.
-    ///
-    /// It used to be `Sandboxed`, on the theory that the browser's own viewer
-    /// would render it inside the iframe. It does not: a bare `sandbox` CSP
-    /// gives the document an opaque origin with no scripting, and Chrome's
-    /// viewer cannot start under that, so the pane showed a broken-document
-    /// icon. Extracting the text is what "show me the file" actually needed,
-    /// and it takes the one remaining non-executable type off the list of
-    /// things this server hands a browser to interpret.
+    /// A PDF goes to the browser as a PDF, so the viewer has something to
+    /// open. The text read out of it is still there, under `Form::Markdown`,
+    /// and that is what the pane asks for when the browser has no viewer.
     #[test]
-    fn a_pdf_is_extracted_to_markdown_rather_than_handed_to_the_browser() {
+    fn a_pdf_is_served_as_a_pdf_and_can_still_be_read_for_its_text() {
+        assert_eq!(served_as(Path::new("paper.pdf")), Some(Served::Pdf));
+        assert_eq!(served_as(Path::new("paper.PDF")), Some(Served::Pdf));
         assert_eq!(
-            served_as(Path::new("paper.pdf")),
-            Some(Served::Document(Extraction::Pdf))
+            response_type(Path::new("paper.pdf"), Form::Bytes),
+            Some("application/pdf")
         );
         assert_eq!(
-            content_type(Path::new("paper.pdf")),
+            response_type(Path::new("paper.pdf"), Form::Markdown),
             Some("text/markdown; charset=utf-8")
         );
-        assert_ne!(served_as(Path::new("paper.PDF")), Some(Served::Sandboxed));
+        assert_eq!(
+            response_type(Path::new("paper.pdf"), Form::PlainText),
+            Some("text/plain; charset=utf-8")
+        );
+        assert_eq!(extraction(Path::new("paper.pdf")), Some(Extraction::Pdf));
     }
 
-    /// The two types that are still sandboxed are the two that execute, and
+    /// The two types that are `Sandboxed` are the two that execute, and
     /// nothing else may join them by accident.
+    ///
+    /// A PDF is framed too now, and is deliberately not on this list. The
+    /// list is not "what goes in a frame", it is "what goes out under a bare
+    /// `Content-Security-Policy: sandbox`", which is a document with no
+    /// scripting at all. A PDF cannot be served that way, because the
+    /// browser's viewer is itself script and does not start in an opaque
+    /// origin with scripting off: that was measured, and it is what the old
+    /// broken-document icon was. So a PDF gets `sandbox allow-scripts`
+    /// instead, one token wider, and the two lists have to stay apart for the
+    /// difference to mean anything. `crate::api::read_artifact` sends both.
     #[test]
     fn only_the_formats_that_execute_are_sandboxed() {
-        let sandboxed: Vec<&str> = [
+        let all = [
             "a.md", "a.txt", "a.json", "a.csv", "a.png", "a.jpg", "a.gif", "a.webp", "a.pdf",
             "a.docx", "a.odt", "a.xlsx", "a.pptx", "a.svg", "a.html",
-        ]
-        .into_iter()
-        .filter(|name| served_as(Path::new(name)) == Some(Served::Sandboxed))
-        .collect();
+        ];
+        let sandboxed: Vec<&str> = all
+            .into_iter()
+            .filter(|name| served_as(Path::new(name)) == Some(Served::Sandboxed))
+            .collect();
         assert_eq!(sandboxed, ["a.svg", "a.html"]);
+
+        // And the whole set that reaches a frame, so adding a fourth is a
+        // decision somebody has to make here rather than notice later.
+        let framed: Vec<&str> = all
+            .into_iter()
+            .filter(|name| {
+                matches!(
+                    served_as(Path::new(name)),
+                    Some(Served::Sandboxed) | Some(Served::Pdf)
+                )
+            })
+            .collect();
+        assert_eq!(framed, ["a.pdf", "a.svg", "a.html"]);
     }
 
     #[test]
     fn images_are_served_with_their_own_type() {
-        assert_eq!(content_type(Path::new("a.png")), Some("image/png"));
-        assert_eq!(content_type(Path::new("a.JPG")), Some("image/jpeg"));
-        assert_eq!(content_type(Path::new("a.jpeg")), Some("image/jpeg"));
-        assert_eq!(content_type(Path::new("a.gif")), Some("image/gif"));
-        assert_eq!(content_type(Path::new("a.webp")), Some("image/webp"));
+        for (name, mime) in [
+            ("a.png", "image/png"),
+            ("a.JPG", "image/jpeg"),
+            ("a.jpeg", "image/jpeg"),
+            ("a.gif", "image/gif"),
+            ("a.webp", "image/webp"),
+        ] {
+            assert_eq!(response_type(Path::new(name), Form::Bytes), Some(mime));
+        }
+    }
+
+    /// The bug this whole split exists to stop: a response carrying extracted
+    /// text, labelled with the type of the file it was extracted from. An
+    /// `application/pdf` full of markdown is a broken viewer, and a
+    /// `text/markdown` full of PDF bytes is a page of mojibake.
+    #[test]
+    fn the_response_type_follows_what_the_response_carries_not_the_extension() {
+        assert_ne!(
+            response_type(Path::new("paper.pdf"), Form::Markdown),
+            Some("application/pdf"),
+            "extracted text was labelled as the file it came out of"
+        );
+        assert_ne!(
+            response_type(Path::new("paper.pdf"), Form::Bytes),
+            Some("text/markdown; charset=utf-8"),
+            "the file itself was labelled as the text in it"
+        );
+        // An image has no text form to ask for, but asking is not an error;
+        // it just means the caller gets told what it would be carrying.
+        assert_eq!(extraction(Path::new("shot.png")), None);
+        assert_eq!(extraction(Path::new("chart.svg")), None);
+        assert_eq!(extraction(Path::new("notes.md")), None);
     }
 
     /// Office files are extracted to markdown before they leave the server,
@@ -404,7 +513,7 @@ mod tests {
                 "{name} is not extracted"
             );
             assert_eq!(
-                content_type(Path::new(name)),
+                response_type(Path::new(name), Form::Bytes),
                 Some("text/markdown; charset=utf-8"),
                 "{name}"
             );

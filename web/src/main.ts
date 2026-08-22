@@ -184,6 +184,7 @@ interface Elements {
   artifactEmpty: HTMLElement;
   artifactDoc: HTMLElement;
   artifactFrame: HTMLIFrameElement;
+  artifactPdf: HTMLIFrameElement;
   artifactImage: HTMLImageElement;
 }
 
@@ -449,6 +450,7 @@ function collectElements(): Elements {
     artifactEmpty: byId<HTMLElement>("artifact-empty"),
     artifactDoc: byId<HTMLElement>("artifact-doc"),
     artifactFrame: byId<HTMLIFrameElement>("artifact-frame"),
+    artifactPdf: byId<HTMLIFrameElement>("artifact-pdf"),
     artifactImage: byId<HTMLImageElement>("artifact-image"),
     settingsResult: byId("settings-result"),
   };
@@ -2472,6 +2474,9 @@ const pane: Pane = {
   get frame() {
     return dom.artifactFrame;
   },
+  get pdf() {
+    return dom.artifactPdf;
+  },
   get image() {
     return dom.artifactImage;
   },
@@ -2728,6 +2733,8 @@ function setArtifactMessage(text: string): void {
   dom.artifactDoc.hidden = true;
   dom.artifactFrame.hidden = true;
   dom.artifactFrame.removeAttribute("src");
+  dom.artifactPdf.hidden = true;
+  dom.artifactPdf.removeAttribute("src");
   dom.artifactImage.hidden = true;
   dom.artifactImage.removeAttribute("src");
   dom.artifactEmpty.hidden = false;

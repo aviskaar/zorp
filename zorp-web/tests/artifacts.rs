@@ -81,7 +81,14 @@ struct ServedHeaders {
 
 async fn headers_of(url: String) -> ServedHeaders {
     tokio::task::spawn_blocking(move || {
-        let r = ureq::get(&url).call().unwrap();
+        // A refusal has headers worth checking too, and a `.pdf` that is not
+        // one comes back as 422. Reading them only on success would mean the
+        // cases most worth pinning are the ones this cannot look at.
+        let r = match ureq::get(&url).call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => panic!("{e}"),
+        };
         ServedHeaders {
             content_type: r.header("content-type").unwrap_or_default().to_string(),
             nosniff: r
@@ -160,13 +167,12 @@ async fn a_file_type_that_is_not_on_the_allowlist_is_refused() {
 
 /// A served file must not be able to act as a document in this origin. Both
 /// headers matter: `nosniff` stops the browser second-guessing the declared
-/// type, and a bare sandbox CSP stops a served document reaching the rest of
-/// the page.
+/// type, and the sandbox CSP stops a served document reaching the rest of the
+/// page.
 ///
-/// Every type, not one of them. The header is set once for the whole
-/// endpoint and that is the property worth pinning: the moment it becomes a
-/// per-type decision, a type that gets it wrong is a hole, and this test is
-/// what would notice.
+/// Every type, not one of them. It is a per-type decision now, which is
+/// exactly why the whole list is walked: the moment a type gets it wrong it
+/// is a hole, and this test is what would notice.
 #[tokio::test]
 async fn served_files_carry_the_headers_that_stop_them_becoming_active() {
     let ws = Workspace::new();
@@ -175,13 +181,7 @@ async fn served_files_carry_the_headers_that_stop_them_becoming_active() {
     std::fs::write(ws.root().join("shot.png"), b"\x89PNG\r\n\x1a\n").unwrap();
     let addr = spawn(&ws.root()).await;
 
-    for name in [
-        "notes.md",
-        "paper.pdf",
-        "chart.svg",
-        "report.html",
-        "shot.png",
-    ] {
+    for name in ["notes.md", "chart.svg", "report.html", "shot.png"] {
         let headers = headers_of(format!("http://{addr}/api/artifacts/raw?path={name}")).await;
         assert_eq!(headers.nosniff, "nosniff", "{name}");
         assert_eq!(
@@ -194,6 +194,38 @@ async fn served_files_carry_the_headers_that_stop_them_becoming_active() {
             headers.csp
         );
     }
+}
+
+/// The one exception, and the exact shape of it.
+///
+/// A PDF goes out under `sandbox allow-scripts`, because the browser's own
+/// viewer is a scripted document and does not start in an opaque origin with
+/// scripting off. That was the previous attempt's broken-document icon.
+/// `allow-scripts` is the only token added: `allow-same-origin` is what would
+/// hand the framed document this page's origin, and it is not there, so
+/// `parent.document` and `localStorage` still throw from inside the frame.
+///
+/// Asked for its text instead, the same file is text and goes back to the
+/// bare policy. A response that carries markdown has no viewer to start.
+#[tokio::test]
+async fn a_pdf_widens_the_sandbox_by_exactly_one_token_and_only_as_a_pdf() {
+    let ws = Workspace::new();
+    let addr = spawn(&ws.root()).await;
+
+    let framed = headers_of(format!("http://{addr}/api/artifacts/raw?path=paper.pdf")).await;
+    assert_eq!(framed.csp, "sandbox allow-scripts");
+    assert!(
+        !framed.csp.contains("allow-same-origin"),
+        "csp was {:?}, which gives the frame this page's origin",
+        framed.csp
+    );
+    assert_eq!(framed.nosniff, "nosniff");
+
+    let read = headers_of(format!(
+        "http://{addr}/api/artifacts/raw?path=paper.pdf&as=text"
+    ))
+    .await;
+    assert_eq!(read.csp, "sandbox");
 }
 
 /// The listing is what the pane's file list is built from. It finds the
@@ -439,13 +471,12 @@ fn pdf(content: &str) -> Vec<u8> {
     out
 }
 
-/// The file itself is never what goes on the wire. A PDF used to be handed to
-/// the browser as `application/pdf` for its own viewer to render inside the
-/// sandboxed iframe, and no viewer starts in a sandbox that strict, so the
-/// pane showed a broken-document icon. Now the text comes out on the server
-/// and the browser gets markdown, like a `.docx`.
+/// The file itself is what goes on the wire, so the browser's viewer has a
+/// PDF to open. This is the bug: the pane showed the words out of the file
+/// instead of the file, and a PDF that a run produced is meant to look like a
+/// PDF.
 #[tokio::test]
-async fn a_pdf_is_served_as_the_text_it_holds_and_not_as_a_pdf() {
+async fn a_pdf_is_served_as_a_pdf() {
     let ws = Workspace::new();
     std::fs::write(
         ws.root().join("report.pdf"),
@@ -456,6 +487,32 @@ async fn a_pdf_is_served_as_the_text_it_holds_and_not_as_a_pdf() {
     let addr = spawn(&ws.root()).await;
 
     let url = format!("http://{addr}/api/artifacts/raw?path=report.pdf");
+    let headers = headers_of(url.clone()).await;
+    assert_eq!(headers.content_type, "application/pdf");
+
+    let (status, body) = get_async(url).await;
+    assert_eq!(status, 200, "body: {body}");
+    assert!(
+        body.starts_with("%PDF-"),
+        "the bytes were not the file: {:?}",
+        &body[..body.len().min(40)]
+    );
+}
+
+/// The fallback, and the reason `crate::pdf` is still here. A browser with no
+/// PDF viewer asks for the words instead, and gets markdown, like a `.docx`.
+#[tokio::test]
+async fn the_same_pdf_asked_for_as_text_comes_back_as_the_words_in_it() {
+    let ws = Workspace::new();
+    std::fs::write(
+        ws.root().join("report.pdf"),
+        pdf("BT /F1 18 Tf 72 720 Td (Findings) Tj ET\n\
+             BT /F1 12 Tf 72 700 Td (Latency fell by 40 percent.) Tj ET"),
+    )
+    .unwrap();
+    let addr = spawn(&ws.root()).await;
+
+    let url = format!("http://{addr}/api/artifacts/raw?path=report.pdf&as=text");
     let headers = headers_of(url.clone()).await;
     assert_eq!(headers.content_type, "text/markdown; charset=utf-8");
 
@@ -469,18 +526,78 @@ async fn a_pdf_is_served_as_the_text_it_holds_and_not_as_a_pdf() {
     );
 }
 
-/// A model wrote this file, or downloaded it, so "it is not really a PDF" is
-/// an ordinary case. It gets a message, not a blank pane and not a 500.
+/// `as=text` is about documents with a reader behind them. On anything else
+/// it changes nothing, rather than turning a `.png` or a `.html` into some
+/// other kind of response.
 #[tokio::test]
-async fn a_pdf_that_is_not_a_pdf_is_refused_with_a_reason() {
+async fn asking_for_the_text_of_a_file_that_has_no_reader_changes_nothing() {
+    let ws = Workspace::new();
+    std::fs::write(ws.root().join("report.html"), "<html>hi</html>").unwrap();
+    let addr = spawn(&ws.root()).await;
+
+    for (name, mime) in [
+        ("notes.md", "text/plain; charset=utf-8"),
+        ("report.html", "text/html; charset=utf-8"),
+    ] {
+        let headers = headers_of(format!(
+            "http://{addr}/api/artifacts/raw?path={name}&as=text"
+        ))
+        .await;
+        assert_eq!(headers.content_type, mime, "{name}");
+        assert_eq!(headers.csp, "sandbox", "{name}");
+    }
+}
+
+/// A model wrote this file, or downloaded it, so "it is not really a PDF" is
+/// an ordinary case, and now it is one the viewer would draw a
+/// broken-document icon over. So the header is checked before the bytes go
+/// out and a file that fails it is read for its words instead. A message, not
+/// a blank pane and not a 500.
+#[tokio::test]
+async fn a_pdf_that_is_not_a_pdf_is_read_for_its_words_rather_than_framed() {
     let ws = Workspace::new();
     std::fs::write(ws.root().join("broken.pdf"), b"not a pdf at all").unwrap();
     let addr = spawn(&ws.root()).await;
 
-    let (status, body) =
-        get_async(format!("http://{addr}/api/artifacts/raw?path=broken.pdf")).await;
+    let url = format!("http://{addr}/api/artifacts/raw?path=broken.pdf");
+    let headers = headers_of(url.clone()).await;
+    assert_ne!(
+        headers.content_type, "application/pdf",
+        "a file with no PDF header was handed to the viewer anyway"
+    );
+    assert_eq!(
+        headers.csp, "sandbox",
+        "the sandbox was widened for something that is not a PDF"
+    );
+
+    let (status, body) = get_async(url).await;
     assert_eq!(status, 422, "body: {body}");
     assert!(body.contains("not a readable PDF"), "body: {body}");
+}
+
+/// The same gate, for a file that is not a PDF but does hold readable text.
+/// The pane shows the words inside the frame, so they go out as plain text: a
+/// browser handed `text/markdown` offers to save it instead of showing it.
+#[tokio::test]
+async fn a_pdf_header_missing_but_words_present_comes_back_as_plain_text() {
+    let ws = Workspace::new();
+    // A `.pdf` that is really markdown, which is what a model writes when it
+    // means to produce a PDF and does not.
+    std::fs::write(
+        ws.root().join("draft.pdf"),
+        b"# Findings\n\nLatency fell.\n",
+    )
+    .unwrap();
+    let addr = spawn(&ws.root()).await;
+
+    let url = format!("http://{addr}/api/artifacts/raw?path=draft.pdf");
+    let headers = headers_of(url.clone()).await;
+    assert_ne!(headers.content_type, "application/pdf");
+    // 422 with the reader's sentence is the honest answer for a file the
+    // reader cannot read, and either way the frame shows words.
+    let (status, body) = get_async(url).await;
+    assert!(status == 200 || status == 422, "{status}: {body}");
+    assert!(!body.is_empty(), "the frame would have been empty");
 }
 
 /* ------------------------------------------------------------------ */
