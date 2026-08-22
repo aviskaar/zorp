@@ -100,7 +100,14 @@ resulting artifact, deliver it in the right form.
   non-default `search` feature, which is the only built-in that sends
   anything over the network. `research` deliberately does not enable it;
   run `--features research,search` when you want it. The API key comes
-  from `ZORP_TAVILY_API_KEY` and never from a flavor manifest.
+  from `ZORP_TAVILY_API_KEY` and never from a flavor manifest. `zorp-web`
+  has its own opt-in `search` feature that turns the same built-in on for
+  the browser, off by default for the same reason, and it reports whether
+  the tool is really there at `GET /api/capabilities`. That answer is
+  observed rather than re-derived: `zorp_agent::web_search_availability`
+  shares one function with the registration site, and a test pins it to
+  `tool_names()`. See `docs/DECISIONS.md` (2026-08-21) before changing
+  either.
 - `zorp-skill/` is zorp's own skill capability: discovery and parsing
   for Claude Code compatible skills (`SKILL.md` in a directory, YAML
   frontmatter plus a markdown body). Like `zorp-search` it depends on no

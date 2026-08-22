@@ -105,6 +105,22 @@ export interface ConnectionTestResult {
   reason?: string;
 }
 
+/**
+ * Whether one tool is there, and when it is not, why not.
+ *
+ * `detail` is written for a person: it names the missing feature or the
+ * missing environment variable rather than a code.
+ */
+export interface ToolAvailability {
+  available: boolean;
+  detail: string;
+}
+
+/** What `GET /api/capabilities` answers with. */
+export interface Capabilities {
+  web_search: ToolAvailability;
+}
+
 /** The agent started work. Drives the in-progress indicator. */
 export interface WorkingEvent {
   seq: number;
@@ -551,6 +567,30 @@ export async function startPanel(
     }
     throw error;
   }
+}
+
+/**
+ * What this server can actually do, as opposed to what it was asked to do.
+ *
+ * Read from the server, never inferred here. Whether `web_search` exists
+ * depends on a compile-time feature, on the policy, and on a key in the
+ * server's environment, and a page can see none of the three.
+ *
+ * A server too old to know the route, or one answering something unexpected,
+ * comes back as unavailable rather than as an error: an indicator that
+ * cannot be shown is not worth an error card, and claiming a capability on a
+ * malformed answer is the one outcome to avoid.
+ */
+export async function getCapabilities(): Promise<Capabilities> {
+  const body = await request<Partial<Record<string, unknown>>>("GET", "/api/capabilities");
+  return { web_search: toolAvailability(body?.["web_search"]) };
+}
+
+function toolAvailability(value: unknown): ToolAvailability {
+  const record = (value ?? {}) as Record<string, unknown>;
+  const available = record["available"] === true;
+  const detail = typeof record["detail"] === "string" ? record["detail"] : "";
+  return { available, detail };
 }
 
 /** Read the effective model settings and where each field came from. */

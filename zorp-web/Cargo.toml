@@ -9,6 +9,15 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# The `web_search` built-in, and with it the only path out of this machine
+# that the browser agent has. Opt-in for the same reason it is opt-in on
+# `zorp-agent`: starting a local web UI should not acquire an egress path by
+# side effect. `GET /api/capabilities` reports whether it is actually there,
+# so the page never has to guess.
+search = ["zorp-agent/search"]
+
 [dependencies]
 zorp-agent = { path = "../zorp-agent" }
 axum = { workspace = true }

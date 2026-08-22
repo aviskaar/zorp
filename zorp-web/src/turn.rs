@@ -29,6 +29,24 @@ fn seed_transcript(store: &Store, session_id: &str, budget: &ContextBudget) -> S
     plan_seed(stored, system_prompt(), budget)
 }
 
+/// The policy every agent on this server runs under.
+///
+/// Same policy the agent already defaults to, plus the one thing only the
+/// server knows: its own port. Commands that call back into this server are
+/// denied, because one approved `run_command` is otherwise enough to stand
+/// the approval gate down and leave every later call unreviewed.
+///
+/// A function rather than a line inside `run_agent` because
+/// `GET /api/capabilities` has to answer questions about it, and an answer
+/// about a policy the turn does not use would be worse than no answer.
+pub fn policy(own_port: Option<u16>) -> zorp_agent::Policy {
+    let policy = zorp_agent::Policy::default();
+    match own_port {
+        Some(port) => policy.with_own_server(port),
+        None => policy,
+    }
+}
+
 /// The system prompt this server hands the agent.
 ///
 /// A function rather than a `use` at the call site so a test can assert on
@@ -258,13 +276,7 @@ fn run_agent(
     .register_builtins_filtered(None)
     .with_renderer(renderer);
 
-    // Same policy the agent already defaults to, plus the one thing only the
-    // server knows: its own port. Commands that call back into this server
-    // are denied, because one approved `run_command` is otherwise enough to
-    // stand the approval gate down and leave every later call unreviewed.
-    if let Some(port) = own_port {
-        agent = agent.with_policy(zorp_agent::Policy::default().with_own_server(port));
-    }
+    agent = agent.with_policy(policy(own_port));
 
     // The seed replaces the transcript wholesale, so it has to land before
     // the recorder: `with_message_records` sets how much the agent believes

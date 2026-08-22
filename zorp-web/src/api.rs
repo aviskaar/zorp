@@ -110,6 +110,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/panel", post(start_panel))
         .route("/api/panel/lenses", get(list_lenses))
+        .route("/api/capabilities", get(capabilities))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
         .route(
@@ -131,6 +132,33 @@ fn api_router(state: AppState) -> Router {
 
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"status": "ok"}))
+}
+
+/// What this build can actually do, for a page that cannot see the build.
+///
+/// One capability today: `web_search`. Three separate things decide whether
+/// that tool exists, and the browser can observe none of them. Whether
+/// `zorp-web` was compiled with the `search` feature is a fact about the
+/// binary. Whether the policy permits the tool is a fact about the code the
+/// binary runs. Whether the search provider found its key is a fact about
+/// the environment the server was started in, and it can change without a
+/// restart, so this is answered per request rather than at startup.
+///
+/// A separate route rather than another field on `/api/settings`, which is
+/// a PUT-able resource of things the user chose. Nothing here is choosable
+/// from the browser: it is read-only by nature, and putting it beside the
+/// settings would invite an attempt to set it.
+///
+/// The policy comes from `turn::policy`, the same call a real turn makes, so
+/// this reports on the policy the agent will actually run under.
+async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let web_search = zorp_agent::web_search_availability(&turn::policy(state.own_port));
+    Json(json!({
+        "web_search": {
+            "available": web_search.available,
+            "detail": web_search.detail,
+        }
+    }))
 }
 
 async fn create_session(State(state): State<AppState>) -> Json<serde_json::Value> {
