@@ -101,11 +101,29 @@ pub fn forecast_prompt(hypothesis: &str, metric_name: &str) -> String {
 /// backwards: a model that quotes the requested shape while explaining
 /// itself would otherwise have its example parsed as its answer.
 pub fn parse_forecast(text: &str) -> Result<Forecast, ForecastError> {
-    let block = fenced_blocks(text)
-        .pop()
-        .ok_or(ForecastError::NoFencedBlock)?;
+    let blocks = fenced_blocks(text);
+    let last = blocks.last().ok_or(ForecastError::NoFencedBlock)?;
+
+    // Backwards to the last block that is actually a forecast, rather than
+    // straight to the last block of any kind. A model that closes with an
+    // empty fence, or with its caveats in one, used to throw its own answer
+    // away: the empty body reached serde as "" and came back as "EOF while
+    // parsing a value at line 1 column 0". That was 11 of the 25 discarded
+    // attempts in the 60-directory registry run.
+    //
+    // This loosens which block is read and nothing else. `is_forecast_shaped`
+    // demands all four numbers be present and finite, so a block that only
+    // resembles a forecast is stepped over rather than repaired, and the one
+    // that is selected still faces every coherence check below. A forecast
+    // that cannot be read must never become one that was invented.
+    let block = blocks
+        .iter()
+        .rev()
+        .find(|b| is_forecast_shaped(b))
+        .unwrap_or(last);
+
     let value: serde_json::Value =
-        serde_json::from_str(&block).map_err(|e| ForecastError::InvalidJson(e.to_string()))?;
+        serde_json::from_str(block).map_err(|e| ForecastError::InvalidJson(e.to_string()))?;
 
     let number = |field: &'static str| -> Result<f64, ForecastError> {
         value
@@ -148,7 +166,36 @@ pub fn parse_forecast(text: &str) -> Result<Forecast, ForecastError> {
     })
 }
 
+/// Whether a block body is a forecast rather than prose, an empty fence,
+/// or some other JSON. All four numbers present and finite, which is the
+/// same bar `parse_forecast` applies; anything less is not a candidate.
+fn is_forecast_shaped(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    [
+        "expected_value",
+        "interval_low",
+        "interval_high",
+        "confidence",
+    ]
+    .iter()
+    .all(|field| {
+        value
+            .get(field)
+            .and_then(|v| v.as_f64())
+            .is_some_and(f64::is_finite)
+    })
+}
+
 /// Every fenced block body in `text`, in order.
+///
+/// A fence left open at end of input still yields its body. The model is
+/// asked for the forecast last, so a truncated answer loses its closing
+/// fence and nothing else, and dropping a body that parses because three
+/// backticks never arrived is throwing away the answer over punctuation.
+/// That was 8 of the 25 discarded attempts in the registry run, all of
+/// them reported as "no fenced json block in the forecast".
 fn fenced_blocks(text: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut inside: Option<Vec<&str>> = None;
@@ -163,6 +210,9 @@ fn fenced_blocks(text: &str) -> Vec<String> {
             (Some(body), false) => body.push(line),
             (None, false) => {}
         }
+    }
+    if let Some(body) = inside {
+        blocks.push(body.join("\n"));
     }
     blocks
 }
@@ -236,6 +286,74 @@ mod tests {
         );
 
         assert_eq!(parse_forecast(&text).unwrap().expected_value, 0.42);
+    }
+
+    /// The 11 EOF failures in the 60-directory registry run. `.pop()` took
+    /// the last block whatever it held, so one empty fence after the answer
+    /// threw the answer away and handed serde an empty string, which
+    /// reports "EOF while parsing a value at line 1 column 0".
+    ///
+    /// Last-not-first still holds, and the test above still pins it. What
+    /// changes is that "last" now means the last block that is actually a
+    /// forecast, rather than the last block of any kind.
+    #[test]
+    fn an_empty_block_after_the_answer_does_not_win() {
+        let text = format!(
+            "My forecast is\n\n```json\n{}\n```\n\n```\n```\n",
+            r#"{"expected_value": 12.0, "interval_low": 10.0, "interval_high": 14.0, "confidence": 0.9}"#,
+        );
+
+        assert_eq!(parse_forecast(&text).unwrap().expected_value, 12.0);
+    }
+
+    /// Prose in a trailing fence is the same bug wearing different clothes.
+    #[test]
+    fn a_trailing_non_json_block_does_not_win() {
+        let text = format!(
+            "```json\n{}\n```\n\nCaveats:\n\n```\nI could not read two files.\n```\n",
+            r#"{"expected_value": 5.0, "interval_low": 4.0, "interval_high": 6.0, "confidence": 0.8}"#,
+        );
+
+        assert_eq!(parse_forecast(&text).unwrap().expected_value, 5.0);
+    }
+
+    /// The 8 "no fenced json block" failures. A truncated answer opens the
+    /// fence and never closes it, and the body was being dropped on the
+    /// floor at end of input even though it parses.
+    #[test]
+    fn an_unclosed_final_fence_is_still_read() {
+        let text = format!(
+            "Here is my forecast.\n\n```json\n{}\n",
+            r#"{"expected_value": 0.3, "interval_low": 0.2, "interval_high": 0.4, "confidence": 0.7}"#,
+        );
+
+        assert_eq!(parse_forecast(&text).unwrap().expected_value, 0.3);
+    }
+
+    /// Leniency has a floor. Nothing here may invent a forecast, so a block
+    /// that is merely close is still refused rather than repaired.
+    #[test]
+    fn a_block_that_is_not_a_forecast_is_still_refused() {
+        let text = "```json\n{\"expected_value\": 1.0}\n```\n";
+
+        assert!(parse_forecast(text).is_err());
+    }
+
+    /// And an incoherent forecast does not get skipped in favour of an
+    /// earlier well-formed one. Reading backwards must not become a way to
+    /// shop for the answer that happens to pass.
+    #[test]
+    fn an_incoherent_last_forecast_is_reported_not_skipped() {
+        let text = format!(
+            "```json\n{}\n```\n\n```json\n{}\n```\n",
+            r#"{"expected_value": 5.0, "interval_low": 4.0, "interval_high": 6.0, "confidence": 0.8}"#,
+            r#"{"expected_value": 99.0, "interval_low": 4.0, "interval_high": 6.0, "confidence": 0.8}"#,
+        );
+
+        assert!(matches!(
+            parse_forecast(&text).unwrap_err(),
+            ForecastError::Incoherent(_)
+        ));
     }
 
     #[test]
