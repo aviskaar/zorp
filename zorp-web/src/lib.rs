@@ -13,6 +13,8 @@ pub mod documents;
 pub mod event;
 pub mod panel;
 pub mod pdf;
+#[cfg(feature = "recall")]
+pub mod recall;
 pub mod renderer;
 pub mod settings;
 pub mod state;

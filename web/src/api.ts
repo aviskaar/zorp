@@ -862,3 +862,69 @@ function authHeaders(): Record<string, string> {
   const token = apiToken();
   return token ? { authorization: `Bearer ${token}` } : {};
 }
+
+/* ------------------------------------------------------------------ */
+/* conversation search                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Whether this server can search the conversations it holds.
+ *
+ * Answered by every build, including one compiled without the feature, so
+ * the page can hide the search box for a reason it can name instead of
+ * hiding it because a request 404'd.
+ */
+export interface RecallStatus {
+  available: boolean;
+  /** Why not, in the server's own words. Null when it is available. */
+  reason: string | null;
+  /** The loopback endpoint the vectors would come from. */
+  endpoint: string | null;
+  model: string | null;
+  conversations: number;
+  chunks: number;
+}
+
+/** One conversation that matched, and the message in it that matched best. */
+export interface RecallHit {
+  id: string;
+  title: string;
+  seq: number;
+  role: string;
+  snippet: string;
+  /** Cosine similarity. Ranks this result list and means nothing outside it. */
+  score: number;
+}
+
+export interface RecallReport {
+  indexed: number;
+  skipped: number;
+  removed: number;
+  chunks: number;
+}
+
+export async function recallStatus(): Promise<RecallStatus> {
+  return request<RecallStatus>("GET", "/api/recall/status");
+}
+
+/**
+ * Bring the index up to date. Slow the first time, because every message
+ * costs one call to the local model, so the caller has to be ready to wait
+ * and to say that it is waiting.
+ */
+export async function recallIndex(): Promise<RecallReport> {
+  return request<RecallReport>("POST", "/api/recall/index", {});
+}
+
+/**
+ * Search. Returns the raw rows: `conversation-search.ts` is what checks
+ * their shape, because it is the thing that puts them on the page.
+ */
+export async function recallSearch(query: string, limit?: number): Promise<unknown> {
+  const cap = limit === undefined ? "" : `&limit=${encodeURIComponent(String(limit))}`;
+  const body = await request<{ hits?: unknown }>(
+    "GET",
+    `/api/recall/search?q=${encodeURIComponent(query)}${cap}`,
+  );
+  return body?.hits;
+}

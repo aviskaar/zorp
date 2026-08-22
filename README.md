@@ -345,6 +345,41 @@ Design and plan:
 [`docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md`](docs/superpowers/specs/2026-08-17-zorp-web-ui-design.md),
 [`docs/superpowers/specs/2026-08-17-artifact-pane-design.md`](docs/superpowers/specs/2026-08-17-artifact-pane-design.md).
 
+### Searching your own conversations, on this machine
+
+The browser sidebar can search everything you have ever asked zorp, by
+meaning rather than by spelling, behind the `recall` feature:
+
+```bash
+ollama pull nomic-embed-text
+cargo run -p zorp-web --features recall
+```
+
+Then press **Index** once. It reads the conversations already in zorp's
+session store, asks the local model for one vector per message, and writes
+them to `recall.db` next to that store. A second press skips every
+conversation whose text has not changed.
+
+**Conversation text goes to a loopback address or it goes nowhere.** There
+is no remote embedding provider, no flag that adds one, and no fallback
+when the local model is missing: if nothing answers on `127.0.0.1`, the
+search box says so and searches nothing. This corpus is your whole history
+with an agent that has been reading your files, and a feature that stayed
+working by posting it to an API would be worse than one that stops.
+
+Four things hold that up, and they are layered because any one of them
+could be wrong. The endpoint has to be a loopback literal or `localhost`,
+and it has to still resolve to loopback. The addresses it resolved to are
+the only ones the HTTP client can reach, through a resolver that performs
+no lookup of its own. Redirects are refused rather than followed. Proxy
+detection from the environment is switched off, so `HTTP_PROXY` cannot
+route the text through somebody else's server.
+
+`ZORP_EMBED_URL` and `ZORP_EMBED_MODEL` override the endpoint and the
+model, and `ZORP_RECALL_DB` overrides where the index goes. Naming a remote
+host in `ZORP_EMBED_URL` does not get you a remote embedder; it gets you a
+refusal that names the host.
+
 ### Web search without an MCP server
 
 `validate` also accepts a built-in `web_search` tool, behind the

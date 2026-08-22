@@ -41,6 +41,12 @@ jobs:
       - name: Test workspace (excluding zorp-track)
         run: cargo test --workspace --exclude zorp-track --locked
 
+      # `recall` is off by default, so the run above compiles none of it,
+      # including the tests that pin conversation text never leaving the
+      # machine. Cheap to add here: the feature pulls in no new crates.
+      - name: Test conversation search
+        run: cargo test -p zorp-web -p zorp-recall --features zorp-web/recall --locked
+
   msrv:
     # `rust-version` in the root manifest is a promise, and until this job
     # existed nothing checked it. Every other job here installs `stable`, so
