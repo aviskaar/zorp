@@ -181,7 +181,10 @@ resulting artifact, deliver it in the right form.
   whole arrow tree.
 - `Cargo.lock` is committed and CI builds `--locked`. Shared dependency
   versions live in `[workspace.dependencies]` in the root `Cargo.toml`,
-  not in the member manifests. MSRV is 1.82.
+  not in the member manifests. MSRV is 1.95, declared as `rust-version`
+  in the root `Cargo.toml` and pinned by the `msrv` CI job. It was 1.82
+  until the dependency tree walked past it, so read the manifest and
+  not this line if the two ever disagree again.
 
 ## Writing style
 
