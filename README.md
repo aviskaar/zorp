@@ -380,6 +380,49 @@ model, and `ZORP_RECALL_DB` overrides where the index goes. Naming a remote
 host in `ZORP_EMBED_URL` does not get you a remote embedder; it gets you a
 refusal that names the host.
 
+### Remembering earlier conversations inside a new one
+
+The `memory` feature turns the same index into something a turn can read,
+so a fact from a thread you finished in March can be recalled in a thread
+you started today:
+
+```bash
+cargo run -p zorp-web --features memory
+```
+
+Every finished turn indexes its own session in the background, so the
+corpus keeps up without a button press, and the **Index** button stays as
+the catch-up for anything a failed feed missed. Tick **Recall earlier
+conversations for this message** next to the composer and the server
+embeds what you typed, finds the closest handful of messages, and quotes
+them into the transcript the model reads. Above the answer you get a card
+listing exactly what was recalled: the conversation, the date, and whether
+each line was written by you or by the assistant.
+
+Three things about it are deliberate.
+
+**The box is unticked on every message.** Retrieval is not a mode you leave
+on. It spends context, and it puts text from old conversations in front of
+the model, so it is a decision you make per message and can see the result
+of. The model cannot ask for a recall on its own; there is no tool for it.
+
+**A memory is a quotation, never a summary.** Nothing reads your history
+and writes down what it learned. There is no fact table, no profile, and no
+stored sentence a model composed about your past, because that is the shape
+in which an agent's guesses turn into its own evidence. What gets recalled
+is a message somebody actually sent, with the conversation, the position,
+the author and the date attached. Half of any conversation was written by
+an assistant, and those lines are labelled as a model's earlier output
+rather than presented as fact.
+
+**Recalled text is data.** It arrives inside a fence whose marker is minted
+for that one turn, so a payload sitting in an old conversation cannot close
+the quotation and start giving orders, and it arrives under the same
+sentence a skill body gets: it cannot grant a tool, widen an approval, or
+bypass the command denylist. It is a `user` message and never the system
+prompt, and it is never written back into your conversation store, which is
+what stops the recalled block being re-embedded and recalled again.
+
 ### Web search without an MCP server
 
 `validate` also accepts a built-in `web_search` tool, behind the

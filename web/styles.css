@@ -1449,6 +1449,93 @@ button {
   cursor: default;
 }
 
+/* The per message recall switch. Deliberately plain and deliberately next
+   to the send button: it changes what this one message is answered with,
+   and it goes back to off the moment the message is sent. */
+
+.composer-memory {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.composer-memory:hover {
+  color: var(--text);
+}
+
+.composer-memory input {
+  accent-color: var(--accent, currentColor);
+  cursor: pointer;
+}
+
+/* What a turn recalled, drawn above the answer that used it.
+
+   Every quotation in here is text out of an old conversation, so it is
+   presented as a quotation and never as prose the page is asserting. The
+   attribution line under each one says who wrote it, and an assistant line
+   is dimmed and says it is a model's earlier answer, because the whole
+   point of showing this is that a thing a model said once is not the same
+   kind of thing as a thing the user said. */
+
+.card-memory {
+  border-color: var(--line);
+}
+
+.memory-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-item {
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+}
+
+.memory-open {
+  font: inherit;
+  font-size: 12.8px;
+  color: var(--text);
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+
+.memory-open:hover {
+  text-decoration-color: currentColor;
+}
+
+.memory-attribution {
+  margin: 2px 0 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.memory-by-model {
+  font-style: italic;
+}
+
+.memory-quote {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .card-panel {
   border-color: var(--line);
 }

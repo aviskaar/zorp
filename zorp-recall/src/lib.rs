@@ -37,5 +37,5 @@ pub use embed::{
     EmbedError, Embedder, OllamaEmbedder, DEFAULT_EMBED_MODEL, DEFAULT_EMBED_URL, EMBED_MODEL_VAR,
     EMBED_URL_VAR,
 };
-pub use index::{Chunk, Hit, Index, IndexError, Stats};
+pub use index::{Chunk, Conversation, Hit, Index, IndexError, Passage, Stats};
 pub use loopback::{LoopbackError, LoopbackResolver, LoopbackUrl};

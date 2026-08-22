@@ -257,6 +257,15 @@ fn session_or_adopt(
 #[derive(Deserialize)]
 struct TurnBody {
     message: String,
+    /// Look at earlier conversations before answering this one.
+    ///
+    /// Absent means no, which is the answer for every caller that has not
+    /// heard of this. Retrieval is per message rather than per session on
+    /// purpose: it spends context and it puts text from old conversations,
+    /// tool results and fetched pages included, in front of the model, so
+    /// it is a thing to choose each time and not a mode to leave on.
+    #[serde(default)]
+    memory: bool,
 }
 
 #[derive(Deserialize)]
@@ -481,6 +490,7 @@ async fn start_turn(
         session,
         id,
         body.message,
+        body.memory,
         state.settings.clone(),
         state.own_port,
     );
@@ -954,6 +964,7 @@ async fn recall_status() -> Json<serde_json::Value> {
         "model": null,
         "conversations": 0,
         "chunks": 0,
+        "memory": false,
     }))
 }
 
@@ -969,6 +980,11 @@ async fn recall_status() -> Json<serde_json::Value> {
         "model": status.model,
         "conversations": status.conversations,
         "chunks": status.chunks,
+        // Whether a turn can be told to read this index, which is a
+        // separate build-time choice from whether the sidebar can search
+        // it. The page needs it to decide whether to offer the box, and
+        // answering it in every build keeps the browser from guessing.
+        "memory": cfg!(feature = "memory"),
     }))
 }
 

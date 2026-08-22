@@ -239,6 +239,47 @@ export interface DoneEvent {
   type: "done";
 }
 
+/**
+ * One message recalled out of an earlier conversation and quoted to the
+ * model, with everything needed to say where it came from.
+ *
+ * `author` is "you" or "the assistant", spelled out by the server rather
+ * than left as a role name. The difference between a thing the user wrote
+ * and a thing a model wrote is the whole reason this is on the page: an
+ * assistant line is a model's earlier output and not a checked fact.
+ *
+ * `text` is verbatim stored text, never a summary. Nothing in zorp asks a
+ * model to write down what it learned from the corpus, so there is no
+ * derived claim this could be carrying.
+ */
+export interface MemoryCitation {
+  conversation_id: string;
+  title: string;
+  seq: number;
+  author: string;
+  /** `YYYY-MM-DD`, or empty when the store recorded no date. */
+  when: string;
+  text: string;
+  /** Cosine similarity. Ranks this list and means nothing outside it. */
+  score: number;
+}
+
+/**
+ * What this turn recalled, sent before the model is called.
+ *
+ * Sent even when `used` is empty, because "memory was on and found
+ * nothing" and "memory was off" look identical otherwise. `unavailable`
+ * carries the reason a recall could not run, most often no local embedder;
+ * the turn goes ahead without memory and this is the only thing that says
+ * so.
+ */
+export interface MemoryEvent {
+  seq: number;
+  type: "memory";
+  used: unknown;
+  unavailable?: string | null;
+}
+
 /** How bad a reviewer thinks something is. */
 export type Severity = "note" | "concern" | "blocking";
 
@@ -351,6 +392,7 @@ export type ZorpEvent =
   | AssistantEvent
   | ApprovalRequestEvent
   | ContextEvent
+  | MemoryEvent
   | ErrorEvent
   | StoppedEvent
   | ReviewerStartedEvent
@@ -494,10 +536,16 @@ export async function getSession(id: string): Promise<SessionTranscript> {
 /**
  * Send a user message. The server answers 202 and the result arrives on the
  * event stream. A 409 means a turn is already running.
+ *
+ * `memory` asks the server to read earlier conversations before answering
+ * this one. It defaults to off and is passed per message rather than held
+ * per session, because a recall spends context and puts text from old
+ * conversations, tool results and fetched pages included, in front of the
+ * model. That is a thing to choose each time, not a mode to leave on.
  */
-export async function sendTurn(id: string, message: string): Promise<void> {
+export async function sendTurn(id: string, message: string, memory = false): Promise<void> {
   try {
-    await request<void>("POST", `/api/sessions/${segment(id)}/turn`, { message });
+    await request<void>("POST", `/api/sessions/${segment(id)}/turn`, { message, memory });
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       throw new TurnBusyError("a turn is already running on this session");
@@ -934,6 +982,7 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   assistant: true,
   approval_request: true,
   context: true,
+  memory: true,
   error: true,
   stopped: true,
   reviewer_started: true,
@@ -1029,6 +1078,12 @@ export interface RecallStatus {
   model: string | null;
   conversations: number;
   chunks: number;
+  /**
+   * Whether a turn can be told to read this index, as opposed to only the
+   * sidebar being able to search it. A separate build-time choice, so the
+   * page asks rather than assuming that one implies the other.
+   */
+  memory: boolean;
 }
 
 /** One conversation that matched, and the message in it that matched best. */

@@ -40,6 +40,44 @@ impl From<&zorp_agent::Agreement> for AgreementFrame {
     }
 }
 
+/// One recalled message, flattened for the wire.
+///
+/// The provenance the model was shown, so the person can check it: which
+/// conversation, where in it, who wrote it, when, and how close the match
+/// was. `author` is "you" or "the assistant", spelled out rather than left
+/// as a role name, because the difference between a thing the user said and
+/// a thing a model said is the whole point of showing this at all.
+///
+/// A separate type from `zorp_recall::Passage` so the JSON the browser
+/// parses is this crate's contract, the same reason `PanelFindingFrame`
+/// exists.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryCitationFrame {
+    pub conversation_id: String,
+    pub title: String,
+    pub seq: i64,
+    pub author: String,
+    /// `YYYY-MM-DD`, or empty when the store recorded no date.
+    pub when: String,
+    pub text: String,
+    pub score: f32,
+}
+
+#[cfg(feature = "memory")]
+impl From<&crate::memory::Citation> for MemoryCitationFrame {
+    fn from(c: &crate::memory::Citation) -> Self {
+        MemoryCitationFrame {
+            conversation_id: c.conversation_id.clone(),
+            title: c.title.clone(),
+            seq: c.seq,
+            author: c.author.to_string(),
+            when: c.when.clone(),
+            text: c.text.clone(),
+            score: c.score,
+        }
+    }
+}
+
 /// One frame on the SSE stream.
 ///
 /// `seq` is monotonic per session so a browser that reconnects can send
@@ -168,6 +206,25 @@ pub enum EventKind {
         track_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         approved: Option<bool>,
+    },
+    /// This turn was told to look at earlier conversations, and here is
+    /// exactly what it found.
+    ///
+    /// Sent before the model is called, and sent even when the answer is
+    /// nothing, because "memory was on and found nothing" and "memory was
+    /// off" are different states and a user who cannot tell them apart
+    /// cannot tell whether an answer used their history.
+    ///
+    /// `unavailable` carries the reason a recall could not run at all, most
+    /// often no local embedder. The turn goes ahead without memory rather
+    /// than failing, and this is the only thing that says so.
+    ///
+    /// The snippets are text a model wrote or a page the agent fetched, so
+    /// the browser draws every one of them through `textContent`.
+    Memory {
+        used: Vec<MemoryCitationFrame>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unavailable: Option<String>,
     },
     Error {
         message: String,

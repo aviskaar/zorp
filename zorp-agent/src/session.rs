@@ -65,6 +65,13 @@ pub struct SessionRow {
     pub repo: String,
     pub model: String,
     pub status: String,
+    /// When this conversation was last written to, in epoch milliseconds.
+    ///
+    /// The column has always been here and nothing read it out. It is the
+    /// only "when" the store has: messages carry a sequence number and no
+    /// clock, so this is the finest grain anything downstream can honestly
+    /// put a date on.
+    pub updated: i64,
 }
 
 /// SQLite-backed session persistence.
@@ -393,7 +400,7 @@ impl Store {
 
     pub fn latest_session(&self) -> Result<Option<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status FROM sessions \
+            "SELECT id, task, repo, model, status, updated FROM sessions \
              ORDER BY updated DESC, created DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
@@ -404,6 +411,7 @@ impl Store {
                 repo: row.get(2)?,
                 model: row.get(3)?,
                 status: row.get(4)?,
+                updated: row.get(5)?,
             }))
         } else {
             Ok(None)
@@ -429,9 +437,9 @@ impl Store {
     /// CLI's resume needs. A session list needs all of them, which is what a
     /// sidebar needs.
     pub fn sessions(&self) -> Result<Vec<SessionRow>, BoxErr> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, task, repo, model, status FROM sessions ORDER BY rowid DESC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task, repo, model, status, updated FROM sessions ORDER BY rowid DESC",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(SessionRow {
                 id: row.get(0)?,
@@ -439,6 +447,7 @@ impl Store {
                 repo: row.get(2)?,
                 model: row.get(3)?,
                 status: row.get(4)?,
+                updated: row.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)

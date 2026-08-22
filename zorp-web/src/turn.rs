@@ -115,6 +115,14 @@ fn closing_events(outcome: Result<Outcome, String>, stopped: bool) -> Vec<EventK
     kinds
 }
 
+/// Whether this one turn was told to look at earlier conversations.
+///
+/// A parameter and not a session setting, so it is a decision made once per
+/// message rather than a mode somebody leaves on. Retrieval spends context
+/// and puts untrusted text in front of the model, and both of those are
+/// things a person should be choosing each time rather than discovering.
+pub type UseMemory = bool;
+
 /// Run one turn to completion on a blocking thread.
 ///
 /// The agent loop is synchronous, so it must not run on the async runtime.
@@ -125,6 +133,7 @@ pub fn spawn_turn(
     session: Arc<Mutex<SessionState>>,
     session_id: String,
     message: String,
+    use_memory: UseMemory,
     settings: SettingsHandle,
     own_port: Option<u16>,
 ) {
@@ -162,9 +171,18 @@ pub fn spawn_turn(
         // requests interleave correctly with activity.
         renderer.set_seq(Arc::clone(&seq));
 
+        // Before the model is called, never after. A recall run afterwards
+        // would be a search for what the answer turned out to need, which
+        // is a different thing from what the question asked for, and the
+        // model would already have answered without it.
+        let recalled = recall_into_turn(use_memory, &message, &tx, &seq);
+
         let outcome = run_agent(
-            &session_id,
-            &message,
+            Ask {
+                session_id: &session_id,
+                message: &message,
+                recalled,
+            },
             Box::new(renderer),
             approver,
             Arc::clone(&cancel),
@@ -186,18 +204,121 @@ pub fn spawn_turn(
         }
         drop(next);
         session.lock().unwrap().running = false;
+
+        // Every conversation feeds the memory, and this is where. After the
+        // answer, never in front of it: a model call per message on the
+        // send path would make the chat depend on a local embedder being
+        // up, which is a price the chat should not pay for a capability it
+        // is not using. Best effort, on its own thread, and a failure
+        // leaves the index one conversation behind rather than failing the
+        // turn. The Index button in the sidebar is the catch-up.
+        feed_memory(session_id);
     });
 }
 
-fn run_agent(
-    session_id: &str,
+/// Index the conversation that just finished.
+///
+/// Compiled away entirely without the feature, which is what keeps a build
+/// that never opted into this from doing anything at all with the store.
+#[cfg(feature = "memory")]
+fn feed_memory(session_id: String) {
+    std::thread::spawn(move || {
+        if let Err(e) = crate::recall::feed_session(&session_id) {
+            // Said once, to the log, and not to the browser. A user who
+            // never turned recall on should not get a card about an
+            // embedder they do not run, and the sidebar already says
+            // whether the index is reachable.
+            eprintln!("zorp-web: not indexing {session_id} into memory: {e}");
+        }
+    });
+}
+
+#[cfg(not(feature = "memory"))]
+fn feed_memory(_session_id: String) {}
+
+/// Look up what earlier conversations said about this message, tell the
+/// browser what came back, and hand the text to the run.
+///
+/// Everything about the result reaches the browser first, including the
+/// case where nothing was found and the case where no local embedder
+/// answered. A recall the user cannot see is a model that knows things for
+/// reasons nobody can check.
+#[cfg(feature = "memory")]
+fn recall_into_turn(
+    use_memory: UseMemory,
     message: &str,
+    tx: &std::sync::mpsc::Sender<Event>,
+    seq: &Arc<Mutex<u64>>,
+) -> Option<String> {
+    if !use_memory {
+        return None;
+    }
+    let (block, kind) = match crate::memory::recall_for(message, crate::memory::DEFAULT_PASSAGES) {
+        Ok(found) => (
+            found.block,
+            EventKind::Memory {
+                used: found.citations.iter().map(Into::into).collect(),
+                unavailable: None,
+            },
+        ),
+        // Not an error card, and not a silent fall through either. The
+        // turn goes ahead without memory, because refusing to answer a
+        // question over a search index being down is the wrong trade, and
+        // the user is told in the server's own words that memory was asked
+        // for and could not be used. Those words already name the missing
+        // local embedder and say that nothing was sent anywhere.
+        Err(e) => (
+            None,
+            EventKind::Memory {
+                used: Vec::new(),
+                unavailable: Some(e.to_string()),
+            },
+        ),
+    };
+    let mut next = seq.lock().unwrap();
+    let _ = tx.send(Event { seq: *next, kind });
+    *next += 1;
+    drop(next);
+    block
+}
+
+#[cfg(not(feature = "memory"))]
+fn recall_into_turn(
+    _use_memory: UseMemory,
+    _message: &str,
+    _tx: &std::sync::mpsc::Sender<Event>,
+    _seq: &Arc<Mutex<u64>>,
+) -> Option<String> {
+    None
+}
+
+/// What this turn is about, as opposed to the machinery it runs on.
+///
+/// Grouped because the three travel together and because two of them are
+/// strings: `run_agent(&id, &message, block, ...)` is a call site where
+/// swapping two arguments compiles and then puts the session id in front of
+/// the model.
+struct Ask<'a> {
+    session_id: &'a str,
+    message: &'a str,
+    /// Earlier conversations, framed and fenced, or `None` when this turn
+    /// did not ask for any.
+    recalled: Option<String>,
+}
+
+fn run_agent(
+    ask: Ask<'_>,
     mut renderer: Box<dyn zorp_agent::Renderer>,
     approver: Arc<WebApprover>,
     cancel: zorp_agent::CancelToken,
     settings: &SettingsHandle,
     own_port: Option<u16>,
 ) -> Result<Outcome, String> {
+    let Ask {
+        session_id,
+        message,
+        recalled,
+    } = ask;
     let resolved = settings.lock().unwrap().effective_model();
     if !resolved.configured {
         return Err("no model configured, open settings and pick one".to_string());
@@ -243,6 +364,29 @@ fn run_agent(
             seq,
             0,
         )));
+    }
+
+    // Recalled conversations go on the end of the seed, which is what keeps
+    // them out of the store.
+    //
+    // `with_message_records` tells the agent how much of the transcript is
+    // already persisted, and it counts what it is handed. So a record
+    // appended here is one the agent believes it has already written, and
+    // `sync` never offers it to the recorder. The model sees it; the
+    // conversation does not keep it.
+    //
+    // That is not a tidiness argument. A block written into the store would
+    // be embedded by the next feed and recalled by the turn after that, and
+    // the harness's own framing of somebody else's text would become a
+    // thing the corpus says. Growing your own evidence is the failure this
+    // whole feature is arranged around.
+    //
+    // A `user` message, because that is the least trusted role a provider
+    // will accept in a transcript and this is the least trusted text in the
+    // request. Never `system`: the one channel the harness speaks in is the
+    // one channel recalled text must never occupy.
+    if let (Some(plan), Some(block)) = (seed.as_mut(), recalled) {
+        plan.records.push(zorp_agent::Message::user(block).into());
     }
 
     // Say what compaction took before the turn starts, not after, so it reads
