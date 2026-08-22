@@ -420,9 +420,17 @@ fn to_blob(v: &[f32]) -> Vec<u8> {
     out
 }
 
+/// `as_chunks` rather than `chunks_exact(4)`, because it hands back a real
+/// `[u8; 4]` instead of a slice that happens to be four long. That is what
+/// `from_le_bytes` wants, so the four element indexes and their bounds
+/// checks go away. Same chunks in the same order either way, and both drop
+/// a trailing partial chunk, which cannot occur here because `to_blob`
+/// only ever writes whole `f32`s.
 fn from_blob(bytes: &[u8]) -> Vec<f32> {
     bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect()
 }
