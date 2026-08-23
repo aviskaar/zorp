@@ -21,7 +21,15 @@ declare global {
   }
 }
 
-/** One row in the session sidebar. */
+/**
+ * One row in the session sidebar.
+ *
+ * `title` is the short name a model wrote for the conversation when there
+ * is one, and the verbatim first message when there is not. The server
+ * decides which; the browser never sees the difference and never needs to.
+ * Either way it is text nobody here wrote, so it reaches the page through
+ * `textContent`.
+ */
 export interface SessionSummary {
   id: string;
   title: string;
@@ -216,6 +224,23 @@ export interface ContextEvent {
   source: ContextUsageSource;
 }
 
+/**
+ * This session now has a short, model-written name.
+ *
+ * Arrives after `done`, because the server asks for it once the turn has
+ * an answer to read and never makes the turn wait. It arrives only when a
+ * title was actually written: a call that failed, was refused, or was
+ * declined sends nothing, and the row keeps showing the first message.
+ *
+ * `title` is model output. It goes on the page through `textContent`, the
+ * same as every other line a model wrote.
+ */
+export interface SessionTitleEvent {
+  seq: number;
+  type: "session_title";
+  title: string;
+}
+
 /** The turn failed. Always shown, never swallowed. */
 export interface ErrorEvent {
   seq: number;
@@ -398,6 +423,7 @@ export type ZorpEvent =
   | ApprovalRequestEvent
   | ContextEvent
   | MemoryEvent
+  | SessionTitleEvent
   | ErrorEvent
   | StoppedEvent
   | ReviewerStartedEvent
@@ -988,6 +1014,7 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   approval_request: true,
   context: true,
   memory: true,
+  session_title: true,
   error: true,
   stopped: true,
   reviewer_started: true,

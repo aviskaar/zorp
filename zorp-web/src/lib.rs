@@ -22,4 +22,5 @@ pub mod recall;
 pub mod renderer;
 pub mod settings;
 pub mod state;
+pub mod title;
 pub mod turn;

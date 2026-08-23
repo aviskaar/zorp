@@ -190,6 +190,24 @@ resulting artifact, deliver it in the right form.
   Retrieval is per message and off by default, and the model cannot ask for
   it. Run `cargo test -p zorp-web --features memory` whenever any of it
   changes. See `docs/DECISIONS.md` (2026-08-22) first.
+- `title` (`zorp-web/src/title.rs`) is the sidebar's session name: one
+  model call per conversation, made after the first turn has both a
+  question and an answer, on by default and off with
+  `ZORP_SESSION_TITLES=0`. Three things are not negotiable. It writes to
+  `sessions.display_title` and never to `sessions.task`, because `task`
+  is the verbatim first message and `recall::index_one` reads it into the
+  search index while `memory::block` quotes that title into a later turn
+  and tells the model to cite it; a generated summary in `task` is the
+  agent's own sentence coming back as evidence. Both halves of the
+  material handed to the call are untrusted, so they are fenced under a
+  boundary sentence with a per-call marker, the same shape `zorp-skill`
+  and `memory` use. And whatever comes back is clamped in code on the one
+  path to the column: one line, one short noun phrase, control and
+  bidirectional characters stripped. Every failure writes nothing and
+  leaves the first message showing. The sidebar catches up on the
+  existing event stream via a `session_title` frame, and the browser puts
+  it on the page through `textContent`. See `docs/DECISIONS.md`
+  (2026-08-22) before changing any of it.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's

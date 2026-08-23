@@ -41,6 +41,13 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "working_done":
     case "context":
       return false;
+    // A title renames a row in the sidebar and the heading above the
+    // transcript. It puts nothing in the transcript itself, so it must not
+    // cut an answer in two. It normally lands after `done`, when nothing
+    // is streaming, but a title from the previous turn can arrive during
+    // this one and that is exactly the case this line covers.
+    case "session_title":
+      return false;
     // Anything a reader can see.
     case "tool":
     case "verify":

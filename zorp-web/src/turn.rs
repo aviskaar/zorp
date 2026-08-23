@@ -205,6 +205,19 @@ pub fn spawn_turn(
         drop(next);
         session.lock().unwrap().running = false;
 
+        // Name the conversation, if it still needs a name. Strictly after
+        // the closing events: `Done` has already gone out, so the composer
+        // is back and the reader has their answer before this costs
+        // anything. It runs on its own thread, it writes to a column
+        // nothing but the sidebar reads, and every way it can fail leaves
+        // the sidebar showing the first message.
+        crate::title::spawn_titling(
+            session_id.clone(),
+            settings.clone(),
+            tx.clone(),
+            Arc::clone(&seq),
+        );
+
         // Every conversation feeds the memory, and this is where. After the
         // answer, never in front of it: a model call per message on the
         // send path would make the chat depend on a local embedder being

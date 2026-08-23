@@ -434,4 +434,63 @@ mod on {
             .iter()
             .all(|h| h["id"] != "conv-dog"));
     }
+
+    /// The regression test for why session titles got their own column.
+    ///
+    /// A generated title is a sentence a model wrote. It goes in
+    /// `sessions.display_title`, and the sidebar reads that. The index
+    /// keeps reading `sessions.task`, the user's own first message,
+    /// because `memory::block` quotes an indexed title into a later turn's
+    /// transcript and tells the model to cite it. Index the generated one
+    /// and the agent's guess becomes its own evidence.
+    ///
+    /// Both halves are asserted here on purpose: that the sidebar changed,
+    /// and that the index did not.
+    #[tokio::test]
+    async fn a_generated_title_reaches_the_sidebar_and_never_the_index() {
+        let _env = ENV.lock().await;
+        let fixture = set_up(Some(&embedding_server()));
+        // What `zorp_web::title` writes after the first turn of a session.
+        // The scratch store in this test's own directory, not the user's.
+        zorp_agent::Store::open_at(&fixture.sessions_db())
+            .unwrap()
+            .set_display_title("conv-money", "Refund on last month's charge")
+            .unwrap();
+        let addr = spawn().await;
+
+        let (status, body) = post(format!("http://{addr}/api/recall/index")).await;
+        assert_eq!(status, 200, "{body}");
+
+        // What the index holds, and therefore what a memory block would
+        // quote: the verbatim first message, unchanged.
+        let (_, body) = get(format!("http://{addr}/api/recall/search?q=refund")).await;
+        let hits = json(&body);
+        let hit = &hits["hits"].as_array().unwrap()[0];
+        assert_eq!(hit["id"], "conv-money", "{hits}");
+        assert_eq!(
+            hit["title"], "Sorting out the account",
+            "the index picked up the model's title: {hits}"
+        );
+
+        // What the sidebar shows: the generated one.
+        let (_, body) = get(format!("http://{addr}/api/sessions")).await;
+        let listed = json(&body);
+        let row = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "conv-money")
+            .expect("the session is not listed");
+        assert_eq!(row["title"], "Refund on last month's charge", "{listed}");
+
+        // And a session nobody named still shows its first message, which
+        // is the fallback the whole feature has to keep.
+        let unnamed = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "conv-dog")
+            .expect("the session is not listed");
+        assert_eq!(unnamed["title"], "Walking the dog", "{listed}");
+    }
 }

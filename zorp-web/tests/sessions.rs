@@ -139,6 +139,52 @@ async fn the_replay_still_carries_both_sides_of_the_conversation() {
     assert_eq!(messages[1]["content"], "Done.");
 }
 
+/// What the sidebar shows, and what it shows when nothing named a session.
+///
+/// A generated title lives in `sessions.display_title` and is the only
+/// thing that reads it. `sessions.task` still holds the verbatim first
+/// message, and a session nobody named still shows it, which is exactly
+/// how the sidebar read before titles existed. That fallback is a
+/// requirement and not a convenience: a titling call can fail, decline, or
+/// never be made, and none of those may leave a blank row.
+#[tokio::test]
+async fn the_sidebar_shows_a_generated_title_and_falls_back_to_the_first_message() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    let named = seed(&db);
+    let store = Store::open_at(&db).unwrap();
+    store
+        .create_session(
+            "unnamed",
+            "how many .rs files are in the root",
+            "repo",
+            "model",
+        )
+        .unwrap();
+    store
+        .set_display_title(&named, "Writing hello.txt")
+        .unwrap();
+    drop(store);
+
+    let addr = spawn().await;
+    let listed = get_json(format!("http://{addr}/api/sessions")).await;
+    let rows = listed.as_array().unwrap();
+    let row = |id: &str| {
+        rows.iter()
+            .find(|s| s["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is not listed: {listed}"))
+            .clone()
+    };
+
+    assert_eq!(row(&named)["title"], "Writing hello.txt");
+    assert_eq!(
+        row("unnamed")["title"],
+        "how many .rs files are in the root"
+    );
+}
+
 /// Reopening a session from the sidebar after a restart and carrying on.
 ///
 /// Live session state is held in a process-local map. The store outlives the
