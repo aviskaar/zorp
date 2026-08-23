@@ -18,9 +18,6 @@ use std::io::Read;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-/// How much of an error body to quote back. Matches the core's cap.
-const ERROR_BODY_CAP: u64 = 8 * 1024;
-
 /// What abandoning a half-arrived response reports.
 ///
 /// An error rather than a third `StreamOutcome`, because there is nothing
@@ -184,6 +181,17 @@ pub enum StreamOutcome {
 /// answered badly. A 300 attempt calibration run recorded 286 discards as "no
 /// fenced json block" and zero as "agent error", and the whole log did not
 /// contain the word timeout once. See `docs/DECISIONS.md` (2026-08-23).
+///
+/// **A provider that will not take the request is asked again, and one that
+/// has started answering never is.** The retrying lives in `zorp::send_json`
+/// and stops the moment a response exists, which is the only place it can
+/// safely happen on this path. A 429 arrives before a single byte of body, so
+/// sending again is clean: nothing reached `on_payload` and nothing was
+/// generated upstream. A failure part way through a stream is the opposite.
+/// Payloads have already gone to the caller, and in the browser that means
+/// text already on somebody's screen, so a second send would replay the
+/// beginning of a fresh answer over the middle of the abandoned one. The
+/// truncation error above is therefore an error and stays one.
 pub fn stream_sse(
     url: &str,
     headers: &[(&str, &str)],
@@ -200,27 +208,11 @@ pub fn stream_sse(
     for (k, v) in headers {
         req = req.set(k, v);
     }
-    let resp = match req.send_json(body) {
-        Ok(resp) => resp,
-        // Mirrors the core's error shape, so a failing stream reads the same
-        // as a failing buffered call rather than like a new kind of outage.
-        Err(ureq::Error::Status(code, resp)) => {
-            let url = resp.get_url().to_string();
-            let mut bytes = Vec::new();
-            let _ = resp
-                .into_reader()
-                .take(ERROR_BODY_CAP)
-                .read_to_end(&mut bytes);
-            let text = String::from_utf8_lossy(&bytes);
-            let text = text.trim();
-            return Err(if text.is_empty() {
-                format!("{url}: status code {code}").into()
-            } else {
-                format!("{url}: status code {code}: {text}").into()
-            });
-        }
-        Err(e) => return Err(e.into()),
-    };
+    // The core's sender, not `req.send_json` directly. This used to be a copy
+    // of the core's error handling with a comment saying it mirrored it, and
+    // the copy is now the thing itself, so a failing stream reads the same as
+    // a failing buffered call and a rate limited one is retried the same way.
+    let resp = zorp::send_json(req, body)?;
 
     let streaming = resp.content_type().contains("event-stream");
     let mut reader = resp.into_reader();

@@ -269,6 +269,26 @@ resulting artifact, deliver it in the right form.
   answer that returns `Ok` is indistinguishable from a model that replied
   badly and that is how a nine hour run was misread twice. See
   `docs/DECISIONS.md` (2026-08-23) before changing either.
+- A 429 or a 503 is retried and nothing else is. `zorp::send_json` is the
+  one place it happens, so the buffered path and `stream_sse` share it;
+  the streaming path used to keep its own copy of the core's error
+  handling, which is how it went months with no timeout at all. The bound
+  is two sided, `ZORP_RETRY_ATTEMPTS` sends in total (4) and
+  `ZORP_RETRY_BUDGET_SECS` of added waiting (30), and both numbers are
+  picked for the person watching a browser rather than for a batch run. A
+  `Retry-After` is waited out in full, with jitter on top and never
+  inside, and one that will not fit the budget ends the retrying rather
+  than being clamped. Three things are not negotiable. Nothing is retried
+  once a response body has started arriving, because those payloads
+  already went to the caller and a second send would replay the start of
+  one answer over the middle of another; `stream_sse` gets that for free
+  by retrying before the body exists and `retry_rate_limit.rs` counts
+  connections to prove it. 400, 401 and 404 are never retried, because a
+  slow misconfiguration reads like a network problem. And every retry
+  says so on stderr, for the same reason the bound above is loud. It came
+  from a 250 crate calibration run losing 25 of its first 48 attempts to
+  one 429 whose own body said "Please retry shortly". See
+  `docs/DECISIONS.md` (2026-08-23) before changing any of it.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides the oldest tool-result bodies
