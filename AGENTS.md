@@ -239,6 +239,20 @@ resulting artifact, deliver it in the right form.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.
+- `zorp::http_agent` is the one HTTP agent for model traffic and the one
+  place timeouts are set: 30 seconds to connect, `ZORP_HTTP_TIMEOUT_SECS`
+  to read, defaulting to 300. Anything in the workspace that talks to a
+  model endpoint goes through it. It was private once and the streaming
+  path reached for `ureq::agent()` instead, which has no timeouts at all,
+  so every real model call ran unbounded and one of them sat on an
+  established socket for 3 hours 18 minutes. `timeout_read` is per read,
+  which on a streamed body makes it an idle timeout: it bounds silence,
+  never the length of an answer. Do not add a second variable for the
+  streaming path. `zorp-recall`, `zorp-search`, `zorp-mcp` and
+  `zorp-web`'s settings probes each build their own agent on purpose and
+  each sets its own timeouts; `zorp-recall`'s in particular carries the
+  loopback resolver and must not be replaced by this one. See
+  `docs/DECISIONS.md` (2026-08-22) before changing any of it.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides the oldest tool-result bodies

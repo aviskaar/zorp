@@ -36,6 +36,26 @@ fn cancelled(cancel: Option<&CancelToken>) -> bool {
     cancel.is_some_and(|c| c.load(Ordering::SeqCst))
 }
 
+/// Say which failure this was, in words a person can act on.
+///
+/// ureq reports a read timeout as `TimedOut` carrying "timed out reading
+/// response", which is true and tells nobody what to do next. Whoever reads
+/// this line wants two things: that the provider went quiet rather than
+/// refused, and which knob buys more patience.
+fn read_error(e: std::io::Error) -> BoxErr {
+    if e.kind() == std::io::ErrorKind::TimedOut {
+        format!(
+            "the provider sent nothing for {} seconds and the stream was \
+             abandoned; set {} to wait longer",
+            zorp::read_timeout_secs(),
+            zorp::READ_TIMEOUT_VAR
+        )
+        .into()
+    } else {
+        e.into()
+    }
+}
+
 /// What the provider actually did when asked to stream.
 pub enum StreamOutcome {
     /// It streamed. Payloads were handed to the callback as they arrived.
@@ -57,13 +77,20 @@ pub enum StreamOutcome {
 ///
 /// `cancel` is checked between reads, so a caller that raises it stops
 /// waiting on the model within one chunk instead of at the end of the
-/// response. `None` reads to the end exactly as this always did. What this
-/// cannot interrupt is a socket that has gone quiet: the check sits between
-/// blocking reads, not inside one, so a provider that has accepted the
-/// request and sent nothing at all is still waited on. In practice a model
-/// that is producing an answer is sending something several times a second,
-/// including while it is reasoning, so that is the case this covers and the
-/// case that matters.
+/// response. `None` reads to the end exactly as this always did.
+///
+/// A cancel cannot interrupt a socket that has gone quiet, because the check
+/// sits between blocking reads rather than inside one. This used to say that
+/// a model producing an answer sends something several times a second, so a
+/// quiet socket was not the case worth covering. That was wrong, and it was
+/// wrong in the way that costs the most: a 200 sample calibration run against
+/// OpenRouter stopped at attempt 123 and then sat at 0% CPU for 3 hours 18
+/// minutes, connection still established, nothing arriving, nobody there to
+/// press stop. What bounds that is the read timeout on the shared agent, not
+/// the cancel token. `zorp::http_agent` sets it, `ZORP_HTTP_TIMEOUT_SECS`
+/// overrides it, and because ureq applies it per read it behaves here as an
+/// idle timeout: a long answer that keeps producing tokens is never cut off,
+/// and a silence longer than the timeout ends as an error.
 pub fn stream_sse(
     url: &str,
     headers: &[(&str, &str)],
@@ -71,7 +98,12 @@ pub fn stream_sse(
     cancel: Option<&CancelToken>,
     on_payload: &mut dyn FnMut(&str),
 ) -> Result<StreamOutcome, BoxErr> {
-    let mut req = ureq::agent().post(url).set("Accept", "text/event-stream");
+    // The shared agent, not `ureq::agent()`. ureq's default agent has no
+    // timeouts of any kind, which is how a streamed call could wait forever
+    // on a provider gone quiet while every buffered call was bounded.
+    let mut req = zorp::http_agent()
+        .post(url)
+        .set("Accept", "text/event-stream");
     for (k, v) in headers {
         req = req.set(k, v);
     }
@@ -115,7 +147,7 @@ pub fn stream_sse(
             if cancelled(cancel) {
                 return Err(CANCELLED.into());
             }
-            let read = reader.read(&mut chunk)?;
+            let read = reader.read(&mut chunk).map_err(read_error)?;
             if read == 0 {
                 break;
             }
@@ -156,7 +188,7 @@ pub fn stream_sse(
         if cancelled(cancel) {
             return Err(CANCELLED.into());
         }
-        let read = reader.read(&mut buf)?;
+        let read = reader.read(&mut buf).map_err(read_error)?;
         if read == 0 {
             break;
         }

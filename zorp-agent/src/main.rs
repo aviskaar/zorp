@@ -643,9 +643,13 @@ fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, St
 
     if model_name.is_empty() && base_url.contains("localhost:11434") {
         let tags_url = base_url.replace("/v1", "/api/tags");
-        // Plain GET; the zorp core only exposes POST-a-JSON-body helpers
-        // (zorp_raw), so this one call keeps a direct ureq dependency.
-        if let Ok(res) = ureq::get(&tags_url).call() {
+        // Plain GET, so it cannot go through `zorp_raw`, which only knows
+        // how to POST a JSON body. It goes through the shared agent anyway:
+        // that is the one place timeouts are decided, and a bare
+        // `ureq::get` has none, so an Ollama that accepts the connection and
+        // then says nothing would hold the CLI here before it had printed a
+        // single line.
+        if let Ok(res) = zorp::http_agent().get(&tags_url).call() {
             if let Ok(json) = res.into_json::<OllamaTagsResponse>() {
                 if !json.models.is_empty() {
                     eprintln!("No model specified. Available Ollama models:");

@@ -128,7 +128,9 @@ export ZORP_API_KEY="sk-..."
 export ZORP_MODEL="gpt-4o-mini"
 # Optional. Seconds to wait for the model, default 300. Loading a local model
 # into memory can take minutes on modest hardware, and that wait happens
-# before the first token.
+# before the first token. On a streamed reply this bounds the silence between
+# chunks, not the length of the answer, so a long reply is never cut off and a
+# provider that goes quiet stops being waited on.
 export ZORP_HTTP_TIMEOUT_SECS=300
 cargo run -- "Summarize the second law of thermodynamics in one sentence."
 ```
