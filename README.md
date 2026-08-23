@@ -292,6 +292,19 @@ it came from. The API key is the exception to what gets saved: it is held
 in memory for the life of the server process and never written to disk.
 Set `ZORP_API_KEY` in the environment if you want it to survive a restart.
 
+**Naming a conversation.** The sidebar used to show the first message you
+typed, cut off wherever the row ran out, which is a wall of "hello". Once a
+session has a question and an answer in it, the model you are already using
+is asked for a short name for it, once, and the sidebar updates in place.
+Set `ZORP_SESSION_TITLES=0` to turn it off and get the first message back.
+
+A title is a label and nothing else. It is stored in its own column, and
+the conversation search index and the memory block both keep reading the
+verbatim first message, because a sentence a model wrote must not become
+something a later turn is told to cite. Everything the model says is
+clamped in code on the way to the column, to one short line, and a call
+that fails or declines leaves the first message showing.
+
 **Watching the answer arrive.** Answers stream. Text appears as the model
 produces it rather than after it finishes, which is the difference between
 a spinner and a page on a local 27B model. Reasoning is filtered out on

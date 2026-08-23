@@ -179,6 +179,13 @@ async fn create_session(State(state): State<AppState>) -> Json<serde_json::Value
 /// Sessions come from the store, not from memory, so history survives a
 /// server restart. In-memory sessions that have not recorded a message yet
 /// are unioned in so a brand new chat appears in the sidebar immediately.
+///
+/// `title` is the generated one when there is one and the verbatim first
+/// message when there is not. The fallback is the point: a titling call
+/// that failed, was declined, or was never made leaves a sidebar that reads
+/// exactly as it did before the feature existed. Only this endpoint reads
+/// `display_title`; everything that must not be handed model-authored text,
+/// the recall feed above all, still reads `task`.
 async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value> {
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -186,7 +193,8 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
         if let Ok(sessions) = store.sessions() {
             for s in sessions {
                 seen.insert(s.id.clone());
-                rows.push(json!({"id": s.id, "title": s.task, "status": s.status}));
+                let title = s.display_title.unwrap_or(s.task);
+                rows.push(json!({"id": s.id, "title": title, "status": s.status}));
             }
         }
     }

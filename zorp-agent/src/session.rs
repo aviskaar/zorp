@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT NOT NULL,
     status TEXT NOT NULL,
     session_reasoning_mode TEXT,
+    display_title TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
 );
@@ -61,10 +62,27 @@ CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_
 /// A stored session's header row.
 pub struct SessionRow {
     pub id: String,
+    /// The first thing the user asked for, stored verbatim.
+    ///
+    /// **This column holds text a person typed and nothing else.** It is
+    /// read by things that must never be handed a sentence a model wrote:
+    /// `zorp-web`'s recall feed puts it in the search index as a
+    /// conversation's title, and the memory block quotes that title into a
+    /// later turn's transcript and tells the model to cite it. A generated
+    /// summary written here would be the agent's own guess coming back to
+    /// it as evidence. Display titles go in `display_title` for exactly
+    /// that reason.
     pub task: String,
     pub repo: String,
     pub model: String,
     pub status: String,
+    /// A short title for this session, for display only, or `None` when
+    /// nothing has written one.
+    ///
+    /// Separate from `task` because it may hold model-authored text. Read
+    /// it to label a conversation on a screen; never to build an index,
+    /// seed a prompt, or feed anything a model will later read back.
+    pub display_title: Option<String>,
     /// When this conversation was last written to, in epoch milliseconds.
     ///
     /// The column has always been here and nothing read it out. It is the
@@ -198,21 +216,33 @@ fn migrate_message_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+fn session_column_exists(conn: &Connection, column: &str) -> Result<bool, rusqlite::Error> {
     let mut statement = conn.prepare("PRAGMA table_info(sessions)")?;
     let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-    let mut has_reasoning_mode = false;
-    for column in columns {
-        if column? == "session_reasoning_mode" {
-            has_reasoning_mode = true;
-            break;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
         }
     }
-    if !has_reasoning_mode {
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN session_reasoning_mode TEXT",
-            [],
-        )?;
+    Ok(false)
+}
+
+/// Add whatever the sessions table is missing, so a database written by an
+/// older zorp keeps opening. Same shape as `migrate_message_columns`: a
+/// table of columns, added one at a time, every open.
+fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("session_reasoning_mode", "TEXT"),
+        ("display_title", "TEXT"),
+    ];
+
+    for (column, sql_type) in COLUMNS {
+        if !session_column_exists(conn, column)? {
+            conn.execute(
+                &format!("ALTER TABLE sessions ADD COLUMN {column} {sql_type}"),
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -305,6 +335,43 @@ impl Store {
             |row| row.get(0),
         )?;
         raw.map(|value| value.parse()).transpose()
+    }
+
+    /// Write a short, display-only title for this session.
+    ///
+    /// A second column rather than a rewrite of `task`, and that is the
+    /// whole point of it. `task` is the user's own first message, and the
+    /// recall feed reads it as a conversation's title and the memory block
+    /// quotes that title into a later turn. A generated summary written
+    /// there would be a model's own sentence coming back to it as something
+    /// to cite. Whatever lands here is for a screen and for nothing else.
+    ///
+    /// `updated` is deliberately left alone. It records when the
+    /// conversation was last written to and it is the only clock the store
+    /// has: recall dates an excerpt by it and the CLI resumes by it. A title
+    /// arriving is not the conversation moving.
+    pub fn set_display_title(&self, id: &str, title: &str) -> Result<(), BoxErr> {
+        self.conn.execute(
+            "UPDATE sessions SET display_title = ?2 WHERE id = ?1",
+            (id, title),
+        )?;
+        Ok(())
+    }
+
+    /// This session's display title, or `None` when nothing has written one.
+    ///
+    /// A session that does not exist answers `None` too. A caller asking
+    /// whether a title is still wanted cannot act on the difference, and one
+    /// lookup is cheaper than two.
+    pub fn display_title(&self, id: &str) -> Result<Option<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT display_title FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get(0)?),
+            None => Ok(None),
+        }
     }
 
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), BoxErr> {
@@ -400,7 +467,7 @@ impl Store {
 
     pub fn latest_session(&self) -> Result<Option<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, updated FROM sessions \
+            "SELECT id, task, repo, model, status, display_title, updated FROM sessions \
              ORDER BY updated DESC, created DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
@@ -411,7 +478,8 @@ impl Store {
                 repo: row.get(2)?,
                 model: row.get(3)?,
                 status: row.get(4)?,
-                updated: row.get(5)?,
+                display_title: row.get(5)?,
+                updated: row.get(6)?,
             }))
         } else {
             Ok(None)
@@ -438,7 +506,8 @@ impl Store {
     /// sidebar needs.
     pub fn sessions(&self) -> Result<Vec<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, updated FROM sessions ORDER BY rowid DESC",
+            "SELECT id, task, repo, model, status, display_title, updated FROM sessions \
+             ORDER BY rowid DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SessionRow {
@@ -447,7 +516,8 @@ impl Store {
                 repo: row.get(2)?,
                 model: row.get(3)?,
                 status: row.get(4)?,
-                updated: row.get(5)?,
+                display_title: row.get(5)?,
+                updated: row.get(6)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -769,6 +839,83 @@ CREATE TABLE file_changes (
         let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
 
         assert!(Store::init(conn).is_err());
+    }
+
+    /// The oldest schema this store has ever written has no
+    /// `display_title`, and a person with such a database must be able to
+    /// open it, keep using it, and get titles from then on.
+    #[test]
+    fn a_database_written_before_display_titles_gains_the_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, task, repo, model, status, created, updated) \
+             VALUES ('old', 'hello', '/r', 'm', 'done', 1, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = Store::open_at(&path).unwrap();
+
+        // The session that was already there survives, with no title.
+        let existing = &store.sessions().unwrap()[0];
+        assert_eq!(existing.task, "hello");
+        assert_eq!(existing.display_title, None);
+
+        store.set_display_title("old", "A greeting").unwrap();
+        assert_eq!(
+            store.display_title("old").unwrap().as_deref(),
+            Some("A greeting")
+        );
+    }
+
+    #[test]
+    fn a_new_session_has_no_display_title() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "hello", "/r", "m").unwrap();
+        assert_eq!(store.display_title("s1").unwrap(), None);
+        assert_eq!(store.sessions().unwrap()[0].display_title, None);
+    }
+
+    /// The regression test for the whole reason `display_title` exists. A
+    /// generated title must leave `task` exactly as the user typed it,
+    /// because the recall feed reads `task` and quotes it to a model.
+    #[test]
+    fn a_display_title_leaves_the_verbatim_task_alone() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session(
+                "s1",
+                "read erbga/src/lib.rs and tell me what it does",
+                "/r",
+                "m",
+            )
+            .unwrap();
+        store
+            .set_display_title("s1", "ERBGA library walkthrough")
+            .unwrap();
+
+        let row = &store.sessions().unwrap()[0];
+        assert_eq!(row.task, "read erbga/src/lib.rs and tell me what it does");
+        assert_eq!(
+            row.display_title.as_deref(),
+            Some("ERBGA library walkthrough")
+        );
+    }
+
+    /// A title arriving is not the conversation moving. `updated` is what
+    /// recall dates an excerpt by and what `latest_session` resumes on.
+    #[test]
+    fn a_display_title_does_not_move_the_conversations_clock() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "hello", "/r", "m").unwrap();
+        let before = store.sessions().unwrap()[0].updated;
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.set_display_title("s1", "A greeting").unwrap();
+        assert_eq!(store.sessions().unwrap()[0].updated, before);
     }
 
     #[test]

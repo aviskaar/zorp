@@ -176,6 +176,14 @@ test("the finished answer does not end the message, it completes it", () => {
   assert.equal(endsStreamedMessage("assistant_delta"), false);
 });
 
+// A session title renames a row in the sidebar and the heading above the
+// transcript, and puts nothing in the transcript itself. It usually lands
+// after `done`, when nothing is streaming, but the previous turn's title can
+// arrive in the middle of this one and must not cut the answer in two.
+test("a session title does not end the message, it renames the conversation", () => {
+  assert.equal(endsStreamedMessage("session_title"), false);
+});
+
 test("visible activity and turn endings all close the message", () => {
   for (const type of ["verify", "notice", "approval_request", "error", "done"] as const) {
     assert.equal(endsStreamedMessage(type), true, `${type} left the message open`);

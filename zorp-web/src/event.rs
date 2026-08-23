@@ -226,6 +226,21 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         unavailable: Option<String>,
     },
+    /// This session now has a short, model-written name, and here it is.
+    ///
+    /// Sent after `Done`, because the title is asked for once the turn has
+    /// an answer to read and the turn must not wait on it. Sent only when
+    /// one was actually written: a failed, empty or declined titling call
+    /// sends nothing at all and the sidebar keeps showing the first
+    /// message, which is the correct thing for it to be showing.
+    ///
+    /// The text came from a model, so the browser puts it on the page
+    /// through `textContent` like every other line a model wrote. It is
+    /// display only: `sessions.task` still holds the verbatim first message
+    /// and it is `task`, not this, that the recall index reads.
+    SessionTitle {
+        title: String,
+    },
     Error {
         message: String,
     },

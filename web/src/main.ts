@@ -21,6 +21,7 @@ import { setSendControl } from "./send-control";
 import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
+import { emptySessionRow, sessionRow, UNTITLED } from "./session-row";
 import {
   PaneResizer,
   artifactsBounds,
@@ -1083,6 +1084,13 @@ function applyEvent(event: ZorpEvent): void {
       appendMemoryNote(event);
       break;
 
+    case "session_title":
+      // The server named this conversation. Rename it in place rather than
+      // asking for the list again: the event carries the whole answer, and
+      // it lands after `done` has already refreshed the sidebar once.
+      renameSession(event.title);
+      break;
+
     case "error":
       appendError(event.message);
       // A turn that failed is still a turn that ran, and the server sends
@@ -1730,32 +1738,47 @@ function renderSessions(): void {
   dom.sessionList.replaceChildren();
 
   if (!sessions.length) {
-    const empty = el("li", "session-empty");
-    empty.textContent = "No sessions yet.";
-    dom.sessionList.append(empty);
+    dom.sessionList.append(emptySessionRow(document));
     return;
   }
 
   for (const session of sessions) {
-    const item = el("li", "session-item");
-    const button = el("button", "session-button") as HTMLButtonElement;
-    button.type = "button";
-    button.dataset.id = session.id;
-    button.append(
-      textNode("span", "session-title", session.title || "Untitled session"),
-      textNode("span", "session-time", relativeTime(session.updated_at)),
+    dom.sessionList.append(
+      sessionRow(document, session, {
+        active: session.id === sessionId,
+        when: relativeTime(session.updated_at),
+        onOpen: (chosen) => {
+          void openSession(chosen);
+          closeSidebar();
+        },
+      }),
     );
-    if (session.id === sessionId) {
-      button.classList.add("is-active");
-      button.setAttribute("aria-current", "true");
-    }
-    button.addEventListener("click", () => {
-      void openSession(session);
-      closeSidebar();
-    });
-    item.append(button);
-    dom.sessionList.append(item);
   }
+}
+
+/**
+ * The server named the conversation that is open. Put the name on the page.
+ *
+ * The stream belongs to one session, so a `session_title` frame is always
+ * about the one being shown. The row is rewritten in the local list and the
+ * list is redrawn, which is what makes the sidebar catch up without a
+ * reload and without a poll.
+ *
+ * The title is model output. It reaches the DOM through `setTitle` and
+ * `renderSessions`, both of which assign `textContent`, and it must keep
+ * doing so: this is a string a model wrote after reading the user's message
+ * and its own answer.
+ */
+function renameSession(title: string): void {
+  if (!sessionId || !title) {
+    return;
+  }
+  const row = sessions.find((session) => session.id === sessionId);
+  if (row) {
+    row.title = title;
+  }
+  renderSessions();
+  setTitle(title);
 }
 
 function markActiveSession(): void {
@@ -1792,7 +1815,7 @@ async function openSession(session: SessionSummary): Promise<void> {
   closeStream();
   resetTranscript();
   sessionId = session.id;
-  setTitle(session.title || "Untitled session");
+  setTitle(session.title || UNTITLED);
   markActiveSession();
   // Approval mode belongs to the session being opened, not to the one being
   // left. Until the server answers, the page shows the careful state.
