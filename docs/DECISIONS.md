@@ -24,12 +24,24 @@ it underneath. `DEFAULT_READ_TIMEOUT_SECS` goes from 300 to 900.
 | `ZORP_HTTP_TIMEOUT_SECS` | usable forecasts |
 | --- | --- |
 | 180 | 0 of 20, and 9 of 300 on a longer run |
+| 300 | 10 of 15 |
 | 3600 | 6 of 10 |
 | no bound at all (before PR #95) | 76 of 123 |
 
 `stealth/ox-alpha` on OpenRouter, 300 crate directories, each attempt an
 agent loop of up to 40 model calls. The only thing that changed between
 the rows is the idle timeout.
+
+The 300 second row was measured after this entry was first written, and
+it moves the cliff rather than the conclusion. 300 is not a middling
+value that loses some attempts, it performs like no bound at all, so the
+whole collapse sits between 180 and 300 seconds. That says the stall tail
+this model puts on a free endpoint is a few minutes wide and then stops,
+which is a narrower thing than the arithmetic below assumed. 900 is still
+the right default for the reason the arithmetic gives, headroom over a
+tail nobody has bounded on other providers, but it is headroom and not a
+rescue: the number that was actually shipped and hurt was 180, and 300
+would have been fine.
 
 **The failure was silent, and that is the part worth recording.** The
 discard tally for the 300 attempt run read: no fenced json block 286,
