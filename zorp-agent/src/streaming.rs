@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 /// How much of an error body to quote back. Matches the core's cap.
 const ERROR_BODY_CAP: u64 = 8 * 1024;
@@ -36,24 +37,105 @@ fn cancelled(cancel: Option<&CancelToken>) -> bool {
     cancel.is_some_and(|c| c.load(Ordering::SeqCst))
 }
 
+/// What a stream that stopped before the provider had finished reports.
+///
+/// A separate sentence from [`CANCELLED`] because it is a separate thing. A
+/// cancel is somebody deciding to stop; this is the provider stopping without
+/// saying so, and the two need different answers from whoever reads the line.
+pub const TRUNCATED: &str = "the stream ended before the provider said it had finished";
+
+/// How far short of the read timeout a failed read may measure and still be
+/// counted as that timeout.
+///
+/// The clock here starts just before the read is issued and the socket's own
+/// timer starts a few instructions later, so a real timeout normally measures
+/// a shade over the limit and needs no slack at all. This is for the case
+/// where it does not: a coarse clock, or a thread descheduled between the two.
+/// Small enough that no other failure can reach it, because the only way to
+/// have been idle for nearly the whole limit is to have been idle.
+const TIMEOUT_SLACK: Duration = Duration::from_millis(250);
+
 /// Say which failure this was, in words a person can act on.
 ///
-/// ureq reports a read timeout as `TimedOut` carrying "timed out reading
-/// response", which is true and tells nobody what to do next. Whoever reads
-/// this line wants two things: that the provider went quiet rather than
-/// refused, and which knob buys more patience.
-fn read_error(e: std::io::Error) -> BoxErr {
-    if e.kind() == std::io::ErrorKind::TimedOut {
+/// Whoever reads this line wants two things: that the provider went quiet
+/// rather than refused, and which knob buys more patience. ureq's own words
+/// give them neither, and on one of the two body framings it gives them
+/// worse than neither.
+///
+/// A close-delimited body is read straight off the socket, so a read timeout
+/// arrives as `TimedOut` carrying "timed out reading response". A chunked one
+/// is read through a decoder that consumes the chunk body and then reads the
+/// framing bytes around it with separate calls, and when one of those fails
+/// the decoder throws the reason away and reports `InvalidInput`, "Error
+/// while decoding chunks". That is the framing every OpenAI-compatible
+/// endpoint behind a CDN uses, so in practice the timeout that mattered was
+/// the one that never said its own name. Grepping a 300 attempt log for
+/// "timeout" matched nothing, and the run looked like a model problem.
+///
+/// So the clock decides and not the kind. A read that failed after the socket
+/// had been silent for as long as the limit was the limit, whatever ureq
+/// chose to call it, and the transport's own words are kept on the end rather
+/// than dropped.
+fn read_error(e: std::io::Error, quiet_for: Duration) -> BoxErr {
+    let limit = zorp::read_timeout_secs();
+    let timed_out = e.kind() == std::io::ErrorKind::TimedOut
+        || quiet_for + TIMEOUT_SLACK >= Duration::from_secs(limit);
+    if timed_out {
         format!(
-            "the provider sent nothing for {} seconds and the stream was \
-             abandoned; set {} to wait longer",
-            zorp::read_timeout_secs(),
+            "the provider sent nothing for {limit} seconds and the stream was \
+             abandoned; set {} to wait longer (the transport said: {e})",
             zorp::READ_TIMEOUT_VAR
         )
         .into()
     } else {
         e.into()
     }
+}
+
+/// Did this payload say the provider had finished?
+///
+/// Two shapes count. `[DONE]` is the sentinel an OpenAI-compatible endpoint
+/// writes as the last event, and a non-empty `finish_reason` is the field it
+/// sets on the last choice. A provider sends one, the other, or both; a
+/// stream carrying neither stopped rather than ended.
+///
+/// This is not the second interpreter the module doc warns about. It asks
+/// whether the stream is over, not what the message says, and it reads no
+/// field that goes into the answer. [`DeltaAccumulator`] remains the only
+/// place that decides what the model actually said.
+///
+/// The substring check before the parse is not a micro-optimization worth
+/// hiding: a long answer is thousands of content deltas and every one of them
+/// would otherwise be parsed twice, once here and once in the accumulator.
+fn signals_completion(payload: &str) -> bool {
+    let payload = payload.trim();
+    if payload == "[DONE]" {
+        return true;
+    }
+    if !payload.contains("finish_reason") {
+        return false;
+    }
+    serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|value| {
+            let reason = value
+                .get("choices")?
+                .as_array()?
+                .first()?
+                .get("finish_reason")?
+                .as_str()?;
+            Some(!reason.is_empty())
+        })
+        .unwrap_or(false)
+}
+
+/// The error a stream that stopped short reports.
+fn truncated(events: usize) -> BoxErr {
+    format!(
+        "{TRUNCATED}: {events} events arrived and then the response ended, \
+         with no [DONE] and no finish_reason, so the answer is cut off"
+    )
+    .into()
 }
 
 /// What the provider actually did when asked to stream.
@@ -91,6 +173,17 @@ pub enum StreamOutcome {
 /// overrides it, and because ureq applies it per read it behaves here as an
 /// idle timeout: a long answer that keeps producing tokens is never cut off,
 /// and a silence longer than the timeout ends as an error.
+///
+/// **A stream that ends without the provider saying it had finished is an
+/// error too, and that is the more important half.** A gateway that hits its
+/// own idle limit does not hold the socket open, it ends the response, and a
+/// response that ends cleanly halfway through an answer is not a transport
+/// failure at all: the bytes that arrived were well formed and the body was
+/// closed properly. It used to come back as `Ok`, carrying whatever text had
+/// arrived, and from above that is indistinguishable from a model that
+/// answered badly. A 300 attempt calibration run recorded 286 discards as "no
+/// fenced json block" and zero as "agent error", and the whole log did not
+/// contain the word timeout once. See `docs/DECISIONS.md` (2026-08-23).
 pub fn stream_sse(
     url: &str,
     headers: &[(&str, &str)],
@@ -147,7 +240,10 @@ pub fn stream_sse(
             if cancelled(cancel) {
                 return Err(CANCELLED.into());
             }
-            let read = reader.read(&mut chunk).map_err(read_error)?;
+            let since_last_byte = Instant::now();
+            let read = reader
+                .read(&mut chunk)
+                .map_err(|e| read_error(e, since_last_byte.elapsed()))?;
             if read == 0 {
                 break;
             }
@@ -159,28 +255,36 @@ pub fn stream_sse(
         // Streamed anyway, under some other content type. Decode it rather
         // than failing on a technicality about a header.
         let mut decoder = SseDecoder::new();
-        let mut any = false;
+        let mut events = 0usize;
+        let mut finished = false;
         for payload in decoder.push(&raw) {
-            any = true;
+            events += 1;
+            finished |= signals_completion(&payload);
             on_payload(&payload);
         }
         if let Some(payload) = decoder.finish() {
-            any = true;
+            events += 1;
+            finished |= signals_completion(&payload);
             on_payload(&payload);
         }
-        return if any {
-            Ok(StreamOutcome::Streamed)
-        } else {
-            Err(format!(
+        if events == 0 {
+            return Err(format!(
                 "{url}: answer was neither JSON nor an event stream ({} bytes)",
                 raw.len()
             )
-            .into())
+            .into());
+        }
+        return if finished {
+            Ok(StreamOutcome::Streamed)
+        } else {
+            Err(truncated(events))
         };
     }
 
     let mut decoder = SseDecoder::new();
     let mut buf = [0u8; 4096];
+    let mut events = 0usize;
+    let mut finished = false;
     loop {
         // Between reads, which is the only place a synchronous reader offers.
         // One chunk of latency, against a response that otherwise has to
@@ -188,18 +292,37 @@ pub fn stream_sse(
         if cancelled(cancel) {
             return Err(CANCELLED.into());
         }
-        let read = reader.read(&mut buf).map_err(read_error)?;
+        // Restarted per read, so it measures silence rather than the length
+        // of the answer. `read_error` needs the second of those and would be
+        // wrong about every long healthy response if handed the first.
+        let since_last_byte = Instant::now();
+        let read = reader
+            .read(&mut buf)
+            .map_err(|e| read_error(e, since_last_byte.elapsed()))?;
         if read == 0 {
             break;
         }
         for payload in decoder.push(&buf[..read]) {
+            events += 1;
+            finished |= signals_completion(&payload);
             on_payload(&payload);
         }
     }
     if let Some(payload) = decoder.finish() {
+        events += 1;
+        finished |= signals_completion(&payload);
         on_payload(&payload);
     }
-    Ok(StreamOutcome::Streamed)
+    // The events that did arrive were delivered on the way past, and that is
+    // deliberate even when the answer turns out to be cut off: a caller that
+    // renders deltas has already shown them, and pretending the response
+    // never started would only make the transcript disagree with the screen.
+    // What must not happen is this returning `Ok`.
+    if finished {
+        Ok(StreamOutcome::Streamed)
+    } else {
+        Err(truncated(events))
+    }
 }
 
 /// Frames an SSE body.
@@ -839,10 +962,14 @@ mod tests {
     /// not an agent, and it must behave exactly as it did before.
     #[test]
     fn without_a_token_a_stream_still_reads_to_the_end() {
-        let pieces: Vec<String> = ["he", "llo"]
+        let mut pieces: Vec<String> = ["he", "llo"]
             .iter()
             .map(|t| format!("data: {}\n\n", json!({"choices":[{"delta":{"content":t}}]})))
             .collect();
+        // The provider says it has finished, because that is what a provider
+        // does and because a stream without it is now an error in its own
+        // right. See `a_stream_that_stops_without_saying_so_is_not_an_answer`.
+        pieces.push("data: [DONE]\n\n".to_string());
         let address = drip_server("text/event-stream", pieces, Duration::from_millis(1));
 
         let mut seen = 0usize;
@@ -854,6 +981,77 @@ mod tests {
             &mut |_payload| seen += 1,
         );
         assert!(outcome.is_ok(), "{:?}", outcome.err());
-        assert_eq!(seen, 2);
+        assert_eq!(seen, 3);
+    }
+
+    /* ---- a response that stopped, told apart from one that finished ---- */
+
+    /// The bug that cost nine hours: this used to be `Ok`.
+    ///
+    /// A response that ends cleanly halfway through an answer is not a
+    /// transport failure, so nothing below noticed, and the half answer went
+    /// up the stack looking exactly like a model that replied badly.
+    #[test]
+    fn a_stream_that_stops_without_saying_so_is_not_an_answer() {
+        let pieces = vec![format!(
+            "data: {}\n\n",
+            json!({"choices":[{"delta":{"content":"half an ans"}}]})
+        )];
+        let address = drip_server("text/event-stream", pieces, Duration::from_millis(1));
+
+        let mut seen = 0usize;
+        let outcome = stream_sse(
+            &format!("http://{address}/v1/chat/completions"),
+            &[],
+            json!({"stream": true}),
+            None,
+            &mut |_payload| seen += 1,
+        );
+        let error = outcome
+            .err()
+            .expect("a truncated answer came back as a finished one")
+            .to_string();
+        assert!(error.starts_with(TRUNCATED), "{error}");
+        assert_eq!(seen, 1, "the event that did arrive was not delivered");
+    }
+
+    /// A `finish_reason` is the other way a provider says it is done, and a
+    /// provider that sends one without a `[DONE]` after it is ordinary.
+    #[test]
+    fn a_finish_reason_is_enough_to_call_a_stream_finished() {
+        let pieces = vec![format!(
+            "data: {}\n\n",
+            json!({"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]})
+        )];
+        let address = drip_server("text/event-stream", pieces, Duration::from_millis(1));
+
+        let outcome = stream_sse(
+            &format!("http://{address}/v1/chat/completions"),
+            &[],
+            json!({"stream": true}),
+            None,
+            &mut |_payload| {},
+        );
+        assert!(outcome.is_ok(), "{:?}", outcome.err());
+    }
+
+    /// `finish_reason: null` arrives on every intermediate chunk from some
+    /// providers. Reading it as an ending would undo the whole check.
+    #[test]
+    fn a_null_finish_reason_does_not_end_a_stream() {
+        assert!(!signals_completion(
+            &json!({"choices":[{"delta":{"content":"x"},"finish_reason":null}]}).to_string()
+        ));
+        assert!(!signals_completion(
+            &json!({"choices":[{"delta":{"content":"x"},"finish_reason":""}]}).to_string()
+        ));
+        assert!(signals_completion(
+            &json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}).to_string()
+        ));
+        assert!(signals_completion("[DONE]"));
+        assert!(signals_completion(" [DONE] "));
+        assert!(!signals_completion(
+            &json!({"choices":[{"delta":{"content":"x"}}]}).to_string()
+        ));
     }
 }

@@ -126,12 +126,14 @@ Run the core transport directly:
 export ZORP_BASE_URL="https://api.openai.com/v1"   # or a local endpoint (Ollama, LM Studio, vLLM)
 export ZORP_API_KEY="sk-..."
 export ZORP_MODEL="gpt-4o-mini"
-# Optional. Seconds to wait for the model, default 300. Loading a local model
+# Optional. Seconds of silence to wait for, default 900. Loading a local model
 # into memory can take minutes on modest hardware, and that wait happens
 # before the first token. On a streamed reply this bounds the silence between
 # chunks, not the length of the answer, so a long reply is never cut off and a
-# provider that goes quiet stops being waited on.
-export ZORP_HTTP_TIMEOUT_SECS=300
+# provider that goes quiet stops being waited on. Exceeding it is an error
+# that says so, and so is a stream that ends before the provider says it has
+# finished.
+export ZORP_HTTP_TIMEOUT_SECS=900
 cargo run -- "Summarize the second law of thermodynamics in one sentence."
 ```
 

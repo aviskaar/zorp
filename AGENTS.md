@@ -241,7 +241,7 @@ resulting artifact, deliver it in the right form.
   run `cargo fmt --all` before committing.
 - `zorp::http_agent` is the one HTTP agent for model traffic and the one
   place timeouts are set: 30 seconds to connect, `ZORP_HTTP_TIMEOUT_SECS`
-  to read, defaulting to 300. Anything in the workspace that talks to a
+  to read, defaulting to 900. Anything in the workspace that talks to a
   model endpoint goes through it. It was private once and the streaming
   path reached for `ureq::agent()` instead, which has no timeouts at all,
   so every real model call ran unbounded and one of them sat on an
@@ -253,6 +253,22 @@ resulting artifact, deliver it in the right form.
   each sets its own timeouts; `zorp-recall`'s in particular carries the
   loopback resolver and must not be replaced by this one. See
   `docs/DECISIONS.md` (2026-08-22) before changing any of it.
+- An agent loop multiplies that bound and the default is picked with the
+  multiplication in mind. One attempt is up to 40 model calls and any one
+  of them exceeding the bound kills the attempt, so a per-request stall
+  rate of `p` leaves `(1 - p)^40` attempts alive: one request in twenty
+  stalling loses seven attempts in eight. At 180 seconds a 300 attempt
+  calibration run produced 9 usable forecasts; before any bound existed
+  the same corpus produced 76 from 123. Two things follow and neither is
+  negotiable. Exceeding the bound is loud: `stream_sse` names the timeout
+  and `ZORP_HTTP_TIMEOUT_SECS` whatever ureq called the underlying error,
+  because on a chunked body ureq reports a read timeout as "Error while
+  decoding chunks" and a log full of those says nothing. And a stream that
+  ends before the provider says it has finished, no `[DONE]` and no
+  `finish_reason`, is an error and not a short answer, because a truncated
+  answer that returns `Ok` is indistinguishable from a model that replied
+  badly and that is how a nine hour run was misread twice. See
+  `docs/DECISIONS.md` (2026-08-23) before changing either.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides the oldest tool-result bodies

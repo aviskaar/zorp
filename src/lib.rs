@@ -69,14 +69,35 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
 /// is fixed (no per-call knobs), so a single static is enough.
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
-/// Seconds to wait for a model to respond, and the variable that overrides it.
+/// Seconds of silence to wait for before giving up on a model, and the
+/// variable that overrides it.
 ///
-/// 300, not 60. A local model that is not resident has to be loaded before it
-/// can emit a token, and on ordinary hardware that takes longer than a minute:
-/// a cold 4B on an Apple laptop measured 131 seconds to first response. At 60
+/// Not 60. A local model that is not resident has to be loaded before it can
+/// emit a token, and on ordinary hardware that takes longer than a minute: a
+/// cold 4B on an Apple laptop measured 131 seconds to first response. At 60
 /// the first message a new user ever sends fails, which reads as "this is
 /// broken" rather than "the model is loading".
-pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 300;
+///
+/// 900 and not 300, because an agent loop multiplies this. One attempt is up
+/// to 40 model calls and any one of them exceeding the bound kills the whole
+/// attempt, so a per-request stall rate of `p` leaves `(1 - p)^40` attempts
+/// alive: one request in twenty stalling is seven attempts in eight lost, and
+/// one in ten is ninety-nine in a hundred. Measured, at 180 seconds: 9 usable
+/// forecasts out of 300 attempts, against 76 out of 123 before any bound
+/// existed. That is roughly one request in twelve going quiet for longer than
+/// three minutes, which is unremarkable for a reasoning model behind a
+/// gateway and catastrophic once it is raised to the fortieth power.
+///
+/// The number is chosen with the asymmetry in mind rather than from a
+/// distribution nobody has. Too long costs one wait on a socket nobody is
+/// coming back to; too short costs the run. 900 is five times the value
+/// measured to be catastrophic and still catches the 3 hours 18 minutes that
+/// put a bound here in the first place, thirteen times over.
+///
+/// It is also a number that can be wrong safely now, which is the part that
+/// matters. Exceeding it used to be silent, so being wrong about it looked
+/// like a bad model. See `docs/DECISIONS.md` (2026-08-23).
+pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 900;
 pub const READ_TIMEOUT_VAR: &str = "ZORP_HTTP_TIMEOUT_SECS";
 
 /// The read timeout in force, in seconds. Public so a caller that has to
