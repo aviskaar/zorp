@@ -79,7 +79,9 @@ static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 pub const DEFAULT_READ_TIMEOUT_SECS: u64 = 300;
 pub const READ_TIMEOUT_VAR: &str = "ZORP_HTTP_TIMEOUT_SECS";
 
-fn read_timeout_secs() -> u64 {
+/// The read timeout in force, in seconds. Public so a caller that has to
+/// explain a timeout can name the number the user would have to change.
+pub fn read_timeout_secs() -> u64 {
     std::env::var(READ_TIMEOUT_VAR)
         .ok()
         .and_then(|v| v.parse().ok())
@@ -87,7 +89,21 @@ fn read_timeout_secs() -> u64 {
         .unwrap_or(DEFAULT_READ_TIMEOUT_SECS)
 }
 
-fn agent() -> ureq::Agent {
+/// The one HTTP agent in the workspace, and the one place timeouts are set.
+///
+/// Public because it has to be. It was private, and the streaming path in
+/// `zorp-agent` reached for `ureq::agent()` instead, which is ureq's default
+/// agent: no connect timeout and no read timeout. Every real model call
+/// streams, so every real model call ran with no bound at all. A 200 sample
+/// calibration run against OpenRouter sat at 0% CPU for 3 hours 18 minutes on
+/// an established socket and had to be killed. Two ways to configure one
+/// thing are one too many, so there is now one function and callers share it.
+///
+/// `timeout_read` is per read call, not per request. On a streamed response
+/// that makes it an idle timeout: it bounds silence between chunks and says
+/// nothing about how long an answer may take, so a model that keeps producing
+/// tokens for an hour is fine and a model that stops mid-sentence is not.
+pub fn http_agent() -> ureq::Agent {
     AGENT
         .get_or_init(|| {
             ureq::AgentBuilder::new()
@@ -137,7 +153,7 @@ fn send_json(req: ureq::Request, body: Value) -> Result<ureq::Response, BoxErr> 
 /// arbitrary headers; return the full parsed response. No path/auth/shape opinions.
 /// A non-2xx status becomes an error that includes the response body.
 pub fn zorp_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
-    let mut req = agent().post(url);
+    let mut req = http_agent().post(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
@@ -202,7 +218,7 @@ pub fn zorp_stream(
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(true));
     }
-    let mut req = agent().post(url);
+    let mut req = http_agent().post(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }

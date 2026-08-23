@@ -128,7 +128,7 @@ Configuration, all environment variables:
   ZORP_MODEL               model name
   ZORP_SYSTEM              system prompt
   ZORP_STREAM              set to 0 to buffer the reply instead of streaming
-  ZORP_HTTP_TIMEOUT_SECS   read timeout; raise it for a slow cold model
+  ZORP_HTTP_TIMEOUT_SECS   idle read timeout; raise it for a slow cold model
 
 Only a leading flag is read as a flag. Anywhere else it is part of the
 prompt, so `zorp what does --version print` still asks the model.
