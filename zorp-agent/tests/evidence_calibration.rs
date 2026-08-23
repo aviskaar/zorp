@@ -36,6 +36,27 @@
 //!
 //! `ZORP_CAL_N` caps how many directories are asked about.
 //! `ZORP_CAL_STEPS` caps agent steps per forecast, default 12.
+//! `ZORP_CAL_ROOT` is the tree to walk, default this workspace.
+//! `ZORP_CAL_SEED` fixes the order the sample is taken in, default 0.
+//!
+//! **The sample is nested, so a bigger run extends a smaller one.** The
+//! order over the eligible directories is fixed by `ZORP_CAL_SEED`
+//! alone and the run takes the first `ZORP_CAL_N` of it, which means
+//! the sample for 250 starts with the sample for 200 and the two runs
+//! can be compared. The old sampler took every kth directory with k
+//! chosen from n, so raising n replaced the sample instead of extending
+//! it: two real runs at n=200 and n=250 shared one directory out of 76
+//! and 33 scored, and the calibration gap moved from 0.107 to 0.000 for
+//! reasons that had nothing to do with the model. See
+//! `docs/DECISIONS.md` (2026-08-23).
+//!
+//! **A run reproduces against the same corpus, and only that.** The
+//! order comes from a hash of each directory's path, so adding one
+//! directory to the tree does not reorder the others, but it can still
+//! push one out of the prefix. `~/.cargo/registry/src` gains crates, so
+//! the `corpus:` line carries the eligible count and a digest of the
+//! eligible paths: two runs over different corpora say so on their
+//! first line rather than looking alike.
 //!
 //! **Every sampled directory prints one line and the totals add up.**
 //! Each attempt is either scored or discarded into one named category,
@@ -92,10 +113,107 @@ fn prompt(dir: &str) -> String {
     )
 }
 
+/// The order the sample is taken in, when nobody picks one.
+const DEFAULT_SEED: u64 = 0;
+
+/// splitmix64's finalizer. Spreads a weakly mixed hash across the whole
+/// word, so sorting by the key does not sort by a shared prefix.
+fn mix(mut z: u64) -> u64 {
+    z ^= z >> 30;
+    z = z.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z ^= z >> 27;
+    z = z.wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// FNV-1a over the seed and then the bytes, finalized.
+///
+/// Written out here rather than reached for from a crate on purpose.
+/// The number this returns is the sample: it has to be the same on
+/// every machine and in every future build, and a hash from a
+/// dependency is only as stable as that dependency's next release.
+/// `DefaultHasher` is worse still, since its keys are not promised to
+/// stay put between Rust versions.
+fn keyed_hash(seed: u64, bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in seed.to_le_bytes().iter().chain(bytes.iter()) {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    mix(h)
+}
+
+/// A fingerprint of which directories were eligible, not of what is in
+/// them. Printed so two runs over different corpora are visibly
+/// different rather than silently so.
+fn corpus_digest(eligible: &[(String, usize)]) -> u64 {
+    let mut joined = String::new();
+    for (rel, _) in eligible {
+        joined.push_str(rel);
+        joined.push('\n');
+    }
+    keyed_hash(0, joined.as_bytes())
+}
+
+/// The eligible directories in a fixed order that does not depend on
+/// how many the run wants.
+///
+/// That independence is the whole point: the sample is the first `want`
+/// of this order, so a larger run starts with the smaller one's sample
+/// and the two are comparable.
+///
+/// A key per path, rather than a seeded shuffle of the list. Both give
+/// an order that is not alphabetical, which is what a plain sort gets
+/// wrong: sorted paths group by crate name and therefore by ecosystem
+/// and vintage, so the first n are one letter's worth of crates. The
+/// difference is what happens when the tree grows. A shuffle is a
+/// property of the whole list, so one new crate in the registry
+/// reorders everything and no earlier run can be extended. A hash of
+/// the path is a property of that path, so a new directory takes its
+/// own place and leaves every other pair in the same relative order.
+/// It can still displace the tail of a prefix, which is why a run is
+/// only reproducible against the same corpus and why the digest is
+/// printed.
+fn ordered(eligible: &[(String, usize)], seed: u64) -> Vec<(String, usize)> {
+    let mut keyed: Vec<(u64, &(String, usize))> = eligible
+        .iter()
+        .map(|e| (keyed_hash(seed, e.0.as_bytes()), e))
+        .collect();
+    // Ties broken by path, so two directories that collide still land
+    // in the same order on every machine.
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1 .0.cmp(&b.1 .0)));
+    keyed.into_iter().map(|(_, e)| e.clone()).collect()
+}
+
+/// The first `want` of the seeded order.
+fn sample(eligible: &[(String, usize)], want: usize, seed: u64) -> Vec<(String, usize)> {
+    let mut out = ordered(eligible, seed);
+    out.truncate(want);
+    out
+}
+
+/// Everything a reader needs to run the same sample again: where it
+/// walked, how many directories it found, which set of directories that
+/// was, the seed, and how many it took.
+fn corpus_line(
+    root: &std::path::Path,
+    eligible: &[(String, usize)],
+    seed: u64,
+    taken: usize,
+) -> String {
+    format!(
+        "corpus: {} eligible directories under {}, digest {:016x}, \
+         ZORP_CAL_SEED={seed}, taking the first {taken} of the seeded order",
+        eligible.len(),
+        root.display(),
+        corpus_digest(eligible),
+    )
+}
+
 /// Directories holding at least two `.rs` files, with the true total
 /// for each. Two, because a single file total is one `read_file` away
 /// and would measure tool use rather than judgement.
-fn subjects(root: &std::path::Path, want: usize) -> Vec<(String, usize)> {
+fn subjects(root: &std::path::Path, want: usize, seed: u64) -> Vec<(String, usize)> {
     let mut out: Vec<(String, usize)> = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
     while let Some(dir) = dirs.pop() {
@@ -137,22 +255,10 @@ fn subjects(root: &std::path::Path, want: usize) -> Vec<(String, usize)> {
         }
     }
     out.sort();
-    if out.len() <= want {
-        return out;
-    }
-    // Every nth, not the first n. Sorted paths mean truncation would take
-    // an alphabetical prefix, which on a registry checkout is one letter's
-    // worth of crates and on any tree is whatever sorts early. Striding
-    // spans the corpus and is still deterministic, so the sample is the
-    // same on every machine and the run reproduces.
-    let stride = out.len() / want;
-    let sampled: Vec<(String, usize)> = out.iter().step_by(stride).take(want).cloned().collect();
-    println!(
-        "corpus: {} eligible directories, sampling every {}th for {}",
-        out.len(),
-        stride,
-        sampled.len()
-    );
+    let sampled = sample(&out, want, seed);
+    // Printed on every run, including the one that takes the whole
+    // corpus, because the line is what a later run is repeated from.
+    println!("{}", corpus_line(root, &out, seed, sampled.len()));
     sampled
 }
 
@@ -465,6 +571,14 @@ fn a_forecaster_with_tools_is_scored_on_what_it_gathered() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(12);
+    // Fixes the order, and nothing else. Raising `ZORP_CAL_N` at the
+    // same seed extends the sample rather than replacing it; changing
+    // the seed is how you deliberately ask a different set of
+    // questions, and the `corpus:` line says which you did.
+    let seed: u64 = std::env::var("ZORP_CAL_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_SEED);
 
     // The corpus this repo can offer is 22 directories, and the report
     // needs 50 before it will return anything but NotEnoughEvidence, so
@@ -502,7 +616,7 @@ fn a_forecaster_with_tools_is_scored_on_what_it_gathered() {
         )
         .unwrap();
 
-    let targets = subjects(&root, want);
+    let targets = subjects(&root, want, seed);
     println!(
         "asking about {} directories, model {model_name}, max_steps {max_steps}\n",
         targets.len()
@@ -648,6 +762,223 @@ fn a_forecaster_with_tools_is_scored_on_what_it_gathered() {
         for r in verdict.reasons() {
             println!("    {r:?}");
         }
+    }
+}
+
+// ---------------------------------------------------------------------
+// The sample, checked without a model.
+//
+// Nesting and determinism are the two properties the calibration
+// numbers rest on, so neither is a claim in a comment. Both fail
+// against the stride sampler these replaced.
+// ---------------------------------------------------------------------
+
+/// A stand-in for a registry checkout: several versions of each of many
+/// crates, so a sorted order clumps by crate name the way the real one
+/// does.
+fn synthetic_corpus(crates: usize, versions: usize) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for c in 0..crates {
+        for v in 0..versions {
+            out.push((format!("crate{c:03}-1.{v}.0/src"), 100 + c * 10 + v));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The defect this change exists to stop. A run at a larger n has to
+/// extend the smaller one, or the two numbers are not comparable and
+/// nothing accumulates.
+#[test]
+fn a_larger_sample_starts_with_a_smaller_one() {
+    let corpus = synthetic_corpus(120, 4);
+    assert_eq!(corpus.len(), 480);
+
+    let small = sample(&corpus, 40, DEFAULT_SEED);
+    let large = sample(&corpus, 150, DEFAULT_SEED);
+    assert_eq!(small.len(), 40);
+    assert_eq!(large.len(), 150);
+    assert_eq!(
+        &large[..small.len()],
+        small.as_slice(),
+        "the sample for 150 does not start with the sample for 40"
+    );
+
+    // The whole chain, including the sizes either side of a boundary
+    // and one past the end of the corpus.
+    let mut prev = sample(&corpus, 1, DEFAULT_SEED);
+    for n in [2, 7, 39, 40, 41, 200, 480, 999] {
+        let next = sample(&corpus, n, DEFAULT_SEED);
+        assert_eq!(next.len(), n.min(corpus.len()));
+        assert_eq!(
+            &next[..prev.len()],
+            prev.as_slice(),
+            "the sample for {n} does not start with the sample for {}",
+            prev.len()
+        );
+        prev = next;
+    }
+}
+
+#[test]
+fn the_same_corpus_and_seed_give_the_same_sample_every_time() {
+    let corpus = synthetic_corpus(120, 4);
+    let once = sample(&corpus, 25, DEFAULT_SEED);
+    assert_eq!(once, sample(&corpus, 25, DEFAULT_SEED));
+
+    // The order is a property of the paths, not of the order the walk
+    // happened to find them in.
+    let mut backwards = corpus.clone();
+    backwards.reverse();
+    assert_eq!(sample(&backwards, 25, DEFAULT_SEED), once);
+
+    // Written down, because "the same every time" has to mean across
+    // processes, machines and next year's build, and two calls in one
+    // process cannot show that. If this ever needs updating, every
+    // published calibration number taken at this seed was taken over a
+    // different sample than the next one will be.
+    let first_five: Vec<&str> = once.iter().take(5).map(|(rel, _)| rel.as_str()).collect();
+    assert_eq!(
+        first_five,
+        [
+            "crate090-1.0.0/src",
+            "crate102-1.2.0/src",
+            "crate007-1.0.0/src",
+            "crate031-1.0.0/src",
+            "crate070-1.2.0/src",
+        ]
+    );
+    assert_eq!(
+        format!("{:016x}", corpus_digest(&corpus)),
+        "d90c9619eab87686"
+    );
+}
+
+#[test]
+fn a_different_seed_asks_a_different_set_of_questions() {
+    let corpus = synthetic_corpus(120, 4);
+    let a = sample(&corpus, 40, 0);
+    let b = sample(&corpus, 40, 1);
+
+    assert_ne!(a, b);
+    let shared = a.iter().filter(|dir| b.contains(dir)).count();
+    assert!(
+        shared < 20,
+        "seed 1 asked mostly the same questions as seed 0: {shared} of 40 shared"
+    );
+}
+
+/// A plain sort is deterministic and nested and still wrong: it takes
+/// one letter's worth of crates, which on a registry checkout is one
+/// ecosystem and one vintage.
+#[test]
+fn the_sample_is_not_an_alphabetical_prefix() {
+    let corpus = synthetic_corpus(120, 4);
+    let taken = sample(&corpus, 40, DEFAULT_SEED);
+    let alphabetical: Vec<(String, usize)> = corpus.iter().take(40).cloned().collect();
+
+    assert_ne!(taken, alphabetical);
+    let crates: std::collections::BTreeSet<&str> = taken
+        .iter()
+        .map(|(rel, _)| rel.split('-').next().unwrap_or(rel))
+        .collect();
+    assert!(
+        crates.len() > 20,
+        "40 directories came from only {} crates, which is a clump",
+        crates.len()
+    );
+}
+
+/// `~/.cargo/registry/src` gains crates, so say what that does. The key
+/// is per path, so the directories already there keep their order; a
+/// new one can still land inside the prefix and push the last one out,
+/// which is why a run reproduces against the same corpus and no other.
+#[test]
+fn a_new_directory_does_not_reorder_the_ones_already_there() {
+    let before = synthetic_corpus(60, 3);
+    let mut after = before.clone();
+    for v in 0..3 {
+        after.push((format!("newcrate-2.{v}.0/src"), 7));
+    }
+    after.sort();
+
+    let old: Vec<String> = ordered(&before, DEFAULT_SEED)
+        .into_iter()
+        .map(|(rel, _)| rel)
+        .collect();
+    let kept: Vec<String> = ordered(&after, DEFAULT_SEED)
+        .into_iter()
+        .map(|(rel, _)| rel)
+        .filter(|rel| !rel.starts_with("newcrate-"))
+        .collect();
+    assert_eq!(kept, old, "adding directories reordered the existing ones");
+
+    // And the honest half: a grown corpus is a different corpus, and
+    // the line the run prints says so.
+    assert_ne!(corpus_digest(&before), corpus_digest(&after));
+}
+
+#[test]
+fn the_digest_names_the_set_of_directories_and_not_what_is_in_them() {
+    let corpus = synthetic_corpus(20, 2);
+
+    let mut retotalled = corpus.clone();
+    retotalled[3].1 += 1000;
+    assert_eq!(corpus_digest(&corpus), corpus_digest(&retotalled));
+
+    let mut grown = corpus.clone();
+    grown.push(("brand-new-1.0.0/src".into(), 12));
+    grown.sort();
+    assert_ne!(corpus_digest(&corpus), corpus_digest(&grown));
+}
+
+#[test]
+fn the_corpus_line_says_enough_to_repeat_the_run() {
+    let corpus = synthetic_corpus(10, 2);
+    let root = std::path::Path::new("/tmp/registry/src");
+    let line = corpus_line(root, &corpus, 7, 12);
+
+    assert!(line.starts_with("corpus:"), "{line}");
+    assert!(line.contains("20 eligible directories"), "{line}");
+    assert!(line.contains("/tmp/registry/src"), "{line}");
+    assert!(
+        line.contains(&format!("{:016x}", corpus_digest(&corpus))),
+        "{line}"
+    );
+    assert!(line.contains("ZORP_CAL_SEED=7"), "{line}");
+    assert!(line.contains("first 12"), "{line}");
+    // The stride is gone, so the line must not still describe one.
+    assert!(!line.contains("sampling every"), "{line}");
+}
+
+/// The walk and the sample together, over a tree this test builds, so
+/// what is checked is what the run calls.
+#[test]
+fn a_sample_over_a_real_tree_is_deterministic_and_nested() {
+    let tmp = tempfile::tempdir().unwrap();
+    for c in 0..40usize {
+        let dir = tmp.path().join(format!("crate{c:03}-1.0.0")).join("src");
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in 0..2usize {
+            std::fs::write(dir.join(format!("f{f}.rs")), "line\n".repeat(c + f + 1)).unwrap();
+        }
+    }
+
+    let small = subjects(tmp.path(), 5, DEFAULT_SEED);
+    let again = subjects(tmp.path(), 5, DEFAULT_SEED);
+    let large = subjects(tmp.path(), 20, DEFAULT_SEED);
+
+    assert_eq!(small, again);
+    assert_eq!(small.len(), 5);
+    assert_eq!(large.len(), 20);
+    assert_eq!(&large[..small.len()], small.as_slice());
+
+    // The truth still comes from the files. Only the choice of
+    // directories changed.
+    for (rel, total) in &large {
+        let c: usize = rel[5..8].parse().unwrap();
+        assert_eq!(*total, (c + 1) + (c + 2), "{rel}");
     }
 }
 
