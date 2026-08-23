@@ -14,6 +14,12 @@
 # v0.2.1 tarball on purpose, because both defaults were left behind. v0.2.1
 # is the release whose first message times out on a cold model, so everyone
 # who installed the fix and checked was told they had not.
+#
+# Member crates that opt out of version.workspace = true are also invisible
+# to a tag/workspace/Dockerfile-only check. zorp-search once shipped at
+# 0.1.0 while the rest of the product was 0.3.2. After reading the workspace
+# version, this script walks each workspace member and requires it to inherit
+# unless it is on the deliberate exemption list (erbga today).
 set -u
 
 tag="${1:-}"
@@ -55,6 +61,68 @@ if [ "$tag" != "$docker_default" ]; then
     echo "Dockerfile: ARG VERSION is '$docker_default' but this release is" \
         "'$tag'. Bump it, or a bare docker build ships the old binary." >&2
     fail=1
+fi
+
+# Product crates must inherit the workspace version. Paths listed here are
+# deliberate exemptions (standalone prior work that versions on its own terms).
+# Keep this list short and documented in CLAUDE.md / docs/DECISIONS.md.
+is_exempt() {
+    case "$1" in
+        erbga|./erbga|erbga/|./erbga/) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# members = [".", "zorp-agent", ...] — flatten onto one line then split.
+members_line=$(sed -n 's/^members = \[\(.*\)\]$/\1/p' "$cargo_file" | head -n 1)
+# Fallback: multi-line members tables are not used today; fail closed if missing.
+if [ -z "$members_line" ]; then
+    echo "Cargo.toml: could not read workspace members = [...]" >&2
+    fail=1
+else
+    # shellcheck disable=SC2086
+    old_ifs=$IFS
+    IFS=','
+    set -- $members_line
+    IFS=$old_ifs
+    for raw in "$@"; do
+        # strip quotes and whitespace
+        m=$(printf '%s' "$raw" | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+        [ -n "$m" ] || continue
+        if [ "$m" = "." ]; then
+            member_toml="$cargo_file"
+            label="."
+        else
+            member_toml="$dir/$m/Cargo.toml"
+            label="$m"
+        fi
+        if is_exempt "$label"; then
+            echo "member=$label exempt"
+            continue
+        fi
+        if [ ! -f "$member_toml" ]; then
+            echo "member $label: missing $member_toml" >&2
+            fail=1
+            continue
+        fi
+        # Require version.workspace = true in the [package] table (before the
+        # next [section]). An explicit version = "..." is the failure mode.
+        pkg_block=$(sed -n '/^\[package\]/,/^\[/p' "$member_toml")
+        if printf '%s\n' "$pkg_block" | grep -q '^version\.workspace = true'; then
+            echo "member=$label inherits"
+            continue
+        fi
+        explicit=$(printf '%s\n' "$pkg_block" | sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1)
+        if [ -n "$explicit" ]; then
+            echo "member $label: has version = \"$explicit\" instead of" \
+                "version.workspace = true. Product crates share one version;" \
+                "only listed exemptions may pin their own." >&2
+            fail=1
+        else
+            echo "member $label: no version.workspace = true in [package]" >&2
+            fail=1
+        fi
+    done
 fi
 
 exit $fail
