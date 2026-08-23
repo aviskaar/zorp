@@ -532,6 +532,24 @@
             hidden
           ></iframe>
           <img class="artifact-image" id="artifact-image" alt="" hidden />
+          <!--
+            The PDF surface. A separate frame from the one above, and
+            deliberately without a `sandbox` attribute: the browser's own PDF
+            viewer is a scripted document and does not start under one, so
+            every value of the attribute leaves a broken-document icon here.
+            What isolates it instead is the response, which the server sends
+            with `Content-Security-Policy: sandbox allow-scripts`. That is an
+            opaque origin with scripting on, one token wider than the frame
+            above and no more. `allow-same-origin` is not in it, so a document
+            loaded here cannot read this page, its cookies or its storage.
+          -->
+          <iframe
+            class="artifact-pdf"
+            id="artifact-pdf"
+            title="PDF preview"
+            referrerpolicy="no-referrer"
+            hidden
+          ></iframe>
         </div>
       </aside>
     </div>

@@ -782,6 +782,15 @@ async fn test_connection(
 #[derive(Deserialize)]
 struct ArtifactQuery {
     path: Option<String>,
+    /// `text` asks for the readable text in a document rather than the
+    /// document. Only a file with a reader behind it has a text form, so on
+    /// anything else it is ignored rather than refused.
+    ///
+    /// This exists for the PDF, which is the one type with two useful
+    /// answers: the file, for the browser's viewer, and the words in it, for
+    /// a browser that has no viewer to give it to.
+    #[serde(rename = "as")]
+    form: Option<String>,
 }
 
 /// List the files under the workspace that `read_artifact` would serve.
@@ -806,10 +815,11 @@ async fn list_artifacts(State(state): State<AppState>) -> Json<serde_json::Value
 /// Serve one file, by a path relative to the workspace root.
 ///
 /// The headers are not decoration. `nosniff` stops the browser
-/// second-guessing the declared type, and `sandbox` means a served file
-/// cannot reach the rest of this origin even if the browser does decide to
-/// execute something in it, which is what makes it safe to drop a PDF into
-/// an iframe here. See `crate::artifacts` for the traversal rules.
+/// second-guessing the declared type, and the `sandbox` CSP means a served
+/// file cannot reach the rest of this origin even if the browser does decide
+/// to execute something in it. See `crate::artifacts` for the traversal
+/// rules, and the header block at the bottom of this function for why a PDF
+/// gets a different one word of that policy from an SVG.
 async fn read_artifact(
     State(state): State<AppState>,
     Query(query): Query<ArtifactQuery>,
@@ -817,43 +827,39 @@ async fn read_artifact(
     use crate::artifacts::{self, Refusal};
 
     let Some(root) = state.workspace.clone() else {
-        return (
+        return refuse(
             StatusCode::NOT_FOUND,
             "this server was not started with a workspace",
-        )
-            .into_response();
+        );
     };
     let requested = query.path.unwrap_or_default();
     if requested.is_empty() {
-        return (StatusCode::BAD_REQUEST, "no path given").into_response();
+        return refuse(StatusCode::BAD_REQUEST, "no path given");
     }
 
     let resolved = tokio::task::spawn_blocking(move || artifacts::resolve(&root, &requested)).await;
     let path = match resolved {
         Ok(Ok(p)) => p,
         Ok(Err(Refusal::Outside)) => {
-            return (
+            return refuse(
                 StatusCode::FORBIDDEN,
                 "that path is outside this server's workspace",
             )
-                .into_response()
         }
         Ok(Err(Refusal::Missing)) => {
-            return (StatusCode::NOT_FOUND, "no such file in this workspace").into_response()
+            return refuse(StatusCode::NOT_FOUND, "no such file in this workspace")
         }
         Ok(Err(Refusal::UnsupportedType)) => {
-            return (
+            return refuse(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "this endpoint does not serve that kind of file",
             )
-                .into_response()
         }
         Err(e) => {
-            return (
+            return refuse(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("internal error: {e}"),
             )
-                .into_response()
         }
     };
 
@@ -861,46 +867,58 @@ async fn read_artifact(
     // makes it into memory at all. What counts as enormous depends on what
     // the file is for: text is rendered by the page and a picture is not.
     let served = artifacts::served_as(&path).unwrap_or(artifacts::Served::Text);
-    let mime = artifacts::content_type(&path).unwrap_or("application/octet-stream");
     let cap = match served {
         artifacts::Served::Text => artifacts::MAX_TEXT_BYTES,
-        artifacts::Served::Document(_) => artifacts::MAX_DOCUMENT_BYTES,
+        artifacts::Served::Document(_) | artifacts::Served::Pdf => artifacts::MAX_DOCUMENT_BYTES,
         artifacts::Served::Image | artifacts::Served::Sandboxed => artifacts::MAX_BINARY_BYTES,
     };
     match std::fs::metadata(&path) {
         Ok(m) if m.len() > cap => {
-            return (
+            return refuse(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 format!(
                     "that file is {} bytes, over the {cap} this pane will render",
                     m.len()
                 ),
             )
-                .into_response()
         }
         Ok(_) => {}
-        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Err(e) => return refuse(StatusCode::NOT_FOUND, e.to_string()),
     }
 
     let body = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        Err(e) => return refuse(StatusCode::NOT_FOUND, e.to_string()),
     };
 
-    // An office file is a zip of XML and a PDF is a list of glyph placements.
-    // Neither is something the browser will show, and neither is something
-    // this server wants to hand a browser to interpret, so both are read here
-    // and only their text goes out. See `crate::documents` for the caps that
-    // make reading an archive safe and `crate::pdf` for why a PDF is read at
-    // all rather than framed.
-    //
-    // Both readers run on a blocking thread. Reading is slow enough to matter
+    // Which of the two things this response carries. An office file is a zip
+    // of XML and is only ever the text in it; a PDF is the file itself unless
+    // something says otherwise. Two things say otherwise, and they are the
+    // two ways the browser's viewer would have shown nothing: the caller
+    // asked for the text because it has no viewer, or the file is not a PDF
+    // at all and the viewer would draw a broken-document icon over it.
+    let wants_text = query.form.as_deref() == Some("text");
+    let form = match served {
+        artifacts::Served::Document(_) => artifacts::Form::Markdown,
+        artifacts::Served::Pdf if wants_text => artifacts::Form::Markdown,
+        // Plain text and not markdown, because this one is read inside the
+        // frame by the browser rather than by the page's renderer, and a
+        // browser handed `text/markdown` offers to save it instead of
+        // showing it.
+        artifacts::Served::Pdf if !crate::pdf::looks_like_pdf(&body) => artifacts::Form::PlainText,
+        _ => artifacts::Form::Bytes,
+    };
+    let mime = artifacts::response_type(&path, form).unwrap_or("application/octet-stream");
+
+    // The readers run on a blocking thread. Reading is slow enough to matter
     // on a long document, and both are parsers pointed at a file a model
     // wrote or downloaded, so a panic in one has to end that request and
     // nothing else. `spawn_blocking` gives both: a panicking task comes back
-    // as a join error rather than taking the server with it.
-    let body = match served {
-        artifacts::Served::Document(kind) => {
+    // as a join error rather than taking the server with it. See
+    // `crate::documents` for the caps that make reading an archive safe.
+    let body = match (form, artifacts::extraction(&path)) {
+        (artifacts::Form::Bytes, _) | (_, None) => body,
+        (_, Some(kind)) => {
             let read = tokio::task::spawn_blocking(move || match kind {
                 artifacts::Extraction::Office(kind) => {
                     crate::documents::to_markdown(kind, &body).map_err(|e| e.to_string())
@@ -911,38 +929,93 @@ async fn read_artifact(
             })
             .await;
             match read {
-                Ok(Ok(markdown)) => markdown.into_bytes(),
+                Ok(Ok(text)) => text.into_bytes(),
                 // A file that is not really the format its name claims is an
                 // ordinary outcome when a model wrote it, so it gets a sentence
                 // rather than a 500 or a blank pane.
                 Ok(Err(why)) => {
-                    return (StatusCode::UNPROCESSABLE_ENTITY, why).into_response();
+                    return refuse(StatusCode::UNPROCESSABLE_ENTITY, why);
                 }
                 Err(_) => {
-                    return (
+                    return refuse(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "reading this document crashed the reader, so there is nothing to show",
-                    )
-                        .into_response();
+                    );
                 }
             }
         }
-        _ => body,
     };
 
     let mut headers = HeaderMap::new();
     headers.insert("content-type", mime.parse().unwrap());
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
-    // A bare `sandbox`, with no `allow-` token. That is what makes it safe to
-    // point an iframe at a PDF, an SVG or an HTML file this server did not
-    // write: the document loads into a unique origin with scripting off, so
-    // script inside it neither runs nor has a handle on the page that framed
-    // it. Every token added here gives some of that back.
-    headers.insert("content-security-policy", "sandbox".parse().unwrap());
+    headers.insert("content-security-policy", sandbox_policy(served, form));
     // Inline, because the point is to show it in the pane. The sandbox above
     // is what makes that safe, not the disposition.
     headers.insert("content-disposition", "inline".parse().unwrap());
     (headers, body).into_response()
+}
+
+/// The `Content-Security-Policy` for one served file.
+///
+/// A bare `sandbox`, with no `allow-` token, is the default and the one every
+/// type but a PDF gets. It puts the document in a unique origin with
+/// scripting off, so script inside an SVG or an HTML file this server did not
+/// write neither runs nor has a handle on the page that framed it.
+///
+/// A PDF gets one token more, and only one. The browser's PDF viewer is
+/// itself a scripted document, and under a bare `sandbox` it does not start:
+/// the pane showed a broken-document icon on grey, which is what the previous
+/// attempt at this ran into. `sandbox allow-scripts` is what was measured to
+/// work, in Chrome 151 on macOS, and it keeps the part that matters. Without
+/// `allow-same-origin` the document is still in an opaque origin: reading
+/// `parent.document`, `parent.location` or `localStorage` from inside one
+/// throws `SecurityError`, `window.origin` is `null`, and the framing page's
+/// title is untouched. That was measured too, with a hostile page served
+/// under exactly this header, not argued from the spec.
+///
+/// The iframe that holds a PDF therefore carries no `sandbox` attribute,
+/// because any value of it stops the viewer starting, including
+/// `allow-scripts`. This header is the whole of the isolation for that frame,
+/// which is the reason a PDF is its own `Served` variant rather than a third
+/// `Sandboxed` one: the two must not drift into sharing a policy.
+///
+/// A PDF read for its text is text, so it goes back to the bare `sandbox`.
+/// A refusal from this endpoint, under headers as inert as a served file's.
+///
+/// These land inside the pane's frame now. A `.pdf` the reader could not read
+/// is answered right here, with no page in the middle to catch it, and the
+/// frame that shows it carries no `sandbox` attribute of its own. So the
+/// sentence goes out declared, `nosniff`ed and sandboxed like everything else
+/// this endpoint sends, rather than as a bare body a browser is left to make
+/// its own mind up about.
+fn refuse(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "content-type",
+        axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    headers.insert(
+        "x-content-type-options",
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        "content-security-policy",
+        axum::http::HeaderValue::from_static("sandbox"),
+    );
+    (status, headers, message.into()).into_response()
+}
+
+fn sandbox_policy(
+    served: crate::artifacts::Served,
+    form: crate::artifacts::Form,
+) -> axum::http::HeaderValue {
+    use crate::artifacts::{Form, Served};
+    let policy = match (served, form) {
+        (Served::Pdf, Form::Bytes) => "sandbox allow-scripts",
+        _ => "sandbox",
+    };
+    axum::http::HeaderValue::from_static(policy)
 }
 
 /* ------------------------------------------------------------------ */

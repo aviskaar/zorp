@@ -2826,3 +2826,16 @@ button {
     grid-template-columns: 0 minmax(0, 1fr);
   }
 }
+
+/* The PDF surface. Full bleed rather than padded: what fills it is the
+   browser's own viewer, which draws its own margins around the page and its
+   own toolbar above it, and a border of ours around that reads as a second
+   frame. Its isolation is the response header, not the element; see the
+   comment on it in index.html. */
+.artifact-pdf {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: var(--bg);
+}

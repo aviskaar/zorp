@@ -7,6 +7,11 @@
  * whole reason the server and the UI are separate artifacts.
  */
 
+// The one thing this module imports, and only because the fallback it names
+// is a rule about the artifact pane rather than about HTTP. `artifact-view`
+// imports nothing, so this cannot become a cycle.
+import { textUrl } from "./artifact-view";
+
 declare global {
   interface Window {
     /** Origin of the zorp-web server, for example "http://127.0.0.1:7777". */
@@ -1038,15 +1043,18 @@ export function artifactUrl(path: string): string {
 /**
  * The text of an artifact, for the markdown renderer.
  *
- * Only ever called for the types the pane renders itself. A `.svg` or a
- * `.html` is never fetched into the page: those are addressed by URL from the
- * sandboxed iframe, so the browser loads them somewhere this page cannot be
- * reached from. A `.pdf` and the office formats are read on the server, so
- * what this fetches for them is text and never the file. See
- * `artifact-view.ts`.
+ * Only ever called for the types the pane renders itself. A `.svg`, a
+ * `.html` or a `.pdf` is never fetched into the page: those are addressed by
+ * URL from a frame, so the browser loads them somewhere this page cannot be
+ * reached from. The office formats are read on the server, so what this
+ * fetches for them is text and never the file. See `artifact-view.ts`.
+ *
+ * `as=text` is what asks the server for the words in a document rather than
+ * the document. It is the fallback path for a PDF, on a browser with no
+ * viewer to hand the file to, and it changes nothing for any other type.
  */
 export async function readArtifact(path: string): Promise<string> {
-  const response = await fetch(artifactUrl(path), { headers: authHeaders() });
+  const response = await fetch(textUrl(artifactUrl(path)), { headers: authHeaders() });
   if (!response.ok) {
     throw new ApiError(response.status, (await response.text()) || response.statusText);
   }
