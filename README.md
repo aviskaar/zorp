@@ -134,6 +134,14 @@ export ZORP_MODEL="gpt-4o-mini"
 # that says so, and so is a stream that ends before the provider says it has
 # finished.
 export ZORP_HTTP_TIMEOUT_SECS=900
+# Optional. A provider that answers 429 or 503 has not taken the request, so
+# it is sent again: at most this many times in total, adding at most this many
+# seconds of waiting. A Retry-After is waited out in full, and without one the
+# wait is exponential backoff with jitter. Nothing else is retried, nothing is
+# retried once an answer has started arriving, and every retry says so on
+# stderr. Set either to 1 and 0 respectively to turn retrying off.
+export ZORP_RETRY_ATTEMPTS=4
+export ZORP_RETRY_BUDGET_SECS=30
 cargo run -- "Summarize the second law of thermodynamics in one sentence."
 ```
 
