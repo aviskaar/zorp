@@ -77,14 +77,15 @@ test("the label goes back to send when the turn ends", () => {
   assert.equal(send.disabled, false, "the composer stayed locked after the turn ended");
 });
 
-test("the composer has one control, carrying both icons", () => {
+test("the composer keeps one primary send and stop control", () => {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
-  const sends = doc.querySelectorAll(".composer button");
-  assert.equal(sends.length, 1, "the composer grew a second button");
+  const sends = doc.querySelectorAll(".composer button[type=submit]");
+  assert.equal(sends.length, 1, "the composer grew a second submit control");
   const send = doc.querySelector("#send")!;
   assert.ok(send.querySelector(".send-icon"), "no send icon");
   assert.ok(send.querySelector(".stop-icon"), "no stop icon");
+  assert.equal(doc.querySelector("#voice-mic")?.getAttribute("type"), "button");
 });
 
 /**

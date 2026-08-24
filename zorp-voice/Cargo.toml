@@ -1,0 +1,18 @@
+[package]
+name = "zorp-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Loopback-only voice transcription for zorp."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependency on another workspace member. This crate knows only the
+# checked local Qwen ASR HTTP contract and the audio handed to it.
+[dependencies]
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }

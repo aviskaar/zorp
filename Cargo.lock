@@ -8490,6 +8490,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zorp-voice"
+version = "0.3.2"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "zorp-web"
 version = "0.3.2"
 dependencies = [
@@ -8512,6 +8522,7 @@ dependencies = [
  "zorp-agent",
  "zorp-recall",
  "zorp-track",
+ "zorp-voice",
 ]
 
 [[package]]

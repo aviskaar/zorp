@@ -111,6 +111,13 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id/panel", post(start_panel))
         .route("/api/panel/lenses", get(list_lenses))
         .route("/api/capabilities", get(capabilities))
+        .route("/api/voice/status", get(crate::voice::status))
+        .route("/api/voice/wait", post(crate::voice::wait))
+        .route(
+            "/api/voice/transcribe",
+            post(crate::voice::transcribe)
+                .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
+        )
         .route("/api/sessions/:id/investigate", post(start_investigate))
         .route("/api/investigate/status", get(investigate_status))
         .route("/api/investigate/ledger", get(investigate_ledger))
@@ -145,8 +152,8 @@ async fn health() -> Json<serde_json::Value> {
 
 /// What this build can actually do, for a page that cannot see the build.
 ///
-/// One capability today: `web_search`. Three separate things decide whether
-/// that tool exists, and the browser can observe none of them. Whether
+/// `web_search` is one capability. Three separate things decide whether that
+/// tool exists, and the browser can observe none of them. Whether
 /// `zorp-web` was compiled with the `search` feature is a fact about the
 /// binary. Whether the policy permits the tool is a fact about the code the
 /// binary runs. Whether the search provider found its key is a fact about
@@ -160,13 +167,17 @@ async fn health() -> Json<serde_json::Value> {
 ///
 /// The policy comes from `turn::policy`, the same call a real turn makes, so
 /// this reports on the policy the agent will actually run under.
+/// Voice status comes from `voice::status_value`, the same function as the
+/// dedicated status route, so it reports the runtime that will receive audio.
 async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
     let web_search = zorp_agent::web_search_availability(&turn::policy(state.own_port));
+    let voice = crate::voice::status_value().await;
     Json(json!({
         "web_search": {
             "available": web_search.available,
             "detail": web_search.detail,
-        }
+        },
+        "voice": voice,
     }))
 }
 

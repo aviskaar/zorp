@@ -317,6 +317,49 @@ something a later turn is told to cite. Everything the model says is
 clamped in code on the way to the column, to one short line, and a call
 that fails or declines leaves the first message showing.
 
+**Speaking into the composer.** Voice input is opt-in. It records in the
+browser, asks a local Qwen3-ASR model for a transcript, and puts the text in
+the composer for you to read and edit. It never sends the message for you.
+Qwen3-ASR detects the language, so there is no English setting to choose.
+
+Install the exact local runtime contract this integration targets:
+
+```bash
+python -m pip install "qwen-asr[vllm]==0.0.6"
+```
+
+Start the runtime in one terminal:
+
+```bash
+qwen-asr-serve Qwen/Qwen3-ASR-0.6B --host 127.0.0.1 --port 8000
+```
+
+Start zorp-web in another terminal:
+
+```bash
+cargo run -p zorp-web --features voice
+```
+
+The first runtime start downloads the model weights. The runtime has no HTTP
+endpoint for starting that download. The microphone shows the command above
+when the runtime or model is absent. After you start it, the page polls the
+real `GET /health` and `GET /v1/models` endpoints and says that it is waiting.
+It shows no invented percentage. Transcription uses Qwen's documented
+`POST /v1/chat/completions` audio request.
+
+The defaults are `http://127.0.0.1:8000` and
+`Qwen/Qwen3-ASR-0.6B`. Override them with `ZORP_VOICE_URL` and
+`ZORP_VOICE_MODEL`. A URL override still has to be a loopback address or
+`localhost`. Recorded voice goes to that checked local address or nowhere.
+The client pins its resolver to the checked host and port, refuses redirects,
+and ignores proxy environment variables. There is no cloud ASR fallback.
+For an HTTPS or path-prefixed URL, put `qwen-asr-serve` behind your own
+loopback proxy. Zorp reports that requirement instead of constructing a start
+command for an endpoint the runtime cannot bind directly.
+
+Design:
+[`docs/superpowers/specs/2026-08-23-qwen3-asr-voice-input-design.md`](docs/superpowers/specs/2026-08-23-qwen3-asr-voice-input-design.md).
+
 **Watching the answer arrive.** Answers stream. Text appears as the model
 produces it rather than after it finishes, which is the difference between
 a spinner and a page on a local 27B model. Reasoning is filtered out on
