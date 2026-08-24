@@ -155,6 +155,14 @@ resulting artifact, deliver it in the right form.
   conversations in `zorp-agent`'s store. Like `zorp-search` and `zorp-skill`
   it depends on no other workspace member. `zorp-web` exposes it behind the
   non-default `recall` feature as three endpoints and a sidebar search box.
+  One background worker sweeps at startup and every 300 seconds by default,
+  configurable with `ZORP_RECALL_SWEEP_SECS`, where 0 disables automatic
+  sweeps. A finished turn queues its session on that same worker. The worker
+  serializes every pass, coalesces repeat session notices, runs outside server
+  startup and turns, and relies on the existing fingerprint skip. It logs the
+  first failure, stays quiet while it persists, and logs recovery. The Index
+  button is gone, but `POST /api/recall/index` remains for tests and scripts
+  that need to force a pass.
   One rule holds the whole thing up and it is not negotiable: conversation
   text goes to a loopback address or it goes nowhere. There is no remote
   embedding provider, no flag that adds one, and no fallback when the local
@@ -168,8 +176,8 @@ resulting artifact, deliver it in the right form.
   error, because a failed request and a request never made look the same from
   the caller's side. Run `cargo test -p zorp-web -p zorp-recall
   --features zorp-web/recall` whenever any of it changes. See
-  `docs/DECISIONS.md` (2026-08-22) before changing any of that, especially
-  the choice of SQLite over the LanceDB library in `zorp-track`.
+  `docs/DECISIONS.md` (2026-08-22, 2026-08-24) before changing any of that,
+  especially the choice of SQLite over the LanceDB library in `zorp-track`.
 - `zorp-voice/` is zorp's own voice transcription client. It talks to
   `qwen-asr-serve` 0.0.6 for Qwen3-ASR and depends on no other workspace
   member. `zorp-web` exposes it behind the non-default `voice` feature. The

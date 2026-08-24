@@ -16,15 +16,19 @@
 
 use std::net::SocketAddr;
 
-async fn spawn() -> SocketAddr {
+async fn spawn_with_state(state: zorp_web::state::AppState) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, zorp_web::api::router())
+        axum::serve(listener, zorp_web::api::router_with_state(state))
             .await
             .unwrap();
     });
     addr
+}
+
+async fn spawn() -> SocketAddr {
+    spawn_with_state(zorp_web::state::AppState::new()).await
 }
 
 async fn get(url: String) -> (u16, String) {
@@ -125,6 +129,25 @@ mod on {
             store
                 .record_message(id, 1, &Message::assistant(answer))
                 .unwrap();
+        }
+    }
+
+    async fn wait_for_status(
+        addr: SocketAddr,
+        mut predicate: impl FnMut(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+        loop {
+            let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
+            let status = json(&body);
+            if predicate(&status) {
+                return status;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "recall status did not catch up: {status}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 
@@ -324,26 +347,109 @@ mod on {
         assert_eq!(report["skipped"], 3, "{report}");
     }
 
-    /// Status reports what is configured and how much is indexed, so the
-    /// page can say "nothing indexed yet" instead of "no results".
+    /// Status reports the store beside the derived index, so the page can
+    /// distinguish catch-up work from a search that found no results.
     #[tokio::test]
     async fn status_reports_the_endpoint_and_the_index_size() {
         let _env = ENV.lock().await;
         let embedder = embedding_server();
         let _fixture = set_up(Some(&embedder));
-        let addr = spawn().await;
+        std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
+        let state = zorp_web::state::AppState::new()
+            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        let addr = spawn_with_state(state).await;
 
         let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
         let before = json(&body);
         assert_eq!(before["available"], true, "{before}");
         assert_eq!(before["conversations"], 0);
+        assert_eq!(before["store_conversations"], 3);
+        assert_eq!(before["running"], false);
+        assert_eq!(before["ready"], false);
         assert_eq!(before["endpoint"], embedder);
 
         post(format!("http://{addr}/api/recall/index")).await;
         let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
         let after = json(&body);
         assert_eq!(after["conversations"], 3, "{after}");
+        assert_eq!(after["store_conversations"], 3, "{after}");
+        assert_eq!(after["ready"], true, "{after}");
         assert_eq!(after["chunks"], 6, "{after}");
+        std::env::remove_var("ZORP_RECALL_SWEEP_SECS");
+    }
+
+    /// The binary's real worker handles both its startup backfill and a
+    /// same-count edit made outside a turn on the next periodic pass.
+    #[tokio::test]
+    async fn automatic_worker_indexes_startup_and_external_changes() {
+        let _env = ENV.lock().await;
+        let embedder = embedding_server();
+        let fixture = set_up(Some(&embedder));
+        std::env::set_var("ZORP_RECALL_SWEEP_SECS", "1");
+        let state = zorp_web::state::AppState::new()
+            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        let addr = spawn_with_state(state).await;
+
+        let initial = wait_for_status(addr, |status| status["ready"] == true).await;
+        assert_eq!(initial["conversations"], 3, "{initial}");
+        assert_eq!(initial["store_conversations"], 3, "{initial}");
+
+        zorp_agent::Store::open_at(&fixture.sessions_db())
+            .unwrap()
+            .record_message(
+                "conv-money",
+                2,
+                &zorp_agent::Message::user(
+                    "Insomnia has made bedtime difficult for several nights",
+                ),
+            )
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+        loop {
+            let (_, body) = get(format!("http://{addr}/api/recall/search?q=bedtime&limit=3")).await;
+            let payload = json(&body);
+            let picked_up = payload["hits"].as_array().is_some_and(|hits| {
+                hits.iter().any(|hit| {
+                    hit["id"] == "conv-money"
+                        && hit["snippet"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("Insomnia"))
+                })
+            });
+            if picked_up {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the periodic sweep did not index the external edit: {payload}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        std::env::remove_var("ZORP_RECALL_SWEEP_SECS");
+    }
+
+    /// An embedded router has no automatic worker unless its caller installs
+    /// one. It says so, while the force-pass endpoint remains usable.
+    #[tokio::test]
+    async fn a_router_without_a_worker_does_not_claim_to_be_ready() {
+        let _env = ENV.lock().await;
+        let embedder = embedding_server();
+        let _fixture = set_up(Some(&embedder));
+        let addr = spawn().await;
+
+        let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
+        let status = json(&body);
+        assert_eq!(status["available"], false, "{status}");
+        assert!(
+            status["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("not running")),
+            "{status}"
+        );
+
+        let (code, body) = post(format!("http://{addr}/api/recall/index")).await;
+        assert_eq!(code, 200, "{body}");
     }
 
     /// No local embedder, no search, no quiet hop to a remote API. The
@@ -355,7 +461,10 @@ mod on {
         let canary = Canary::new();
         let _fixture = set_up(Some(&dead_port()));
         std::env::set_var("ZORP_BASE_URL", format!("{}/v1", canary.base));
-        let addr = spawn().await;
+        std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
+        let state = zorp_web::state::AppState::new()
+            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        let addr = spawn_with_state(state).await;
 
         let (status, body) = post(format!("http://{addr}/api/recall/index")).await;
         assert_eq!(status, 503, "{body}");
@@ -368,7 +477,19 @@ mod on {
         assert_eq!(status, 503, "{body}");
         assert!(body.contains("no local embedder"), "{body}");
 
+        let (status, body) = get(format!("http://{addr}/api/recall/status")).await;
+        assert_eq!(status, 200, "{body}");
+        let reported = json(&body);
+        assert_eq!(reported["available"], false, "{reported}");
+        assert!(
+            reported["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("no local embedder")),
+            "{reported}"
+        );
+
         std::env::remove_var("ZORP_BASE_URL");
+        std::env::remove_var("ZORP_RECALL_SWEEP_SECS");
         assert_eq!(canary.hits(), 0, "the chat endpoint was contacted");
     }
 

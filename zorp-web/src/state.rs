@@ -125,6 +125,9 @@ pub struct AppState {
     /// ordinary loopback install, where there is no token, meant any page the
     /// user visited could drive the agent and read what it produced.
     pub allowed_origins: Vec<String>,
+    /// The one background worker that updates the conversation index.
+    #[cfg(feature = "recall")]
+    pub recall_indexer: Option<crate::recall::IndexerHandle>,
 }
 
 impl AppState {
@@ -165,6 +168,12 @@ impl AppState {
     /// works in.
     pub fn with_workspace(mut self, root: std::path::PathBuf) -> Self {
         self.workspace = Some(root);
+        self
+    }
+
+    #[cfg(feature = "recall")]
+    pub fn with_recall_indexer(mut self, indexer: Option<crate::recall::IndexerHandle>) -> Self {
+        self.recall_indexer = indexer;
         self
     }
 

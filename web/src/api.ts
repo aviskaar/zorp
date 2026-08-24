@@ -1204,8 +1204,14 @@ export interface RecallStatus {
   /** The loopback endpoint the vectors would come from. */
   endpoint: string | null;
   model: string | null;
+  /** Conversations represented in the derived index. */
   conversations: number;
+  /** Conversations in the source store. Missing on older servers. */
+  store_conversations?: number;
   chunks: number;
+  /** Automatic indexer state. Missing on older servers. */
+  running?: boolean;
+  ready?: boolean;
   /**
    * Whether a turn can be told to read this index, as opposed to only the
    * sidebar being able to search it. A separate build-time choice, so the
@@ -1225,24 +1231,8 @@ export interface RecallHit {
   score: number;
 }
 
-export interface RecallReport {
-  indexed: number;
-  skipped: number;
-  removed: number;
-  chunks: number;
-}
-
 export async function recallStatus(): Promise<RecallStatus> {
   return request<RecallStatus>("GET", "/api/recall/status");
-}
-
-/**
- * Bring the index up to date. Slow the first time, because every message
- * costs one call to the local model, so the caller has to be ready to wait
- * and to say that it is waiting.
- */
-export async function recallIndex(): Promise<RecallReport> {
-  return request<RecallReport>("POST", "/api/recall/index", {});
 }
 
 /**

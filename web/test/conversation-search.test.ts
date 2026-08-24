@@ -174,7 +174,10 @@ test("an unavailable search says why, in the server's own words", () => {
     endpoint: null,
     model: null,
     conversations: 0,
+    store_conversations: 0,
     chunks: 0,
+    running: false,
+    ready: false,
   });
   assert.match(line, /no local embedder/);
 });
@@ -186,21 +189,44 @@ test("an unavailable search with no reason still says something", () => {
     endpoint: null,
     model: null,
     conversations: 0,
+    store_conversations: 0,
     chunks: 0,
+    running: false,
+    ready: false,
   });
   assert.ok(line.trim().length > 0);
 });
 
-test("an empty index says so, rather than looking like a search that found nothing", () => {
+test("catch-up says how much is indexed, rather than looking like no search results", () => {
   const line = summarize({
     available: true,
     reason: null,
     endpoint: "http://127.0.0.1:11434",
     model: "nomic-embed-text",
     conversations: 0,
+    store_conversations: 3,
     chunks: 0,
+    running: false,
+    ready: false,
   });
-  assert.match(line, /nothing indexed/i);
+  assert.match(line, /0 of 3 conversations indexed/i);
+  assert.doesNotMatch(line, /nothing close enough/i);
+});
+
+test("a running pass says it is indexing and reports its counts", () => {
+  const line = summarize({
+    available: true,
+    reason: null,
+    endpoint: "http://127.0.0.1:11434",
+    model: "nomic-embed-text",
+    conversations: 1,
+    store_conversations: 3,
+    chunks: 2,
+    running: true,
+    ready: false,
+  });
+  assert.match(line, /indexing/i);
+  assert.match(line, /1 of 3/);
 });
 
 test("a populated index reports its size and the model behind it", () => {
@@ -210,8 +236,26 @@ test("a populated index reports its size and the model behind it", () => {
     endpoint: "http://127.0.0.1:11434",
     model: "nomic-embed-text",
     conversations: 1,
+    store_conversations: 1,
     chunks: 4,
+    running: false,
+    ready: true,
   });
+  assert.match(line, /ready/i);
   assert.match(line, /1 conversation\b/);
   assert.match(line, /nomic-embed-text/);
+});
+
+test("an older server gets an honest compatibility message", () => {
+  const line = summarize({
+    available: true,
+    reason: null,
+    endpoint: "http://127.0.0.1:11434",
+    model: "nomic-embed-text",
+    conversations: 2,
+    chunks: 4,
+    memory: false,
+  });
+  assert.match(line, /automatic indexing status is not available/i);
+  assert.doesNotMatch(line, /NaN/);
 });

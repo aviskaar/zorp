@@ -137,19 +137,33 @@ export function renderNotice(doc: Document, list: HTMLElement, message: string):
  *
  * An unavailable search repeats the server's own words. They are written
  * to be read by a person and they name the thing to fix, which a generic
- * "search unavailable" does not. An empty index gets its own sentence
- * because "no results" and "nothing indexed yet" look identical on screen
- * and mean completely different things.
+ * "search unavailable" does not. Catch-up gets its own sentence because
+ * "no results" and "not indexed yet" look identical on screen and mean
+ * completely different things.
  */
 export function summarize(status: RecallStatus): string {
   if (!status.available) {
     return status.reason?.trim() || "Conversation search is not available on this server.";
   }
-  if (status.conversations <= 0) {
-    return "Nothing indexed yet. Index to search these conversations by meaning.";
+  if (
+    typeof status.store_conversations !== "number" ||
+    !Number.isFinite(status.store_conversations) ||
+    typeof status.running !== "boolean" ||
+    typeof status.ready !== "boolean"
+  ) {
+    return "Automatic indexing status is not available from this server. Update zorp-web to see catch-up progress.";
   }
-  const plural = status.conversations === 1 ? "conversation" : "conversations";
+  const total = Math.max(0, status.store_conversations);
+  const indexedCount = Number.isFinite(status.conversations) ? status.conversations : 0;
+  const indexed = Math.max(0, Math.min(indexedCount, total));
+  if (status.running) {
+    return `Indexing on this machine. ${indexed} of ${total} conversations indexed.`;
+  }
+  if (!status.ready) {
+    return `${indexed} of ${total} conversations indexed. Automatic indexing is catching up.`;
+  }
+  const plural = total === 1 ? "conversation" : "conversations";
   const model = status.model?.trim();
   const by = model ? `, embedded on this machine by ${model}` : "";
-  return `${status.conversations} ${plural} indexed${by}.`;
+  return `Ready. ${indexed} ${plural} indexed${by}.`;
 }

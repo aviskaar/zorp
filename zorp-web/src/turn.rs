@@ -123,6 +123,11 @@ fn closing_events(outcome: Result<Outcome, String>, stopped: bool) -> Vec<EventK
 /// things a person should be choosing each time rather than discovering.
 pub type UseMemory = bool;
 
+#[cfg(feature = "recall")]
+pub type RecallFeed = Option<crate::recall::IndexerHandle>;
+#[cfg(not(feature = "recall"))]
+pub type RecallFeed = ();
+
 /// Run one turn to completion on a blocking thread.
 ///
 /// The agent loop is synchronous, so it must not run on the async runtime.
@@ -136,6 +141,7 @@ pub fn spawn_turn(
     use_memory: UseMemory,
     settings: SettingsHandle,
     own_port: Option<u16>,
+    recall_indexer: RecallFeed,
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     // One token per turn, held by the session so the stop endpoint can reach
@@ -218,14 +224,11 @@ pub fn spawn_turn(
             Arc::clone(&seq),
         );
 
-        // Every conversation feeds the memory, and this is where. After the
-        // answer, never in front of it: a model call per message on the
-        // send path would make the chat depend on a local embedder being
-        // up, which is a price the chat should not pay for a capability it
-        // is not using. Best effort, on its own thread, and a failure
-        // leaves the index one conversation behind rather than failing the
-        // turn. The Index button in the sidebar is the catch-up.
-        feed_memory(session_id);
+        // Queue only after the answer. The send is immediate and the one
+        // indexer thread does the blocking work, so a missing local model
+        // cannot slow or fail this turn. The periodic sweep is the catch-up
+        // for a failed attempt and for changes made outside a turn.
+        feed_recall(recall_indexer, session_id);
     });
 }
 
@@ -233,21 +236,19 @@ pub fn spawn_turn(
 ///
 /// Compiled away entirely without the feature, which is what keeps a build
 /// that never opted into this from doing anything at all with the store.
-#[cfg(feature = "memory")]
-fn feed_memory(session_id: String) {
-    std::thread::spawn(move || {
-        if let Err(e) = crate::recall::feed_session(&session_id) {
-            // Said once, to the log, and not to the browser. A user who
-            // never turned recall on should not get a card about an
-            // embedder they do not run, and the sidebar already says
-            // whether the index is reachable.
-            eprintln!("zorp-web: not indexing {session_id} into memory: {e}");
-        }
-    });
+#[cfg(feature = "recall")]
+fn feed_recall(indexer: RecallFeed, session_id: String) {
+    match indexer {
+        Some(indexer) => indexer.index_session(session_id),
+        // A router embedded without the process worker cannot promise
+        // automatic indexing. The forced endpoint remains available, but
+        // starting unmanaged per-turn workers here would break serialization.
+        None => {}
+    }
 }
 
-#[cfg(not(feature = "memory"))]
-fn feed_memory(_session_id: String) {}
+#[cfg(not(feature = "recall"))]
+fn feed_recall(_indexer: RecallFeed, _session_id: String) {}
 
 /// Look up what earlier conversations said about this message, tell the
 /// browser what came back, and hand the text to the run.

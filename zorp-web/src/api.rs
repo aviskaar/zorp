@@ -505,6 +505,10 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
+    #[cfg(feature = "recall")]
+    let recall_indexer = state.recall_indexer.clone();
+    #[cfg(not(feature = "recall"))]
+    let recall_indexer = ();
     turn::spawn_turn(
         session,
         id,
@@ -512,6 +516,7 @@ async fn start_turn(
         body.memory,
         state.settings.clone(),
         state.own_port,
+        recall_indexer,
     );
     StatusCode::ACCEPTED.into_response()
 }
@@ -1055,14 +1060,18 @@ async fn recall_status() -> Json<serde_json::Value> {
         "endpoint": null,
         "model": null,
         "conversations": 0,
+        "store_conversations": 0,
         "chunks": 0,
+        "running": false,
+        "ready": false,
         "memory": false,
     }))
 }
 
 #[cfg(feature = "recall")]
-async fn recall_status() -> Json<serde_json::Value> {
-    let status = tokio::task::spawn_blocking(crate::recall::status)
+async fn recall_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let indexer = state.recall_indexer.clone();
+    let status = tokio::task::spawn_blocking(move || crate::recall::status(indexer.as_ref()))
         .await
         .expect("recall status does not panic");
     Json(json!({
@@ -1071,7 +1080,10 @@ async fn recall_status() -> Json<serde_json::Value> {
         "endpoint": status.endpoint,
         "model": status.model,
         "conversations": status.conversations,
+        "store_conversations": status.store_conversations,
         "chunks": status.chunks,
+        "running": status.running,
+        "ready": status.ready,
         // Whether a turn can be told to read this index, which is a
         // separate build-time choice from whether the sidebar can search
         // it. The page needs it to decide whether to offer the box, and
@@ -1090,14 +1102,18 @@ async fn recall_index() -> impl IntoResponse {
 
 /// Bring the index up to date with the store.
 ///
-/// Synchronous, and it can take minutes on a corpus that has never been
-/// indexed, because every message costs one call to the local model. That
-/// is the honest shape for a thing the user pressed a button to start. A
-/// second press while one is running gets a 409, the same answer a second
-/// turn on a busy session gets.
+/// Kept for scripts and tests that need to force a pass. A running server
+/// sends it through the same worker as startup, periodic and per-session
+/// indexing, so no two passes can interleave.
 #[cfg(feature = "recall")]
-async fn recall_index() -> impl IntoResponse {
-    match tokio::task::spawn_blocking(crate::recall::reindex).await {
+async fn recall_index(State(state): State<AppState>) -> impl IntoResponse {
+    let indexer = state.recall_indexer.clone();
+    match tokio::task::spawn_blocking(move || match indexer {
+        Some(indexer) => indexer.sweep(),
+        None => crate::recall::reindex(),
+    })
+    .await
+    {
         Ok(Ok(report)) => Json(json!({
             "indexed": report.indexed,
             "skipped": report.skipped,

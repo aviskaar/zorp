@@ -129,6 +129,12 @@ async fn main() {
     if let Some(persisted) = zorp_web::settings::load() {
         state.settings.lock().unwrap().load_persisted(persisted);
     }
+    // Starting the worker only creates a thread and returns. Its first sweep
+    // runs there, never in front of binding the server or accepting a turn.
+    #[cfg(feature = "recall")]
+    {
+        state = state.with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+    }
     if let Err(e) = axum::serve(listener, api::router_with_ui(state, ui)).await {
         eprintln!("zorp-web: server error: {e}");
         std::process::exit(1);
