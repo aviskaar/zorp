@@ -94,11 +94,19 @@ impl Framing {
 /// still has unread bytes on it sends RST rather than FIN, and the client then
 /// reports a connection reset instead of whatever the test is about.
 pub fn drain_request(stream: &mut TcpStream) {
+    assert!(try_drain_request(stream), "request ended before headers");
+}
+
+fn try_drain_request(stream: &mut TcpStream) -> bool {
     let mut request = Vec::new();
     let mut buffer = [0u8; 1024];
     let header_end = loop {
-        let read = stream.read(&mut buffer).unwrap();
-        assert!(read > 0, "request ended before headers");
+        let Ok(read) = stream.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            return false;
+        }
         request.extend_from_slice(&buffer[..read]);
         if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
             break end + 4;
@@ -110,10 +118,15 @@ pub fn drain_request(stream: &mut TcpStream) {
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
     while request.len() < header_end + length {
-        let read = stream.read(&mut buffer).unwrap();
-        assert!(read > 0, "request ended before body");
+        let Ok(read) = stream.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            return false;
+        }
         request.extend_from_slice(&buffer[..read]);
     }
+    true
 }
 
 /// Accept one connection, answer with event-stream headers, then hand the
@@ -173,6 +186,45 @@ pub fn scripted_server(
         }
     });
     (address, connections)
+}
+
+/// Finish one request on a keep-alive connection, then leave the next
+/// request waiting for response headers. The second request may arrive on
+/// the first connection or on a new one. Both paths accept and count it.
+pub fn pooled_header_stall_server() -> (SocketAddr, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let request_counter = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        let (mut first, _) = listener.accept().unwrap();
+        drain_request(&mut first);
+        request_counter.fetch_add(1, Ordering::SeqCst);
+
+        let framing = Framing::Chunked;
+        let _ = first.write_all(framing.headers());
+        let _ = first.write_all(event(framing, 0).as_bytes());
+        let _ = first.write_all(ending(framing).as_bytes());
+        let _ = first.write_all(b"0\r\n\r\n");
+        let _ = first.flush();
+
+        let reused_requests = Arc::clone(&request_counter);
+        std::thread::spawn(move || {
+            if try_drain_request(&mut first) {
+                reused_requests.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(PATIENCE * 2);
+            }
+        });
+
+        let Ok((mut second, _)) = listener.accept() else {
+            return;
+        };
+        if try_drain_request(&mut second) {
+            request_counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(PATIENCE * 2);
+        }
+    });
+    (address, requests)
 }
 
 fn serve(framing: Framing, reply: Reply, mut socket: TcpStream) {
