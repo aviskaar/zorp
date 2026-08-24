@@ -333,7 +333,7 @@ impl Discard {
             Discard::StepLimit => "step limit reached",
             Discard::AgentError => "agent error",
             Discard::AgentStopped => "agent stopped early",
-            Discard::NoFencedBlock => "no fenced json block",
+            Discard::NoFencedBlock => "no forecast object",
             Discard::NotTheShapeAsked => "not the shape asked for",
             Discard::MissingNumber => "missing or non finite number",
             Discard::IncoherentForecast => "incoherent forecast",

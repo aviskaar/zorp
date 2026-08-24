@@ -49,7 +49,9 @@ pub enum ForecastError {
 impl std::fmt::Display for ForecastError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ForecastError::NoFencedBlock => write!(f, "no fenced json block in the forecast"),
+            ForecastError::NoFencedBlock => {
+                write!(f, "no forecast object in the answer, fenced or bare")
+            }
             ForecastError::InvalidJson(e) => {
                 write!(f, "forecast block is not the shape asked for: {e}")
             }
@@ -102,7 +104,11 @@ pub fn forecast_prompt(hypothesis: &str, metric_name: &str) -> String {
 /// itself would otherwise have its example parsed as its answer.
 pub fn parse_forecast(text: &str) -> Result<Forecast, ForecastError> {
     let blocks = fenced_blocks(text);
-    let last = blocks.last().ok_or(ForecastError::NoFencedBlock)?;
+    let bare = bare_objects(text);
+    let last = blocks
+        .last()
+        .or_else(|| bare.last())
+        .ok_or(ForecastError::NoFencedBlock)?;
 
     // Backwards to the last block that is actually a forecast, rather than
     // straight to the last block of any kind. A model that closes with an
@@ -116,10 +122,17 @@ pub fn parse_forecast(text: &str) -> Result<Forecast, ForecastError> {
     // resembles a forecast is stepped over rather than repaired, and the one
     // that is selected still faces every coherence check below. A forecast
     // that cannot be read must never become one that was invented.
+    //
+    // A forecast that arrived without backticks is found the same way, and
+    // only when no fence carries one. Run 9 discarded 11 of its 22 failed
+    // attempts as "no fenced json block" while their raw text held a
+    // complete forecast object, and scored 2 overall. The fence is the
+    // model's punctuation, not its answer.
     let block = blocks
         .iter()
         .rev()
         .find(|b| is_forecast_shaped(b))
+        .or_else(|| bare.iter().rev().find(|b| is_forecast_shaped(b)))
         .unwrap_or(last);
 
     let value: serde_json::Value =
@@ -217,6 +230,67 @@ fn fenced_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
+/// Every balanced `{...}` span in `text`, in order.
+///
+/// The fallback for a model that answers with the right object and no
+/// backticks. Balanced rather than regular: a forecast is flat today, but a
+/// scan that stops at the first `}` would silently truncate the moment one
+/// nests, and a truncated object parses as nothing rather than as something
+/// wrong. Quotes and escapes are tracked so a brace inside a string cannot
+/// open or close a span.
+///
+/// This finds candidates and judges none of them. Every span still faces
+/// `is_forecast_shaped` and then every coherence check, so widening where a
+/// forecast may be found does not widen what counts as one. A forecast that
+/// cannot be read must never become one that was invented.
+fn bare_objects(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some(end) = balanced_end(bytes, i) {
+                spans.push(text[i..end].to_string());
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// The index just past the `}` closing the object that opens at `start`,
+/// or `None` when it never closes.
+fn balanced_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, byte) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Ask for a forecast on a fresh agent with no tools and one step.
 ///
 /// Returns `Ok(None)` when the model produced nothing usable. A
@@ -256,6 +330,104 @@ mod tests {
 
     fn block(body: &str) -> String {
         format!("Here is my forecast.\n\n```json\n{body}\n```\n")
+    }
+
+    /// A fence and its body on one line.
+    ///
+    /// `fenced_blocks` is line based, so a line that opens and closes a fence
+    /// around its own body toggles twice and captures nothing between. The
+    /// empty body then reached serde as "" and came back as "EOF while
+    /// parsing a value at line 1 column 0", reported as "not the shape asked
+    /// for". Four of run 8's fourteen discards looked like this, and the
+    /// forecast was sitting in the text the whole time:
+    ///
+    /// ```text
+    /// ...7919 lines** across the 19 top-level `.rs` files. ```json
+    /// {"expected_value": 7919, ...} ``` ```
+    /// ```
+    ///
+    /// The bare scan rescues it, because it reads the text and not the
+    /// fences. Recorded as its own test because it is a different failure
+    /// from an unfenced answer and would come back on its own.
+    #[test]
+    fn a_fence_and_its_body_on_one_line_is_still_read() {
+        let text = "I counted 7919 lines across the 19 top-level files. \
+                    ```json {\"expected_value\": 7919, \"interval_low\": 7899, \
+                    \"interval_high\": 7939, \"confidence\": 0.95} ``` ```";
+        let forecast = parse_forecast(text).expect("a one-line fenced forecast should parse");
+        assert_eq!(forecast.expected_value, 7919.0);
+        assert_eq!(forecast.interval_low, 7899.0);
+        assert_eq!(forecast.confidence, 0.95);
+    }
+
+    /// A forecast the model did not fence is still a forecast.
+    ///
+    /// Measured, not imagined: run 9 on nemotron-3-super-120b discarded 11 of
+    /// its 22 failed attempts as "no fenced json block", and the raw text of
+    /// several of them was a complete, correct forecast object that simply
+    /// arrived without backticks. That run scored 2. Refusing those is
+    /// refusing evidence the model did produce, over punctuation it was never
+    /// going to be reliable about.
+    #[test]
+    fn an_unfenced_forecast_is_read() {
+        let text = "After counting the files I estimate the total.\n\n\
+                    {\"expected_value\": 1750, \"interval_low\": 1600, \
+                    \"interval_high\": 1900, \"confidence\": 0.85}\n";
+        let forecast = parse_forecast(text).expect("an unfenced forecast should parse");
+        assert_eq!(forecast.expected_value, 1750.0);
+        assert_eq!(forecast.confidence, 0.85);
+    }
+
+    /// The last one, for the same reason a fenced forecast is read backwards:
+    /// a model that restates the requested shape while explaining itself must
+    /// not have its example parsed as its answer.
+    #[test]
+    fn the_last_unfenced_forecast_wins() {
+        let text = "The shape I will use is \
+                    {\"expected_value\": 1, \"interval_low\": 0, \
+                    \"interval_high\": 2, \"confidence\": 0.5}. \
+                    My actual answer is \
+                    {\"expected_value\": 900, \"interval_low\": 850, \
+                    \"interval_high\": 950, \"confidence\": 0.9}";
+        let forecast = parse_forecast(text).expect("should parse");
+        assert_eq!(forecast.expected_value, 900.0);
+    }
+
+    /// A fenced forecast still wins. This loosens where a forecast may be
+    /// found and changes nothing about which one is preferred.
+    #[test]
+    fn a_fenced_forecast_beats_a_bare_one() {
+        let text = format!(
+            "{{\"expected_value\": 1, \"interval_low\": 0, \"interval_high\": 2, \"confidence\": 0.5}}\n{}",
+            block(
+                r#"{"expected_value": 42, "interval_low": 40, "interval_high": 44, "confidence": 0.7}"#
+            )
+        );
+        let forecast = parse_forecast(&text).expect("should parse");
+        assert_eq!(forecast.expected_value, 42.0);
+    }
+
+    /// Loosening where a forecast is found must not loosen what counts as
+    /// one. An unfenced object still faces every coherence check, so the
+    /// certainty nemotron sometimes claims is refused exactly as before.
+    #[test]
+    fn an_unfenced_forecast_still_faces_the_coherence_checks() {
+        let text = "{\"expected_value\": 380, \"interval_low\": 380, \
+                    \"interval_high\": 380, \"confidence\": 1.0}";
+        let err = parse_forecast(text).expect_err("confidence 1.0 must still be refused");
+        assert!(
+            matches!(err, ForecastError::Incoherent(_)),
+            "expected an incoherence error, got {err:?}"
+        );
+    }
+
+    /// Prose with no forecast anywhere in it is still nothing, and still says
+    /// so. An unreadable answer must never become an invented forecast.
+    #[test]
+    fn prose_without_any_forecast_is_still_reported_as_missing() {
+        let err = parse_forecast("I could not determine the line count.")
+            .expect_err("prose is not a forecast");
+        assert!(matches!(err, ForecastError::NoFencedBlock), "got {err:?}");
     }
 
     #[test]
