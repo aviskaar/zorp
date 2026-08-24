@@ -332,6 +332,34 @@ mod tests {
         format!("Here is my forecast.\n\n```json\n{body}\n```\n")
     }
 
+    /// A fence and its body on one line.
+    ///
+    /// `fenced_blocks` is line based, so a line that opens and closes a fence
+    /// around its own body toggles twice and captures nothing between. The
+    /// empty body then reached serde as "" and came back as "EOF while
+    /// parsing a value at line 1 column 0", reported as "not the shape asked
+    /// for". Four of run 8's fourteen discards looked like this, and the
+    /// forecast was sitting in the text the whole time:
+    ///
+    /// ```text
+    /// ...7919 lines** across the 19 top-level `.rs` files. ```json
+    /// {"expected_value": 7919, ...} ``` ```
+    /// ```
+    ///
+    /// The bare scan rescues it, because it reads the text and not the
+    /// fences. Recorded as its own test because it is a different failure
+    /// from an unfenced answer and would come back on its own.
+    #[test]
+    fn a_fence_and_its_body_on_one_line_is_still_read() {
+        let text = "I counted 7919 lines across the 19 top-level files. \
+                    ```json {\"expected_value\": 7919, \"interval_low\": 7899, \
+                    \"interval_high\": 7939, \"confidence\": 0.95} ``` ```";
+        let forecast = parse_forecast(text).expect("a one-line fenced forecast should parse");
+        assert_eq!(forecast.expected_value, 7919.0);
+        assert_eq!(forecast.interval_low, 7899.0);
+        assert_eq!(forecast.confidence, 0.95);
+    }
+
     /// A forecast the model did not fence is still a forecast.
     ///
     /// Measured, not imagined: run 9 on nemotron-3-super-120b discarded 11 of
