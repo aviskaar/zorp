@@ -14,10 +14,14 @@
 mod sse_stub;
 
 use std::io::Write;
+use std::sync::atomic::Ordering;
 use std::sync::Once;
 use std::time::Duration;
 
-use sse_stub::{close_body, ending, event, sse_server, stream_with_patience, Framing, PATIENCE};
+use sse_stub::{
+    close_body, ending, event, pooled_header_stall_server, sse_server, stream_with_patience,
+    Framing, PATIENCE,
+};
 
 /// Short enough to keep the suite quick, long enough that a healthy stream
 /// pausing for [`GAP`] between chunks is nowhere near it.
@@ -77,6 +81,51 @@ fn a_provider_that_goes_quiet_ends_the_stream_instead_of_being_waited_on() {
             run.elapsed
         );
     }
+}
+
+/// The pooled-connection hole left after the streaming path first gained a
+/// read timeout.
+///
+/// ureq 2.12.1 arms the timeout when it connects, clears it when the response
+/// returns the socket to the pool, and does not arm it again when the next
+/// request takes that socket back. Its body reader hides the problem by
+/// restoring the timeout after response headers arrive. A provider that says
+/// nothing before those headers therefore leaves request two unbounded.
+#[test]
+fn a_second_request_cannot_lose_the_header_read_timeout_in_the_pool() {
+    bound_the_wait();
+    let (address, requests) = pooled_header_stall_server();
+
+    let first = stream_with_patience(address, "the first request on a fresh connection");
+    assert!(
+        first.error.is_none() && first.streamed,
+        "the first request did not finish normally: {:?}",
+        first.error
+    );
+
+    let second = stream_with_patience(address, "the second request waiting for response headers");
+    let error = second
+        .error
+        .unwrap_or_else(|| panic!("a silent header wait came back as an answer"));
+    assert!(
+        error.contains(zorp::READ_TIMEOUT_VAR),
+        "the header timeout does not say what ran out or how to buy more of it: {error}"
+    );
+    assert!(
+        second.elapsed + Duration::from_millis(250) >= Duration::from_secs(IDLE_TIMEOUT_SECS),
+        "the second request gave up after {:?}, too soon to be the read timeout",
+        second.elapsed
+    );
+    assert!(
+        second.elapsed < Duration::from_secs(IDLE_TIMEOUT_SECS * 2 + 2),
+        "the configured {IDLE_TIMEOUT_SECS} second timeout took {:?} to fire",
+        second.elapsed
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        2,
+        "the provider did not receive both requests"
+    );
 }
 
 /// The case that broke a nine hour experiment, and the one the test above
