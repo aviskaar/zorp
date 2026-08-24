@@ -1433,6 +1433,34 @@ button {
   opacity: 0.45;
 }
 
+.voice-meter {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+}
+
+.voice-meter[hidden] {
+  display: none;
+}
+
+.voice-meter-bar {
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  /* The script sets this every frame; the resting value is here so a bar
+     that has never been drawn still looks like a bar. */
+  transform: scaleY(0.08);
+  transition: transform 70ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-meter-bar {
+    transition: none;
+  }
+}
+
 .voice-feedback {
   display: flex;
   align-items: center;
@@ -1445,8 +1473,7 @@ button {
 
 .voice-feedback:not(:has(> :not([hidden]))),
 .voice-status[hidden],
-.voice-secondary[hidden],
-.voice-command[hidden] {
+.voice-secondary[hidden] {
   display: none;
 }
 
@@ -1468,18 +1495,6 @@ button {
 .voice-secondary:hover:not(:disabled) {
   color: var(--text);
   border-color: var(--line-strong);
-}
-
-.voice-command {
-  flex-basis: 100%;
-  padding: 6px 8px;
-  overflow-x: auto;
-  color: var(--text-dim);
-  background: var(--bg-inset);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  font-size: 10.5px;
-  white-space: pre-wrap;
 }
 
 .send {

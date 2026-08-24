@@ -147,9 +147,10 @@ export interface VoiceStatus {
   available: boolean;
   runtime_reachable: boolean;
   model_present: boolean;
+  setup_available: boolean;
   endpoint: string | null;
   model: string | null;
-  command: string | null;
+  stage: VoiceWaitEvent["stage"] | null;
   detail: string;
 }
 
@@ -726,9 +727,10 @@ function voiceStatus(value: unknown): VoiceStatus {
     available: record["available"] === true,
     runtime_reachable: record["runtime_reachable"] === true,
     model_present: record["model_present"] === true,
+    setup_available: record["setup_available"] === true,
     endpoint: typeof record["endpoint"] === "string" ? record["endpoint"] : null,
     model: typeof record["model"] === "string" ? record["model"] : null,
-    command: typeof record["command"] === "string" ? record["command"] : null,
+    stage: voiceStage(record["stage"]),
     detail: typeof record["detail"] === "string" ? record["detail"] : "Voice input is unavailable.",
   };
 }
@@ -740,18 +742,42 @@ export async function getVoiceStatus(): Promise<VoiceStatus> {
 
 /** Wait for the local runtime to report that its configured model is ready. */
 export async function waitForVoiceModel(onEvent: (event: VoiceWaitEvent) => void): Promise<void> {
+  let terminalError = "";
+  await readVoiceStream("/api/voice/wait", "wait for the voice model", (event) => {
+    onEvent(event);
+    if (event.status === "error") terminalError = event.detail;
+  });
+  if (terminalError) throw new ApiError(0, terminalError);
+}
+
+async function readVoiceStream(
+  path: string,
+  action: string,
+  onEvent: (event: VoiceWaitEvent) => void,
+): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(url("/api/voice/wait"), voiceWaitRequest(apiToken()));
+    response = await fetch(url(path), voiceWaitRequest(apiToken()));
   } catch {
-    throw new ApiError(0, "cannot reach the zorp server while waiting for the voice model");
+    throw new ApiError(0, `cannot reach the zorp server to ${action}`);
   }
   if (!response.ok) {
     const detail = (await response.text().catch(() => "")).trim();
-    throw new ApiError(response.status, detail || "could not wait for the voice model");
+    throw new ApiError(response.status, detail || `could not ${action}`);
   }
   if (!response.body) throw new ApiError(response.status, "the voice readiness stream was empty");
   await readVoiceWaitStream(response.body, onEvent);
+}
+
+function voiceStage(value: unknown): VoiceWaitEvent["stage"] | null {
+  return value === "creating_environment" ||
+    value === "installing" ||
+    value === "downloading_model" ||
+    value === "loading" ||
+    value === "ready" ||
+    value === "error"
+    ? value
+    : null;
 }
 
 export async function transcribeVoice(recording: Blob): Promise<VoiceTranscription> {

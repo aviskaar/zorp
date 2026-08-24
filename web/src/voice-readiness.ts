@@ -1,6 +1,13 @@
 /** One observed state from zorp's local Qwen3-ASR readiness poll. */
 export interface VoiceWaitEvent {
   status: "waiting" | "ready" | "error";
+  stage:
+    | "creating_environment"
+    | "installing"
+    | "downloading_model"
+    | "loading"
+    | "ready"
+    | "error";
   model: string;
   detail: string;
 }
@@ -39,7 +46,15 @@ export async function readVoiceWaitStream(
       }
       const record = parsed as Partial<VoiceWaitEvent>;
       if (
-        (record.status !== "waiting" && record.status !== "ready" && record.status !== "error") ||
+        (record.status !== "waiting" &&
+          record.status !== "ready" &&
+          record.status !== "error") ||
+        (record.stage !== "creating_environment" &&
+          record.stage !== "installing" &&
+          record.stage !== "downloading_model" &&
+          record.stage !== "loading" &&
+          record.stage !== "ready" &&
+          record.stage !== "error") ||
         typeof record.model !== "string" ||
         typeof record.detail !== "string"
       ) {

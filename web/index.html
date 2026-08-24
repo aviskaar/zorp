@@ -352,14 +352,16 @@
             </button>
           </div>
           <div class="voice-feedback" id="voice-feedback">
+            <!--
+              The bars are drawn from the microphone level while recording, so
+              the page shows it is listening. Decoration only: the status line
+              below is what a screen reader is told.
+            -->
+            <div class="voice-meter" id="voice-meter" aria-hidden="true" hidden></div>
             <p class="voice-status" id="voice-status" role="status" aria-live="polite" hidden></p>
-            <button class="voice-secondary" id="voice-download" type="button" hidden>
-              I started it. Wait for the model
-            </button>
             <button class="voice-secondary" id="voice-cancel" type="button" hidden>
               Cancel recording
             </button>
-            <code class="voice-command" id="voice-command" hidden></code>
           </div>
           <p class="composer-hint">
             <kbd>Enter</kbd> to send, <kbd>Shift</kbd><span>+</span><kbd>Enter</kbd> for a newline

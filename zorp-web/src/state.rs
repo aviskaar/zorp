@@ -128,6 +128,15 @@ pub struct AppState {
     /// The one background worker that updates the conversation index.
     #[cfg(feature = "recall")]
     pub recall_indexer: Option<crate::recall::IndexerHandle>,
+    /// The one Qwen3-ASR process this server started on a person's request.
+    /// Kept in shared state so two browser requests cannot launch two copies,
+    /// and dropped with the server so zorp does not leave an orphan runtime.
+    #[cfg(feature = "voice")]
+    pub voice_runtime: Arc<tokio::sync::Mutex<crate::voice::VoiceRuntime>>,
+    /// The production bootstrap is fixed. Tests and embedders can replace
+    /// only this package/process boundary while exercising the real route.
+    #[cfg(feature = "voice")]
+    pub voice_bootstrap: Option<Arc<dyn crate::voice::VoiceBootstrap>>,
 }
 
 impl AppState {
@@ -174,6 +183,15 @@ impl AppState {
     #[cfg(feature = "recall")]
     pub fn with_recall_indexer(mut self, indexer: Option<crate::recall::IndexerHandle>) -> Self {
         self.recall_indexer = indexer;
+        self
+    }
+
+    #[cfg(feature = "voice")]
+    pub fn with_voice_bootstrap(
+        mut self,
+        bootstrap: Arc<dyn crate::voice::VoiceBootstrap>,
+    ) -> Self {
+        self.voice_bootstrap = Some(bootstrap);
         self
     }
 

@@ -178,19 +178,29 @@ resulting artifact, deliver it in the right form.
   --features zorp-web/recall` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-22, 2026-08-24) before changing any of that,
   especially the choice of SQLite over the LanceDB library in `zorp-track`.
-- `zorp-voice/` is zorp's own voice transcription client. It talks to
-  `qwen-asr-serve` 0.0.6 for Qwen3-ASR and depends on no other workspace
-  member. `zorp-web` exposes it behind the non-default `voice` feature. The
-  status, readiness, and transcription routes exist in every build, and the
-  mutating routes answer 501 without it. Recorded voice has the same boundary
-  as recall text: the endpoint passes written-form and resolution checks, the
-  client gets a resolver for that host and port only, redirects are off, and
-  proxy discovery is off. Tests count connections to loopback canaries. There
-  is no cloud ASR provider or fallback. The runtime has no model pull API, so
-  the page shows the operator command and polls real readiness. It fabricates
-  no download progress. HTTPS and path-prefixed endpoints need an
-  operator-managed loopback proxy, and zorp does not invent a direct start
-  command for them. A transcript is untrusted
+- `zorp-voice/` is zorp's own voice transcription client and runtime bootstrap
+  for Qwen3-ASR 0.0.6. It depends on no other workspace member. `zorp-web`
+  exposes it behind the non-default `voice` feature. The status, readiness, and
+  transcription routes exist in every build, and the mutating routes answer
+  501 without it. Recorded voice has the same boundary as recall text: the
+  endpoint passes written-form and resolution checks, the client gets a
+  resolver for that host and port only, redirects are off, and proxy discovery
+  is off. Tests count connections to loopback canaries. There is no cloud ASR
+  provider or fallback. A person's microphone click starts setup through the
+  readiness request while the browser asks for permission. Setup installs
+  exactly `qwen-asr[vllm]==0.0.6` or `qwen-asr==0.0.6` in a marked virtual
+  environment under the user's local data directory, refuses root, and falls
+  back to the embedded Transformers server when pip cannot resolve the vLLM
+  extra. The server binds only to loopback and readiness reports real create,
+  install, download, load, ready, and error stages. `GET /api/voice/status`
+  stays read-only. No command reaches the page.
+  `ZORP_VOICE_AUTOSTART=0` disables setup and spawning. HTTPS and path-prefixed
+  endpoints still need an operator-managed loopback proxy. No model tool can
+  start a runtime or recording. While the microphone is open the composer
+  draws a live level meter from the stream, so the page says it is listening
+  through a setup that can take minutes. It reads amplitude only, keeps no
+  sample and copies the audio nowhere, and a browser with no Web Audio gets an
+  inert meter rather than a failed recording. A transcript is untrusted
   editable composer text. It grants no tool, changes no approval, bypasses no
   denylist, and is never sent automatically. Run `cargo test -p zorp-web
   --features voice` and `cargo test -p zorp-voice` whenever it changes. See
