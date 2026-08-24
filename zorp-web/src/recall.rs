@@ -38,9 +38,10 @@
 //! rebuildable and the thing it was derived from is not.
 
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zorp_recall::{
     Chunk, Conversation, EmbedError, Embedder, Index, IndexError, LoopbackUrl, OllamaEmbedder,
 };
@@ -112,6 +113,9 @@ pub struct Report {
     pub skipped: usize,
     pub removed: usize,
     pub chunks: usize,
+    /// Successful model calls made by this pass. This is runtime evidence
+    /// that a previously unreachable embedder has recovered.
+    embeddings: usize,
 }
 
 impl Report {
@@ -120,6 +124,7 @@ impl Report {
         self.skipped += other.skipped;
         self.removed += other.removed;
         self.chunks += other.chunks;
+        self.embeddings += other.embeddings;
     }
 }
 
@@ -129,10 +134,10 @@ pub struct Status {
     pub reason: Option<String>,
     pub endpoint: String,
     pub model: String,
-    /// Conversations in the source store.
-    pub conversations: i64,
     /// Conversations represented in the derived index.
-    pub indexed_conversations: i64,
+    pub conversations: i64,
+    /// Conversations in the source store.
+    pub store_conversations: i64,
     pub chunks: i64,
     pub running: bool,
     pub ready: bool,
@@ -193,26 +198,29 @@ pub fn status(indexer: Option<&IndexerHandle>) -> Status {
         Ok(s) => (s.conversations, s.chunks),
         Err(_) => (0, 0),
     };
-    let conversations = store.as_ref().copied().unwrap_or(0);
-    let runtime = indexer.map(IndexerHandle::snapshot);
+    let store_conversations = store.as_ref().copied().unwrap_or(0);
+    let runtime = indexer
+        .map(IndexerHandle::snapshot)
+        .unwrap_or_else(|| IndexerSnapshot {
+            available: false,
+            reason: Some("automatic recall indexing is not running".to_string()),
+            running: false,
+            ready: false,
+        });
     let reason = unavailable
         .or_else(|| store.err().map(|e| e.to_string()))
         .or_else(|| stats.err().map(|e| e.to_string()))
-        .or_else(|| runtime.as_ref().and_then(|state| state.reason.clone()));
-    let running = runtime.as_ref().is_some_and(|state| state.running);
-    let caught_up = conversations == indexed_conversations;
-    let ready = reason.is_none()
-        && caught_up
-        && runtime
-            .as_ref()
-            .map_or(true, |state| state.ready && !state.running);
+        .or_else(|| runtime.reason.clone());
+    let running = runtime.running;
+    let caught_up = store_conversations == indexed_conversations;
+    let ready = reason.is_none() && caught_up && runtime.ready && !runtime.running;
     Status {
         available: reason.is_none(),
         reason,
         endpoint,
         model,
-        conversations,
-        indexed_conversations,
+        conversations: indexed_conversations,
+        store_conversations,
         chunks,
         running,
         ready,
@@ -353,10 +361,15 @@ fn index_one(
     // keep in the memory.
     let known = index.vectors_by_text(&session.id)?;
     let mut embedded = Vec::with_capacity(chunks.len());
+    let mut embeddings = 0;
     for chunk in chunks {
         let vector = match known.get(&chunk.text) {
             Some(cached) => cached.clone(),
-            None => embedder.embed(&chunk.text)?,
+            None => {
+                let vector = embedder.embed(&chunk.text)?;
+                embeddings += 1;
+                vector
+            }
         };
         embedded.push((chunk, vector));
     }
@@ -373,6 +386,7 @@ fn index_one(
     Ok(Report {
         indexed: 1,
         chunks: embedded.len(),
+        embeddings,
         ..Report::default()
     })
 }
@@ -400,6 +414,13 @@ struct RuntimeState {
     pending: usize,
     swept: bool,
     last_failure: Option<String>,
+    last_failure_kind: Option<FailureKind>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FailureKind {
+    Embedder,
+    Other,
 }
 
 /// The part of the background worker's state that the status route exposes.
@@ -426,19 +447,25 @@ type Logger = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct IndexerHandle {
     tx: mpsc::Sender<Command>,
     state: Arc<Mutex<RuntimeState>>,
+    pending_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl IndexerHandle {
     /// Start the real worker. This returns before its startup sweep begins.
-    pub fn start_from_env() -> Option<Self> {
+    pub fn start_from_env() -> Self {
         let interval = sweep_interval_from_env();
-        Self::try_start_with(
+        match Self::try_start_with(
             interval,
             Arc::new(StorePasses),
             Arc::new(|line| eprintln!("{line}")),
-        )
-        .map_err(|e| eprintln!("zorp-web: cannot start recall indexing: {e}"))
-        .ok()
+        ) {
+            Ok(indexer) => indexer,
+            Err(error) => {
+                let reason = format!("cannot start the background indexer: {error}");
+                eprintln!("zorp-web: recall indexing paused: {reason}");
+                Self::stopped(reason)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -453,20 +480,54 @@ impl IndexerHandle {
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let pending_sessions = Arc::new(Mutex::new(HashSet::new()));
         let worker_state = Arc::clone(&state);
+        let worker_sessions = Arc::clone(&pending_sessions);
         std::thread::Builder::new()
             .name("zorp-recall-indexer".to_string())
-            .spawn(move || worker_loop(rx, worker_state, runner, interval, logger))?;
-        Ok(Self { tx, state })
+            .spawn(move || {
+                worker_loop(rx, worker_state, worker_sessions, runner, interval, logger)
+            })?;
+        Ok(Self {
+            tx,
+            state,
+            pending_sessions,
+        })
+    }
+
+    fn stopped(reason: String) -> Self {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let state = RuntimeState {
+            last_failure: Some(reason),
+            last_failure_kind: Some(FailureKind::Other),
+            ..RuntimeState::default()
+        };
+        Self {
+            tx,
+            state: Arc::new(Mutex::new(state)),
+            pending_sessions: Arc::new(Mutex::new(HashSet::new())),
+        }
     }
 
     /// Queue one changed conversation. Sending never waits for embeddings.
     pub fn index_session(&self, session_id: impl Into<String>) {
+        let session_id = session_id.into();
+        if !self
+            .pending_sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.clone())
+        {
+            return;
+        }
         self.state.lock().unwrap().pending += 1;
-        if self.tx.send(Command::Session(session_id.into())).is_err() {
+        if self.tx.send(Command::Session(session_id.clone())).is_err() {
+            self.pending_sessions.lock().unwrap().remove(&session_id);
             let mut state = self.state.lock().unwrap();
             state.pending = state.pending.saturating_sub(1);
             state.last_failure = Some("the background indexer stopped".to_string());
+            state.last_failure_kind = Some(FailureKind::Other);
         }
     }
 
@@ -525,29 +586,42 @@ fn sweep_interval(raw: Option<&str>) -> Option<Duration> {
 fn worker_loop(
     rx: mpsc::Receiver<Command>,
     state: Arc<Mutex<RuntimeState>>,
+    pending_sessions: Arc<Mutex<HashSet<String>>>,
     runner: Arc<dyn PassRunner>,
     interval: Option<Duration>,
     logger: Logger,
 ) {
-    if interval.is_some() {
+    let mut next_sweep = interval.map(|period| {
         let _ = run_pass(&state, runner.as_ref(), None, false, logger.as_ref());
-    }
+        Instant::now() + period
+    });
 
     loop {
-        let command = match interval {
-            Some(interval) => match rx.recv_timeout(interval) {
-                Ok(command) => Some(command),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            },
-            None => match rx.recv() {
+        let command = match (interval, next_sweep) {
+            (Some(period), Some(deadline)) if Instant::now() >= deadline => {
+                let _ = run_pass(&state, runner.as_ref(), None, false, logger.as_ref());
+                next_sweep = Some(Instant::now() + period);
+                continue;
+            }
+            (Some(_), Some(deadline)) => {
+                match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(command) => Some(command),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            (None, None) => match rx.recv() {
                 Ok(command) => Some(command),
                 Err(_) => break,
             },
+            _ => unreachable!("the sweep interval and deadline move together"),
         };
 
         match command {
             Some(Command::Session(session_id)) => {
+                // Remove it before the pass. A later turn for this session
+                // can then queue one follow-up while this snapshot is read.
+                pending_sessions.lock().unwrap().remove(&session_id);
                 let _ = run_pass(
                     &state,
                     runner.as_ref(),
@@ -562,6 +636,7 @@ fn worker_loop(
             }
             None => {
                 let _ = run_pass(&state, runner.as_ref(), None, false, logger.as_ref());
+                next_sweep = interval.map(|period| Instant::now() + period);
             }
         }
     }
@@ -588,20 +663,34 @@ fn run_pass(
             state.pending = state.pending.saturating_sub(1);
         }
         match &result {
-            Ok(_) => {
+            Ok(report) => {
                 if session_id.is_none() {
                     state.swept = true;
                 }
-                if state.last_failure.take().is_some() {
+                let recovered = session_id.is_none()
+                    && match state.last_failure_kind {
+                        Some(FailureKind::Embedder) => report.embeddings > 0,
+                        Some(FailureKind::Other) => true,
+                        None => false,
+                    };
+                if recovered {
+                    state.last_failure = None;
+                    state.last_failure_kind = None;
                     log = Some("zorp-web: recall indexing recovered".to_string());
                 }
             }
             Err(error) => {
+                let kind = if matches!(error, RecallError::Embed(_)) {
+                    FailureKind::Embedder
+                } else {
+                    FailureKind::Other
+                };
                 let error = error.to_string();
                 if state.last_failure.is_none() {
                     log = Some(format!("zorp-web: recall indexing paused: {error}"));
                 }
                 state.last_failure = Some(error);
+                state.last_failure_kind = Some(kind);
             }
         }
     }
@@ -794,6 +883,24 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct TrafficRunner {
+        sweeps: AtomicUsize,
+        sessions: AtomicUsize,
+    }
+
+    impl PassRunner for TrafficRunner {
+        fn sweep(&self) -> Result<Report, RecallError> {
+            self.sweeps.fetch_add(1, Ordering::SeqCst);
+            Ok(Report::default())
+        }
+
+        fn session(&self, _session_id: &str) -> Result<Report, RecallError> {
+            self.sessions.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(2));
+            Ok(Report::default())
+        }
+    }
+
     impl ConcurrentRunner {
         fn new() -> Self {
             Self {
@@ -852,6 +959,51 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_session_requests_are_coalesced() {
+        let runner = Arc::new(TrafficRunner {
+            sweeps: AtomicUsize::new(0),
+            sessions: AtomicUsize::new(0),
+        });
+        let indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
+
+        for _ in 0..100 {
+            indexer.index_session("conv-1");
+        }
+        indexer.sweep().unwrap();
+
+        assert!(
+            runner.sessions.load(Ordering::SeqCst) <= 2,
+            "duplicate work accumulated without a bound"
+        );
+    }
+
+    #[test]
+    fn queued_sessions_cannot_postpone_a_periodic_sweep() {
+        let runner = Arc::new(TrafficRunner {
+            sweeps: AtomicUsize::new(0),
+            sessions: AtomicUsize::new(0),
+        });
+        let indexer = IndexerHandle::start_with(
+            Some(Duration::from_millis(20)),
+            runner.clone(),
+            silent_logger(),
+        );
+        wait_until(Duration::from_secs(1), || {
+            runner.sweeps.load(Ordering::SeqCst) == 1
+        });
+
+        for seq in 0..100 {
+            indexer.index_session(format!("conv-{seq}"));
+        }
+        std::thread::sleep(Duration::from_millis(45));
+
+        assert!(
+            runner.sweeps.load(Ordering::SeqCst) >= 2,
+            "the queued session backlog starved the periodic sweep"
+        );
+    }
+
+    #[test]
     fn zero_interval_starts_no_automatic_sweep() {
         let runner = Arc::new(ConcurrentRunner::new());
         let _indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
@@ -872,6 +1024,20 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_worker_stays_explicitly_unavailable() {
+        let indexer = IndexerHandle::stopped("thread spawn failed".to_string());
+
+        let snapshot = indexer.snapshot();
+        assert!(!snapshot.available);
+        assert_eq!(snapshot.reason.as_deref(), Some("thread spawn failed"));
+        assert!(!snapshot.ready);
+        assert!(indexer.sweep().is_err());
+
+        indexer.index_session("conv-1");
+        assert!(!indexer.snapshot().available);
+    }
+
+    #[test]
     fn a_pass_is_reported_running_until_it_finishes() {
         let runner = Arc::new(ConcurrentRunner::new());
         let indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
@@ -887,6 +1053,7 @@ mod tests {
     struct FailingRunner {
         fail: AtomicBool,
         calls: AtomicUsize,
+        successful_embeddings: AtomicUsize,
     }
 
     impl FailingRunner {
@@ -898,7 +1065,10 @@ mod tests {
                     message: format!("connection refused on attempt {call}"),
                 }))
             } else {
-                Ok(Report::default())
+                Ok(Report {
+                    embeddings: self.successful_embeddings.load(Ordering::SeqCst),
+                    ..Report::default()
+                })
             }
         }
     }
@@ -914,10 +1084,35 @@ mod tests {
     }
 
     #[test]
+    fn a_session_success_cannot_hide_a_failed_full_sweep() {
+        let runner = Arc::new(FailingRunner {
+            fail: AtomicBool::new(true),
+            calls: AtomicUsize::new(0),
+            successful_embeddings: AtomicUsize::new(1),
+        });
+        let indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
+
+        assert!(indexer.sweep().is_err());
+        runner.fail.store(false, Ordering::SeqCst);
+        indexer.index_session("conv-1");
+        wait_until(Duration::from_secs(1), || {
+            runner.calls.load(Ordering::SeqCst) == 2 && !indexer.snapshot().running
+        });
+        assert!(
+            !indexer.snapshot().available,
+            "unrelated session work hid the failed full sweep"
+        );
+
+        indexer.sweep().unwrap();
+        assert!(indexer.snapshot().available);
+    }
+
+    #[test]
     fn an_unreachable_embedder_is_retried_without_logging_every_tick() {
         let runner = Arc::new(FailingRunner {
             fail: AtomicBool::new(true),
             calls: AtomicUsize::new(0),
+            successful_embeddings: AtomicUsize::new(0),
         });
         let logs = Arc::new(Mutex::new(Vec::<String>::new()));
         let logger = {
@@ -935,6 +1130,14 @@ mod tests {
         assert!(!indexer.snapshot().available);
 
         runner.fail.store(false, Ordering::SeqCst);
+        indexer.sweep().unwrap();
+        assert!(
+            !indexer.snapshot().available,
+            "a no-op pass cannot prove that the embedder recovered"
+        );
+        assert_eq!(logs.lock().unwrap().len(), 1);
+
+        runner.successful_embeddings.store(1, Ordering::SeqCst);
         indexer.sweep().unwrap();
         assert!(indexer.snapshot().available);
         assert_eq!(

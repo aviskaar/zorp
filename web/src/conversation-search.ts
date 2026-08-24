@@ -145,8 +145,17 @@ export function summarize(status: RecallStatus): string {
   if (!status.available) {
     return status.reason?.trim() || "Conversation search is not available on this server.";
   }
-  const total = Math.max(0, status.conversations);
-  const indexed = Math.max(0, Math.min(status.indexed_conversations, total));
+  if (
+    typeof status.store_conversations !== "number" ||
+    !Number.isFinite(status.store_conversations) ||
+    typeof status.running !== "boolean" ||
+    typeof status.ready !== "boolean"
+  ) {
+    return "Automatic indexing status is not available from this server. Update zorp-web to see catch-up progress.";
+  }
+  const total = Math.max(0, status.store_conversations);
+  const indexedCount = Number.isFinite(status.conversations) ? status.conversations : 0;
+  const indexed = Math.max(0, Math.min(indexedCount, total));
   if (status.running) {
     return `Indexing on this machine. ${indexed} of ${total} conversations indexed.`;
   }

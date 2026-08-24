@@ -174,7 +174,7 @@ test("an unavailable search says why, in the server's own words", () => {
     endpoint: null,
     model: null,
     conversations: 0,
-    indexed_conversations: 0,
+    store_conversations: 0,
     chunks: 0,
     running: false,
     ready: false,
@@ -189,7 +189,7 @@ test("an unavailable search with no reason still says something", () => {
     endpoint: null,
     model: null,
     conversations: 0,
-    indexed_conversations: 0,
+    store_conversations: 0,
     chunks: 0,
     running: false,
     ready: false,
@@ -203,8 +203,8 @@ test("catch-up says how much is indexed, rather than looking like no search resu
     reason: null,
     endpoint: "http://127.0.0.1:11434",
     model: "nomic-embed-text",
-    conversations: 3,
-    indexed_conversations: 0,
+    conversations: 0,
+    store_conversations: 3,
     chunks: 0,
     running: false,
     ready: false,
@@ -219,8 +219,8 @@ test("a running pass says it is indexing and reports its counts", () => {
     reason: null,
     endpoint: "http://127.0.0.1:11434",
     model: "nomic-embed-text",
-    conversations: 3,
-    indexed_conversations: 1,
+    conversations: 1,
+    store_conversations: 3,
     chunks: 2,
     running: true,
     ready: false,
@@ -236,7 +236,7 @@ test("a populated index reports its size and the model behind it", () => {
     endpoint: "http://127.0.0.1:11434",
     model: "nomic-embed-text",
     conversations: 1,
-    indexed_conversations: 1,
+    store_conversations: 1,
     chunks: 4,
     running: false,
     ready: true,
@@ -244,4 +244,18 @@ test("a populated index reports its size and the model behind it", () => {
   assert.match(line, /ready/i);
   assert.match(line, /1 conversation\b/);
   assert.match(line, /nomic-embed-text/);
+});
+
+test("an older server gets an honest compatibility message", () => {
+  const line = summarize({
+    available: true,
+    reason: null,
+    endpoint: "http://127.0.0.1:11434",
+    model: "nomic-embed-text",
+    conversations: 2,
+    chunks: 4,
+    memory: false,
+  });
+  assert.match(line, /automatic indexing status is not available/i);
+  assert.doesNotMatch(line, /NaN/);
 });

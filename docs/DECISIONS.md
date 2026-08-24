@@ -20,6 +20,8 @@ every 300 seconds by default, and accepts a session as soon as a turn finishes.
 `ZORP_RECALL_SWEEP_SECS` changes the interval and 0 disables automatic sweeps.
 The worker serializes startup, periodic, per-session and forced passes. None of
 them can interleave, and neither server startup nor a turn waits for embedding.
+Duplicate notices for one session collapse into one pending pass, and a due
+periodic sweep takes priority over queued session work.
 The existing conversation fingerprint remains the only change detector, so an
 unchanged sweep makes no embedding calls.
 
@@ -33,8 +35,12 @@ and scripts that need to force a pass.
 machine that has not set recall up. The first failed pass is logged, later
 failures stay quiet, a recovery is logged once, and the next tick retries. The
 status endpoint carries the last failure so the page can name the missing local
-embedder. No fallback was added. Conversation text still goes to a checked
-loopback address or nowhere.
+embedder. If the worker itself cannot start, status reports that failure and no
+unmanaged per-turn worker takes its place. No fallback was added. Conversation
+text still goes to a checked loopback address or nowhere.
+Only a successful full sweep clears a failed sweep. An embedder failure clears
+only after that sweep makes a successful embedding call, so a fingerprint-only
+pass cannot claim recovery without contacting Ollama.
 
 **Cost:** every interval reads session headers and message text to check the
 stored fingerprints. Unchanged text costs no model call and no vector write.

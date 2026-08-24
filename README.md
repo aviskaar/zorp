@@ -423,10 +423,12 @@ ollama pull nomic-embed-text
 cargo run -p zorp-web --features recall
 ```
 
-Then press **Index** once. It reads the conversations already in zorp's
-session store, asks the local model for one vector per message, and writes
-them to `recall.db` next to that store. A second press skips every
-conversation whose text has not changed.
+The server indexes existing conversations after startup, checks them again
+every five minutes, and indexes an active conversation after each turn. It
+asks the local model for one vector per changed message and writes the vectors
+to `recall.db` next to the session store. An unchanged conversation makes no
+embedding call. `ZORP_RECALL_SWEEP_SECS` changes the full-store interval, and
+0 disables startup and periodic sweeps.
 
 **Conversation text goes to a loopback address or it goes nowhere.** There
 is no remote embedding provider, no flag that adds one, and no fallback
@@ -458,14 +460,13 @@ you started today:
 cargo run -p zorp-web --features memory
 ```
 
-Every finished turn indexes its own session in the background, so the
-corpus keeps up without a button press, and the **Index** button stays as
-the catch-up for anything a failed feed missed. Tick **Recall earlier
-conversations for this message** next to the composer and the server
-embeds what you typed, finds the closest handful of messages, and quotes
-them into the transcript the model reads. Above the answer you get a card
-listing exactly what was recalled: the conversation, the date, and whether
-each line was written by you or by the assistant.
+Every finished turn indexes its own session in the background, and the
+periodic sweep catches anything a failed feed missed. Tick **Recall earlier
+conversations for this message** next to the composer and the server embeds
+what you typed, finds the closest handful of messages, and quotes them into
+the transcript the model reads. Above the answer you get a card listing
+exactly what was recalled: the conversation, the date, and whether each line
+was written by you or by the assistant.
 
 Three things about it are deliberate.
 

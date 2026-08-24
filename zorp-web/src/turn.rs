@@ -240,13 +240,10 @@ pub fn spawn_turn(
 fn feed_recall(indexer: RecallFeed, session_id: String) {
     match indexer {
         Some(indexer) => indexer.index_session(session_id),
-        // Library-built test routers do not start a process worker. Preserve
-        // the old best-effort path for them and for embedders of the router.
-        None => {
-            std::thread::spawn(move || {
-                let _ = crate::recall::feed_session(&session_id);
-            });
-        }
+        // A router embedded without the process worker cannot promise
+        // automatic indexing. The forced endpoint remains available, but
+        // starting unmanaged per-turn workers here would break serialization.
+        None => {}
     }
 }
 

@@ -24,8 +24,25 @@ use std::net::SocketAddr;
 async fn spawn() -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    #[cfg(not(feature = "memory"))]
+    let state = zorp_web::state::AppState::new();
+    #[cfg(feature = "memory")]
+    let state = {
+        // These tests force their initial corpus explicitly. Disable only
+        // the automatic full sweep while retaining the production worker
+        // that receives finished-turn session updates.
+        let previous = std::env::var_os("ZORP_RECALL_SWEEP_SECS");
+        std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
+        let state = zorp_web::state::AppState::new()
+            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        match previous {
+            Some(value) => std::env::set_var("ZORP_RECALL_SWEEP_SECS", value),
+            None => std::env::remove_var("ZORP_RECALL_SWEEP_SECS"),
+        }
+        state
+    };
     tokio::spawn(async move {
-        axum::serve(listener, zorp_web::api::router())
+        axum::serve(listener, zorp_web::api::router_with_state(state))
             .await
             .unwrap();
     });

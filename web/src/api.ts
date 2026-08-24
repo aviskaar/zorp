@@ -1204,13 +1204,14 @@ export interface RecallStatus {
   /** The loopback endpoint the vectors would come from. */
   endpoint: string | null;
   model: string | null;
-  /** Conversations in the source store. */
-  conversations: number;
   /** Conversations represented in the derived index. */
-  indexed_conversations: number;
+  conversations: number;
+  /** Conversations in the source store. Missing on older servers. */
+  store_conversations?: number;
   chunks: number;
-  running: boolean;
-  ready: boolean;
+  /** Automatic indexer state. Missing on older servers. */
+  running?: boolean;
+  ready?: boolean;
   /**
    * Whether a turn can be told to read this index, as opposed to only the
    * sidebar being able to search it. A separate build-time choice, so the
