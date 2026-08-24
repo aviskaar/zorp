@@ -19,6 +19,7 @@ import {
 } from "./search-indicator";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
+import { createVoiceMeter } from "./voice-meter";
 import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
@@ -51,7 +52,6 @@ import {
   getAutoApprove,
   setAutoApprove,
   getCapabilities,
-  getVoiceStatus,
   getSession,
   getSettings,
   listModels,
@@ -152,8 +152,7 @@ interface Elements {
   voiceMicrophone: HTMLButtonElement;
   voiceCancel: HTMLButtonElement;
   voiceStatus: HTMLElement;
-  voiceDownload: HTMLButtonElement;
-  voiceCommand: HTMLElement;
+  voiceMeter: HTMLElement;
   reviewPanel: HTMLButtonElement;
   zorpMode: HTMLButtonElement;
   zorpPanel: HTMLElement;
@@ -223,14 +222,14 @@ const voiceInput = createVoiceInput(
     microphone: dom.voiceMicrophone,
     cancel: dom.voiceCancel,
     status: dom.voiceStatus,
-    download: dom.voiceDownload,
-    command: dom.voiceCommand,
   },
   {
-    status: getVoiceStatus,
     wait: waitForVoiceModel,
     transcribe: transcribeVoice,
   },
+  // The browser's own microphone and Web Audio.
+  undefined,
+  createVoiceMeter(dom.voiceMeter),
 );
 
 let sessionId: string | null = null;
@@ -448,8 +447,7 @@ function collectElements(): Elements {
     voiceMicrophone: byId<HTMLButtonElement>("voice-mic"),
     voiceCancel: byId<HTMLButtonElement>("voice-cancel"),
     voiceStatus: byId("voice-status"),
-    voiceDownload: byId<HTMLButtonElement>("voice-download"),
-    voiceCommand: byId("voice-command"),
+    voiceMeter: byId("voice-meter"),
     settingsOverlay: byId("settings-overlay"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),
     settingsForm: byId<HTMLFormElement>("settings-form"),

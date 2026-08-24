@@ -5,15 +5,16 @@ use std::net::SocketAddr;
 use zorp_web::state::AppState;
 
 async fn spawn() -> SocketAddr {
+    spawn_with(AppState::with_token(None)).await
+}
+
+async fn spawn_with(state: AppState) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(
-            listener,
-            zorp_web::api::router_with_state(AppState::with_token(None)),
-        )
-        .await
-        .unwrap();
+        axum::serve(listener, zorp_web::api::router_with_state(state))
+            .await
+            .unwrap();
     });
     addr
 }
@@ -67,6 +68,8 @@ mod enabled {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use tokio::sync::Mutex;
+    use zorp_voice::{QwenAsr, SetupError, SetupProgress, SetupStage};
+    use zorp_web::voice::VoiceBootstrap;
 
     static ENV: Mutex<()> = Mutex::const_new(());
 
@@ -90,6 +93,48 @@ mod enabled {
             }
         });
         format!("http://{addr}")
+    }
+
+    struct ReadyBootstrap;
+
+    impl VoiceBootstrap for ReadyBootstrap {
+        fn start(
+            &self,
+            client: &QwenAsr,
+            progress: &mut dyn FnMut(SetupProgress),
+        ) -> Result<Option<std::process::Child>, SetupError> {
+            for stage in [
+                SetupStage::CreatingEnvironment,
+                SetupStage::Installing,
+                SetupStage::DownloadingModel,
+                SetupStage::Loading,
+            ] {
+                progress(SetupProgress { stage });
+            }
+            let address = client
+                .endpoint()
+                .strip_prefix("http://")
+                .unwrap()
+                .to_string();
+            let listener = TcpListener::bind(address).unwrap();
+            let model = client.model().to_string();
+            std::thread::spawn(move || {
+                for body in [
+                    r#"{"status":"ready"}"#.to_string(),
+                    format!(r#"{{"data":[{{"id":"{model}"}}]}}"#),
+                ] {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut bytes = [0u8; 16384];
+                    let _ = stream.read(&mut bytes);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            });
+            Ok(None)
+        }
     }
 
     #[tokio::test]
@@ -122,10 +167,8 @@ mod enabled {
         assert_eq!(capabilities["voice"], status);
         assert_eq!(status["runtime_reachable"], true);
         assert_eq!(status["model_present"], true);
-        assert!(status["command"]
-            .as_str()
-            .unwrap()
-            .contains("qwen-asr-serve"));
+        assert_eq!(status["setup_available"], true);
+        assert!(status["command"].is_null());
     }
 
     #[tokio::test]
@@ -174,6 +217,38 @@ mod enabled {
     }
 
     #[tokio::test]
+    async fn wait_stream_sets_up_once_and_reports_ordered_real_stages() {
+        let _guard = ENV.lock().await;
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = reserved.local_addr().unwrap();
+        drop(reserved);
+        std::env::set_var("ZORP_VOICE_URL", format!("http://{endpoint}"));
+        let state =
+            AppState::with_token(None).with_voice_bootstrap(std::sync::Arc::new(ReadyBootstrap));
+        let addr = spawn_with(state).await;
+        let url = format!("http://{addr}/api/voice/wait");
+        let (status, body) = tokio::task::spawn_blocking(move || {
+            request("POST", &url, Some("application/json"), b"{}")
+        })
+        .await
+        .unwrap();
+        std::env::remove_var("ZORP_VOICE_URL");
+        assert_eq!(status, 200, "{body}");
+        let mut previous = 0;
+        for stage in [
+            "creating_environment",
+            "installing",
+            "downloading_model",
+            "loading",
+            "ready",
+        ] {
+            let position = body.find(&format!(r#""stage":"{stage}""#)).unwrap();
+            assert!(position >= previous, "{stage} was out of order: {body}");
+            previous = position;
+        }
+    }
+
+    #[tokio::test]
     async fn wait_rejects_a_bodyless_simple_post() {
         let _guard = ENV.lock().await;
         let addr = spawn().await;
@@ -183,5 +258,32 @@ mod enabled {
             .unwrap();
         assert_eq!(status, 415, "{body}");
         assert!(body.contains("application/json"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn autostart_zero_emits_one_error_without_creating_an_environment() {
+        let _guard = ENV.lock().await;
+        let temp = tempfile::tempdir().unwrap();
+        let setup_dir = temp.path().join("voice-runtime");
+        std::env::set_var("ZORP_VOICE_URL", "http://127.0.0.1:9");
+        std::env::set_var("ZORP_VOICE_SETUP_DIR", &setup_dir);
+        std::env::set_var("ZORP_VOICE_AUTOSTART", "0");
+        let addr = spawn().await;
+        let url = format!("http://{addr}/api/voice/wait");
+        let (status, body) = tokio::task::spawn_blocking(move || {
+            request("POST", &url, Some("application/json"), b"{}")
+        })
+        .await
+        .unwrap();
+        std::env::remove_var("ZORP_VOICE_URL");
+        std::env::remove_var("ZORP_VOICE_SETUP_DIR");
+        std::env::remove_var("ZORP_VOICE_AUTOSTART");
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body.matches("\"status\":\"error\"").count(), 1, "{body}");
+        assert!(body.contains("disabled"), "{body}");
+        assert!(
+            !setup_dir.exists(),
+            "setup ran despite the explicit opt-out"
+        );
     }
 }

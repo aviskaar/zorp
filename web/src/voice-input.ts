@@ -1,7 +1,7 @@
 import type { VoiceStatus, VoiceTranscription, VoiceWaitEvent } from "./api";
+import type { VoiceMeter } from "./voice-meter";
 
 export interface VoiceApi {
-  status(): Promise<VoiceStatus>;
   wait(onEvent: (event: VoiceWaitEvent) => void): Promise<void>;
   transcribe(recording: Blob): Promise<VoiceTranscription>;
 }
@@ -11,8 +11,6 @@ export interface VoiceInputElements {
   microphone: HTMLButtonElement;
   cancel: HTMLButtonElement;
   status: HTMLElement;
-  download: HTMLButtonElement;
-  command: HTMLElement;
 }
 
 export interface VoiceEnvironment {
@@ -31,12 +29,19 @@ export function createVoiceInput(
   elements: VoiceInputElements,
   api: VoiceApi,
   environment: VoiceEnvironment = browserEnvironment(),
+  // The level meter is passed in rather than built here, so a caller that
+  // draws no meter costs nothing and recording never depends on one.
+  meter: VoiceMeter = { start: () => {}, stop: () => {} },
 ): VoiceInput {
   let recorder: MediaRecorder | null = null;
   let stream: MediaStream | null = null;
   let chunks: Blob[] = [];
   let cancelled = false;
   let busy = false;
+  let readiness: Promise<{ ready: boolean; error?: unknown }> | null = null;
+  let readinessGeneration = 0;
+  let visibleReadiness = 0;
+  let recordingGeneration = 0;
 
   const message = (text: string): void => {
     elements.status.hidden = false;
@@ -44,6 +49,8 @@ export function createVoiceInput(
   };
 
   const releaseStream = (): void => {
+    // The meter reads the same stream, so it stops wherever the stream does.
+    meter.stop();
     if (!stream) return;
     for (const track of stream.getTracks()) track.stop();
     stream = null;
@@ -75,29 +82,44 @@ export function createVoiceInput(
   };
 
   const finishRecording = async (): Promise<void> => {
+    const generation = recordingGeneration;
     const wasCancelled = cancelled;
+    const pendingReadiness = readiness;
+    readiness = null;
     const recording = new Blob(chunks, {
       type: recorder?.mimeType || chunks[0]?.type || "audio/webm",
     });
     releaseStream();
     idleControls();
     if (wasCancelled) {
+      if (visibleReadiness === generation) visibleReadiness = 0;
+      void reportBackgroundFailure(pendingReadiness);
       message("Recording cancelled.");
       return;
     }
     if (recording.size === 0) {
+      if (visibleReadiness === generation) visibleReadiness = 0;
+      void reportBackgroundFailure(pendingReadiness);
       message("No audio was recorded. Try again.");
       return;
     }
     busy = true;
     elements.microphone.disabled = true;
-    message("Transcribing on this machine…");
     try {
+      const outcome = await pendingReadiness;
+      if (visibleReadiness === generation) visibleReadiness = 0;
+      if (!outcome?.ready) {
+        console.error("voice setup failed", outcome?.error);
+        message("Voice input is unavailable right now.");
+        return;
+      }
+      message("Transcribing on this machine…");
       const transcript = await api.transcribe(recording);
       insertTranscript(transcript.text);
       message(`Transcript ready. Detected language: ${transcript.language}. Review it before sending.`);
     } catch (error) {
-      message(`Could not transcribe the recording: ${describe(error)}`);
+      console.error("voice transcription failed", error);
+      message("The recording could not be transcribed. Try again.");
     } finally {
       elements.microphone.disabled = false;
       busy = false;
@@ -109,17 +131,33 @@ export function createVoiceInput(
       message("Microphone access needs a secure context. Open zorp-web on localhost or over HTTPS.");
       return;
     }
+    if (!environment.mediaDevices?.getUserMedia || !environment.MediaRecorder) {
+      message("This browser does not provide microphone recording here.");
+      return;
+    }
     busy = true;
     elements.microphone.disabled = true;
+    const generation = ++readinessGeneration;
+    visibleReadiness = generation;
+    recordingGeneration = generation;
+    let readinessError: unknown;
+    readiness = api
+      .wait((event) => {
+        if (visibleReadiness === generation) message(stageMessage(event.stage));
+        if (event.status === "error") readinessError = event.detail;
+      })
+      .then(
+        () =>
+          readinessError === undefined
+            ? { ready: true }
+            : { ready: false, error: readinessError },
+        (error) => ({ ready: false, error }),
+      );
     try {
-      const status = await api.status();
-      observe(status);
-      if (!status.available || !status.runtime_reachable || !status.model_present) return;
-      if (!environment.mediaDevices?.getUserMedia || !environment.MediaRecorder) {
-        message("This browser does not provide microphone recording here.");
-        return;
-      }
       stream = await environment.mediaDevices.getUserMedia({ audio: true });
+      // Show the level meter as soon as the microphone is live, so the page
+      // says it is listening while the runtime is still waking up.
+      meter.start(stream);
       const Recorder = environment.MediaRecorder;
       const mimeType = MIME_TYPES.find((type) => Recorder.isTypeSupported?.(type));
       recorder = mimeType ? new Recorder(stream, { mimeType }) : new Recorder(stream);
@@ -137,6 +175,7 @@ export function createVoiceInput(
       elements.cancel.hidden = false;
       message("Recording. Press the microphone to stop, or cancel to discard it.");
     } catch (error) {
+      if (visibleReadiness === generation) visibleReadiness = 0;
       releaseStream();
       if (
         typeof error === "object" &&
@@ -146,8 +185,11 @@ export function createVoiceInput(
       ) {
         message("Microphone permission was denied. Allow it in the browser and try again.");
       } else {
-        message(`Could not start recording: ${describe(error)}`);
+        console.error("voice recording failed", error);
+        message("Audio could not be recorded. Try again.");
       }
+      void reportBackgroundFailure(readiness);
+      readiness = null;
     } finally {
       elements.microphone.disabled = false;
       busy = false;
@@ -155,21 +197,20 @@ export function createVoiceInput(
   };
 
   const observe = (status: VoiceStatus): void => {
-    elements.download.hidden = true;
-    elements.command.hidden = true;
-    elements.command.textContent = "";
     if (!status.available) {
-      message(status.detail || "Voice input is off. Rebuild zorp-web with the voice feature.");
+      message("Voice input is off in this zorp-web build.");
       return;
     }
-    if (!status.runtime_reachable || !status.model_present) {
-      message(status.detail || `Start the local runtime for ${status.model ?? "Qwen3-ASR"}.`);
-      if (status.command) {
-        elements.command.textContent = status.command;
-        elements.command.hidden = false;
-      }
-      elements.download.textContent = "I started it. Wait for the model";
-      elements.download.hidden = false;
+    if (!status.runtime_reachable) {
+      message(
+        status.setup_available
+          ? "Voice input will be prepared on this machine when you use the microphone."
+          : "Voice input is unavailable on this machine.",
+      );
+      return;
+    }
+    if (!status.model_present) {
+      message("The local runtime is not serving the configured Qwen3-ASR model.");
       return;
     }
     message("Voice input is ready.");
@@ -190,32 +231,6 @@ export function createVoiceInput(
     recorder.stop();
   });
 
-  elements.download.addEventListener("click", () => {
-    if (busy) return;
-    busy = true;
-    elements.download.disabled = true;
-    message("Waiting for the local Qwen3-ASR model…");
-    void api
-      .wait((event) => {
-        if (event.status === "ready") {
-          elements.download.hidden = true;
-          elements.command.hidden = true;
-          message("Voice model ready. Press the microphone to record.");
-        } else if (event.status === "error") {
-          message(`The local runtime could not report readiness: ${event.detail}`);
-        } else {
-          message(`Waiting for the local Qwen3-ASR model. ${event.detail}`);
-        }
-      })
-      .catch((error) => {
-        message(`Could not wait for the voice model: ${describe(error)}`);
-      })
-      .finally(() => {
-        elements.download.disabled = false;
-        busy = false;
-      });
-  });
-
   return { observe };
 }
 
@@ -227,6 +242,26 @@ function browserEnvironment(): VoiceEnvironment {
   };
 }
 
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function stageMessage(stage: VoiceWaitEvent["stage"]): string {
+  switch (stage) {
+    case "creating_environment":
+      return "Creating a private voice environment…";
+    case "installing":
+      return "Installing the local voice runtime…";
+    case "downloading_model":
+      return "Downloading the Qwen3-ASR model…";
+    case "loading":
+      return "Loading the Qwen3-ASR model…";
+    case "ready":
+      return "Voice input is ready.";
+    case "error":
+      return "Voice input is unavailable right now.";
+  }
+}
+
+async function reportBackgroundFailure(
+  pending: Promise<{ ready: boolean; error?: unknown }> | null,
+): Promise<void> {
+  const outcome = await pending;
+  if (outcome && !outcome.ready) console.error("voice setup failed", outcome.error);
 }

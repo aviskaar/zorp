@@ -1,6 +1,7 @@
 //! The Qwen ASR 0.0.6 voice runtime, over checked loopback HTTP.
 
 use crate::loopback::{LoopbackError, LoopbackResolver, LoopbackUrl};
+use crate::SetupStage;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -20,6 +21,7 @@ pub struct VoiceStatus {
     pub model: String,
     pub runtime_reachable: bool,
     pub model_present: bool,
+    pub stage: Option<SetupStage>,
     pub detail: String,
 }
 
@@ -123,11 +125,18 @@ impl QwenAsr {
         &self.model
     }
 
+    pub(crate) fn direct_runtime_target(&self) -> Option<(&str, u16)> {
+        self.url
+            .supports_direct_runtime()
+            .then(|| (self.url.host(), self.url.port()))
+    }
+
     /// A copyable operator command for a direct HTTP endpoint.
     ///
-    /// It is shown as text and never executed by zorp. HTTPS and path-prefixed
-    /// endpoints need an operator-managed loopback proxy, so zorp cannot
-    /// construct the full command for them.
+    /// Automatic setup executes equivalent argument vectors directly, never
+    /// this shell text. HTTPS and path-prefixed endpoints need an
+    /// operator-managed loopback proxy, so zorp cannot construct the full
+    /// command for them.
     pub fn start_command(&self) -> Option<String> {
         self.url.supports_direct_runtime().then(|| format!(
             "python -m pip install \"qwen-asr[vllm]==0.0.6\"\nqwen-asr-serve {} --host {} --port {}",
@@ -143,13 +152,45 @@ impl QwenAsr {
             model: self.model.clone(),
             runtime_reachable: false,
             model_present: false,
+            stage: None,
             detail: String::new(),
         };
-        if let Err(error) = self.get_text("/health") {
-            status.detail = self.with_operator_guidance(error.to_string());
-            return status;
-        }
+        let health = match self.get_text("/health") {
+            Ok(body) => body,
+            Err(_) => {
+                status.detail = if self.url.supports_direct_runtime() {
+                    "the local Qwen3-ASR runtime is not running".into()
+                } else {
+                    "the configured local voice proxy is not answering. It must be started and managed by the operator"
+                        .into()
+                };
+                return status;
+            }
+        };
         status.runtime_reachable = true;
+        if let Some(stage) = health_stage(&health) {
+            status.stage = Some(stage);
+            match stage {
+                SetupStage::DownloadingModel => {
+                    status.detail = "the local Qwen3-ASR model is downloading".into();
+                    return status;
+                }
+                SetupStage::Loading => {
+                    status.detail = "the local Qwen3-ASR model is loading".into();
+                    return status;
+                }
+                SetupStage::Error => {
+                    status.detail = health_detail(&health)
+                        .map(|detail| detail.chars().take(400).collect())
+                        .unwrap_or_else(|| {
+                            "the local Qwen3-ASR runtime could not load the model".into()
+                        });
+                    return status;
+                }
+                SetupStage::Ready => {}
+                SetupStage::CreatingEnvironment | SetupStage::Installing => return status,
+            }
+        }
         let models = match self.get_text("/v1/models") {
             Ok(body) => body,
             Err(error) => {
@@ -161,6 +202,7 @@ impl QwenAsr {
             Ok(present) => {
                 status.model_present = present;
                 status.detail = if present {
+                    status.stage = Some(SetupStage::Ready);
                     "the local Qwen3-ASR runtime and model are ready".into()
                 } else {
                     "the local runtime is ready, but it is not serving the configured Qwen3-ASR model"
@@ -209,6 +251,27 @@ impl QwenAsr {
             )
         }
     }
+}
+
+fn health_stage(body: &str) -> Option<SetupStage> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let status = value.get("status")?.as_str()?;
+    match status {
+        "downloading_model" => Some(SetupStage::DownloadingModel),
+        "loading" => Some(SetupStage::Loading),
+        "ready" => Some(SetupStage::Ready),
+        "error" => Some(SetupStage::Error),
+        _ => None,
+    }
+}
+
+fn health_detail(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("detail")?
+        .as_str()
+        .filter(|detail| !detail.trim().is_empty())
+        .map(str::to_string)
 }
 
 fn request_result(
@@ -359,7 +422,43 @@ fn non_empty(var: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{chat_body, model_is_present, parse_transcription, shell_word, QwenAsr};
+    use super::{
+        chat_body, health_detail, health_stage, model_is_present, parse_transcription, shell_word,
+        QwenAsr,
+    };
+    use crate::SetupStage;
+
+    #[test]
+    fn embedded_health_reports_only_known_runtime_stages() {
+        assert_eq!(
+            health_stage(r#"{"status":"downloading_model"}"#),
+            Some(SetupStage::DownloadingModel)
+        );
+        assert_eq!(
+            health_stage(r#"{"status":"loading"}"#),
+            Some(SetupStage::Loading)
+        );
+        assert_eq!(
+            health_stage(r#"{"status":"ready"}"#),
+            Some(SetupStage::Ready)
+        );
+        assert_eq!(
+            health_stage(r#"{"status":"error"}"#),
+            Some(SetupStage::Error)
+        );
+        assert_eq!(health_stage(r#"{"status":"ok"}"#), None);
+        assert_eq!(health_stage("not json"), None);
+    }
+
+    #[test]
+    fn embedded_health_keeps_model_failure_detail_for_the_console() {
+        assert_eq!(
+            health_detail(r#"{"status":"error","detail":"weights are corrupt"}"#),
+            Some("weights are corrupt".into())
+        );
+        assert_eq!(health_detail(r#"{"status":"error","detail":""}"#), None);
+        assert_eq!(health_detail(r#"{"status":"error","detail":7}"#), None);
+    }
 
     #[test]
     fn qwen_language_envelope_is_split_without_translation() {

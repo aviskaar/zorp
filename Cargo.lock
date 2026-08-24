@@ -8494,8 +8494,11 @@ name = "zorp-voice"
 version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
+ "dirs",
+ "rustix",
  "serde",
  "serde_json",
+ "tempfile",
  "ureq",
 ]
 

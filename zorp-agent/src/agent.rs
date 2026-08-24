@@ -2521,6 +2521,26 @@ mod tests {
         }
     }
 
+    /// Voice setup and recording start only from a person's microphone click.
+    /// Neither operation belongs in the model's builtin tool set.
+    #[test]
+    fn no_builtin_tool_can_start_voice_setup_or_recording() {
+        let model = Scripted::new(vec![text("done")]);
+        let names = agent(model).register_builtins().tool_names();
+        for forbidden in [
+            "voice",
+            "start_voice",
+            "setup_voice",
+            "record_voice",
+            "transcribe_voice",
+        ] {
+            assert!(
+                !names.contains(&forbidden.to_string()),
+                "a model must not be able to start voice setup or recording: found {forbidden}"
+            );
+        }
+    }
+
     #[test]
     fn register_builtins_includes_new_subagent_tools_by_default() {
         let model = Scripted::new(vec![text("done")]);

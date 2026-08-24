@@ -7,6 +7,7 @@ import {
   type VoiceEnvironment,
   type VoiceInputElements,
 } from "../src/voice-input.ts";
+import type { VoiceMeter } from "../src/voice-meter.ts";
 
 function fixture(): { window: Window; elements: VoiceInputElements } {
   const dom = new JSDOM(`
@@ -14,8 +15,6 @@ function fixture(): { window: Window; elements: VoiceInputElements } {
     <button id="mic" type="button"></button>
     <button id="cancel" type="button" hidden></button>
     <p id="status" hidden></p>
-    <button id="download" type="button" hidden></button>
-    <code id="command" hidden></code>
   `);
   const doc = dom.window.document;
   return {
@@ -25,24 +24,15 @@ function fixture(): { window: Window; elements: VoiceInputElements } {
       microphone: doc.querySelector<HTMLButtonElement>("#mic")!,
       cancel: doc.querySelector<HTMLButtonElement>("#cancel")!,
       status: doc.querySelector<HTMLElement>("#status")!,
-      download: doc.querySelector<HTMLButtonElement>("#download")!,
-      command: doc.querySelector<HTMLElement>("#command")!,
     },
   };
 }
 
 function api(overrides: Partial<VoiceApi> = {}): VoiceApi {
   return {
-    status: async () => ({
-      available: true,
-      runtime_reachable: true,
-      model_present: true,
-      endpoint: "http://127.0.0.1:8000",
-      model: "Qwen/Qwen3-ASR-0.6B",
-      command: 'qwen-asr-serve Qwen/Qwen3-ASR-0.6B --host 127.0.0.1 --port 8000',
-      detail: "ready",
-    }),
-    wait: async () => {},
+    wait: async (onEvent) => {
+      onEvent({ status: "ready", stage: "ready", model: "qwen", detail: "ready" });
+    },
     transcribe: async () => ({ text: "hello", language: "English" }),
     ...overrides,
   };
@@ -67,6 +57,7 @@ test("an insecure context gets a visible explanation", async () => {
 
 test("permission denial is visible", async () => {
   const { window, elements } = fixture();
+  let report: ((event: Parameters<Parameters<VoiceApi["wait"]>[0]>[0]) => void) | undefined;
   const environment: VoiceEnvironment = {
     secureContext: true,
     mediaDevices: {
@@ -76,44 +67,157 @@ test("permission denial is visible", async () => {
     },
     MediaRecorder: class {} as typeof MediaRecorder,
   };
-  createVoiceInput(elements, api(), environment);
+  createVoiceInput(
+    elements,
+    api({
+      wait: async (onEvent) => {
+        report = onEvent;
+        await new Promise(() => {});
+      },
+    }),
+    environment,
+  );
   click(window, elements.microphone);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.match(elements.status.textContent ?? "", /permission/i);
+  report?.({ status: "waiting", stage: "downloading_model", model: "qwen", detail: "raw" });
+  assert.match(elements.status.textContent ?? "", /permission/i);
 });
 
-test("a missing model shows the operator command and waits for real readiness", async () => {
+test("one click requests readiness before permission and records while setup is pending", async () => {
   const { window, elements } = fixture();
+  const order: string[] = [];
+  let ready: (() => void) | undefined;
+  let uploads = 0;
   const voiceApi = api({
-    status: async () => ({
-      available: true,
-      runtime_reachable: true,
-      model_present: false,
-      endpoint: "http://127.0.0.1:8000",
-      model: "Qwen/Qwen3-ASR-0.6B",
-      command: 'qwen-asr-serve Qwen/Qwen3-ASR-0.6B --host 127.0.0.1 --port 8000',
-      detail: "missing",
-    }),
     wait: async (onEvent) => {
-      onEvent({ status: "waiting", model: "qwen", detail: "not ready" });
-      assert.match(elements.status.textContent ?? "", /waiting/i);
-      onEvent({ status: "ready", model: "qwen", detail: "ready" });
+      order.push("readiness");
+      onEvent({ status: "waiting", stage: "installing", model: "qwen", detail: "raw" });
+      await new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      onEvent({ status: "ready", stage: "ready", model: "qwen", detail: "ready" });
+    },
+    transcribe: async () => {
+      uploads++;
+      return { text: "hello", language: "English" };
     },
   });
-  createVoiceInput(elements, voiceApi, {
+  const { environment } = recordingEnvironment(() => order.push("permission"));
+  createVoiceInput(elements, voiceApi, environment);
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ["readiness", "permission"]);
+  assert.equal(FakeRecorder.instance.state, "recording");
+  const data = new Event("dataavailable");
+  Object.defineProperty(data, "data", {
+    value: new Blob(["audio"], { type: "audio/webm" }),
+  });
+  FakeRecorder.instance.dispatchEvent(data);
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(uploads, 0, "audio uploaded before the local model was ready");
+  ready?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(uploads, 1);
+});
+
+test("readiness stages use fixed short copy instead of server detail", async () => {
+  const { window, elements } = fixture();
+  const messages: string[] = [];
+  createVoiceInput(
+    elements,
+    api({
+      wait: async (onEvent) => {
+        for (const stage of [
+          "creating_environment",
+          "installing",
+          "downloading_model",
+          "loading",
+          "ready",
+        ] as const) {
+          onEvent({
+            status: stage === "ready" ? "ready" : "waiting",
+            stage,
+            model: "qwen",
+            detail: `<raw-${stage}>`,
+          });
+          messages.push(elements.status.textContent ?? "");
+        }
+      },
+    }),
+    recordingEnvironment().environment,
+  );
+
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(messages, [
+    "Creating a private voice environment…",
+    "Installing the local voice runtime…",
+    "Downloading the Qwen3-ASR model…",
+    "Loading the Qwen3-ASR model…",
+    "Voice input is ready.",
+  ]);
+  assert.doesNotMatch(messages.join(" "), /<raw-/);
+});
+
+test("setup failure keeps raw detail in the console and shows fixed copy", async () => {
+  const { window, elements } = fixture();
+  const raw = "pip failed in /private/path";
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...values: unknown[]) => errors.push(values);
+  try {
+    createVoiceInput(
+      elements,
+      api({
+        wait: async (onEvent) => {
+          onEvent({ status: "error", stage: "error", model: "qwen", detail: raw });
+          throw new Error(raw);
+        },
+      }),
+      recordingEnvironment().environment,
+    );
+    click(window, elements.microphone);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const data = new Event("dataavailable");
+    Object.defineProperty(data, "data", {
+      value: new Blob(["audio"], { type: "audio/webm" }),
+    });
+    FakeRecorder.instance.dispatchEvent(data);
+    click(window, elements.microphone);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(
+      elements.status.textContent,
+      "Voice input is unavailable right now.",
+    );
+    assert.doesNotMatch(elements.status.textContent ?? "", /pip|private/);
+    assert.match(String(errors[0]?.[1]), /pip failed.*private\/path/);
+  } finally {
+    console.error = original;
+  }
+});
+
+test("an unavailable configured runtime is one fixed sentence", () => {
+  const { elements } = fixture();
+  const voice = createVoiceInput(elements, api(), {
     secureContext: true,
     mediaDevices: undefined,
     MediaRecorder: undefined,
   });
-  click(window, elements.microphone);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(elements.download.hidden, false);
-  assert.equal(elements.command.hidden, false);
-  assert.match(elements.command.textContent ?? "", /qwen-asr-serve/);
-  click(window, elements.download);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.match(elements.status.textContent ?? "", /ready/i);
-  assert.equal(elements.command.hidden, true);
+  voice.observe({
+    available: true,
+    runtime_reachable: false,
+    model_present: false,
+    setup_available: false,
+    endpoint: null,
+    model: null,
+    stage: null,
+    detail: "run this command from /private/path",
+  });
+  assert.equal(elements.status.textContent, "Voice input is unavailable on this machine.");
 });
 
 class FakeRecorder extends EventTarget {
@@ -140,7 +244,10 @@ class FakeRecorder extends EventTarget {
   }
 }
 
-function recordingEnvironment(): { environment: VoiceEnvironment; stopped: () => number } {
+function recordingEnvironment(onPermission: () => void = () => {}): {
+  environment: VoiceEnvironment;
+  stopped: () => number;
+} {
   let tracksStopped = 0;
   const stream = {
     getTracks: () => [{ stop: () => tracksStopped++ }],
@@ -148,7 +255,12 @@ function recordingEnvironment(): { environment: VoiceEnvironment; stopped: () =>
   return {
     environment: {
       secureContext: true,
-      mediaDevices: { getUserMedia: async () => stream },
+      mediaDevices: {
+        getUserMedia: async () => {
+          onPermission();
+          return stream;
+        },
+      },
       MediaRecorder: FakeRecorder as unknown as typeof MediaRecorder,
     },
     stopped: () => tracksStopped,
@@ -209,4 +321,55 @@ test("a hostile transcript becomes editable textarea text and is not sent", asyn
   assert.equal(elements.input.value, `Before ${hostile} after`);
   assert.equal(elements.input.ownerDocument.querySelector("img"), null);
   assert.match(elements.status.textContent ?? "", /العربية/);
+});
+
+function recordingMeter(): { meter: VoiceMeter; events: string[] } {
+  const events: string[] = [];
+  return {
+    events,
+    meter: {
+      start: (stream) => {
+        events.push(typeof stream?.getTracks === "function" ? "start" : "start with no stream");
+      },
+      stop: () => events.push("stop"),
+    },
+  };
+}
+
+test("the level meter runs on the live microphone and stops with it", async () => {
+  const { window, elements } = fixture();
+  const { environment } = recordingEnvironment();
+  const { meter, events } = recordingMeter();
+  createVoiceInput(elements, api(), environment, meter);
+
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(events, ["start"], "the meter reads the stream the microphone handed over");
+
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(events, ["start", "stop"], "the meter stops when the stream is released");
+});
+
+test("a denied microphone never starts the meter", async () => {
+  const { window, elements } = fixture();
+  const { meter, events } = recordingMeter();
+  createVoiceInput(
+    elements,
+    api(),
+    {
+      secureContext: true,
+      mediaDevices: {
+        getUserMedia: async () => {
+          throw new window.DOMException("denied", "NotAllowedError");
+        },
+      },
+      MediaRecorder: class {} as unknown as typeof MediaRecorder,
+    },
+    meter,
+  );
+
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(events.includes("start"), false, "no permission means no meter");
 });

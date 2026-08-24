@@ -322,29 +322,28 @@ browser, asks a local Qwen3-ASR model for a transcript, and puts the text in
 the composer for you to read and edit. It never sends the message for you.
 Qwen3-ASR detects the language, so there is no English setting to choose.
 
-Install the exact local runtime contract this integration targets:
-
-```bash
-python -m pip install "qwen-asr[vllm]==0.0.6"
-```
-
-Start the runtime in one terminal:
-
-```bash
-qwen-asr-serve Qwen/Qwen3-ASR-0.6B --host 127.0.0.1 --port 8000
-```
-
-Start zorp-web in another terminal:
+Start zorp-web with voice enabled:
 
 ```bash
 cargo run -p zorp-web --features voice
 ```
 
-The first runtime start downloads the model weights. The runtime has no HTTP
-endpoint for starting that download. The microphone shows the command above
-when the runtime or model is absent. After you start it, the page polls the
-real `GET /health` and `GET /v1/models` endpoints and says that it is waiting.
-It shows no invented percentage. Transcription uses Qwen's documented
+One microphone click starts readiness and asks for browser permission at the
+same time. Recording begins as soon as permission is granted, and the composer
+draws a live level meter from your microphone so you can see it listening while
+setup is still running. If no runtime is
+available, zorp creates a versioned virtual environment below the platform's
+local data directory and tries `qwen-asr[vllm]==0.0.6`. When pip cannot resolve
+that extra, zorp recreates only its marked environment with
+`qwen-asr==0.0.6` and starts its embedded Transformers server. The page reports
+the real create, install, download, load, and ready stages without inventing a
+percentage. If recording finishes first, it waits for readiness before sending
+the audio to the checked loopback endpoint.
+
+Set `ZORP_VOICE_AUTOSTART=0` to disable every install and spawn step. In that
+compatibility mode the status API still reports the old operator start command,
+but the browser never renders shell text. Setup also refuses to run as root.
+Transcription uses the existing OpenAI-compatible
 `POST /v1/chat/completions` audio request.
 
 The defaults are `http://127.0.0.1:8000` and
@@ -354,8 +353,8 @@ The defaults are `http://127.0.0.1:8000` and
 The client pins its resolver to the checked host and port, refuses redirects,
 and ignores proxy environment variables. There is no cloud ASR fallback.
 For an HTTPS or path-prefixed URL, put `qwen-asr-serve` behind your own
-loopback proxy. Zorp reports that requirement instead of constructing a start
-command for an endpoint the runtime cannot bind directly.
+loopback proxy. Automatic setup cannot bind that endpoint and leaves it to the
+operator.
 
 Design:
 [`docs/superpowers/specs/2026-08-23-qwen3-asr-voice-input-design.md`](docs/superpowers/specs/2026-08-23-qwen3-asr-voice-input-design.md).
