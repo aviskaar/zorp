@@ -63,10 +63,8 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
     )
 }
 
-/// Shared HTTP agent: built once, cloned per use (a cheap Arc clone). Reusing
-/// one agent keeps the connection pool and TLS config alive across calls, so
-/// keep-alive works and each request avoids a fresh TLS handshake. The config
-/// is fixed (no per-call knobs), so a single static is enough.
+/// Shared HTTP agent: built once, cloned per use (a cheap Arc clone). The
+/// config is fixed (no per-call knobs), so a single static is enough.
 static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
 
 /// Seconds of silence to wait for before giving up on a model, and the
@@ -124,6 +122,13 @@ pub fn read_timeout_secs() -> u64 {
 /// that makes it an idle timeout: it bounds silence between chunks and says
 /// nothing about how long an answer may take, so a model that keeps producing
 /// tokens for an hour is fine and a model that stops mid-sentence is not.
+///
+/// Idle pooling is off because ureq 2.12.1 clears socket timeouts when it
+/// returns a connection to the pool and does not restore them before the next
+/// request waits for response headers. The body reader restores the timeout,
+/// but it does not exist yet in that unbounded window. A fresh connection for
+/// every model call keeps the per-read bound armed from the first response
+/// byte through the last.
 pub fn http_agent() -> ureq::Agent {
     AGENT
         .get_or_init(|| {
@@ -134,6 +139,7 @@ pub fn http_agent() -> ureq::Agent {
                 // kind.
                 .timeout_connect(Duration::from_secs(30))
                 .timeout_read(Duration::from_secs(read_timeout_secs()))
+                .max_idle_connections(0)
                 .build()
         })
         .clone()
@@ -375,9 +381,42 @@ pub fn send_json(req: ureq::Request, body: Value) -> Result<ureq::Response, BoxE
                 std::thread::sleep(wait);
                 waited += wait;
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(transport_error(e)),
         }
     }
+}
+
+/// Keep a response-header timeout as legible as a response-body timeout.
+///
+/// ureq preserves the timed-out `io::Error` while it reads headers, so this
+/// path can use the error chain instead of the clock that `stream_sse` needs
+/// after ureq's chunk decoder has discarded the original error kind.
+fn transport_error(error: ureq::Error) -> BoxErr {
+    if error.kind() == ureq::ErrorKind::Io && error_chain_timed_out(&error) {
+        let limit = read_timeout_secs();
+        format!(
+            "the provider sent nothing for {limit} seconds while zorp waited \
+             for response headers; set {READ_TIMEOUT_VAR} to wait longer \
+             (the transport said: {error})"
+        )
+        .into()
+    } else {
+        error.into()
+    }
+}
+
+fn error_chain_timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 /// The error a status the provider will not take back becomes.
