@@ -1,11 +1,14 @@
 //! `GET /api/capabilities`: what this build can actually do.
 //!
-//! There is one capability here, `web_search`, and the endpoint exists
-//! because the browser cannot work it out for itself. Three separate things
+//! The endpoint exists because the browser cannot work these capabilities
+//! out for itself. Three separate things
 //! decide whether that tool is there: whether `zorp-web` was built with the
 //! `search` feature, whether the policy permits the tool, and whether the
 //! search provider found its key in the server's environment. A page can see
 //! none of the three, so it has to be told.
+//!
+//! Voice shares this endpoint. Its value comes from the same observed status
+//! function as `GET /api/voice/status`, and voice route tests pin that equality.
 //!
 //! A default build has the feature off, which is the state these tests run
 //! in unless `--features search` says otherwise.

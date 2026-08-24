@@ -326,6 +326,18 @@
               autocomplete="off"
               placeholder="Ask zorp to do something in this workspace…"
             ></textarea>
+            <button
+              class="voice-mic"
+              id="voice-mic"
+              type="button"
+              aria-label="Record a voice message"
+              title="Record a voice message"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="9" y="3" width="6" height="11" rx="3" />
+                <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6" />
+              </svg>
+            </button>
             <!--
               One control, two jobs. It sends while the composer is idle and
               stops the run while one is going. Both icons are here and the
@@ -339,6 +351,16 @@
                 <rect x="7" y="7" width="10" height="10" rx="1.5" />
               </svg>
             </button>
+          </div>
+          <div class="voice-feedback" id="voice-feedback">
+            <p class="voice-status" id="voice-status" role="status" aria-live="polite" hidden></p>
+            <button class="voice-secondary" id="voice-download" type="button" hidden>
+              I started it. Wait for the model
+            </button>
+            <button class="voice-secondary" id="voice-cancel" type="button" hidden>
+              Cancel recording
+            </button>
+            <code class="voice-command" id="voice-command" hidden></code>
           </div>
           <p class="composer-hint">
             <kbd>Enter</kbd> to send, <kbd>Shift</kbd><span>+</span><kbd>Enter</kbd> for a newline
@@ -355,10 +377,10 @@
           can spawn agents can spawn agents that spawn agents, and nothing
           in the loop bounds that.
 
-          Outside the composer form, not in it. The composer has exactly
-          one control on purpose, an arrow that becomes a square, because
-          a separate stop button was the original bug. This is a different
-          action on the same text and it stays out of that guard's way.
+          Outside the composer form, not in it. The composer keeps one
+          primary control, an arrow that becomes a square, because a separate
+          stop button was the original bug. Voice recording is an input
+          affordance beside the text field, not a second submit control.
         -->
         <div class="composer-actions">
           <button class="composer-action-btn" id="review-panel" type="button">

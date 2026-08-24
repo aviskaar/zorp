@@ -11,6 +11,13 @@
 // is a rule about the artifact pane rather than about HTTP. `artifact-view`
 // imports nothing, so this cannot become a cycle.
 import { textUrl } from "./artifact-view";
+import {
+  readVoiceWaitStream,
+  voiceWaitRequest,
+  type VoiceWaitEvent,
+} from "./voice-readiness";
+
+export type { VoiceWaitEvent } from "./voice-readiness";
 
 declare global {
   interface Window {
@@ -132,6 +139,24 @@ export interface ToolAvailability {
 /** What `GET /api/capabilities` answers with. */
 export interface Capabilities {
   web_search: ToolAvailability;
+  voice: VoiceStatus;
+}
+
+/** The server's observed local voice runtime state. */
+export interface VoiceStatus {
+  available: boolean;
+  runtime_reachable: boolean;
+  model_present: boolean;
+  endpoint: string | null;
+  model: string | null;
+  command: string | null;
+  detail: string;
+}
+
+/** Qwen3-ASR's editable text and detected language. */
+export interface VoiceTranscription {
+  text: string;
+  language: string;
 }
 
 /** The agent started work. Drives the in-progress indicator. */
@@ -682,7 +707,10 @@ export async function startPanel(
  */
 export async function getCapabilities(): Promise<Capabilities> {
   const body = await request<Partial<Record<string, unknown>>>("GET", "/api/capabilities");
-  return { web_search: toolAvailability(body?.["web_search"]) };
+  return {
+    web_search: toolAvailability(body?.["web_search"]),
+    voice: voiceStatus(body?.["voice"]),
+  };
 }
 
 function toolAvailability(value: unknown): ToolAvailability {
@@ -690,6 +718,71 @@ function toolAvailability(value: unknown): ToolAvailability {
   const available = record["available"] === true;
   const detail = typeof record["detail"] === "string" ? record["detail"] : "";
   return { available, detail };
+}
+
+function voiceStatus(value: unknown): VoiceStatus {
+  const record = (value ?? {}) as Record<string, unknown>;
+  return {
+    available: record["available"] === true,
+    runtime_reachable: record["runtime_reachable"] === true,
+    model_present: record["model_present"] === true,
+    endpoint: typeof record["endpoint"] === "string" ? record["endpoint"] : null,
+    model: typeof record["model"] === "string" ? record["model"] : null,
+    command: typeof record["command"] === "string" ? record["command"] : null,
+    detail: typeof record["detail"] === "string" ? record["detail"] : "Voice input is unavailable.",
+  };
+}
+
+export async function getVoiceStatus(): Promise<VoiceStatus> {
+  const value = await request<unknown>("GET", "/api/voice/status");
+  return voiceStatus(value);
+}
+
+/** Wait for the local runtime to report that its configured model is ready. */
+export async function waitForVoiceModel(onEvent: (event: VoiceWaitEvent) => void): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url("/api/voice/wait"), voiceWaitRequest(apiToken()));
+  } catch {
+    throw new ApiError(0, "cannot reach the zorp server while waiting for the voice model");
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim();
+    throw new ApiError(response.status, detail || "could not wait for the voice model");
+  }
+  if (!response.body) throw new ApiError(response.status, "the voice readiness stream was empty");
+  await readVoiceWaitStream(response.body, onEvent);
+}
+
+export async function transcribeVoice(recording: Blob): Promise<VoiceTranscription> {
+  const headers: Record<string, string> = {
+    "content-type": recording.type || "audio/webm",
+  };
+  const token = apiToken();
+  if (token) headers["authorization"] = `Bearer ${token}`;
+  let response: Response;
+  try {
+    response = await fetch(url("/api/voice/transcribe"), {
+      method: "POST",
+      headers,
+      body: recording,
+    });
+  } catch {
+    throw new ApiError(0, "cannot reach the zorp server to transcribe the recording");
+  }
+  const body = await response.text();
+  if (!response.ok) throw new ApiError(response.status, body.trim() || "voice transcription failed");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new ApiError(response.status, "voice transcription returned invalid JSON");
+  }
+  const record = parsed as Partial<VoiceTranscription>;
+  if (typeof record.text !== "string" || typeof record.language !== "string") {
+    throw new ApiError(response.status, "voice transcription returned no text or language");
+  }
+  return { text: record.text, language: record.language };
 }
 
 /**

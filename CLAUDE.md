@@ -12,7 +12,7 @@ both in sync).
 A Rust workspace, forked from [quecto](https://github.com/adityak74/quecto)
 (MIT) and renamed. Crates and binaries are `zorp`, `zorp-agent`,
 `zorp-mcp`, `zorp-track`, and `zorp-eval`, not `quecto-*`.
-`zorp-search`, `zorp-skill`, and `erbga` are further workspace members
+`zorp-search`, `zorp-skill`, `zorp-voice`, and `erbga` are further workspace members
 and ship no binary; see the bullets below. Env vars use the `ZORP_`
 prefix. It's being extended into a harness for
 evidence-based
@@ -170,6 +170,23 @@ resulting artifact, deliver it in the right form.
   --features zorp-web/recall` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-22) before changing any of that, especially
   the choice of SQLite over the LanceDB library in `zorp-track`.
+- `zorp-voice/` is zorp's own voice transcription client. It talks to
+  `qwen-asr-serve` 0.0.6 for Qwen3-ASR and depends on no other workspace
+  member. `zorp-web` exposes it behind the non-default `voice` feature. The
+  status, readiness, and transcription routes exist in every build, and the
+  mutating routes answer 501 without it. Recorded voice has the same boundary
+  as recall text: the endpoint passes written-form and resolution checks, the
+  client gets a resolver for that host and port only, redirects are off, and
+  proxy discovery is off. Tests count connections to loopback canaries. There
+  is no cloud ASR provider or fallback. The runtime has no model pull API, so
+  the page shows the operator command and polls real readiness. It fabricates
+  no download progress. HTTPS and path-prefixed endpoints need an
+  operator-managed loopback proxy, and zorp does not invent a direct start
+  command for them. A transcript is untrusted
+  editable composer text. It grants no tool, changes no approval, bypasses no
+  denylist, and is never sent automatically. Run `cargo test -p zorp-web
+  --features voice` and `cargo test -p zorp-voice` whenever it changes. See
+  `docs/DECISIONS.md` (2026-08-24) first.
 - `memory` (`zorp-web/src/memory.rs`, non-default `memory` feature, which
   turns on `recall`) is the second way that index gets read: not into the
   sidebar, into a live turn. Every finished turn indexes its own session, so

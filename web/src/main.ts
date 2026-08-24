@@ -18,6 +18,7 @@ import {
   type SearchIndicatorView,
 } from "./search-indicator";
 import { setSendControl } from "./send-control";
+import { createVoiceInput } from "./voice-input";
 import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
@@ -50,6 +51,7 @@ import {
   getAutoApprove,
   setAutoApprove,
   getCapabilities,
+  getVoiceStatus,
   getSession,
   getSettings,
   listModels,
@@ -70,6 +72,8 @@ import {
   artifactUrl,
   listArtifacts,
   readArtifact,
+  waitForVoiceModel,
+  transcribeVoice,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -147,6 +151,11 @@ interface Elements {
   composer: HTMLFormElement;
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
+  voiceMicrophone: HTMLButtonElement;
+  voiceCancel: HTMLButtonElement;
+  voiceStatus: HTMLElement;
+  voiceDownload: HTMLButtonElement;
+  voiceCommand: HTMLElement;
   reviewPanel: HTMLButtonElement;
   zorpMode: HTMLButtonElement;
   zorpPanel: HTMLElement;
@@ -210,6 +219,21 @@ const panelView = new PanelView(document, dom.transcript);
  * does, so only one can be running.
  */
 const zorpView = new ZorpModeView(document, dom.transcript);
+const voiceInput = createVoiceInput(
+  {
+    input: dom.input,
+    microphone: dom.voiceMicrophone,
+    cancel: dom.voiceCancel,
+    status: dom.voiceStatus,
+    download: dom.voiceDownload,
+    command: dom.voiceCommand,
+  },
+  {
+    status: getVoiceStatus,
+    wait: waitForVoiceModel,
+    transcribe: transcribeVoice,
+  },
+);
 
 let sessionId: string | null = null;
 let stream: EventStream | null = null;
@@ -424,6 +448,11 @@ function collectElements(): Elements {
     composer: byId<HTMLFormElement>("composer"),
     input: byId<HTMLTextAreaElement>("input"),
     send: byId<HTMLButtonElement>("send"),
+    voiceMicrophone: byId<HTMLButtonElement>("voice-mic"),
+    voiceCancel: byId<HTMLButtonElement>("voice-cancel"),
+    voiceStatus: byId("voice-status"),
+    voiceDownload: byId<HTMLButtonElement>("voice-download"),
+    voiceCommand: byId("voice-command"),
     settingsOverlay: byId("settings-overlay"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),
     settingsForm: byId<HTMLFormElement>("settings-form"),
@@ -1931,16 +1960,16 @@ function closeSettings(): void {
 /**
  * Ask the server what this build can do, and draw it.
  *
- * Once, on connect. The answer depends on how the server was compiled and on
- * its environment, neither of which changes while the page is open, so
- * polling it would be asking the same question forever. A failure leaves the
- * indicator where it started, which is away: a capability that could not be
- * confirmed is not one to advertise.
+ * Once, on connect. Build features and the search environment do not change
+ * while the page is open. Voice readiness can change, so the microphone asks
+ * again before recording. A failure leaves the indicators where they started:
+ * a capability that could not be confirmed is not one to advertise.
  */
 async function refreshCapabilities(): Promise<void> {
   try {
     const capabilities = await getCapabilities();
     renderSearchIndicator(searchIndicator, capabilities.web_search);
+    voiceInput.observe(capabilities.voice);
   } catch {
     renderSearchIndicator(searchIndicator, null);
   }

@@ -39,11 +39,15 @@ research = ["dep:zorp-track", "zorp-agent/research"]
 # default, and off again per turn unless the person sending it ticks the
 # box.
 memory = ["recall"]
+# Browser voice transcription through a local Qwen3-ASR runtime. The route
+# shape exists without this feature and explains that it is off.
+voice = ["dep:zorp-voice"]
 
 [dependencies]
 zorp-agent = { path = "../zorp-agent" }
 zorp-recall = { path = "../zorp-recall", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
+zorp-voice = { path = "../zorp-voice", optional = true }
 sha2 = { workspace = true, optional = true }
 axum = { workspace = true }
 tokio = { workspace = true }
