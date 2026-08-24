@@ -26,11 +26,7 @@ fn script() -> PathBuf {
 ///
 /// `members` is a list of `(path, inherits)` pairs under the workspace root.
 /// `inherits == true` writes `version.workspace = true`; false pins `0.1.0`.
-fn tree(
-    cargo_version: &str,
-    docker_version: &str,
-    members: &[(&str, bool)],
-) -> tempfile::TempDir {
+fn tree(cargo_version: &str, docker_version: &str, members: &[(&str, bool)]) -> tempfile::TempDir {
     let dir = tempdir().unwrap();
     let member_list = members
         .iter()
@@ -193,10 +189,7 @@ fn a_member_with_its_own_version_fails() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        all.contains("zorp-search"),
-        "must name the member: {all}"
-    );
+    assert!(all.contains("zorp-search"), "must name the member: {all}");
 }
 
 /// erbga is the deliberate exemption: standalone prior work that keeps its
