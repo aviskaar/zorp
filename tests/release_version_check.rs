@@ -19,18 +19,29 @@ fn script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/check-release-version.sh")
 }
 
-/// Write a minimal tree with the two version declarations the script reads.
+/// Write a minimal tree with the version declarations the script reads.
 /// The Cargo fixture deliberately carries a `[package]` block above
 /// `[workspace.package]`, because that is the shape of the real file and the
 /// naive `grep '^version'` reads the wrong one.
-fn tree(cargo_version: &str, docker_version: &str) -> tempfile::TempDir {
+///
+/// `members` is a list of `(path, inherits)` pairs under the workspace root.
+/// `inherits == true` writes `version.workspace = true`; false pins `0.1.0`.
+fn tree(cargo_version: &str, docker_version: &str, members: &[(&str, bool)]) -> tempfile::TempDir {
     let dir = tempdir().unwrap();
+    let member_list = members
+        .iter()
+        .map(|(path, _)| format!("\"{path}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     fs::write(
         dir.path().join("Cargo.toml"),
         format!(
             "[package]\n\
              name = \"zorp\"\n\
              version.workspace = true\n\
+             \n\
+             [workspace]\n\
+             members = [{member_list}]\n\
              \n\
              [workspace.package]\n\
              edition = \"2021\"\n\
@@ -39,6 +50,28 @@ fn tree(cargo_version: &str, docker_version: &str) -> tempfile::TempDir {
         ),
     )
     .unwrap();
+    for (path, inherits) in members {
+        if *path == "." {
+            continue;
+        }
+        let member_dir = dir.path().join(path);
+        fs::create_dir_all(&member_dir).unwrap();
+        let version_line = if *inherits {
+            "version.workspace = true\n".to_string()
+        } else {
+            "version = \"0.1.0\"\n".to_string()
+        };
+        fs::write(
+            member_dir.join("Cargo.toml"),
+            format!(
+                "[package]\n\
+                 name = \"{path}\"\n\
+                 {version_line}\
+                 edition.workspace = true\n"
+            ),
+        )
+        .unwrap();
+    }
     fs::write(
         dir.path().join("Dockerfile"),
         format!("FROM debian:12-slim\nARG VERSION={docker_version}\nARG TARGETARCH\n"),
@@ -47,14 +80,28 @@ fn tree(cargo_version: &str, docker_version: &str) -> tempfile::TempDir {
     dir
 }
 
-fn check(tag: &str, cargo_version: &str, docker_version: &str) -> std::process::Output {
-    let dir = tree(cargo_version, docker_version);
+fn check_with_members(
+    tag: &str,
+    cargo_version: &str,
+    docker_version: &str,
+    members: &[(&str, bool)],
+) -> std::process::Output {
+    let dir = tree(cargo_version, docker_version, members);
     Command::new("sh")
         .arg(script())
         .arg(tag)
         .arg(dir.path())
         .output()
         .unwrap()
+}
+
+fn check(tag: &str, cargo_version: &str, docker_version: &str) -> std::process::Output {
+    check_with_members(
+        tag,
+        cargo_version,
+        docker_version,
+        &[(".", true), ("zorp-agent", true)],
+    )
 }
 
 #[test]
@@ -120,5 +167,45 @@ fn a_prefix_match_is_not_a_match() {
     assert!(
         !out.status.success(),
         "v0.3.10 must not be accepted against version 0.3.1"
+    );
+}
+
+/// A product member that pins its own version instead of inheriting must
+/// fail — this is the zorp-search shape that slipped past the old gate.
+#[test]
+fn a_member_with_its_own_version_fails() {
+    let out = check_with_members(
+        "v0.3.2",
+        "0.3.2",
+        "v0.3.2",
+        &[(".", true), ("zorp-search", false)],
+    );
+    assert!(
+        !out.status.success(),
+        "pinned member version must fail the tag"
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("zorp-search"), "must name the member: {all}");
+}
+
+/// erbga is the deliberate exemption: standalone prior work that keeps its
+/// own version. It must not fail the release.
+#[test]
+fn erbga_may_pin_its_own_version() {
+    let out = check_with_members(
+        "v0.3.2",
+        "0.3.2",
+        "v0.3.2",
+        &[(".", true), ("erbga", false), ("zorp-agent", true)],
+    );
+    assert!(
+        out.status.success(),
+        "erbga exemption must pass: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
