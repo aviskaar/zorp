@@ -253,6 +253,23 @@ fn embedded_audio_helpers_use_dtype_max_and_the_verified_result_type() {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
+    // The probe imports numpy, because what `normalize` promises is a numpy
+    // dtype maximum and a stub would only test the stub. Setup installs numpy
+    // into its own environment, so the host python3 need not have it, and a
+    // machine without it says so rather than reporting a failure it cannot fix.
+    // CI is such a machine, which means the assertions below run on developer
+    // machines only; `the_embedded_transformers_server_is_valid_python` is what
+    // covers this file everywhere.
+    let has_numpy = Command::new("python3")
+        .args(["-c", "import numpy"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !has_numpy {
+        eprintln!("skipping: python3 has no numpy");
+        return;
+    }
+
     let source = include_str!("../src/transformers_server.py");
     let probe = r#"
 import ast, sys, types
