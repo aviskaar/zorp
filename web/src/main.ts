@@ -58,7 +58,6 @@ import {
   listSessions,
   newSession,
   putSettings,
-  recallIndex,
   recallSearch,
   recallStatus,
   sendTurn,
@@ -127,7 +126,6 @@ interface Elements {
   useMemory: HTMLInputElement;
   recallInput: HTMLInputElement;
   recallStatus: HTMLElement;
-  recallIndex: HTMLButtonElement;
   recallResults: HTMLElement;
   newChat: HTMLButtonElement;
   menu: HTMLButtonElement;
@@ -414,7 +412,6 @@ function collectElements(): Elements {
     useMemory: byId<HTMLInputElement>("use-memory"),
     recallInput: byId("recall-input"),
     recallStatus: byId("recall-status"),
-    recallIndex: byId("recall-index"),
     recallResults: byId("recall-results"),
     newChat: byId<HTMLButtonElement>("new-chat"),
     menu: byId<HTMLButtonElement>("menu"),
@@ -1640,8 +1637,12 @@ function paragraph(text: string): HTMLElement {
  * enough that the list keeps up with the box. Each search costs one call
  * to the local model, so this is a real cost and not just a paint. */
 const RECALL_DEBOUNCE_MS = 250;
+/** Status is local SQLite state, but a sidebar still does not need to ask
+ * more than four times a minute. Hidden tabs wait until they are visible. */
+const RECALL_STATUS_REFRESH_MS = 15_000;
 
 let recallTimer: number | undefined;
+let recallStatusTimer: number | undefined;
 /** Which query the last request was for, so a slow answer to an older
  * query cannot overwrite the newer one it arrived after. */
 let recallInFlight = "";
@@ -1657,7 +1658,11 @@ function wireRecall(): void {
     }
     recallTimer = window.setTimeout(() => void runRecallSearch(query), RECALL_DEBOUNCE_MS);
   });
-  dom.recallIndex.addEventListener("click", () => void runRecallIndex());
+  recallStatusTimer ??= window.setInterval(() => {
+    if (document.visibilityState === "visible") {
+      void refreshRecallStatus();
+    }
+  }, RECALL_STATUS_REFRESH_MS);
 }
 
 /** Show or hide the search box, and say why when it is off. */
@@ -1678,7 +1683,6 @@ async function refreshRecallStatus(): Promise<void> {
   dom.recall.hidden = false;
   dom.recallStatus.textContent = summarize(status);
   dom.recallInput.disabled = !status.available;
-  dom.recallIndex.disabled = !status.available;
   // Two conditions, and both have to hold. `memory` says the server was
   // built able to read the index into a turn, `available` says there is a
   // local embedder to read it with. Offering the box when either is false
@@ -1711,33 +1715,6 @@ async function runRecallSearch(query: string): Promise<void> {
     // The server's own words. A 503 here says which endpoint did not
     // answer and what to start, which "search failed" does not.
     renderNotice(document, dom.recallResults, describeError(error));
-  }
-}
-
-/**
- * Index, from the button, and say how long it is taking by saying it is
- * taking a while.
- *
- * A first index embeds every message in every conversation, one call to
- * the local model each, so on a real history this is minutes and not
- * seconds. The button stays disabled for the whole of it because a second
- * press would get a 409 anyway.
- */
-async function runRecallIndex(): Promise<void> {
-  dom.recallIndex.disabled = true;
-  dom.recallStatus.textContent = "Indexing on this machine. This can take a while the first time.";
-  try {
-    const report = await recallIndex();
-    dom.recallStatus.textContent =
-      report.indexed + report.removed === 0
-        ? "Already up to date."
-        : `Indexed ${report.indexed}, dropped ${report.removed}.`;
-    // Then replaced by the real count, which is what the box is actually
-    // searching. The pause is so the sentence above gets read first.
-    window.setTimeout(() => void refreshRecallStatus(), 1500);
-  } catch (error) {
-    dom.recallStatus.textContent = describeError(error);
-    dom.recallIndex.disabled = false;
   }
 }
 

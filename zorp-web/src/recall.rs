@@ -24,13 +24,11 @@
 //!
 //! # When
 //!
-//! On request, and never on its own. Embedding on every write would put a
-//! model call in the path of sending a message and make the chat depend on
-//! Ollama being up. Embedding on the first search would put a several
-//! minute wait behind a text box. Neither is worth it for a corpus that
-//! changes a few times a day, so it is a button, and the button is
-//! incremental: a conversation whose text has not changed is skipped by
-//! fingerprint.
+//! A background worker sweeps once at startup and periodically after that.
+//! A finished turn queues its own session on the same worker, so an active
+//! conversation does not wait for the next sweep. Neither path waits in a
+//! turn or in server startup. The existing fingerprint is the change check:
+//! an unchanged sweep reads the store and issues no embedding calls.
 //!
 //! # Where
 //!
@@ -40,8 +38,9 @@
 //! rebuildable and the thing it was derived from is not.
 
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 use zorp_recall::{
     Chunk, Conversation, EmbedError, Embedder, Index, IndexError, LoopbackUrl, OllamaEmbedder,
 };
@@ -57,6 +56,10 @@ const MAX_CHUNK_CHARS: usize = 2000;
 /// How many conversations a search answers with unless asked otherwise.
 pub const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 50;
+
+/// How often a running server checks the whole store by default.
+pub const DEFAULT_SWEEP_SECS: u64 = 300;
+pub const SWEEP_SECS_VAR: &str = "ZORP_RECALL_SWEEP_SECS";
 
 /// Two reindexes at once would fight over one SQLite file and ask the model
 /// for the same vectors twice. The second one is told to wait, the same way
@@ -126,8 +129,13 @@ pub struct Status {
     pub reason: Option<String>,
     pub endpoint: String,
     pub model: String,
+    /// Conversations in the source store.
     pub conversations: i64,
+    /// Conversations represented in the derived index.
+    pub indexed_conversations: i64,
     pub chunks: i64,
+    pub running: bool,
+    pub ready: bool,
 }
 
 /// Where the index lives.
@@ -158,12 +166,10 @@ fn embedder() -> Result<OllamaEmbedder, EmbedError> {
     OllamaEmbedder::from_env()
 }
 
-pub fn status() -> Status {
-    // Configuration and index size, not a probe. Whether the model is
-    // running right now is answered by trying, and trying is what the
-    // index button and the search box do. A status endpoint that opened a
-    // socket every time the page loaded would be a background poll of
-    // somebody's model server.
+pub fn status(indexer: Option<&IndexerHandle>) -> Status {
+    // Configuration and local counts, not a network probe. The worker's
+    // last real attempt is what says whether Ollama answered. Refreshing
+    // this endpoint therefore never adds an embedding call of its own.
     let (endpoint, model, unavailable) = match embedder() {
         Ok(e) => (e.endpoint().to_string(), e.model().to_string(), None),
         Err(e) => (
@@ -174,19 +180,42 @@ pub fn status() -> Status {
             Some(e.to_string()),
         ),
     };
+    let store = zorp_agent::Store::open_default()
+        .map_err(|e| RecallError::Store(e.to_string()))
+        .and_then(|store| {
+            store
+                .sessions()
+                .map(|sessions| sessions.len() as i64)
+                .map_err(|e| RecallError::Store(e.to_string()))
+        });
     let stats = Index::open_at(&index_path()).and_then(|i| i.stats());
-    let (conversations, chunks) = match &stats {
+    let (indexed_conversations, chunks) = match &stats {
         Ok(s) => (s.conversations, s.chunks),
         Err(_) => (0, 0),
     };
-    let reason = unavailable.or_else(|| stats.err().map(|e| e.to_string()));
+    let conversations = store.as_ref().copied().unwrap_or(0);
+    let runtime = indexer.map(IndexerHandle::snapshot);
+    let reason = unavailable
+        .or_else(|| store.err().map(|e| e.to_string()))
+        .or_else(|| stats.err().map(|e| e.to_string()))
+        .or_else(|| runtime.as_ref().and_then(|state| state.reason.clone()));
+    let running = runtime.as_ref().is_some_and(|state| state.running);
+    let caught_up = conversations == indexed_conversations;
+    let ready = reason.is_none()
+        && caught_up
+        && runtime
+            .as_ref()
+            .map_or(true, |state| state.ready && !state.running);
     Status {
         available: reason.is_none(),
         reason,
         endpoint,
         model,
         conversations,
+        indexed_conversations,
         chunks,
+        running,
+        ready,
     }
 }
 
@@ -196,35 +225,58 @@ pub fn reindex() -> Result<Report, RecallError> {
     let Ok(_guard) = REINDEXING.try_lock() else {
         return Err(RecallError::Busy);
     };
+    reindex_unlocked()
+}
+
+fn reindex_waiting() -> Result<Report, RecallError> {
+    let _guard = REINDEXING.lock().unwrap();
+    reindex_unlocked()
+}
+
+fn reindex_unlocked() -> Result<Report, RecallError> {
     let embedder = embedder()?;
-    let mut index = Index::open_at(&index_path())?;
+    reindex_paths(&zorp_agent::Store::default_path(), &index_path(), &embedder)
+}
+
+fn reindex_paths(
+    store_path: &Path,
+    index_path: &Path,
+    embedder: &dyn Embedder,
+) -> Result<Report, RecallError> {
+    let mut index = Index::open_at(index_path)?;
     // A different model means every vector in there is meaningless, so this
     // may empty the index before filling it again. That is the only honest
     // answer, and it is why the model name is recorded.
     index.prepare(&embedder.identity())?;
 
-    let store = zorp_agent::Store::open_default().map_err(|e| RecallError::Store(e.to_string()))?;
+    let store =
+        zorp_agent::Store::open_at(store_path).map_err(|e| RecallError::Store(e.to_string()))?;
     let sessions = store
         .sessions()
         .map_err(|e| RecallError::Store(e.to_string()))?;
 
     let mut report = Report::default();
     let mut seen: Vec<String> = Vec::with_capacity(sessions.len());
+    let mut unreadable = None;
     for session in &sessions {
         seen.push(session.id.clone());
-        match index_one(&store, &mut index, &embedder, session) {
+        match index_one(&store, &mut index, embedder, session) {
             Ok(one) => report.add(&one),
             // One unreadable conversation does not stop the rest. Skipping
-            // it silently would be worse than the warning, but failing the
-            // whole reindex over it would be worse than both.
+            // it silently would make a partial index look ready, so retain
+            // the first failure and return it after the remaining work.
             Err(RecallError::Store(e)) => {
-                eprintln!("zorp-web: skipping {} in the index: {e}", session.id);
+                unreadable
+                    .get_or_insert_with(|| format!("skipping {} in the index: {e}", session.id));
             }
             Err(e) => return Err(e),
         }
     }
     report.removed = index.retain(&seen)?;
-    Ok(report)
+    match unreadable {
+        Some(error) => Err(RecallError::Store(error)),
+        None => Ok(report),
+    }
 }
 
 /// Bring one conversation up to date, and nothing else.
@@ -245,6 +297,15 @@ pub fn feed_session(session_id: &str) -> Result<Report, RecallError> {
     let Ok(_guard) = REINDEXING.try_lock() else {
         return Err(RecallError::Busy);
     };
+    feed_session_unlocked(session_id)
+}
+
+fn feed_session_waiting(session_id: &str) -> Result<Report, RecallError> {
+    let _guard = REINDEXING.lock().unwrap();
+    feed_session_unlocked(session_id)
+}
+
+fn feed_session_unlocked(session_id: &str) -> Result<Report, RecallError> {
     let embedder = embedder()?;
     let mut index = Index::open_at(&index_path())?;
     index.prepare(&embedder.identity())?;
@@ -265,7 +326,7 @@ pub fn feed_session(session_id: &str) -> Result<Report, RecallError> {
 fn index_one(
     store: &zorp_agent::Store,
     index: &mut Index,
-    embedder: &OllamaEmbedder,
+    embedder: &dyn Embedder,
     session: &zorp_agent::SessionRow,
 ) -> Result<Report, RecallError> {
     let messages = store
@@ -314,6 +375,240 @@ fn index_one(
         chunks: embedded.len(),
         ..Report::default()
     })
+}
+
+trait PassRunner: Send + Sync + 'static {
+    fn sweep(&self) -> Result<Report, RecallError>;
+    fn session(&self, session_id: &str) -> Result<Report, RecallError>;
+}
+
+struct StorePasses;
+
+impl PassRunner for StorePasses {
+    fn sweep(&self) -> Result<Report, RecallError> {
+        reindex_waiting()
+    }
+
+    fn session(&self, session_id: &str) -> Result<Report, RecallError> {
+        feed_session_waiting(session_id)
+    }
+}
+
+#[derive(Default)]
+struct RuntimeState {
+    running: bool,
+    pending: usize,
+    swept: bool,
+    last_failure: Option<String>,
+}
+
+/// The part of the background worker's state that the status route exposes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerSnapshot {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub running: bool,
+    pub ready: bool,
+}
+
+enum Command {
+    Session(String),
+    Sweep(mpsc::Sender<Result<Report, RecallError>>),
+}
+
+type Logger = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A non-blocking handle to the one thread allowed to update the index.
+///
+/// Session updates only send a small message. A forced sweep waits for its
+/// answer, which is why the HTTP route calls it through `spawn_blocking`.
+#[derive(Clone)]
+pub struct IndexerHandle {
+    tx: mpsc::Sender<Command>,
+    state: Arc<Mutex<RuntimeState>>,
+}
+
+impl IndexerHandle {
+    /// Start the real worker. This returns before its startup sweep begins.
+    pub fn start_from_env() -> Option<Self> {
+        let interval = sweep_interval_from_env();
+        Self::try_start_with(
+            interval,
+            Arc::new(StorePasses),
+            Arc::new(|line| eprintln!("{line}")),
+        )
+        .map_err(|e| eprintln!("zorp-web: cannot start recall indexing: {e}"))
+        .ok()
+    }
+
+    #[cfg(test)]
+    fn start_with(interval: Option<Duration>, runner: Arc<dyn PassRunner>, logger: Logger) -> Self {
+        Self::try_start_with(interval, runner, logger).expect("the recall worker starts")
+    }
+
+    fn try_start_with(
+        interval: Option<Duration>,
+        runner: Arc<dyn PassRunner>,
+        logger: Logger,
+    ) -> std::io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let state = Arc::new(Mutex::new(RuntimeState::default()));
+        let worker_state = Arc::clone(&state);
+        std::thread::Builder::new()
+            .name("zorp-recall-indexer".to_string())
+            .spawn(move || worker_loop(rx, worker_state, runner, interval, logger))?;
+        Ok(Self { tx, state })
+    }
+
+    /// Queue one changed conversation. Sending never waits for embeddings.
+    pub fn index_session(&self, session_id: impl Into<String>) {
+        self.state.lock().unwrap().pending += 1;
+        if self.tx.send(Command::Session(session_id.into())).is_err() {
+            let mut state = self.state.lock().unwrap();
+            state.pending = state.pending.saturating_sub(1);
+            state.last_failure = Some("the background indexer stopped".to_string());
+        }
+    }
+
+    /// Force a full pass and wait for its report.
+    pub fn sweep(&self) -> Result<Report, RecallError> {
+        let (tx, rx) = mpsc::channel();
+        self.state.lock().unwrap().pending += 1;
+        if self.tx.send(Command::Sweep(tx)).is_err() {
+            let mut state = self.state.lock().unwrap();
+            state.pending = state.pending.saturating_sub(1);
+            return Err(RecallError::Store(
+                "the background indexer stopped".to_string(),
+            ));
+        }
+        rx.recv().unwrap_or_else(|_| {
+            Err(RecallError::Store(
+                "the background indexer stopped".to_string(),
+            ))
+        })
+    }
+
+    pub fn snapshot(&self) -> IndexerSnapshot {
+        let state = self.state.lock().unwrap();
+        let available = state.last_failure.is_none();
+        IndexerSnapshot {
+            available,
+            reason: state.last_failure.clone(),
+            running: state.running,
+            ready: state.swept && available && !state.running && state.pending == 0,
+        }
+    }
+}
+
+fn sweep_interval_from_env() -> Option<Duration> {
+    match std::env::var(SWEEP_SECS_VAR) {
+        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+            Ok(_) => sweep_interval(Some(raw.trim())),
+            Err(_) => {
+                eprintln!(
+                    "zorp-web: ignoring invalid {SWEEP_SECS_VAR}={raw:?}; using {DEFAULT_SWEEP_SECS}"
+                );
+                sweep_interval(None)
+            }
+        },
+        _ => sweep_interval(None),
+    }
+}
+
+fn sweep_interval(raw: Option<&str>) -> Option<Duration> {
+    let seconds = raw
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SWEEP_SECS);
+    (seconds != 0).then(|| Duration::from_secs(seconds))
+}
+
+fn worker_loop(
+    rx: mpsc::Receiver<Command>,
+    state: Arc<Mutex<RuntimeState>>,
+    runner: Arc<dyn PassRunner>,
+    interval: Option<Duration>,
+    logger: Logger,
+) {
+    if interval.is_some() {
+        let _ = run_pass(&state, runner.as_ref(), None, false, logger.as_ref());
+    }
+
+    loop {
+        let command = match interval {
+            Some(interval) => match rx.recv_timeout(interval) {
+                Ok(command) => Some(command),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(command) => Some(command),
+                Err(_) => break,
+            },
+        };
+
+        match command {
+            Some(Command::Session(session_id)) => {
+                let _ = run_pass(
+                    &state,
+                    runner.as_ref(),
+                    Some(&session_id),
+                    true,
+                    logger.as_ref(),
+                );
+            }
+            Some(Command::Sweep(reply)) => {
+                let result = run_pass(&state, runner.as_ref(), None, true, logger.as_ref());
+                let _ = reply.send(result);
+            }
+            None => {
+                let _ = run_pass(&state, runner.as_ref(), None, false, logger.as_ref());
+            }
+        }
+    }
+}
+
+fn run_pass(
+    state: &Mutex<RuntimeState>,
+    runner: &dyn PassRunner,
+    session_id: Option<&str>,
+    queued: bool,
+    logger: &dyn Fn(&str),
+) -> Result<Report, RecallError> {
+    state.lock().unwrap().running = true;
+    let result = match session_id {
+        Some(session_id) => runner.session(session_id),
+        None => runner.sweep(),
+    };
+
+    let mut log = None;
+    {
+        let mut state = state.lock().unwrap();
+        state.running = false;
+        if queued {
+            state.pending = state.pending.saturating_sub(1);
+        }
+        match &result {
+            Ok(_) => {
+                if session_id.is_none() {
+                    state.swept = true;
+                }
+                if state.last_failure.take().is_some() {
+                    log = Some("zorp-web: recall indexing recovered".to_string());
+                }
+            }
+            Err(error) => {
+                let error = error.to_string();
+                if state.last_failure.is_none() {
+                    log = Some(format!("zorp-web: recall indexing paused: {error}"));
+                }
+                state.last_failure = Some(error);
+            }
+        }
+    }
+    if let Some(line) = log {
+        logger(&line);
+    }
+    result
 }
 
 /// Search. Blocking; call it off the async runtime.
@@ -394,4 +689,266 @@ pub fn configured_endpoint() -> Result<LoopbackUrl, zorp_recall::LoopbackError> 
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| zorp_recall::DEFAULT_EMBED_URL.to_string());
     LoopbackUrl::parse(&raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    struct CountingEmbedder {
+        calls: AtomicUsize,
+    }
+
+    impl CountingEmbedder {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Embedder for CountingEmbedder {
+        fn identity(&self) -> String {
+            "test/counting".to_string()
+        }
+
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, EmbedError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![1.0, 0.0])
+        }
+    }
+
+    fn seed(store_path: &Path) {
+        let mut store = zorp_agent::Store::open_at(store_path).unwrap();
+        store
+            .create_session("conv-1", "A verbatim first question", "repo", "model")
+            .unwrap();
+        store
+            .record_message(
+                "conv-1",
+                0,
+                &zorp_agent::Message::user("A long enough first message to be embedded"),
+            )
+            .unwrap();
+        store
+            .record_message(
+                "conv-1",
+                1,
+                &zorp_agent::Message::assistant("A long enough answer to be embedded too"),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn an_unchanged_sweep_issues_no_embedding_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("sessions.db");
+        let index_path = dir.path().join("recall.db");
+        seed(&store_path);
+        let embedder = CountingEmbedder::new();
+
+        let first = reindex_paths(&store_path, &index_path, &embedder).unwrap();
+        assert_eq!(first.indexed, 1);
+        let calls_after_first = embedder.calls();
+
+        let second = reindex_paths(&store_path, &index_path, &embedder).unwrap();
+        assert_eq!(second.skipped, 1);
+        assert_eq!(embedder.calls(), calls_after_first);
+    }
+
+    #[test]
+    fn a_changed_conversation_is_picked_up_by_the_next_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("sessions.db");
+        let index_path = dir.path().join("recall.db");
+        seed(&store_path);
+        let embedder = CountingEmbedder::new();
+        reindex_paths(&store_path, &index_path, &embedder).unwrap();
+        let calls_after_first = embedder.calls();
+
+        zorp_agent::Store::open_at(&store_path)
+            .unwrap()
+            .record_message(
+                "conv-1",
+                2,
+                &zorp_agent::Message::user("A later correction changes this conversation"),
+            )
+            .unwrap();
+
+        let report = reindex_paths(&store_path, &index_path, &embedder).unwrap();
+        assert_eq!(report.indexed, 1);
+        assert_eq!(embedder.calls(), calls_after_first + 1);
+    }
+
+    struct ConcurrentRunner {
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        calls: AtomicUsize,
+    }
+
+    impl ConcurrentRunner {
+        fn new() -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn run(&self) -> Result<Report, RecallError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(Report::default())
+        }
+    }
+
+    impl PassRunner for ConcurrentRunner {
+        fn sweep(&self) -> Result<Report, RecallError> {
+            self.run()
+        }
+
+        fn session(&self, _session_id: &str) -> Result<Report, RecallError> {
+            self.run()
+        }
+    }
+
+    fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !predicate() {
+            assert!(Instant::now() < deadline, "condition did not become true");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn silent_logger() -> Arc<dyn Fn(&str) + Send + Sync> {
+        Arc::new(|_| {})
+    }
+
+    #[test]
+    fn queued_session_and_sweep_passes_never_run_concurrently() {
+        let runner = Arc::new(ConcurrentRunner::new());
+        let indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
+
+        indexer.index_session("conv-1");
+        let forced = {
+            let indexer = indexer.clone();
+            std::thread::spawn(move || indexer.sweep())
+        };
+        forced.join().unwrap().unwrap();
+
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(runner.max_active.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn zero_interval_starts_no_automatic_sweep() {
+        let runner = Arc::new(ConcurrentRunner::new());
+        let _indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
+
+        std::thread::sleep(Duration::from_millis(80));
+
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn zero_seconds_disables_the_configured_sweep() {
+        assert_eq!(sweep_interval(Some("0")), None);
+    }
+
+    #[test]
+    fn the_default_sweep_is_five_minutes() {
+        assert_eq!(sweep_interval(None), Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn a_pass_is_reported_running_until_it_finishes() {
+        let runner = Arc::new(ConcurrentRunner::new());
+        let indexer = IndexerHandle::start_with(None, runner.clone(), silent_logger());
+
+        indexer.index_session("conv-1");
+        wait_until(Duration::from_secs(1), || indexer.snapshot().running);
+        assert!(indexer.snapshot().running);
+        wait_until(Duration::from_secs(1), || {
+            runner.calls.load(Ordering::SeqCst) == 1 && !indexer.snapshot().running
+        });
+    }
+
+    struct FailingRunner {
+        fail: AtomicBool,
+        calls: AtomicUsize,
+    }
+
+    impl FailingRunner {
+        fn result(&self) -> Result<Report, RecallError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fail.load(Ordering::SeqCst) {
+                Err(RecallError::Embed(EmbedError::Unreachable {
+                    url: "http://127.0.0.1:11434".to_string(),
+                    message: format!("connection refused on attempt {call}"),
+                }))
+            } else {
+                Ok(Report::default())
+            }
+        }
+    }
+
+    impl PassRunner for FailingRunner {
+        fn sweep(&self) -> Result<Report, RecallError> {
+            self.result()
+        }
+
+        fn session(&self, _session_id: &str) -> Result<Report, RecallError> {
+            self.result()
+        }
+    }
+
+    #[test]
+    fn an_unreachable_embedder_is_retried_without_logging_every_tick() {
+        let runner = Arc::new(FailingRunner {
+            fail: AtomicBool::new(true),
+            calls: AtomicUsize::new(0),
+        });
+        let logs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let logger = {
+            let logs = Arc::clone(&logs);
+            Arc::new(move |line: &str| logs.lock().unwrap().push(line.to_string()))
+                as Arc<dyn Fn(&str) + Send + Sync>
+        };
+        let indexer =
+            IndexerHandle::start_with(Some(Duration::from_millis(15)), runner.clone(), logger);
+
+        wait_until(Duration::from_secs(1), || {
+            runner.calls.load(Ordering::SeqCst) >= 3
+        });
+        assert_eq!(logs.lock().unwrap().len(), 1);
+        assert!(!indexer.snapshot().available);
+
+        runner.fail.store(false, Ordering::SeqCst);
+        indexer.sweep().unwrap();
+        assert!(indexer.snapshot().available);
+        assert_eq!(
+            logs.lock().unwrap().len(),
+            2,
+            "recovery was not logged once"
+        );
+
+        runner.fail.store(true, Ordering::SeqCst);
+        let _ = indexer.sweep();
+        assert_eq!(
+            logs.lock().unwrap().len(),
+            3,
+            "the new failure was not logged"
+        );
+    }
 }

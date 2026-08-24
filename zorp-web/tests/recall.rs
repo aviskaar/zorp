@@ -324,8 +324,8 @@ mod on {
         assert_eq!(report["skipped"], 3, "{report}");
     }
 
-    /// Status reports what is configured and how much is indexed, so the
-    /// page can say "nothing indexed yet" instead of "no results".
+    /// Status reports the store beside the derived index, so the page can
+    /// distinguish catch-up work from a search that found no results.
     #[tokio::test]
     async fn status_reports_the_endpoint_and_the_index_size() {
         let _env = ENV.lock().await;
@@ -336,13 +336,18 @@ mod on {
         let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
         let before = json(&body);
         assert_eq!(before["available"], true, "{before}");
-        assert_eq!(before["conversations"], 0);
+        assert_eq!(before["conversations"], 3);
+        assert_eq!(before["indexed_conversations"], 0);
+        assert_eq!(before["running"], false);
+        assert_eq!(before["ready"], false);
         assert_eq!(before["endpoint"], embedder);
 
         post(format!("http://{addr}/api/recall/index")).await;
         let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
         let after = json(&body);
         assert_eq!(after["conversations"], 3, "{after}");
+        assert_eq!(after["indexed_conversations"], 3, "{after}");
+        assert_eq!(after["ready"], true, "{after}");
         assert_eq!(after["chunks"], 6, "{after}");
     }
 
