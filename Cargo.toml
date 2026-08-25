@@ -30,7 +30,7 @@ license = "MIT"
 # `default-version` job in the Release workflow now fails a release whose
 # tag and manifest disagree. erbga is deliberately not on this version;
 # it is standalone prior-work and versions on its own terms.
-version = "0.3.2"
+version = "0.4.0"
 # The floor is set by the dependency tree, not by the code. `merman`, a
 # non-optional dependency of zorp-agent, declares 1.95, and below that
 # `globset` and `icu_collections` want 1.88 while `hashbrown` needs Cargo's
