@@ -1,0 +1,22 @@
+[package]
+name        = "zorp-schedule"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Job definitions, schedule arithmetic, and run bookkeeping for zorp's scheduled jobs."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependency on any other workspace member. This crate knows about
+# calendars, TOML and files. It knows nothing about agents, tools, models or
+# approval, and it never runs anything itself.
+[dependencies]
+serde = { workspace = true }
+toml  = { workspace = true }
+serde_json = { workspace = true }
+libc  = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

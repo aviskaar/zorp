@@ -8241,6 +8241,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zorp-schedule"
+version = "0.3.2"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "zorp-search"
 version = "0.3.2"
 dependencies = [
