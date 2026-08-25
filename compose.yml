@@ -3,7 +3,8 @@
 #
 #   ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
 #
-# Then open http://localhost:8080 and set the token when prompted.
+# Then open http://localhost:8080. There is nothing to paste: the UI attaches
+# the token to every request it proxies.
 #
 # See docs/docker.md for pulling the models and for what happens the first
 # time someone clicks the microphone.

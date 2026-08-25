@@ -196,6 +196,9 @@ unavailable. It never sends audio somewhere else to keep the button working.
 
 Design:
 [`docs/superpowers/specs/2026-08-23-qwen3-asr-voice-input-design.md`](superpowers/specs/2026-08-23-qwen3-asr-voice-input-design.md).
+
+---
+
 ## 2026-08-24: distribution happens at the capability boundary, over zorp-web's API, with git as the state bus
 
 **Decision:** zorp's cluster model is a coordinator (a new `zorp-fleet`
@@ -222,6 +225,9 @@ git-backed, one-attempt-per-invocation design makes the track the
 natural shard. Design only; nothing is implemented yet.
 
 **Full writeup:** `docs/superpowers/specs/2026-08-24-zorp-fleet-distributed-design.md`
+
+---
+
 ## 2026-08-24: the calibration tolerance is 0.10, set from the first observed curve
 
 **Decision:** the operating tolerance for `CalibrationReport::verdict` is
