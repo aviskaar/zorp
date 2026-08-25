@@ -5,7 +5,8 @@
 **[zorp architecture](superpowers/specs/2026-08-09-zorp-architecture-design.md)**
 is the current, approved design: four standalone capabilities, one
 binary (`zorp-agent`), a shared foundation (`zorp-track`, specced
-separately and built) underneath all four.
+separately and built) underneath all four. A fifth, `review`, was added
+later on the same shape; see below.
 
 **[zorp scope and positioning](superpowers/specs/2026-08-09-zorp-scope-and-positioning.md)**
 amends the capability names and what zorp is actually for: validate,
@@ -14,9 +15,9 @@ not academic research specifically. Read this one for current names and
 scope; the architecture spec above for structure, which this doesn't
 change.
 
-Four is still the whole set. A fifth capability, `evolve`, was designed,
-reviewed, and not approved. See "What's open" below before assuming it
-exists.
+Four was the whole set for a while. `review` is now a fifth, described
+below. A different fifth, `evolve`, was designed, reviewed, and not
+approved; see "What's open" below before assuming it exists.
 
 This was iterated through an external artifact during design, but that
 was always a working sketch, not the durable record; the specs above are
@@ -33,7 +34,7 @@ experiments/metrics, the checkpoint primitive, and LanceDB provisioning.
 Wired into `zorp-agent` behind an optional `research` feature. See
 [`superpowers/specs/2026-08-09-zorp-track-foundation-design.md`](superpowers/specs/2026-08-09-zorp-track-foundation-design.md).
 
-## What's built: the four capabilities
+## What's built: the five capabilities
 
 **validate** (is this question worth investigating): search via
 whatever MCP tools are configured, score redundancy and feasibility with
@@ -73,6 +74,21 @@ and checkpoints it. Rejecting the checkpoint does not kill the track,
 matching co-write's behavior. See
 [`superpowers/specs/2026-08-09-zorp-deliver-design.md`](superpowers/specs/2026-08-09-zorp-deliver-design.md).
 
+**review** (take a finished paper apart before anyone else does): runs
+rounds of a doer and a checker on each review dimension, keeps only
+findings that quote the paper verbatim and that no earlier round already
+raised, and hands each survivor to three agents told to refute it.
+Findings survive only on a strict majority, with an undecided verifier
+counting against. The loop stops on a convergence criterion, K
+consecutive rounds with nothing new, with a round cap as a backstop, and
+a central agent budget with a depth limit bounds the spend. When a bound
+cuts the review short the report says so rather than reading as a clean
+bill of health, and zero findings is a valid result. Refuses on a killed
+track; needs a paper, from `--paper` or the track's `draft.md`. Writes
+`review.md` and `review.json` and checkpoints; neither checkpoint outcome
+changes track status. See
+[`superpowers/specs/2026-08-18-zorp-review-design.md`](superpowers/specs/2026-08-18-zorp-review-design.md).
+
 ## In the workspace, off the capability path
 
 `erbga` is a sixth workspace member. It ships no binary, declares no
@@ -88,11 +104,11 @@ Don't wire it in without a decision that says to. See
 
 ## What's open
 
-All four capabilities, validate, investigate, co-write, and deliver, are
-built and tested. No part of the core architecture is waiting on a
-design.
+All five capabilities, validate, investigate, co-write, deliver, and
+review, are built and tested. No part of the core architecture is waiting
+on a design.
 
-**A fifth capability was proposed and turned down.** `evolve` would have
+**A different fifth capability was proposed and turned down.** `evolve` would have
 run a population search over question framings. Two rounds of
 adversarial review, eight reviewers, found its search layer unsound both
 times, and the spec

@@ -12,6 +12,60 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-08-18: review is the fifth capability, and it stops on a criterion rather than on satisfaction
+
+**Decision:** `zorp-agent review` is a fifth capability beside validate,
+investigate, co-write, and deliver. It runs a hierarchical adversarial
+review of a paper: rounds of a doer and a checker on each review
+dimension, then agents told to refute what survives. It lives in
+`zorp-agent/src/review/`, behind the `research` feature, and reuses the
+existing `SubagentPool` rather than growing a second way to run agents.
+Full design in
+[`superpowers/specs/2026-08-18-zorp-review-design.md`](superpowers/specs/2026-08-18-zorp-review-design.md).
+
+**The termination decision, which is the whole thing:** "until the
+reviewer is satisfied" is not a stopping condition. A reviewer asked
+"anything else?" always answers, so satisfaction is an infinite loop with
+extra steps. The loop stops after `quiet_rounds` consecutive rounds
+producing no finding not already seen, with `max_rounds` as an
+unconditional backstop. Deduplication is against every finding ever
+proposed, including ones the checker threw out and ones verification
+refuted, not against what survived; deduplicating against survivors would
+let a refuted finding return every round forever. When a bound is hit
+rather than the criterion, the report says the review is not exhaustive.
+
+**The cost decision:** one `Budget` per review, charged before any agent
+starts, with the depth check and the count check in one critical section.
+Both the orchestrator's dispatches and an agent's own
+`spawn_review_agent` go through it. Depth is capped at 10 and defaults to
+3, but depth is explicitly not the safety bound: at a fan-out of three,
+depth 10 is 88,572 agents. The total agent budget (default 150) is what
+binds. Refusals are recorded with what they were for and listed in the
+report under what was not covered.
+
+**What this rules out:** verification by consensus. A finding survives
+only on a strict majority of votes cast, an undecided verifier counts
+against it, and an unparseable reply is undecided. It also rules out
+findings that do not quote the paper: every finding must carry at least
+five words copied verbatim, checked in code against the paper text, which
+is what stops a reviewer padding the report with advice it could have
+given without reading anything.
+
+**What it does not settle:** which dimensions earn their place. Ten of
+the 22 run by default and the rest are opt-in, which is a judgement made
+without measurement. The report ships a per-dimension table of proposed,
+dropped, refuted, and surviving counts so the question can be settled
+from real runs instead of from opinion.
+
+**Overlap with the concurrent self-critique work in `deliver`:** they
+meet on one dimension, `claim-evidence-traceability`. Eventually
+`deliver`'s self-critique should call `review` with that dimension, one
+round and no refuters, rather than two implementations of the same check
+drifting apart. Not done now, because coupling two branches under review
+at the same time makes both harder to judge.
+
+---
+
 ## 2026-08-18: answers stream, and the streaming path filters reasoning
 
 **Decision:** `Model::complete_streaming` is the agent loop's model call.

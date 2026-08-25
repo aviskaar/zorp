@@ -66,8 +66,17 @@ impl From<&SubagentInfo> for SubagentSnapshot {
     }
 }
 
-struct ProgressRecorder {
+pub struct ProgressRecorder {
     buf: Arc<Mutex<Vec<String>>>,
+}
+
+impl ProgressRecorder {
+    /// `buf` is the progress buffer `SubagentPool::allocate` handed back,
+    /// so anything running an agent against a pool slot can report into
+    /// it without a second progress mechanism.
+    pub fn new(buf: Arc<Mutex<Vec<String>>>) -> Self {
+        ProgressRecorder { buf }
+    }
 }
 
 impl RunRecorder for ProgressRecorder {

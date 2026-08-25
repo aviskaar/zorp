@@ -155,6 +155,38 @@ enum Command {
     /// Match a co-written draft against real venues.
     #[cfg(feature = "research")]
     Deliver { question: String },
+    /// Review a paper adversarially until the findings stop appearing.
+    #[cfg(feature = "research")]
+    Review {
+        question: String,
+        /// The paper to review. Defaults to the track's draft.md.
+        #[arg(long = "paper")]
+        paper: Option<String>,
+        /// A venue shortlist for the venue-fit dimension. Defaults to
+        /// the track's venues.md if it exists.
+        #[arg(long = "venues")]
+        venues: Option<String>,
+        /// "core" (the dimensions that bite for a paper), "all", or a
+        /// comma-separated list of dimension keys.
+        #[arg(long = "dimensions", default_value = "core")]
+        dimensions: String,
+        /// Hard cap on review rounds.
+        #[arg(long = "rounds")]
+        rounds: Option<usize>,
+        /// Consecutive rounds with nothing new before the review stops.
+        #[arg(long = "quiet-rounds")]
+        quiet_rounds: Option<usize>,
+        /// How deep a chain of agents may go, capped at 10.
+        #[arg(long = "max-depth")]
+        max_depth: Option<usize>,
+        /// Total agents this review may start. This is the bound that
+        /// actually binds; see the design note.
+        #[arg(long = "max-agents")]
+        max_agents: Option<usize>,
+        /// How many agents try to refute each surviving finding.
+        #[arg(long = "refuters")]
+        refuters: Option<usize>,
+    },
 }
 
 fn main() {
@@ -202,6 +234,32 @@ fn main() {
         Some(Command::CoWrite { question }) => co_write(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
         Some(Command::Deliver { question }) => deliver(&question, cli.yes, &overrides),
+        #[cfg(feature = "research")]
+        Some(Command::Review {
+            question,
+            paper,
+            venues,
+            dimensions,
+            rounds,
+            quiet_rounds,
+            max_depth,
+            max_agents,
+            refuters,
+        }) => review(
+            &question,
+            paper.as_deref(),
+            venues.as_deref(),
+            &dimensions,
+            ReviewBoundOverrides {
+                rounds,
+                quiet_rounds,
+                max_depth,
+                max_agents,
+                refuters,
+            },
+            cli.yes,
+            &overrides,
+        ),
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -1239,6 +1297,169 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
         ),
         Ok(false) => println!(
             "deliver: not yet approved, shortlist left at .zorp/tracks/{track_id}/venues.md"
+        ),
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "research")]
+const REVIEW_SYSTEM_PREAMBLE: &str = "\
+You are part of an adversarial review of a paper. Report only what you can \
+point at in the paper itself, quoting it verbatim, and prefer reporting \
+nothing to reporting something that would apply to any paper.";
+
+/// Bound overrides straight off the command line, before defaults fill in
+/// whatever was not given.
+#[cfg(feature = "research")]
+struct ReviewBoundOverrides {
+    rounds: Option<usize>,
+    quiet_rounds: Option<usize>,
+    max_depth: Option<usize>,
+    max_agents: Option<usize>,
+    refuters: Option<usize>,
+}
+
+#[cfg(feature = "research")]
+fn review(
+    question: &str,
+    paper: Option<&str>,
+    venues: Option<&str>,
+    dimensions: &str,
+    bound_overrides: ReviewBoundOverrides,
+    auto_approve: bool,
+    overrides: &Overrides,
+) {
+    use zorp_agent::review::{dimension::Selection, Bounds};
+
+    let selection = match Selection::parse(dimensions) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+    let defaults = Bounds::default();
+    let bounds = Bounds {
+        max_rounds: bound_overrides.rounds.unwrap_or(defaults.max_rounds),
+        quiet_rounds: bound_overrides
+            .quiet_rounds
+            .unwrap_or(defaults.quiet_rounds),
+        max_depth: bound_overrides.max_depth.unwrap_or(defaults.max_depth),
+        max_agents: bound_overrides.max_agents.unwrap_or(defaults.max_agents),
+        refuters_per_finding: bound_overrides
+            .refuters
+            .unwrap_or(defaults.refuters_per_finding),
+    };
+    // Zero of any of these is not a smaller review, it is no review at
+    // all reported as a finished one.
+    for (name, value) in [
+        ("--rounds", bounds.max_rounds),
+        ("--quiet-rounds", bounds.quiet_rounds),
+        ("--max-agents", bounds.max_agents),
+        ("--refuters", bounds.refuters_per_finding),
+    ] {
+        if value == 0 {
+            eprintln!("zorp-agent: {name} must be at least 1");
+            std::process::exit(2);
+        }
+    }
+
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.clone().merge(project_flavor);
+    let mut system = REVIEW_SYSTEM_PREAMBLE.to_string();
+    system.push_str("\n\n");
+    system.push_str(&compose_system_with_persona(
+        &cwd,
+        persona(&cwd, &merged).as_deref(),
+    ));
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
+    let model = HttpModel {
+        url: join_url(&base_url, provider.path_suffix()),
+        api_key,
+        model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        steps,
+        cwd.clone(),
+        cancel,
+        approval,
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+
+    agent = attach_mcp_tools(agent, overrides, true);
+
+    let project = match zorp_track::Project::open(&cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    };
+    let track_id = zorp_track::id::track_id(question);
+    if let Err(e) = get_or_create_track(&project.store, &track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    }
+    let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    match zorp_agent::review::run(
+        &agent,
+        &project,
+        &track_id,
+        paper,
+        venues,
+        &selection,
+        &bounds,
+        &checkpoint_mode,
+    ) {
+        Ok(true) => println!(
+            "review: accepted, report at .zorp/tracks/{track_id}/review.md (structured record in review.json)"
+        ),
+        Ok(false) => println!(
+            "review: not accepted, report left at .zorp/tracks/{track_id}/review.md (structured record in review.json)"
         ),
         Err(e) => {
             eprintln!("zorp-agent: {e}");

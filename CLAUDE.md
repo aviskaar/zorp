@@ -27,10 +27,12 @@ resulting artifact, deliver it in the right form.
   (mentally substitute `zorp-*`).
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
   records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
-  built, not inherited. The four capabilities (validate, investigate,
-  co-write, deliver) sit on top of it as `zorp-agent` subcommands,
-  behind the `research` feature. All four are built and tested
-  (deliver most recently).
+  built, not inherited. The five capabilities (validate, investigate,
+  co-write, deliver, review) sit on top of it as `zorp-agent`
+  subcommands, behind the `research` feature. All five are built and
+  tested (review most recently). `review` runs agents through the
+  existing `SubagentPool` in `zorp-agent/src/tools/subagent.rs`; do not
+  grow it a second way to run agents.
 - New, zorp-specific capabilities should be clearly separated from
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
@@ -81,7 +83,7 @@ resulting artifact, deliver it in the right form.
   has been reading tool results and web pages. Reach for a markdown
   library and you have reached for `innerHTML`.
 - `cargo test --workspace` does not exercise the `research` feature
-  (validate, investigate, co-write, deliver). Run
+  (validate, investigate, co-write, deliver, review). Run
   `cargo test -p zorp-agent --features research` explicitly whenever
   research-feature code changes. CI covers it nightly and on pull
   requests that touch the research stack, but that is a backstop, not a
@@ -104,5 +106,5 @@ word instead. Prefer short, direct sentences over stacked clauses.
 ## Status
 
 Early/pre-alpha. The base harness and the research foundation
-(`zorp-track`) are built and tested. All four capabilities, validate,
-investigate, co-write, and deliver, are built and tested.
+(`zorp-track`) are built and tested. All five capabilities, validate,
+investigate, co-write, deliver, and review, are built and tested.

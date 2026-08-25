@@ -35,8 +35,8 @@ hypothesis are all the same shape of problem to zorp. It's built by
 
 > **Status: early / pre-alpha.** The base execution harness and the
 > shared research foundation (tracks, evidence records, checkpoints) are
-> in place and fully tested. All four capabilities built on top,
-> validate, investigate, co-write, and deliver, are built and tested.
+> in place and fully tested. Five capabilities built on top, validate,
+> investigate, co-write, deliver, and review, are built and tested.
 > See [Status & roadmap](#status--roadmap) below.
 
 ## Why zorp
@@ -68,11 +68,13 @@ record for whatever gets produced, a decision memo, a competitive
 landscape, a due-diligence package, or a paper. Long-running task loops,
 verification gates, session persistence, tool/MCP integration, and the
 research foundation (multi-track evidence records with git-backed,
-tamper-evident pre-registration) are already built and tested. All four
+tamper-evident pre-registration) are already built and tested. Five
 capabilities on top, each a clearly bounded layer, validate, investigate,
-co-write, and deliver, are built and tested; co-write drafts the
+co-write, deliver, and review, are built and tested; co-write drafts the
 artifact from the track's recorded evidence, with a human as author of
-record, and deliver matches the finished draft against real venues.
+record, deliver matches the finished draft against real venues, and
+review takes a finished paper apart adversarially before anyone else
+does.
 
 ## Architecture
 
@@ -108,8 +110,8 @@ cargo build --workspace --exclude zorp-track
 > it, which is enough for the core `zorp` and `zorp-agent` binaries
 > below. Drop `--exclude zorp-track` (plain `cargo build --workspace`,
 > or `cargo build --workspace --features research` for `zorp-agent`)
-> once you need the `validate`/`investigate`/`co-write`/`deliver`
-> capabilities, and budget time for that first build. The LanceDB vector
+> once you need the `validate`/`investigate`/`co-write`/`deliver`/
+> `review` capabilities, and budget time for that first build. The LanceDB vector
 > library is behind a non-default `library` feature, so the Arrow and
 > DataFusion tree is not built unless you ask for it.
 
@@ -169,9 +171,9 @@ still private, so an anonymous `docker pull` answers `unauthorized`. See
 use the install script above, or build the image yourself with
 `docker build -t zorp .`.
 
-### Using validate, investigate, co-write, deliver
+### Using validate, investigate, co-write, deliver, review
 
-Two of the four need an MCP tool connected first (behind `zorp-agent`'s
+Two of the five need an MCP tool connected first (behind `zorp-agent`'s
 `research` feature): `validate` needs a search-capable tool, one whose
 name carries a search verb (search, fetch, query, browse, find, lookup,
 retrieve), to search for evidence before scoring a question; `deliver`
@@ -209,6 +211,51 @@ A tool that searches your own saved material does not count, even
 though it carries a search verb. Scoring a question against notes you
 wrote yourself, and calling that a search for evidence, is worse than
 refusing to run.
+
+### Reviewing a paper
+
+`review` takes a finished paper apart before anyone else does. It runs
+rounds of a doer and a checker on every review dimension, keeps only
+findings that quote the paper verbatim and that no earlier round already
+raised, and hands each survivor to three agents told to refute it. It
+stops when two consecutive rounds turn up nothing new, or when a bound is
+reached, and the report says which of those happened.
+
+```bash
+# review a track's co-written draft
+cargo run -p zorp-agent --features research -- --yes \
+  review "Should we migrate off Kafka to Redpanda?"
+
+# review any paper, with every dimension and a budget to match
+cargo run -p zorp-agent --features research -- --yes \
+  review "zorp systems paper" \
+  --paper docs/paper/zorp-paper.md \
+  --venues docs/paper/venues.md \
+  --dimensions all --max-agents 400
+```
+
+The report lands at `.zorp/tracks/<id>/review.md`, with the structured
+record beside it at `review.json`, and the run is checkpointed. Findings
+are ranked worst first and grouped by category: technical findings first,
+then communication, distribution, and executive ones, each of those under
+a caveat saying it is not a judgement about whether the paper is correct.
+
+Ten dimensions run by default, the ones that bite for a paper: citation
+integrity, claim to evidence traceability, statistical validity,
+reproducibility, technical correctness, benchmarking validity, data
+correctness, threats to validity, novelty and prior art, and figures and
+tables. Twelve more are opt-in through `--dimensions`, including venue
+fit, virality and reach, and three executive readers. The report prints a
+per-dimension table of what each one proposed and what survived, so a
+dimension that only ever pads the report is visible as doing so.
+
+Bounds are `--rounds` (4), `--quiet-rounds` (2), `--max-depth` (3, hard
+ceiling 10), `--max-agents` (150), and `--refuters` (3). The agent budget
+is the one that binds: depth ten at a fan-out of three would be 88,572
+agents, so depth limits the length of one chain of enquiry and the budget
+limits the spend. When either runs out the review stops, says so, and
+lists what it did not cover. Zero findings is a valid result and reported
+as one.
 
 ### Memory across sessions, with open-context
 
@@ -343,6 +390,7 @@ design specs live, and repo conventions.
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [x] **co-write**: zorp drafts the artifact, a human is always the author of record
 - [x] **deliver**: match a finished draft against real academic venues (conferences and journals, via live huiban search), writing a ranked shortlist for a human to review
+- [x] **review**: take a finished paper apart adversarially, across many dimensions, until the findings stop appearing, and record what was found and what was not covered
 - [ ] A published investigation trace, start to finish
 - [ ] A grounded-vs-baseline evaluation
 - [ ] A systems paper about zorp itself, submitted to arXiv

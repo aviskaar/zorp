@@ -22,6 +22,8 @@ mod provider;
 mod reasoning;
 mod recorder;
 mod render;
+#[cfg(feature = "research")]
+pub mod review;
 mod sandbox;
 #[cfg(feature = "search")]
 mod search_tool;
