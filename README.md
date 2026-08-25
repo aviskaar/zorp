@@ -275,11 +275,15 @@ past the policy. See [`web/README.md`](web/README.md).
 cargo run -p zorp-web            # http://127.0.0.1:7777
 ```
 
-Or the whole thing in containers, server and UI as separate images:
+Or the whole thing in containers: the UI, the server, and an Ollama
+sidecar that serves both the chat model and the embeddings the
+conversation search needs.
 
 ```bash
 ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
 # UI on http://localhost:8080, server on http://localhost:7777
+docker compose exec ollama ollama pull qwen3:4b
+docker compose exec ollama ollama pull qwen3-embedding
 ```
 
 The server binds loopback by default. Binding anything else requires
@@ -287,6 +291,16 @@ The server binds loopback by default. Binding anything else requires
 is agent-driven shell access to whatever the process can see. In the
 compose file that mount is `./workspace`, so the agent sees that directory
 and nothing else; set `ZORP_WORKSPACE` to point it elsewhere.
+
+The UI container proxies the API onto its own origin and attaches the token
+for you, so there is nothing to paste. Both published ports are bound to the
+host's loopback for that reason: whatever reaches them is already talking to
+the agent.
+
+The image is built with voice and recall compiled in, so the microphone and
+the conversation search work rather than answering 501. See
+[`docs/docker.md`](docs/docker.md) for what happens on the first microphone
+click, and for why the sidecar shares the server's network namespace.
 
 **Choosing a model.** The gear button in the top bar opens a settings
 panel: pick a provider, point it at a base URL, and choose from the models

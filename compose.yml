@@ -4,35 +4,82 @@
 #   ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
 #
 # Then open http://localhost:8080 and set the token when prompted.
+#
+# See docs/docker.md for pulling the models and for what happens the first
+# time someone clicks the microphone.
 services:
+  # Serves both the chat model and the embeddings the conversation search
+  # needs. It is here rather than on the host because zorp-recall requires
+  # its embedding endpoint to be loopback and enforces that four ways, and a
+  # normal compose network is not loopback. `server` shares this container's
+  # network namespace below, so both processes see the same 127.0.0.1 and
+  # not one guard has to be weakened.
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama_models:/root/.ollama
+    # 7777 is published here, not on `server`. A container that shares
+    # another's network namespace cannot declare its own ports, so the
+    # namespace owner has to.
+    #
+    # Bound to the host's loopback. The UI attaches the token for you, so
+    # anything that can reach these ports is already talking to the agent, and
+    # the agent runs commands on this machine.
+    ports:
+      - "127.0.0.1:7777:7777"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   server:
     build:
       context: .
       dockerfile: zorp-web/Dockerfile
-    ports:
-      - "7777:7777"
+    network_mode: "service:ollama"
     environment:
       # A reachable server is agent-driven shell access to whatever it can
       # see, so the token is not optional. The server refuses to start
       # without one on a non-loopback bind.
       ZORP_WEB_TOKEN: ${ZORP_WEB_TOKEN:?set ZORP_WEB_TOKEN, for example with openssl rand -hex 16}
-      # host.docker.internal reaches a model running on the host, such as
-      # Ollama. Point these anywhere an OpenAI-compatible endpoint lives.
-      ZORP_BASE_URL: ${ZORP_BASE_URL:-http://host.docker.internal:11434/v1}
+      # The sidecar, reached over the shared namespace. Point these anywhere
+      # an OpenAI-compatible endpoint lives, including a model on the host at
+      # http://host.docker.internal:11434/v1.
+      ZORP_BASE_URL: ${ZORP_BASE_URL:-http://127.0.0.1:11434/v1}
       ZORP_MODEL: ${ZORP_MODEL:-qwen3:4b}
       ZORP_API_KEY: ${ZORP_API_KEY:-}
       ZORP_MAX_STEPS: ${ZORP_MAX_STEPS:-12}
+      # Not overridable to anything remote by design. zorp-recall checks the
+      # written form and then the resolution, so a non-loopback value here is
+      # refused rather than honored.
+      ZORP_EMBED_URL: http://127.0.0.1:11434
+      ZORP_EMBED_MODEL: ${ZORP_EMBED_MODEL:-qwen3-embedding:latest}
+      # On the volumes below, so conversations and their search index outlive
+      # the container.
+      ZORP_STATE_DB: /home/zorp/state/sessions.db
+      ZORP_RECALL_DB: /home/zorp/state/recall.db
+      # Several gigabytes of runtime and model weights, installed on first
+      # use. On a volume so a restart does not download them again.
+      ZORP_VOICE_SETUP_DIR: /home/zorp/voice
     volumes:
       # The agent works on your project. Mount the directory you want it to
       # see, and nothing more: it can read and, with approval, write here.
       - ${ZORP_WORKSPACE:-./workspace}:/work
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - zorp_state:/home/zorp/state
+      - zorp_voice:/home/zorp/voice
 
   ui:
     build:
       context: ./web
+    environment:
+      # nginx puts the API on this origin and attaches the token to every
+      # proxied request, which is why the page itself never holds one. Same
+      # variable as the server, so there is only one secret to set.
+      ZORP_WEB_TOKEN: ${ZORP_WEB_TOKEN:?set ZORP_WEB_TOKEN, for example with openssl rand -hex 16}
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     depends_on:
       - server
+
+volumes:
+  ollama_models:
+  zorp_state:
+  zorp_voice:

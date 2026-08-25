@@ -23,18 +23,40 @@ COPY zorp-mcp ./zorp-mcp
 COPY zorp-eval ./zorp-eval
 COPY zorp-track ./zorp-track
 COPY zorp-web ./zorp-web
+# Every workspace member has to be here or cargo cannot parse the workspace,
+# even the ones this binary does not use. These four arrived after the file
+# was first written and the build had been failing on the missing manifests.
+COPY zorp-search ./zorp-search
+COPY zorp-skill ./zorp-skill
+COPY zorp-recall ./zorp-recall
+COPY zorp-voice ./zorp-voice
 COPY erbga ./erbga
-RUN cargo build --release --locked -p zorp-web
+# voice and recall are both non-default. Without them the microphone and the
+# conversation search are compiled out and the endpoints answer 501, which
+# looks like a broken image rather than a deliberate build.
+RUN cargo build --release --locked -p zorp-web --features voice,recall
 
 FROM debian:12-slim
 # ca-certificates is required: the agent calls an OpenAI-compatible endpoint
 # over TLS and without it every model call fails certificate verification
 # with something that reads like a network fault.
+#
+# python3 and its venv and pip are here for zorp-voice, which installs the
+# Qwen3-ASR runtime into a marked virtual environment on first use rather
+# than baking several gigabytes of model and torch into this image.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates python3 python3-venv python3-pip \
  && rm -rf /var/lib/apt/lists/* \
  && useradd -m -u 1000 zorp
 COPY --from=build /src/target/release/zorp-web /usr/local/bin/zorp-web
+# Made here so the named volumes mount onto paths that already exist and are
+# owned by uid 1000. Left to Docker to create, they arrive owned by root and
+# the server cannot write its databases or set the voice runtime up.
+RUN mkdir -p /home/zorp/state /home/zorp/voice \
+ && chown -R zorp:zorp /home/zorp/state /home/zorp/voice
+# zorp-voice refuses to set itself up as root on purpose, so this is not just
+# good practice here: as root the microphone would not work at all.
 USER zorp
 WORKDIR /work
 EXPOSE 7777

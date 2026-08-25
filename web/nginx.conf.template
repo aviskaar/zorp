@@ -1,0 +1,41 @@
+# Serves the built UI and puts the API on the same origin.
+#
+# index.html resolves the API base to the empty string when the page is served
+# over http, meaning same origin, so nginx has to carry /api itself. Without
+# this the page loads and then reports "no zorp server here", because every
+# request lands on the static file server and 404s.
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        # `ollama` and not `server`. The server shares the sidecar's network
+        # namespace, so it has no name of its own on this network and the
+        # namespace owner answers for it.
+        proxy_pass http://ollama:7777;
+
+        # The token is attached here rather than written into the page, so the
+        # browser never holds it. That is also why the published ports below
+        # are bound to the host's loopback: anything that can reach this port
+        # is already talking to the agent.
+        proxy_set_header Authorization "Bearer ${ZORP_WEB_TOKEN}";
+
+        # /api/sessions/:id/events is server sent events. Buffering it would
+        # hold every token back until the turn had finished.
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+
+        # A turn can think for a long time before it says anything.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
