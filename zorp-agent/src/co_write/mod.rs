@@ -3,6 +3,7 @@ mod error;
 pub use error::CoWriteError;
 
 use crate::agent::{Agent, Outcome};
+use crate::sanitize::{sanitize, SanitizeMode};
 use std::fmt::Write as _;
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::experiment::MetricValue;
@@ -78,12 +79,17 @@ fn build_task_prompt(
 /// to `draft.md`, and checkpoint it. Returns whether the checkpoint was
 /// approved. Unlike `validate::run`/`investigate::run`, neither outcome
 /// changes the track's status.
+///
+/// `sanitize_mode` decides how much of the text sanitization pass runs
+/// over the draft before it is written. Whatever it changes is reported
+/// on stderr and in the checkpoint prompt.
 pub fn run(
     agent: &mut Agent,
     project: &Project,
     track_id: &str,
     hypothesis: &str,
     checkpoint_mode: &CheckpointMode,
+    sanitize_mode: SanitizeMode,
 ) -> Result<bool, CoWriteError> {
     let track = project.store.get_track(track_id)?;
     if track.status == TrackStatus::Killed {
@@ -97,10 +103,17 @@ pub fn run(
 
     let task = build_task_prompt(hypothesis, project, track_id, &metrics)?;
     let outcome = agent.run(&task);
-    let draft = match outcome {
+    let raw = match outcome {
         Outcome::Complete(text) => text,
         other => return Err(CoWriteError::AgentOutcome(other.describe())),
     };
+
+    let cleaned = sanitize(&raw, sanitize_mode);
+    let draft = cleaned.text;
+    let sanitize_note = cleaned.report.summary();
+    if let Some(note) = &sanitize_note {
+        eprintln!("zorp-agent: co-write sanitized the draft: {note}");
+    }
 
     let track_dir = project.track_dir(track_id);
     std::fs::create_dir_all(&track_dir)?;
@@ -124,12 +137,19 @@ pub fn run(
 
     std::fs::write(&draft_path, &draft)?;
 
-    let prompt = format!(
-        "co-write: draft written to {} ({} lines, {} metrics). Ready for review?",
+    let mut prompt = format!(
+        "co-write: draft written to {} ({} lines, {} metrics",
         draft_path.display(),
         draft.lines().count(),
         metrics.len()
     );
+    // The checkpoint is where a human decides on this draft, so it is
+    // where they have to be told the text is not verbatim what the model
+    // produced.
+    if let Some(note) = &sanitize_note {
+        let _ = write!(prompt, ", sanitized: {note}");
+    }
+    prompt.push_str("). Ready for review?");
     let approved =
         project
             .store
@@ -224,7 +244,15 @@ mod tests {
             .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap_err();
         assert!(matches!(err, CoWriteError::TrackKilled));
     }
 
@@ -239,7 +267,15 @@ mod tests {
             .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap_err();
         assert!(matches!(err, CoWriteError::NoMetrics));
     }
 
@@ -251,7 +287,15 @@ mod tests {
         track_with_one_metric(&project, "t1");
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        let approved = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
         assert!(approved);
 
         let draft_path = project.track_dir("t1").join("draft.md");
@@ -267,7 +311,15 @@ mod tests {
         track_with_one_metric(&project, "t1");
         let mode = CheckpointMode::Interactive(Arc::new(RejectAll));
 
-        let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        let approved = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
         assert!(!approved);
 
         let track = project.store.get_track("t1").unwrap();
@@ -279,6 +331,128 @@ mod tests {
         fn decide(&self, _prompt: &str) -> bool {
             false
         }
+    }
+
+    /// Captures the prompt string it was handed so a test can assert on
+    /// what the human would actually have been asked.
+    struct CapturingDecider {
+        prompt: std::sync::Mutex<Option<String>>,
+    }
+
+    impl zorp_track::checkpoint::Decider for CapturingDecider {
+        fn decide(&self, prompt: &str) -> bool {
+            *self.prompt.lock().unwrap() = Some(prompt.to_string());
+            true
+        }
+    }
+
+    /// A draft with one of everything: an invisible, a bidi override, a
+    /// clause dash, curly quotes, an ellipsis, and a fenced code block
+    /// that must come through untouched.
+    const DIRTY_DRAFT: &str = "Latency\u{200B} improved \u{2014} \u{201C}a lot\u{201D}\u{2026}\u{202E}\n\n```\nlet s = \"a\u{2014}b\";\n```\n";
+    const CLEAN_DRAFT: &str =
+        "Latency improved, \"a lot\"...\n\n```\nlet s = \"a\u{2014}b\";\n```\n";
+
+    #[test]
+    fn the_draft_is_sanitized_before_it_is_written() {
+        let mut agent = build_agent(DIRTY_DRAFT);
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(project.track_dir("t1").join("draft.md")).unwrap();
+        assert_eq!(content, CLEAN_DRAFT);
+    }
+
+    #[test]
+    fn sanitize_off_writes_the_model_text_verbatim() {
+        let mut agent = build_agent(DIRTY_DRAFT);
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Off,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(project.track_dir("t1").join("draft.md")).unwrap();
+        assert_eq!(content, DIRTY_DRAFT);
+    }
+
+    #[test]
+    fn the_checkpoint_prompt_says_what_sanitizing_changed() {
+        let mut agent = build_agent(DIRTY_DRAFT);
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        let decider = Arc::new(CapturingDecider {
+            prompt: std::sync::Mutex::new(None),
+        });
+        let mode = CheckpointMode::Interactive(decider.clone());
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
+
+        let prompt = decider
+            .prompt
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("decider should have been asked");
+        assert!(prompt.contains("sanitized:"), "{prompt}");
+        assert!(prompt.contains("1 invisible removed"), "{prompt}");
+        assert!(prompt.contains("1 bidi controls removed"), "{prompt}");
+        assert!(prompt.contains("1 dashes normalized"), "{prompt}");
+    }
+
+    #[test]
+    fn a_clean_draft_leaves_the_checkpoint_prompt_alone() {
+        let mut agent = build_agent("Latency improved to 42ms.");
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+        let decider = Arc::new(CapturingDecider {
+            prompt: std::sync::Mutex::new(None),
+        });
+        let mode = CheckpointMode::Interactive(decider.clone());
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
+
+        let prompt = decider.prompt.lock().unwrap().clone().unwrap();
+        assert!(!prompt.contains("sanitized"), "{prompt}");
     }
 
     #[test]
@@ -293,7 +467,15 @@ mod tests {
             .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        let approved = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
         assert!(approved);
 
         let draft_path = project.track_dir("t1").join("draft.md");
@@ -341,7 +523,15 @@ mod tests {
         track_with_one_metric(&project, "t1");
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        let approved = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
         assert!(approved);
 
         let draft_path = project.track_dir("t1").join("draft.md");
@@ -357,7 +547,15 @@ mod tests {
         std::fs::write(&draft_path, "HUMAN EDIT").unwrap();
 
         let mut agent2 = build_agent("second draft");
-        let approved2 = run(&mut agent2, &project, "t1", "does caching help", &mode).unwrap();
+        let approved2 = run(
+            &mut agent2,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
         assert!(approved2);
 
         let content2 = std::fs::read_to_string(&draft_path).unwrap();

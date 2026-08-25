@@ -92,6 +92,13 @@ struct Cli {
     /// what is asked about, not what is refused. See --yes.
     #[arg(long, global = true)]
     approval: Option<String>,
+    /// How much to sanitize a written artifact: "full" (default) strips
+    /// invisible characters and normalizes typographic punctuation to
+    /// ASCII, "invisible" strips only, "off" writes the model's text
+    /// verbatim. Applies to co-write's draft.md and deliver's venues.md.
+    #[cfg(feature = "research")]
+    #[arg(long = "sanitize", global = true, value_name = "MODE")]
+    sanitize: Option<String>,
     /// Connect to an MCP server. Format: stdio:name:command[:arg1:arg2...]
     /// or streamable_http:name:url  or  sse:name:url (legacy).
     /// Can be specified multiple times. Requires --features mcp build.
@@ -117,6 +124,8 @@ struct Overrides {
     approval: Option<String>,
     #[cfg(feature = "mcp")]
     mcp: Vec<String>,
+    #[cfg(feature = "research")]
+    sanitize: zorp_agent::sanitize::SanitizeMode,
 }
 
 #[derive(Subcommand)]
@@ -175,6 +184,19 @@ fn main() {
         approval: cli.approval.clone(),
         #[cfg(feature = "mcp")]
         mcp: cli.mcp,
+        // Parsed here rather than by clap so an unknown mode reports the
+        // accepted values in the same words the module uses.
+        #[cfg(feature = "research")]
+        sanitize: match cli.sanitize.as_deref() {
+            None => zorp_agent::sanitize::SanitizeMode::default(),
+            Some(raw) => match raw.parse() {
+                Ok(mode) => mode,
+                Err(e) => {
+                    eprintln!("zorp-agent: {e}");
+                    std::process::exit(2);
+                }
+            },
+        },
     };
     match cli.command {
         Some(Command::Chat) => chat(cli.yes, cli.no_verify, &overrides),
@@ -1128,7 +1150,14 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
         }
     };
 
-    match zorp_agent::co_write::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
+    match zorp_agent::co_write::run(
+        &mut agent,
+        &project,
+        &track_id,
+        question,
+        &checkpoint_mode,
+        overrides.sanitize,
+    ) {
         Ok(true) => println!(
             "co-write: approved, draft ready for review at .zorp/tracks/{track_id}/draft.md"
         ),
@@ -1233,7 +1262,14 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
         }
     };
 
-    match zorp_agent::deliver::run(&mut agent, &project, &track_id, question, &checkpoint_mode) {
+    match zorp_agent::deliver::run(
+        &mut agent,
+        &project,
+        &track_id,
+        question,
+        &checkpoint_mode,
+        overrides.sanitize,
+    ) {
         Ok(true) => println!(
             "deliver: approved, shortlist ready for review at .zorp/tracks/{track_id}/venues.md"
         ),

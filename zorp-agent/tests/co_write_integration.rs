@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::tempdir;
 use zorp_agent::co_write::{run, CoWriteError};
+use zorp_agent::sanitize::SanitizeMode;
 use zorp_agent::{cancel_token, Agent, ApprovalMode, AssistantMessage, BoxErr, Message, Model};
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::experiment::{ExperimentStatus, MetricValue};
@@ -92,7 +93,15 @@ fn full_round_trip_writes_draft_and_approves() {
     track_with_one_metric(&project, "t1");
     let mode = CheckpointMode::terminal(true).unwrap();
 
-    let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+    let approved = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap();
     assert!(approved);
 
     let draft_path = project.track_dir("t1").join("draft.md");
@@ -108,7 +117,15 @@ fn rejected_checkpoint_leaves_track_status_unchanged() {
     track_with_one_metric(&project, "t1");
     let mode = CheckpointMode::Interactive(Arc::new(RejectAll));
 
-    let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+    let approved = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap();
     assert!(!approved);
 
     let track = project.store.get_track("t1").unwrap();
@@ -123,7 +140,15 @@ fn a_second_call_overwrites_a_hand_edited_draft_and_still_succeeds() {
     track_with_one_metric(&project, "t1");
     let mode = CheckpointMode::terminal(true).unwrap();
 
-    run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+    run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap();
 
     let draft_path = project.track_dir("t1").join("draft.md");
 
@@ -135,7 +160,15 @@ fn a_second_call_overwrites_a_hand_edited_draft_and_still_succeeds() {
     std::fs::write(&draft_path, "HUMAN EDIT").unwrap();
 
     let mut agent2 = build_agent("second draft, overwritten");
-    let approved = run(&mut agent2, &project, "t1", "does caching help", &mode).unwrap();
+    let approved = run(
+        &mut agent2,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap();
     assert!(approved);
 
     let content = std::fs::read_to_string(&draft_path).unwrap();
@@ -153,6 +186,14 @@ fn no_metrics_refuses_before_running_the_agent() {
         .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
-    let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+    let err = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap_err();
     assert!(matches!(err, CoWriteError::NoMetrics));
 }

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 use zorp_agent::deliver::{run, DeliverError};
+use zorp_agent::sanitize::SanitizeMode;
 use zorp_agent::{
     cancel_token, Agent, ApprovalMode, AssistantMessage, BoxErr, Message, Model, ToolCall,
 };
@@ -137,7 +138,15 @@ fn full_round_trip_finds_venues_and_approves() {
     track_with_draft(&project, "t1");
     let mode = CheckpointMode::terminal(true).unwrap();
 
-    let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+    let approved = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap();
     assert!(approved);
 
     let venues_path = project.track_dir("t1").join("venues.md");
@@ -165,7 +174,15 @@ fn rejected_checkpoint_leaves_track_status_unchanged() {
     track_with_draft(&project, "t1");
     let mode = CheckpointMode::Interactive(Arc::new(RejectAll));
 
-    let approved = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+    let approved = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap();
     assert!(!approved);
 
     let track = project.store.get_track("t1").unwrap();
@@ -196,7 +213,15 @@ fn no_draft_refuses_before_running_the_agent() {
         .unwrap();
     let mode = CheckpointMode::terminal(true).unwrap();
 
-    let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+    let err = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap_err();
     assert!(matches!(err, DeliverError::NoDraft));
 
     // The missing-draft check must short-circuit before the agent (and
@@ -234,7 +259,15 @@ fn no_huiban_tool_refuses_even_with_a_draft_present() {
     )
     .register_builtins();
 
-    let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+    let err = run(
+        &mut agent,
+        &project,
+        "t1",
+        "does caching help",
+        &mode,
+        SanitizeMode::Full,
+    )
+    .unwrap_err();
     assert!(matches!(err, DeliverError::NoVenueTool));
 
     // The huiban gate must short-circuit before the agent (and therefore

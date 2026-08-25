@@ -23,6 +23,7 @@ mod reasoning;
 mod recorder;
 mod render;
 mod sandbox;
+pub mod sanitize;
 #[cfg(feature = "search")]
 mod search_tool;
 mod session;

@@ -3,6 +3,8 @@ mod error;
 pub use error::DeliverError;
 
 use crate::agent::{Agent, Outcome};
+use crate::sanitize::{sanitize, SanitizeMode};
+use std::fmt::Write as _;
 use zorp_track::checkpoint::CheckpointMode;
 use zorp_track::track::TrackStatus;
 use zorp_track::Project;
@@ -42,12 +44,17 @@ fn candidate_count(shortlist: &str) -> usize {
 /// real venues via huiban, write a ranked shortlist to `venues.md`, and
 /// checkpoint it. Returns whether the checkpoint was approved. Like
 /// `co_write::run`, neither outcome changes the track's status.
+///
+/// `sanitize_mode` decides how much of the text sanitization pass runs
+/// over the shortlist before it is written. Whatever it changes is
+/// reported on stderr and in the checkpoint prompt.
 pub fn run(
     agent: &mut Agent,
     project: &Project,
     track_id: &str,
     hypothesis: &str,
     checkpoint_mode: &CheckpointMode,
+    sanitize_mode: SanitizeMode,
 ) -> Result<bool, DeliverError> {
     let track = project.store.get_track(track_id)?;
     if track.status == TrackStatus::Killed {
@@ -67,21 +74,35 @@ pub fn run(
 
     let task = build_task_prompt(hypothesis, &draft);
     let outcome = agent.run(&task);
-    let shortlist = match outcome {
+    let raw = match outcome {
         Outcome::Complete(text) => text,
         other => return Err(DeliverError::AgentOutcome(other.describe())),
     };
+
+    let cleaned = sanitize(&raw, sanitize_mode);
+    let shortlist = cleaned.text;
+    let sanitize_note = cleaned.report.summary();
+    if let Some(note) = &sanitize_note {
+        eprintln!("zorp-agent: deliver sanitized the shortlist: {note}");
+    }
 
     let track_dir = project.track_dir(track_id);
     std::fs::create_dir_all(&track_dir)?;
     let venues_path = track_dir.join("venues.md");
     std::fs::write(&venues_path, &shortlist)?;
 
-    let prompt = format!(
-        "deliver: shortlist written to {} ({} candidates). Ready for review?",
+    let mut prompt = format!(
+        "deliver: shortlist written to {} ({} candidates",
         venues_path.display(),
         candidate_count(&shortlist)
     );
+    // The checkpoint is where a human decides on this shortlist, so it is
+    // where they have to be told the text is not verbatim what the model
+    // produced.
+    if let Some(note) = &sanitize_note {
+        let _ = write!(prompt, ", sanitized: {note}");
+    }
+    prompt.push_str("). Ready for review?");
     let approved =
         project
             .store
@@ -166,7 +187,15 @@ mod tests {
             .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap_err();
         assert!(matches!(err, DeliverError::TrackKilled));
     }
 
@@ -181,7 +210,15 @@ mod tests {
             .unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap_err();
         assert!(matches!(err, DeliverError::NoDraft));
     }
 
@@ -232,7 +269,15 @@ mod tests {
             prompt: captured.clone(),
         }));
 
-        run(&mut agent, &project, "t1", "does caching help", &mode).unwrap();
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
 
         let prompt = captured
             .lock()
@@ -263,11 +308,66 @@ mod tests {
         std::fs::create_dir_all(project.track_dir("t1").join("draft.md")).unwrap();
         let mode = CheckpointMode::terminal(true).unwrap();
 
-        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, DeliverError::Io(_)),
             "expected Io, got {err:?}"
         );
+    }
+
+    #[test]
+    fn the_shortlist_is_sanitized_before_it_is_written() {
+        let shortlist =
+            "## Venue\u{200B} One \u{2014} \u{201C}systems\u{201D}\n- Journal of\u{202E} Caching\n";
+        let mut agent = build_agent(shortlist).register(Box::new(FakeHuibanTool));
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_draft(&project, "t1");
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(project.track_dir("t1").join("venues.md")).unwrap();
+        assert_eq!(content, "## Venue One, \"systems\"\n- Journal of Caching\n");
+    }
+
+    #[test]
+    fn sanitize_off_writes_the_shortlist_verbatim() {
+        let shortlist = "## Venue\u{200B} One \u{2014} \u{201C}systems\u{201D}\n";
+        let mut agent = build_agent(shortlist).register(Box::new(FakeHuibanTool));
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_draft(&project, "t1");
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Off,
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(project.track_dir("t1").join("venues.md")).unwrap();
+        assert_eq!(content, shortlist);
     }
 
     #[test]
@@ -279,7 +379,15 @@ mod tests {
         let mode = CheckpointMode::terminal(true).unwrap();
         // No MCP tools attached: only built-in local tools are present.
 
-        let err = run(&mut agent, &project, "t1", "does caching help", &mode).unwrap_err();
+        let err = run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            &mode,
+            SanitizeMode::Full,
+        )
+        .unwrap_err();
         assert!(matches!(err, DeliverError::NoVenueTool));
     }
 }
