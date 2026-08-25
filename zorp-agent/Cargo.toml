@@ -31,6 +31,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 zorp-mcp   = { path = "../zorp-mcp", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
 zorp-search = { path = "../zorp-search", optional = true }
+zorp-paper = { path = "../zorp-paper", optional = true }
 arboard    = { version = "3", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies
@@ -58,7 +59,7 @@ mcp      = ["dep:zorp-mcp"]
 # part of `research`: running investigate locally should not acquire an
 # egress path by side effect.
 search   = ["dep:zorp-search"]
-research = ["dep:zorp-track", "mcp"]
+research = ["dep:zorp-track", "dep:zorp-paper", "mcp"]
 # Opt-in vector store for validate's cited sources. Deliberately not
 # part of `research`: it drags in LanceDB's arrow stack at build time.
 library  = ["research", "zorp-track/library"]

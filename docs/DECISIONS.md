@@ -12,6 +12,60 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-08-18: zorp writes its own PDFs, because the alternative is a first run that does nothing
+
+**Decision:** `deliver --paper` turns `draft.md` and a track's evidence
+record into `paper.md` and `paper.pdf`. The PDF engine is `zorp-paper`, a
+new workspace member with zero dependencies that writes the PDF file
+format directly and typesets with the base-14 fonts every viewer already
+has. Design:
+`docs/superpowers/specs/2026-08-18-paper-generation-design.md`.
+
+**What it rules out, first option:** shelling out to `typst`, `pandoc` or
+`xelatex`. Better fidelity, no build weight, and on a machine without
+them the command does nothing useful. That machine is most machines, so
+the degradation path would be the path most people meet on their first
+run, and a first run that says "install a TeX distribution" is a first
+run that does not happen. Shelling out to whatever resolves on `PATH` to
+typeset model output is also a code-execution surface we would be adding
+for a document with no figures in it.
+
+**What it rules out, second option:** vendoring a Rust typesetting crate.
+`Cargo.lock` is committed and CI builds `--locked`, so a dependency here
+is a standing commitment, and the crates that would do this well bring
+font parsing, shaping and usually an image stack. That is a large surface
+for a one-column document with no floats, no footnotes, no maths and no
+tables. This repository already made the same call for
+`web/src/markdown.ts`, for the same reason: the library solves a problem
+we do not have and hands us one we do.
+
+**Why writing it is smaller than it sounds:** the hard parts of
+typesetting are the parts this document shape does not have. Base-14
+fonts mean nothing is embedded, parsed or subset. The only thing the
+writer cannot get for free is character widths, for line breaking, and a
+wrong width costs line-fill quality and nothing else, because the viewer
+places glyphs from its own metrics.
+
+**Citation integrity, which is the actual point:** the reference list is
+built from `evidence::for_track` and nothing in the draft can add to it.
+A `References` section written by the model is dropped, along with
+anything nested under it, and replaced. `Paper::assemble` is the only
+constructor for a `Paper` and refuses one whose prose cites a key or a
+position the list does not have. That refusal is fatal and writes
+nothing: a paper whose citations do not resolve is worse than no paper.
+
+**What never fails the run:** typesetting. `paper.md` is written first
+and the PDF is attempted after. A PDF that cannot be written is reported
+on stderr and in the checkpoint prompt, and the delivery still succeeds.
+
+**Also decided:** the document's date comes from the track's
+`created_at`, not the clock, so the same investigation produces the same
+bytes. co-write's prompt now lists the evidence record by key and asks
+for inline `[E1]` citations, because a citation convention nobody is told
+about is a convention nobody follows.
+
+---
+
 ## 2026-08-18: answers stream, and the streaming path filters reasoning
 
 **Decision:** `Model::complete_streaming` is the agent loop's model call.

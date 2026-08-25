@@ -5,6 +5,8 @@ pub enum DeliverError {
     TrackKilled,
     NoDraft,
     NoVenueTool,
+    NoEvidence,
+    Paper(zorp_paper::PaperError),
     AgentOutcome(String),
     Io(String),
     Track(zorp_track::TrackError),
@@ -22,6 +24,11 @@ impl fmt::Display for DeliverError {
                 f,
                 "no huiban-prefixed tool is available; configure the huiban MCP server (--mcp or .zorp/mcp.toml)"
             ),
+            DeliverError::NoEvidence => write!(
+                f,
+                "this track's evidence record is empty, so there is nothing a paper could cite; run investigate first"
+            ),
+            DeliverError::Paper(e) => write!(f, "{e}"),
             DeliverError::AgentOutcome(outcome) => write!(f, "agent did not complete: {outcome}"),
             DeliverError::Io(msg) => write!(f, "could not read or write track files: {msg}"),
             DeliverError::Track(e) => write!(f, "{e}"),
@@ -34,6 +41,12 @@ impl std::error::Error for DeliverError {}
 impl From<zorp_track::TrackError> for DeliverError {
     fn from(e: zorp_track::TrackError) -> Self {
         DeliverError::Track(e)
+    }
+}
+
+impl From<zorp_paper::PaperError> for DeliverError {
+    fn from(e: zorp_paper::PaperError) -> Self {
+        DeliverError::Paper(e)
     }
 }
 

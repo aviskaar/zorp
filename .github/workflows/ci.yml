@@ -236,7 +236,7 @@ jobs:
             exit 0
           fi
           echo "$changed"
-          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|zorp-agent/src/(validate|investigate|co_write|deliver)/|zorp-agent/Cargo\.toml$|Cargo\.toml$|Cargo\.lock$)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|zorp-paper/|zorp-agent/src/(validate|investigate|co_write|deliver)/|zorp-agent/src/evidence\.rs$|zorp-agent/Cargo\.toml$|Cargo\.toml$|Cargo\.lock$)'; then
             echo "research stack touched" >&2
             echo "research=true" >> "$GITHUB_OUTPUT"
           else

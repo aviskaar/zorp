@@ -11,6 +11,8 @@ mod context;
 #[cfg(feature = "research")]
 pub mod deliver;
 mod embed;
+#[cfg(feature = "research")]
+pub mod evidence;
 mod flavor;
 mod identity;
 mod instructions;

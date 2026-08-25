@@ -8209,6 +8209,7 @@ dependencies = [
  "ureq",
  "zorp",
  "zorp-mcp",
+ "zorp-paper",
  "zorp-search",
  "zorp-track",
 ]
@@ -8239,6 +8240,10 @@ dependencies = [
  "ureq",
  "zorp",
 ]
+
+[[package]]
+name = "zorp-paper"
+version = "0.3.2"
 
 [[package]]
 name = "zorp-search"

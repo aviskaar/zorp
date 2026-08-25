@@ -1,6 +1,8 @@
 mod error;
+pub mod paper;
 
 pub use error::DeliverError;
+pub use paper::{run as run_paper, PaperOutcome};
 
 use crate::agent::{Agent, Outcome};
 use zorp_track::checkpoint::CheckpointMode;

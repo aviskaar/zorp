@@ -20,19 +20,10 @@ fn all_metrics(
     project.store.metrics_for_track(track_id)
 }
 
-fn format_metric_value(value: &MetricValue) -> String {
-    match value {
-        MetricValue::Number(n) => n.to_string(),
-        MetricValue::Text(s) => s.clone(),
-        MetricValue::Bool(b) => b.to_string(),
-    }
-}
-
 fn build_task_prompt(
     hypothesis: &str,
     project: &Project,
     track_id: &str,
-    metrics: &[(String, String, MetricValue)],
 ) -> Result<String, TrackError> {
     let mut task = format!("Hypothesis: {hypothesis}\n\n");
 
@@ -61,15 +52,22 @@ fn build_task_prompt(
         Err(e) => return Err(e),
     }
 
-    task.push_str("Recorded metrics:\n");
-    for (experiment_id, key, value) in metrics {
-        let _ = writeln!(
-            task,
-            "- [{experiment_id}] {key} = {}",
-            format_metric_value(value)
-        );
+    // The same list `deliver --paper` builds its reference list from, so
+    // a draft that cites E1 cites a row in the record and the paper's
+    // citation check passes. Anything the model invents instead of using
+    // a key fails that check loudly later. `run` refuses a track with no
+    // metrics, so this list is never empty by the time it is reached.
+    let evidence = crate::evidence::for_track(project, track_id)?;
+    task.push_str("Evidence record, cite these by key and no others:\n");
+    for item in &evidence {
+        let _ = writeln!(task, "- [{}] {} ({})", item.key, item.claim, item.source);
     }
-    task.push_str("\nDraft a short evidence-based artifact (a decision memo or summary) based only on this data.");
+    task.push_str(
+        "\nDraft a short evidence-based artifact (a decision memo or summary) based only \
+         on this data. Cite each figure inline with its key in square brackets, for \
+         example [E1]. Do not write a references section: it is generated from the \
+         record. Do not cite anything that is not in the list above.",
+    );
     Ok(task)
 }
 
@@ -95,7 +93,7 @@ pub fn run(
         return Err(CoWriteError::NoMetrics);
     }
 
-    let task = build_task_prompt(hypothesis, project, track_id, &metrics)?;
+    let task = build_task_prompt(hypothesis, project, track_id)?;
     let outcome = agent.run(&task);
     let draft = match outcome {
         Outcome::Complete(text) => text,
@@ -320,8 +318,7 @@ mod tests {
             .record_validation("t1", 20.0, &red, 85.0, &feas, "worth investigating")
             .unwrap();
 
-        let metrics = all_metrics(&project, "t1").unwrap();
-        let task = build_task_prompt("does caching help", &project, "t1", &metrics).unwrap();
+        let task = build_task_prompt("does caching help", &project, "t1").unwrap();
 
         assert!(
             task.contains("- redundancy citation: \"no prior benchmark found\" (search result 1)"),
@@ -331,6 +328,19 @@ mod tests {
             task.contains("- feasibility citation: \"a harness already exists\" (repo README)"),
             "{task}"
         );
+    }
+
+    #[test]
+    fn the_task_prompt_names_the_evidence_keys_deliver_will_cite() {
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        track_with_one_metric(&project, "t1");
+
+        let task = build_task_prompt("does caching help", &project, "t1").unwrap();
+
+        assert!(task.contains("- [E1] latency_ms = 42"), "{task}");
+        assert!(task.contains("[E1]."), "{task}");
+        assert!(task.contains("Do not write a references section"), "{task}");
     }
 
     #[test]

@@ -72,7 +72,9 @@ tamper-evident pre-registration) are already built and tested. All four
 capabilities on top, each a clearly bounded layer, validate, investigate,
 co-write, and deliver, are built and tested; co-write drafts the
 artifact from the track's recorded evidence, with a human as author of
-record, and deliver matches the finished draft against real venues.
+record, and deliver either matches the finished draft against real venues
+or turns it into a paper, markdown and PDF, whose every reference traces
+back to a row in the evidence record.
 
 ## Architecture
 
@@ -82,6 +84,7 @@ record, and deliver matches the finished draft against real venues.
 ├── zorp-agent/          # the agent: tools, reasoning, verification, sessions, MCP, telemetry
 ├── zorp-mcp/            # MCP client/server integration
 ├── zorp-track/          # research foundation: tracks, evidence records, pre-registration, checkpoints
+├── zorp-paper/          # paper documents: citation checking, markdown, and a dependency-free PDF writer
 ├── zorp-eval/           # deterministic evaluation harness
 ├── erbga/               # standalone genetic algorithm for graph community detection (no zorp deps)
 ├── evals/               # eval suites (smoke tests, Terminal-Bench, Harbor adapter)
@@ -209,6 +212,36 @@ A tool that searches your own saved material does not count, even
 though it carries a search verb. Scoring a question against notes you
 wrote yourself, and calling that a search for evidence, is worse than
 refusing to run.
+
+### Generating a paper
+
+`deliver --paper` turns a co-written draft into a paper-shaped document,
+`paper.md` and `paper.pdf`, next to the draft in
+`.zorp/tracks/<track>/`:
+
+```bash
+cargo run -p zorp-agent --features research -- --yes \
+  deliver --paper --author "Your Name" "Should we migrate off Kafka to Redpanda?"
+```
+
+This mode calls no model. It needs no API key, no MCP server and no
+network, and the same track produces the same bytes every time, because
+the document's date comes from the track rather than the clock.
+
+The reference list is built from the evidence record, validate's cited
+sources and every metric investigate recorded, and nothing in the draft
+can add to it. A `References` section the model wrote is dropped and
+replaced. Prose can cite into the list as `[E1]` or `[1]`, and a draft
+that cites something the record does not have is refused with the
+offending marker named, rather than delivered with a reference nobody
+gathered.
+
+The PDF is written by `zorp-paper`, which has no dependencies and shells
+out to nothing, so there is no LaTeX or typst to install and no path
+where the command quietly does less than it says. If the PDF cannot be
+written for some other reason, the markdown is still delivered and the
+reason is printed. What it does not do: figures, tables, maths, or text
+outside WinAnsi. Markdown tables survive as fixed-width verbatim blocks.
 
 ### Memory across sessions, with open-context
 
@@ -343,6 +376,7 @@ design specs live, and repo conventions.
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [x] **co-write**: zorp drafts the artifact, a human is always the author of record
 - [x] **deliver**: match a finished draft against real academic venues (conferences and journals, via live huiban search), writing a ranked shortlist for a human to review
+- [x] **deliver --paper**: turn the draft and the evidence record into `paper.md` and `paper.pdf`, offline, with a reference list derived from the record rather than written by a model
 - [ ] A published investigation trace, start to finish
 - [ ] A grounded-vs-baseline evaluation
 - [ ] A systems paper about zorp itself, submitted to arXiv

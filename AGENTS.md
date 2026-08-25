@@ -42,8 +42,18 @@ resulting artifact, deliver it in the right form.
   anything over the network. `research` deliberately does not enable it;
   run `--features research,search` when you want it. The API key comes
   from `ZORP_TAVILY_API_KEY` and never from a flavor manifest.
+- `zorp-paper/` is the document layer under `deliver --paper`: a paper
+  model whose only constructor refuses prose that cites a reference the
+  reference list does not have, a markdown renderer, and a PDF writer
+  that has no typesetting dependency and shells out to nothing. It
+  depends on no other workspace member and knows nothing about tracks,
+  agents or DuckDB. `zorp-agent` pulls it in behind `research`. Nothing
+  in it reads the clock: a date, if the document shows one, is passed
+  in, which is what keeps output byte-identical between runs. Adding a
+  dependency here would undo the decision it exists to implement
+  (`docs/DECISIONS.md`, 2026-08-18).
 - `erbga/` is neither inherited harness code nor a zorp capability, so
-  neither of the two bullets above applies to it. It is a standalone,
+  none of the bullets above applies to it. It is a standalone,
   zero-dependency implementation of published prior work (Rao, Janikow,
   Bhatia, Climer, MWAIS 2018): a genetic algorithm for graph community
   detection, validated against that work's four benchmarks. It knows

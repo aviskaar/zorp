@@ -62,8 +62,9 @@ refuses on a killed track. Rejecting the checkpoint does not kill the
 track. See
 [`superpowers/specs/2026-08-09-zorp-co-write-design.md`](superpowers/specs/2026-08-09-zorp-co-write-design.md).
 
-**deliver** (get the finished artifact into the right form): scoped to
-academic venue-matching for v1, refuses on a killed track, requires
+**deliver** (get the finished artifact into the right form): two modes.
+
+By default, academic venue-matching: refuses on a killed track, requires
 `draft.md` (from co-write) and a huiban-prefixed MCP tool to be
 configured, checked the same way validate requires a search-capable
 tool. The missing-draft check runs first, so a user with neither gets
@@ -72,6 +73,24 @@ journals fitting the draft's scope, writes the shortlist to `venues.md`,
 and checkpoints it. Rejecting the checkpoint does not kill the track,
 matching co-write's behavior. See
 [`superpowers/specs/2026-08-09-zorp-deliver-design.md`](superpowers/specs/2026-08-09-zorp-deliver-design.md).
+
+With `--paper`, paper generation: `draft.md` plus the track's evidence
+record become `paper.md` and `paper.pdf`. No model is called, so this
+mode needs no network, no API key and no MCP server, and the same track
+produces the same bytes. The reference list is derived from the record
+and a `References` section written by the model is discarded; a draft
+that cites something the record does not have is refused outright. The
+PDF is written by `zorp-paper` with no typesetting dependency, and a PDF
+that cannot be written never fails the delivery. See
+[`superpowers/specs/2026-08-18-paper-generation-design.md`](superpowers/specs/2026-08-18-paper-generation-design.md).
+
+## Supporting crates
+
+`zorp-paper` is the document layer under `deliver --paper`: a paper model
+whose only constructor refuses prose citing a reference it does not have,
+a markdown renderer, and a PDF writer. It has no dependencies and no
+knowledge of tracks, agents or DuckDB, which is what lets it be tested
+without either. `zorp-agent` pulls it in behind the `research` feature.
 
 ## In the workspace, off the capability path
 

@@ -1,0 +1,16 @@
+[package]
+name        = "zorp-paper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Paper-shaped documents from zorp's evidence record: markdown and a self-contained PDF."
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependencies, deliberately, and none on any other workspace member.
+# This crate knows about a document shape and about the PDF file format.
+# It knows nothing about tracks, agents, or DuckDB, and it writes the same
+# bytes on every machine because nothing under it can drift.
+[dependencies]

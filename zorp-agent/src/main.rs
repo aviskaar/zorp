@@ -152,9 +152,20 @@ enum Command {
     /// Draft an artifact from a track's recorded evidence.
     #[cfg(feature = "research")]
     CoWrite { question: String },
-    /// Match a co-written draft against real venues.
+    /// Match a co-written draft against real venues, or with --paper,
+    /// turn it into a paper with a record-derived reference list.
     #[cfg(feature = "research")]
-    Deliver { question: String },
+    Deliver {
+        question: String,
+        /// Write paper.md and paper.pdf from draft.md and the track's
+        /// evidence record. Calls no model and needs no MCP server.
+        #[arg(long = "paper")]
+        paper: bool,
+        /// Byline for --paper. Repeatable. zorp does not name itself an
+        /// author: a human is the author of record.
+        #[arg(long = "author", value_name = "NAME")]
+        authors: Vec<String>,
+    },
 }
 
 fn main() {
@@ -201,7 +212,17 @@ fn main() {
         #[cfg(feature = "research")]
         Some(Command::CoWrite { question }) => co_write(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
-        Some(Command::Deliver { question }) => deliver(&question, cli.yes, &overrides),
+        Some(Command::Deliver {
+            question,
+            paper,
+            authors,
+        }) => {
+            if paper {
+                deliver_paper(&question, &authors, cli.yes)
+            } else {
+                deliver(&question, cli.yes, &overrides)
+            }
+        }
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -1240,6 +1261,62 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
         Ok(false) => println!(
             "deliver: not yet approved, shortlist left at .zorp/tracks/{track_id}/venues.md"
         ),
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `deliver --paper`. Nothing here builds an agent, resolves a provider,
+/// or reads an API key: the paper is a function of `draft.md` and the
+/// track's evidence record, so this path runs offline and produces the
+/// same bytes every time.
+#[cfg(feature = "research")]
+fn deliver_paper(question: &str, authors: &[String], auto_approve: bool) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let project = match zorp_track::Project::open(&cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            // Exit 1, not 2, for the same reason the other research
+            // subcommands do: a store that will not open is a runtime
+            // failure, not a usage error.
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    };
+    let track_id = zorp_track::id::track_id(question);
+    if let Err(e) = get_or_create_track(&project.store, &track_id, question) {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    }
+    let checkpoint_mode = match zorp_track::checkpoint::CheckpointMode::terminal(auto_approve) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    match zorp_agent::deliver::run_paper(&project, &track_id, question, authors, &checkpoint_mode) {
+        Ok(outcome) => {
+            if let Some(why) = &outcome.pdf_error {
+                eprintln!("zorp-agent: the markdown is written but the PDF is not: {why}");
+            }
+            let state = if outcome.approved {
+                "approved"
+            } else {
+                "not yet approved"
+            };
+            println!(
+                "deliver: {state}, paper at {} ({} references)",
+                outcome.markdown_path.display(),
+                outcome.reference_count
+            );
+            if let Some(path) = &outcome.pdf_path {
+                println!("deliver: pdf at {}", path.display());
+            }
+        }
         Err(e) => {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
