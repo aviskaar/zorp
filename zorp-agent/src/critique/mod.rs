@@ -26,7 +26,8 @@ pub const DEFAULT_MAX_REVISIONS: usize = 2;
 /// What one audited draft came to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoundReport {
-    /// 0 is the draft as co-write left it. Later numbers are revisions.
+    /// 0 is the draft as this pass found it, which is whatever co-write
+    /// last wrote or a human last edited. Later numbers are revisions.
     pub round: usize,
     pub findings: Vec<Finding>,
     /// Whether this draft is the one the pass carried forward.
@@ -243,7 +244,7 @@ fn render_notes(
     );
     for round in rounds {
         let heading = if round.round == 0 {
-            "Round 0: the draft as co-write left it".to_string()
+            "Round 0: the draft as this pass found it".to_string()
         } else {
             format!("Round {}: revision", round.round)
         };
@@ -275,7 +276,7 @@ fn render_notes(
     }
     out.push_str("## Result\n\n");
     if draft_changed {
-        out.push_str("draft.md was revised. The draft as co-write left it is kept beside it at `draft.pre-critique.md`, so a diff of the two shows exactly what this pass changed.\n");
+        out.push_str("draft.md was revised. The draft as this pass found it is kept beside it at `draft.pre-critique.md`, so a diff of the two shows exactly what this pass changed. A later pass overwrites that copy with whatever it finds, so it is the previous draft, not always the first one.\n");
     } else {
         out.push_str("draft.md was not changed.\n");
     }
@@ -600,7 +601,7 @@ mod tests {
         run(&mut agent, &project, "t1", 2, &mode).unwrap();
 
         // What changed has to be inspectable, and a diff against the
-        // draft as co-write left it is the plainest way to see it.
+        // draft as the pass found it is the plainest way to see it.
         let before =
             std::fs::read_to_string(project.track_dir("t1").join("draft.pre-critique.md")).unwrap();
         assert_eq!(before, DIRTY_DRAFT);
