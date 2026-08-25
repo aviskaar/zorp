@@ -12,6 +12,49 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-08-24: one compose stack, extended, with an Ollama sidecar
+
+**Decision:** `zorp-web/Dockerfile` builds with `--features voice,recall`
+and carries python3 with venv and pip. `compose.yml` gains an `ollama`
+service, and `server` joins its network namespace with
+`network_mode: "service:ollama"`. Conversation state and the voice runtime
+live on named volumes. No new Dockerfile and no second compose file.
+
+**Why:** the repo already had a Docker setup and a second one was written
+beside it without anyone noticing the first. Compose loads `compose.yml` in
+preference to `docker-compose.yml`, so the newer file was never read and
+the documented command silently started the older stack. The verification
+that passed had used `-f docker-compose.yml`, which is the one thing the
+docs did not tell anyone to type. One stack, extended, is the only
+arrangement where what the docs say and what runs are the same thing.
+
+The sidecar is not a convenience. `zorp-recall` requires its embedding
+endpoint to be loopback and enforces that four ways, so an Ollama reached
+over a compose network would be refused. Sharing a network namespace gives
+both processes the same 127.0.0.1 and weakens no guard. A container in
+another's namespace cannot publish its own ports, which is why 7777 is
+declared on `ollama` and not on `server`.
+
+The image runs as uid 1000 for a reason past hygiene: `zorp-voice` calls
+`refuse_root_for(geteuid().is_root())`, so as root the microphone does not
+work at all. The state and voice directories are created in the image so
+the volumes mount onto paths that user owns; left to Docker they arrive
+owned by root and the server cannot write its databases.
+
+Two smaller things came out of the same read. The build stage was missing
+four workspace members that arrived after it was written, and cargo cannot
+parse a workspace whose members are absent, so the image had stopped
+building. And `ZORP_BASE_URL` now defaults to the sidecar rather than
+`host.docker.internal`; override it to point back at a model on the host.
+
+**Ruled out:** baking the Qwen3-ASR runtime into the image. That is several
+gigabytes of torch and weights for a feature many people never touch, and
+`zorp-voice` already installs it on first use into a marked virtual
+environment, which a volume then keeps across restarts.
+
+---
+
+
 ## 2026-08-24: conversation indexing is a quiet background loop, not a button
 
 **Decision:** `zorp-web` starts one conversation-index worker when the
