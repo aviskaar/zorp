@@ -30,6 +30,12 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// Hardcoded fallback model, same reasoning.
 pub const DEFAULT_MODEL: &str = "gpt-4o";
 
+/// What to name the model in a transcription upload when nothing else is
+/// chosen. whisper.cpp ignores the field entirely and serves whatever model
+/// it was started with; OpenAI-compatible runtimes that host several models
+/// use it to pick one. `whisper-1` is what every one of them recognises.
+pub const DEFAULT_TRANSCRIBE_MODEL: &str = "whisper-1";
+
 /// Env var that overrides where the settings file lives. Real usage always
 /// resolves to `~/.config/zorp/web.toml`; this exists so tests can point it
 /// at a private temp file instead of touching the developer's real config.
@@ -65,6 +71,13 @@ pub struct PersistedSettings {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Where recorded speech is sent to be turned into text. Persisted like
+    /// the other endpoints, and secret-free for the same reason: zorp never
+    /// authenticates to it, so there is no key to keep out of this file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcribe_base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcribe_model: Option<String>,
 }
 
 /// Body of `PUT /api/settings`. Every field is optional: a PUT only changes
@@ -79,6 +92,8 @@ pub struct PutSettings {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub api_key: Option<String>,
+    pub transcribe_base_url: Option<String>,
+    pub transcribe_model: Option<String>,
 }
 
 /// Everything the server knows about the model to use beyond the env vars
@@ -96,6 +111,12 @@ pub struct SettingsState {
     /// `Ui` rather than `Env` even though the field itself does not change
     /// shape between the two cases.
     pub api_key_from_ui: bool,
+    /// Base URL of an OpenAI-compatible `/audio/transcriptions` endpoint.
+    /// `None` means voice input is off, which is the default: a microphone
+    /// button that records and then has nowhere to send the audio is worse
+    /// than no microphone button.
+    pub transcribe_base_url: Option<String>,
+    pub transcribe_model: Option<String>,
 }
 
 /// The non-secret fields plus their provenance, computed once and shared by
@@ -143,6 +164,12 @@ impl SettingsState {
         if self.max_tokens.is_none() {
             self.max_tokens = persisted.max_tokens;
         }
+        if self.transcribe_base_url.is_none() {
+            self.transcribe_base_url = persisted.transcribe_base_url;
+        }
+        if self.transcribe_model.is_none() {
+            self.transcribe_model = persisted.transcribe_model;
+        }
     }
 
     /// The shape written to disk. Deliberately cannot carry `api_key`: that
@@ -153,6 +180,8 @@ impl SettingsState {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            transcribe_base_url: self.transcribe_base_url.clone(),
+            transcribe_model: self.transcribe_model.clone(),
         }
     }
 
@@ -184,6 +213,21 @@ impl SettingsState {
         if let Some(api_key) = &put.api_key {
             self.api_key = (!api_key.is_empty()).then(|| api_key.clone());
             self.api_key_from_ui = true;
+        }
+        if let Some(url) = &put.transcribe_base_url {
+            // An empty value turns voice input off again, the same way an
+            // empty api_key clears the key. Anything else has to be an
+            // http(s) URL, checked before it is stored rather than after,
+            // so a rejected save leaves the working endpoint in place.
+            self.transcribe_base_url = if url.trim().is_empty() {
+                None
+            } else {
+                Some(validate_scheme(url)?)
+            };
+        }
+        if let Some(model) = &put.transcribe_model {
+            let model = model.trim();
+            self.transcribe_model = (!model.is_empty()).then(|| model.to_string());
         }
         Ok(())
     }
@@ -229,6 +273,35 @@ impl SettingsState {
         }
     }
 
+    /// Where speech goes to be transcribed, and where that choice came
+    /// from. Unlike the chat endpoint there is no hardcoded fallback: an
+    /// unset value stays unset, because guessing a URL here would mean
+    /// offering a microphone that records into nothing.
+    fn transcribe_fields(&self) -> (Option<String>, Source, String, Source) {
+        let (base_url, base_url_source) = match &self.transcribe_base_url {
+            Some(v) => (Some(v.clone()), Source::Ui),
+            None => match non_empty_env("ZORP_TRANSCRIBE_BASE_URL") {
+                Some(v) => (Some(v), Source::Env),
+                None => (None, Source::Default),
+            },
+        };
+        let (model, model_source) = match &self.transcribe_model {
+            Some(v) => (v.clone(), Source::Ui),
+            None => match non_empty_env("ZORP_TRANSCRIBE_MODEL") {
+                Some(v) => (v, Source::Env),
+                None => (DEFAULT_TRANSCRIBE_MODEL.to_string(), Source::Default),
+            },
+        };
+        (base_url, base_url_source, model, model_source)
+    }
+
+    /// The endpoint `POST /api/transcribe` forwards to, or `None` when
+    /// voice input is switched off.
+    pub fn transcription(&self) -> Option<Transcription> {
+        let (base_url, _, model, _) = self.transcribe_fields();
+        base_url.map(|base_url| Transcription { base_url, model })
+    }
+
     fn api_key_provenance(&self) -> (bool, Source) {
         match &self.api_key {
             Some(_) if self.api_key_from_ui => (true, Source::Ui),
@@ -255,6 +328,15 @@ impl SettingsState {
         let fields = self.core_fields();
         let (has_api_key, api_key_source) = self.api_key_provenance();
         let configured = Self::configured(&fields, has_api_key);
+        let (transcribe_base_url, transcribe_base_url_source, transcribe_model, transcribe_model_source) =
+            self.transcribe_fields();
+        // Whether audio stays on this machine, decided here rather than in
+        // the browser, because the browser cannot see this URL any other
+        // way and the answer is the one thing a user needs before speaking.
+        let transcribe_local = transcribe_base_url
+            .as_deref()
+            .map(is_loopback_url)
+            .unwrap_or(true);
         Resolved {
             provider: fields.provider,
             provider_source: fields.provider_source,
@@ -267,6 +349,12 @@ impl SettingsState {
             has_api_key,
             api_key_source,
             configured,
+            transcribe_configured: transcribe_base_url.is_some(),
+            transcribe_base_url: transcribe_base_url.unwrap_or_default(),
+            transcribe_base_url_source,
+            transcribe_model,
+            transcribe_model_source,
+            transcribe_local,
         }
     }
 
@@ -307,6 +395,57 @@ pub struct Resolved {
     pub has_api_key: bool,
     pub api_key_source: Source,
     pub configured: bool,
+    /// Whether there is anywhere to send recorded speech. False means the
+    /// UI offers an explanation instead of a microphone.
+    pub transcribe_configured: bool,
+    /// Empty when unset. Shown in the settings panel, and shown next to the
+    /// microphone when it is not loopback, because that is the case where
+    /// speaking sends audio off this machine.
+    pub transcribe_base_url: String,
+    pub transcribe_base_url_source: Source,
+    pub transcribe_model: String,
+    pub transcribe_model_source: Source,
+    pub transcribe_local: bool,
+}
+
+/// Where `POST /api/transcribe` forwards audio. Not serialized: the browser
+/// reads the same values off `Resolved`.
+pub struct Transcription {
+    pub base_url: String,
+    pub model: String,
+}
+
+/// Whether a URL points back at this machine.
+///
+/// The whole privacy claim for voice input rests on this being right, so it
+/// handles the shapes a person actually types: a port, IPv6 in brackets,
+/// `127.0.0.1` and the rest of `127/8`, and userinfo before the host.
+/// Anything it cannot read confidently is treated as remote, which errs
+/// towards warning too often rather than too rarely.
+pub fn is_loopback_url(url: &str) -> bool {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    let host = match authority.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    }
+    .trim()
+    .to_ascii_lowercase();
+
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(v4) = host.parse::<std::net::Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        return v6.is_loopback();
+    }
+    false
 }
 
 /// What `turn::run_agent` builds `HttpModel` from. Carries the real API key
@@ -566,6 +705,96 @@ mod tests {
                 "{bad} was stored anyway despite the error"
             );
         }
+    }
+
+    /// The mic button's warning label is driven by this, so a host it reads
+    /// as local when it is not means someone is told their voice stays on
+    /// their machine while it does not.
+    #[test]
+    fn loopback_urls_are_told_apart_from_everything_else() {
+        for local in [
+            "http://127.0.0.1:8080/v1",
+            "http://localhost:8080/v1",
+            "http://LOCALHOST:8080",
+            "http://127.5.4.3/v1",
+            "http://[::1]:8080/v1",
+            "http://user:pw@127.0.0.1:8080/v1",
+        ] {
+            assert!(is_loopback_url(local), "{local} was read as remote");
+        }
+        for remote in [
+            "https://api.openai.com/v1",
+            "http://192.168.1.20:8080/v1",
+            "http://speech.example.com/v1",
+            // The host is example.com, not localhost. Reading left to right
+            // and stopping at the first familiar word is how this goes
+            // wrong.
+            "http://localhost.example.com/v1",
+            "http://127.0.0.1.example.com/v1",
+        ] {
+            assert!(!is_loopback_url(remote), "{remote} was read as local");
+        }
+    }
+
+    #[test]
+    fn a_transcription_endpoint_survives_a_write_and_a_read() {
+        let mut state = SettingsState::default();
+        state
+            .apply(&PutSettings {
+                transcribe_base_url: Some("http://127.0.0.1:8080/v1".to_string()),
+                transcribe_model: Some("whisper-1".to_string()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        let text = toml::to_string(&state.to_persisted()).unwrap();
+        let read_back: PersistedSettings = toml::from_str(&text).unwrap();
+
+        let mut restored = SettingsState::default();
+        restored.load_persisted(read_back);
+        let endpoint = restored.transcription().expect("endpoint was not restored");
+        assert_eq!(endpoint.base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(endpoint.model, "whisper-1");
+    }
+
+    /// Voice input has to be switchable off again, and the panel's way of
+    /// saying so is an empty field.
+    #[test]
+    fn an_empty_transcription_url_switches_voice_input_off() {
+        let mut state = SettingsState::default();
+        state
+            .apply(&PutSettings {
+                transcribe_base_url: Some("http://127.0.0.1:8080/v1".to_string()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        state
+            .apply(&PutSettings {
+                transcribe_base_url: Some(String::new()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        assert!(state.transcription().is_none());
+        assert!(!state.resolve().transcribe_configured);
+    }
+
+    /// Configuring speech to text must not make the chat model look
+    /// configured, or the composer stops warning about the thing that
+    /// actually blocks a message.
+    #[test]
+    fn a_transcription_endpoint_does_not_configure_the_chat_model() {
+        for var in ["ZORP_PROVIDER", "ZORP_BASE_URL", "ZORP_MODEL", "ZORP_API_KEY"] {
+            std::env::remove_var(var);
+        }
+        let mut state = SettingsState::default();
+        state
+            .apply(&PutSettings {
+                transcribe_base_url: Some("http://127.0.0.1:8080/v1".to_string()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        let resolved = state.resolve();
+        assert!(resolved.transcribe_configured);
+        assert!(!resolved.configured, "voice input configured the chat model");
     }
 
     /// The good case, so the check above cannot be satisfied by rejecting

@@ -73,6 +73,19 @@ export interface Settings {
    * composer checks this before letting anyone type.
    */
   configured: boolean;
+  /** Whether there is anywhere to send recorded speech. */
+  transcribe_configured: boolean;
+  /** Empty when unset. */
+  transcribe_base_url: string;
+  transcribe_base_url_source: SettingsSource;
+  transcribe_model: string;
+  transcribe_model_source: SettingsSource;
+  /**
+   * Whether that endpoint is on this machine. The server decides this,
+   * because the browser cannot see the URL any other way, and it is the one
+   * thing worth knowing before speaking into a microphone.
+   */
+  transcribe_local: boolean;
 }
 
 /**
@@ -86,6 +99,9 @@ export interface SettingsUpdate {
   model?: string;
   max_tokens?: number;
   api_key?: string;
+  /** An empty string switches voice input off again. */
+  transcribe_base_url?: string;
+  transcribe_model?: string;
 }
 
 /**
@@ -549,6 +565,37 @@ export async function listArtifacts(): Promise<ArtifactListing> {
  */
 export function artifactUrl(path: string): string {
   return url(`/api/artifacts/raw?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * Send a recording to be transcribed and get the words back.
+ *
+ * The audio goes to the zorp server, which forwards it to the transcription
+ * endpoint configured there. It does not go anywhere else: this is the only
+ * request in this file that carries a recording, and its destination is the
+ * same server every other call here goes to.
+ *
+ * The failure message is passed through as the server wrote it, because
+ * every failure here is one the user can fix: the transcription server is
+ * not running, no model is loaded, or the address is wrong.
+ */
+export async function transcribe(wav: Uint8Array): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(url("/api/transcribe"), {
+      method: "POST",
+      headers: { "content-type": "audio/wav", ...authHeaders() },
+      body: wav as BodyInit,
+    });
+  } catch {
+    throw new ApiError(0, `cannot reach the zorp server at ${apiBase() || "this page's origin"}`);
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim();
+    throw new ApiError(response.status, detail || `transcription failed with ${response.status}`);
+  }
+  const body = (await response.json().catch(() => null)) as { text?: unknown } | null;
+  return typeof body?.text === "string" ? body.text : "";
 }
 
 /** The text of an artifact, for the markdown renderer. */

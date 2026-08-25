@@ -10,6 +10,13 @@
 import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import {
+  VoiceInput,
+  browserDeps,
+  insertTranscript,
+  microphoneBlocked,
+  type VoiceState,
+} from "./voice";
+import {
   ApiError,
   TurnBusyError,
   approve,
@@ -22,6 +29,7 @@ import {
   sendTurn,
   streamEvents,
   testConnection,
+  transcribe,
   artifactUrl,
   listArtifacts,
   readArtifact,
@@ -86,6 +94,13 @@ interface Elements {
   composer: HTMLFormElement;
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
+  mic: HTMLButtonElement;
+  recording: HTMLElement;
+  recordingText: HTMLElement;
+  recordingNote: HTMLElement;
+  recordingStop: HTMLButtonElement;
+  recordingDiscard: HTMLButtonElement;
+  recordingDismiss: HTMLButtonElement;
   settingsOverlay: HTMLElement;
   settingsClose: HTMLButtonElement;
   settingsForm: HTMLFormElement;
@@ -100,6 +115,10 @@ interface Elements {
   settingsApiKeyField: HTMLElement;
   settingsApiKey: HTMLInputElement;
   settingsApiKeySource: HTMLElement;
+  settingsTranscribeUrl: HTMLInputElement;
+  settingsTranscribeUrlSource: HTMLElement;
+  settingsTranscribeModel: HTMLInputElement;
+  settingsTranscribeModelSource: HTMLElement;
   settingsTest: HTMLButtonElement;
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
@@ -145,6 +164,7 @@ function start(): void {
   wireScroller();
   wireSettings();
   wireArtifacts();
+  wireVoice();
   showEmptyState();
   setStatus("idle", "idle");
   void connectOrExplain();
@@ -198,6 +218,9 @@ function showServerMissing(): void {
 
   dom.input.disabled = true;
   dom.input.placeholder = "Start zorp-web on your machine, then reload";
+  // Dictation goes through that same server, so with no server there is
+  // nothing to transcribe with either.
+  dom.mic.hidden = true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -235,6 +258,13 @@ function collectElements(): Elements {
     composer: byId<HTMLFormElement>("composer"),
     input: byId<HTMLTextAreaElement>("input"),
     send: byId<HTMLButtonElement>("send"),
+    mic: byId<HTMLButtonElement>("mic"),
+    recording: byId("recording"),
+    recordingText: byId("recording-text"),
+    recordingNote: byId("recording-note"),
+    recordingStop: byId<HTMLButtonElement>("recording-stop"),
+    recordingDiscard: byId<HTMLButtonElement>("recording-discard"),
+    recordingDismiss: byId<HTMLButtonElement>("recording-dismiss"),
     settingsOverlay: byId("settings-overlay"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),
     settingsForm: byId<HTMLFormElement>("settings-form"),
@@ -249,6 +279,10 @@ function collectElements(): Elements {
     settingsApiKeyField: byId("settings-api-key-field"),
     settingsApiKey: byId<HTMLInputElement>("settings-api-key"),
     settingsApiKeySource: byId("settings-api-key-source"),
+    settingsTranscribeUrl: byId<HTMLInputElement>("settings-transcribe-url"),
+    settingsTranscribeUrlSource: byId("settings-transcribe-url-source"),
+    settingsTranscribeModel: byId<HTMLInputElement>("settings-transcribe-model"),
+    settingsTranscribeModelSource: byId("settings-transcribe-model-source"),
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     artifactsBtn: byId<HTMLButtonElement>("artifacts-btn"),
@@ -966,6 +1000,8 @@ const SETTINGS_ENV_VARS: Record<string, string> = {
   model: "ZORP_MODEL",
   api_key: "ZORP_API_KEY",
   max_tokens: "ZORP_MAX_TOKENS",
+  transcribe_base_url: "ZORP_TRANSCRIBE_BASE_URL",
+  transcribe_model: "ZORP_TRANSCRIBE_MODEL",
 };
 
 async function openSettings(): Promise<void> {
@@ -986,6 +1022,7 @@ async function refreshSettingsBadge(): Promise<void> {
     currentSettings = settings;
     updateModelBadge(settings);
     updateComposerWarning(settings);
+    updateVoiceAvailability(settings);
   } catch {
     // The status pill already reports connectivity problems; a stale model
     // badge on top of that is not worth an error card of its own.
@@ -999,6 +1036,7 @@ async function loadSettingsIntoForm(): Promise<void> {
     applySettingsToForm(settings);
     updateModelBadge(settings);
     updateComposerWarning(settings);
+    updateVoiceAvailability(settings);
   } catch (error) {
     setSettingsResult(`Could not load settings: ${describeError(error)}`, "fail");
   }
@@ -1018,6 +1056,15 @@ function applySettingsToForm(settings: Settings): void {
   dom.settingsApiKeySource.textContent = settings.has_api_key
     ? sourceLabel("api_key", settings.api_key_source)
     : "";
+  dom.settingsTranscribeUrl.value = settings.transcribe_base_url;
+  dom.settingsTranscribeUrlSource.textContent = settings.transcribe_configured
+    ? sourceLabel("transcribe_base_url", settings.transcribe_base_url_source)
+    : "";
+  dom.settingsTranscribeModel.value = settings.transcribe_model;
+  dom.settingsTranscribeModelSource.textContent = sourceLabel(
+    "transcribe_model",
+    settings.transcribe_model_source,
+  );
   updateApiKeyVisibility(preset);
 }
 
@@ -1142,6 +1189,10 @@ function formToUpdate(): SettingsUpdate {
     provider,
     base_url: dom.settingsBaseUrl.value.trim(),
     model: currentModelValue(),
+    // Always sent, including empty, because empty is how someone switches
+    // voice input off and a field that only ever adds cannot do that.
+    transcribe_base_url: dom.settingsTranscribeUrl.value.trim(),
+    transcribe_model: dom.settingsTranscribeModel.value.trim(),
   };
   const apiKey = dom.settingsApiKey.value;
   if (apiKey) {
@@ -1159,6 +1210,7 @@ async function saveSettings(): Promise<void> {
     applySettingsToForm(settings);
     updateModelBadge(settings);
     updateComposerWarning(settings);
+    updateVoiceAvailability(settings);
     setSettingsResult("Saved.", "ok");
   } catch (error) {
     setSettingsResult(`Could not save: ${describeError(error)}`, "fail");
@@ -1211,6 +1263,204 @@ function updateModelBadge(settings: Settings): void {
 /** The whole point of this feature: say so before the first message dies. */
 function updateComposerWarning(settings: Settings): void {
   dom.composerWarning.hidden = settings.configured;
+}
+
+/* ------------------------------------------------------------------ */
+/* voice input                                                         */
+/*                                                                      */
+/* Speech becomes a draft in the composer and stops there. This file    */
+/* has exactly one path from a transcript to the page, insertTranscript */
+/* in voice.ts, and that function cannot submit the form. See           */
+/* docs/superpowers/specs/2026-08-18-voice-input-design.md.             */
+/* ------------------------------------------------------------------ */
+
+/** Where the recording would be sent, and why it might not be possible. */
+let voiceBlocked: ReturnType<typeof microphoneBlocked> = null;
+/** Ticks the "Recording 0:07" counter, so the bar is visibly live. */
+let recordingTimer: number | null = null;
+let recordingStartedAt = 0;
+
+const voice = new VoiceInput(
+  browserDeps({
+    transcribe,
+    transcribeConfigured: () => currentSettings?.transcribe_configured === true,
+  }),
+  {
+    onState: applyVoiceState,
+    onTranscript: (text) => {
+      // The one place a transcript reaches the page. It is a draft: the
+      // human reads it and presses send, because this agent runs commands
+      // and a misheard sentence must never become one.
+      insertTranscript(dom.input, text);
+      scrollToBottomIfFollowing(true);
+    },
+    onProblem: showVoiceProblem,
+  },
+);
+
+function wireVoice(): void {
+  dom.mic.addEventListener("click", () => {
+    if (voice.state === "recording") {
+      void voice.stop();
+      return;
+    }
+    if (voice.state === "transcribing") {
+      return;
+    }
+    if (voiceBlocked) {
+      explainNoMicrophone(voiceBlocked);
+      return;
+    }
+    void voice.start();
+  });
+  dom.recordingStop.addEventListener("click", () => void voice.stop());
+  dom.recordingDiscard.addEventListener("click", () => voice.cancel());
+  dom.recordingDismiss.addEventListener("click", hideRecordingBar);
+  // Escape is the reflex for "stop this now", and it is worth honouring for
+  // an open microphone even though nothing else in this UI listens for it.
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && voice.state === "recording") {
+      voice.cancel();
+    }
+  });
+  updateVoiceAvailability(null);
+}
+
+/**
+ * Whether to offer a microphone at all, and what to say instead.
+ *
+ * Called on every settings read, because the answer changes the moment
+ * someone saves a transcription endpoint.
+ */
+function updateVoiceAvailability(settings: Settings | null): void {
+  voiceBlocked = microphoneBlocked({
+    secureContext: window.isSecureContext === true,
+    hasMediaDevices: typeof navigator?.mediaDevices?.getUserMedia === "function",
+    transcribeConfigured: settings?.transcribe_configured === true,
+  });
+
+  const remote = settings?.transcribe_configured === true && !settings.transcribe_local;
+  const host = remote ? hostOf(settings.transcribe_base_url) : "";
+
+  if (voiceBlocked) {
+    dom.mic.dataset.state = "blocked";
+    dom.mic.title = voiceBlocked.reason;
+    dom.mic.setAttribute("aria-label", "Dictation is unavailable. Find out why");
+  } else if (remote) {
+    // The only case where speaking sends audio off this machine, so it is
+    // said on the button itself rather than left for someone to work out.
+    dom.mic.dataset.state = "remote";
+    dom.mic.title = `Dictate a message. Audio is sent to ${host}, which is not this machine.`;
+    dom.mic.setAttribute("aria-label", `Dictate a message. Audio is sent to ${host}`);
+  } else {
+    dom.mic.dataset.state = "ready";
+    dom.mic.title = "Dictate a message. Audio is transcribed on this machine.";
+    dom.mic.setAttribute("aria-label", "Dictate a message");
+  }
+}
+
+function applyVoiceState(state: VoiceState): void {
+  dom.mic.dataset.recording = state === "recording" ? "yes" : "no";
+  stopRecordingClock();
+
+  if (state === "recording") {
+    const settings = currentSettings;
+    const remote = settings?.transcribe_configured === true && !settings.transcribe_local;
+    dom.recordingNote.textContent = remote
+      ? `Audio is being sent to ${hostOf(settings.transcribe_base_url)}, which is not this machine.`
+      : "The words land in the box for you to read. Nothing is sent.";
+    showRecordingBar("recording", "Recording 0:00");
+    startRecordingClock();
+    return;
+  }
+  if (state === "transcribing") {
+    showRecordingBar("working", "Transcribing…");
+    return;
+  }
+  // Idle. A problem message put its own text here and must survive, since
+  // the state goes back to idle immediately after a failure.
+  if (dom.recording.dataset.state !== "problem") {
+    hideRecordingBar();
+  }
+}
+
+function showRecordingBar(state: "recording" | "working" | "problem", text: string): void {
+  dom.recording.dataset.state = state;
+  dom.recordingText.textContent = text;
+  dom.recording.hidden = false;
+}
+
+function hideRecordingBar(): void {
+  stopRecordingClock();
+  dom.recording.hidden = true;
+  dom.recording.dataset.state = "recording";
+}
+
+function showVoiceProblem(message: string): void {
+  showRecordingBar("problem", message);
+}
+
+function startRecordingClock(): void {
+  recordingStartedAt = Date.now();
+  recordingTimer = window.setInterval(() => {
+    const seconds = Math.floor((Date.now() - recordingStartedAt) / 1000);
+    dom.recordingText.textContent = `Recording ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  }, 250);
+}
+
+function stopRecordingClock(): void {
+  if (recordingTimer !== null) {
+    window.clearInterval(recordingTimer);
+    recordingTimer = null;
+  }
+}
+
+/**
+ * A microphone that cannot work says so in full, in the transcript, where
+ * there is room for the command someone has to run. A disabled button with
+ * a tooltip would be a dead end.
+ */
+function explainNoMicrophone(blocked: NonNullable<ReturnType<typeof microphoneBlocked>>): void {
+  clearEmptyState();
+  activityGroup = null;
+  const card = el("div", "card card-error");
+  const head = el("div", "card-head");
+  head.append(glyph("alert"), textNode("span", "card-title", "No dictation here"));
+
+  const body = el("div", "card-body");
+  const lead = el("p");
+  lead.textContent = blocked.reason;
+  body.append(lead);
+
+  if (blocked.action === "settings") {
+    const code = el("pre", "card-code");
+    code.textContent =
+      "brew install whisper-cpp   # or build ggml-org/whisper.cpp\n" +
+      "whisper-server -m ggml-base.en.bin \\\n" +
+      "  --request-path /v1/audio --inference-path /transcriptions";
+    const tail = el("p");
+    tail.textContent =
+      "Then put http://127.0.0.1:8080/v1 in settings, under Speech to text. " +
+      "Audio goes to that address and nowhere else.";
+    const open = el("button", "composer-warning-btn") as HTMLButtonElement;
+    open.type = "button";
+    open.textContent = "Open settings";
+    open.addEventListener("click", () => void openSettings());
+    body.append(code, tail, open);
+  }
+
+  card.append(head, body);
+  dom.transcript.append(card);
+  scrollToBottomIfFollowing(true);
+}
+
+/** The host part of a URL, or the URL itself when it will not parse. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 /* ------------------------------------------------------------------ */

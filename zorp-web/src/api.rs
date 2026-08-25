@@ -67,6 +67,14 @@ fn api_router(state: AppState) -> Router {
         .route("/api/settings/test", post(test_connection))
         .route("/api/artifacts", get(list_artifacts))
         .route("/api/artifacts/raw", get(read_artifact))
+        // Audio is much larger than anything else posted here, so this one
+        // route raises the body limit rather than the whole API doing it.
+        .route(
+            "/api/transcribe",
+            post(transcribe).layer(axum::extract::DefaultBodyLimit::max(
+                crate::transcribe::MAX_AUDIO_BYTES,
+            )),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_token,
@@ -334,6 +342,57 @@ async fn test_connection(
     match result.error {
         None => Json(json!({"ok": true})),
         Some(reason) => Json(json!({"ok": false, "reason": reason})),
+    }
+}
+
+/// Turn a recording into text, on whatever transcription server the user
+/// configured. The body is the WAV the browser encoded; the answer is
+/// `{"text": ...}`.
+///
+/// The refusals are deliberately loud. A voice button that records and then
+/// quietly produces nothing, because no endpoint is configured or because
+/// the one that is configured is not running, is the failure this endpoint
+/// is shaped to avoid: every path out of here either returns a transcript
+/// or says in a sentence why there is not one.
+async fn transcribe(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let endpoint = state.settings.lock().unwrap().transcription();
+    let Some(endpoint) = endpoint else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no transcription endpoint is configured, so speech cannot be \
+             turned into text. Set one under Speech to text in the settings \
+             panel, or start the server with ZORP_TRANSCRIBE_BASE_URL.",
+        )
+            .into_response();
+    };
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no audio was sent").into_response();
+    }
+    if !crate::transcribe::looks_like_wav(&body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "this endpoint takes a WAV recording, and that body is not one",
+        )
+            .into_response();
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::transcribe::transcribe(&endpoint.base_url, &endpoint.model, &body)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(text)) => Json(json!({ "text": text })).into_response(),
+        // The transcription server failed, not this one. 502 says which.
+        Ok(Err(reason)) => (StatusCode::BAD_GATEWAY, reason).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("internal error: {e}"),
+        )
+            .into_response(),
     }
 }
 

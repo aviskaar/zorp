@@ -140,8 +140,34 @@
           </button>
         </div>
 
+        <!--
+          Recording is never quiet. This bar appears the moment the
+          microphone opens and cannot be missed, and both ways out of it are
+          one click: stop and read what was heard, or discard it.
+        -->
+        <div class="recording" id="recording" data-state="recording" role="status" hidden>
+          <span class="recording-dot" aria-hidden="true"></span>
+          <span class="recording-text" id="recording-text">Recording</span>
+          <span class="recording-note" id="recording-note">
+            The words land in the box for you to read. Nothing is sent.
+          </span>
+          <button class="recording-btn" id="recording-stop" type="button">Stop</button>
+          <button class="recording-btn recording-quiet" id="recording-discard" type="button">
+            Discard
+          </button>
+          <button class="recording-btn recording-quiet" id="recording-dismiss" type="button">
+            Dismiss
+          </button>
+        </div>
+
         <form class="composer" id="composer">
           <div class="composer-box">
+            <button class="mic" id="mic" type="button" aria-label="Dictate a message">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4a2.6 2.6 0 0 1 2.6 2.6v5a2.6 2.6 0 0 1-5.2 0v-5A2.6 2.6 0 0 1 12 4Z" />
+                <path d="M6.4 11.2a5.6 5.6 0 0 0 11.2 0M12 16.8V20M9 20h6" />
+              </svg>
+            </button>
             <textarea
               id="input"
               rows="1"
@@ -259,6 +285,41 @@
             The API key is held in memory only, for as long as this server process keeps running, and is
             never written to disk. Set <code>ZORP_API_KEY</code> in the server's environment to make it
             persist across restarts.
+          </p>
+
+          <h3 class="settings-section">Speech to text</h3>
+
+          <div class="settings-field">
+            <label for="settings-transcribe-url">Transcription endpoint</label>
+            <input
+              id="settings-transcribe-url"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="http://127.0.0.1:8080/v1"
+            />
+            <span class="settings-source" id="settings-transcribe-url-source"></span>
+          </div>
+
+          <div class="settings-field">
+            <label for="settings-transcribe-model">Transcription model</label>
+            <input
+              id="settings-transcribe-model"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="whisper-1"
+            />
+            <span class="settings-source" id="settings-transcribe-model-source"></span>
+          </div>
+
+          <p class="settings-note">
+            The microphone button appears once this is set. Recorded audio is sent to this address and
+            nowhere else, so point it at a transcription server on this machine. whisper.cpp serves one:
+            <code
+              >whisper-server -m ggml-base.en.bin --request-path /v1/audio --inference-path
+              /transcriptions</code
+            >. Leave the field empty to switch voice input off. zorp never sends an API key here.
           </p>
 
           <div class="settings-actions">
