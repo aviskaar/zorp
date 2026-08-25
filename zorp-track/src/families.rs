@@ -1,4 +1,4 @@
-//! aryabhatta step 7: anomaly families, the search layer's second
+//! aryabhatta step 7a: anomaly families, the search layer's second
 //! caller.
 //!
 //! Two readers need to partition a graph. Confounded conditions, in
