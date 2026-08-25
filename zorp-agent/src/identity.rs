@@ -72,6 +72,51 @@ mod tests {
         );
     }
 
+    /// The finding block only works if the model knows the shape, so the
+    /// syntax lives in the prompt rather than in documentation nobody feeds
+    /// it.
+    #[test]
+    fn the_prompt_teaches_the_finding_block() {
+        for part in ["```finding", "claim:", "because:", "source:"] {
+            assert!(
+                DEFAULT_SYSTEM_PROMPT.contains(part),
+                "the prompt never shows the model `{part}`, so the block cannot be written"
+            );
+        }
+    }
+
+    /// The failure mode the whole marker is designed against. A model asked
+    /// whether something was novel says yes, so the prompt has to say plainly
+    /// that most answers get no block at all.
+    #[test]
+    fn the_prompt_rations_findings_rather_than_inviting_them() {
+        let lowered = DEFAULT_SYSTEM_PROMPT.to_lowercase();
+        assert!(
+            lowered.contains("at most one"),
+            "the prompt sets no budget, so a long run will emit a block per paragraph"
+        );
+        assert!(
+            lowered.contains("most answers"),
+            "the prompt never says the normal case is no finding at all"
+        );
+    }
+
+    /// A citation the run never touched is the cheapest way to manufacture a
+    /// marker, and it is also the one thing the browser checks. The prompt
+    /// says so, so a dropped marker is not a mystery.
+    #[test]
+    fn the_prompt_says_sources_have_to_be_things_the_run_used() {
+        let lowered = DEFAULT_SYSTEM_PROMPT.to_lowercase();
+        assert!(
+            lowered.contains("actually used"),
+            "nothing tells the model its sources are checked against the run"
+        );
+        assert!(
+            lowered.contains("dropped"),
+            "the prompt never says what happens when a source does not check out"
+        );
+    }
+
     /// zorp is not a research agent in the narrow academic sense, and the
     /// prompt should not let a model assume it is. See the domains section on
     /// zorp.dev: the loop does not know what domain it is in.

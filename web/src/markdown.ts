@@ -16,10 +16,32 @@
  * safe direction and the honest one.
  */
 
+// Spelled with its extension because the tests load this module in node,
+// which resolves ESM specifiers literally and will not guess at ".ts".
+import { parseFinding, type Finding, type VerifiedFinding } from "./finding.ts";
+
 /** Schemes a link is allowed to have. Anything else renders as plain text. */
 const SAFE_SCHEMES = ["http://", "https://", "mailto:"];
 
-export function renderMarkdown(target: HTMLElement, source: string): void {
+export interface MarkdownOptions {
+  /**
+   * Decides whether a `finding` block has earned its marker, and returns the
+   * evidence to show behind it.
+   *
+   * Absent means nothing can be marked. That is the default because most
+   * callers here cannot see what the run actually did: the artifact pane is
+   * rendering a file, and a replayed transcript has lost the tool activity
+   * that a finding would have to cite. A renderer that badged those would be
+   * asserting something it has no way to check.
+   */
+  markFinding?: (finding: Finding) => VerifiedFinding | null;
+}
+
+export function renderMarkdown(
+  target: HTMLElement,
+  source: string,
+  options: MarkdownOptions = {},
+): void {
   const lines = (source ?? "").replace(/\r\n?/g, "\n").split("\n");
   let index = 0;
 
@@ -43,7 +65,15 @@ export function renderMarkdown(target: HTMLElement, source: string): void {
         index += 1;
       }
       index += 1; // the closing fence, or the end of the input
-      target.append(codeBlock(body.join("\n"), lang));
+      // A finding rides inside a fence for one reason: nothing inside a fence
+      // is ever parsed as markdown, so the block is inert before anyone looks
+      // at it, and a surface that has never heard of findings shows it as a
+      // code block rather than swallowing it.
+      target.append(
+        lang === FINDING_LANG
+          ? findingBlock(body.join("\n"), options)
+          : codeBlock(body.join("\n"), lang),
+      );
       continue;
     }
 
@@ -71,7 +101,7 @@ export function renderMarkdown(target: HTMLElement, source: string): void {
       }
       const quote = document.createElement("blockquote");
       quote.className = "md-quote";
-      renderMarkdown(quote, body.join("\n"));
+      renderMarkdown(quote, body.join("\n"), options);
       target.append(quote);
       continue;
     }
@@ -118,6 +148,144 @@ export function renderMarkdown(target: HTMLElement, source: string): void {
     para.className = "para";
     target.append(para);
   }
+}
+
+/** The fence language that asks for a marker. */
+const FINDING_LANG = "finding";
+
+/**
+ * Render a `finding` block in one of its three shapes.
+ *
+ * Only the first shape gets a badge, and it needs a caller willing to vouch
+ * for it. The other two exist so that refusing to mark something never loses
+ * what the model wrote: an unverified finding is still prose worth reading,
+ * it just does not get to look like a verdict.
+ */
+function findingBlock(body: string, options: MarkdownOptions): HTMLElement {
+  const parsed = parseFinding(body);
+  if (!parsed) {
+    // Malformed. Show it verbatim rather than guessing at what was meant.
+    return codeBlock(body, FINDING_LANG);
+  }
+  const verified = options.markFinding?.(parsed) ?? null;
+  return verified ? markedFinding(verified) : plainFinding(parsed);
+}
+
+/** An unmarked finding: the model's words, with none of zorp's authority. */
+function plainFinding(finding: Finding): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "finding-plain";
+  for (const text of [finding.claim, finding.reason]) {
+    const para = document.createElement("p");
+    para.className = "para";
+    renderInline(para, text);
+    wrap.append(para);
+  }
+  if (finding.sources.length) {
+    const list = document.createElement("ul");
+    list.className = "md-list";
+    for (const source of finding.sources) {
+      const item = document.createElement("li");
+      // Verbatim. These are strings that were supposed to match something the
+      // run touched, and formatting them would hide why they did not.
+      item.textContent = source;
+      list.append(item);
+    }
+    wrap.append(list);
+  }
+  return wrap;
+}
+
+/**
+ * A marked finding.
+ *
+ * Every claim this card makes has to be one the mechanism can back. It says
+ * the sources were used in this run, because that was checked. It says
+ * nothing was checked about whether the claim is true, because nothing was.
+ */
+function markedFinding(finding: VerifiedFinding): HTMLElement {
+  const card = document.createElement("section");
+  card.className = "card card-finding";
+  // A named region rather than a coloured box. The icon is decorative and the
+  // word "Finding" is on the page, so nothing here depends on seeing colour.
+  card.setAttribute("role", "note");
+  card.setAttribute(
+    "aria-label",
+    `Finding, corroborated by ${finding.evidence.length} sources this run used`,
+  );
+
+  const head = document.createElement("div");
+  head.className = "card-head";
+  head.append(bulb(), inlineText("span", "card-title", "Finding"));
+  const tag = inlineText("span", "card-tag", `${finding.evidence.length} sources`);
+  head.append(tag);
+  card.append(head);
+
+  const claim = document.createElement("p");
+  claim.className = "finding-claim";
+  renderInline(claim, finding.claim);
+  card.append(claim);
+
+  const why = document.createElement("details");
+  why.className = "finding-why";
+  const summary = document.createElement("summary");
+  summary.textContent = "Why this is marked";
+  why.append(summary);
+
+  const reason = document.createElement("p");
+  reason.className = "card-body";
+  renderInline(reason, finding.reason);
+  why.append(reason);
+
+  const list = document.createElement("ul");
+  list.className = "finding-evidence";
+  for (const entry of finding.evidence) {
+    const item = document.createElement("li");
+    item.append(inlineText("code", "finding-source-name", entry.name));
+    item.append(inlineText("span", "finding-source-summary", entry.summary));
+    list.append(item);
+  }
+  why.append(list);
+
+  const limits = document.createElement("p");
+  limits.className = "card-note";
+  limits.textContent =
+    "zorp checked that these sources are things this run actually used. It did not check that the claim is true, or that it is new.";
+  why.append(limits);
+
+  card.append(why);
+  return card;
+}
+
+function inlineText(tag: string, className: string, text: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = className;
+  node.textContent = text;
+  return node;
+}
+
+/** The marker's icon. Drawn here so it needs no font and no network. */
+function bulb(): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "glyph");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  // Decorative: the card is already named and labelled in text.
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+
+  const glass = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  glass.setAttribute("d", "M9 17a6 6 0 116 0c-.8.6-1.2 1.3-1.3 2.2H10.3C10.2 18.3 9.8 17.6 9 17z");
+  svg.append(glass);
+
+  const base = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  base.setAttribute("d", "M10.3 21.4h3.4");
+  svg.append(base);
+
+  return svg;
 }
 
 function codeBlock(body: string, lang: string): HTMLElement {

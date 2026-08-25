@@ -7,7 +7,8 @@
  * answers. Nothing here approves anything on its own.
  */
 
-import { renderMarkdown } from "./markdown";
+import { renderMarkdown, type MarkdownOptions } from "./markdown";
+import { verifyFinding, type ActivityEntry, type Finding, type VerifiedFinding } from "./finding";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import {
   ApiError,
@@ -136,6 +137,26 @@ const pendingApprovals = new Map<string, PendingApproval>();
 /** The last settings the server reported. Null until the first successful
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
+
+/**
+ * Everything the current turn actually did, in order.
+ *
+ * This is the only thing a finding is allowed to cite. It is thrown away at
+ * the start of each turn, which is deliberate: a turn cannot borrow
+ * corroboration from an earlier one.
+ */
+let turnActivity: ActivityEntry[] = [];
+
+/**
+ * How many findings this turn may still mark.
+ *
+ * A hard budget on top of the corroboration check, because "cited two real
+ * sources" is a much weaker filter than it sounds and a long run does a lot
+ * of reading. One badge in a transcript is a thing a reader looks at. Three
+ * are wallpaper.
+ */
+const FINDINGS_PER_TURN = 1;
+let findingsLeft = 0;
 
 start();
 
@@ -490,10 +511,14 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool":
+      turnActivity.push({ name: event.name, summary: event.summary });
       appendActivity(activityLine(event.name, event.summary));
       break;
 
     case "verify":
+      // A command that ran is as much a thing this run did as a file it read,
+      // so a finding may rest on one.
+      turnActivity.push({ name: "verify", summary: event.command });
       appendActivity(verifyLine(event.command, event.passed));
       break;
 
@@ -538,6 +563,12 @@ function setTurnRunning(running: boolean): void {
   dom.send.disabled = running;
   dom.composer.classList.toggle("is-busy", running);
   if (running) {
+    // A new turn starts with no evidence behind it and a fresh budget. Both
+    // resets are here rather than at the send site because joining a turn
+    // already in flight also comes through this function, and that turn's
+    // activity is about to be replayed from the server's backlog.
+    turnActivity = [];
+    findingsLeft = FINDINGS_PER_TURN;
     dom.workingVerb.textContent = pick(WORKING_VERBS);
     startSpinner();
     setStatus("live", "running");
@@ -584,7 +615,9 @@ function stopSpinner(): void {
  * Fragments are a preview. The server states the finished answer exactly
  * once, in an `assistant` event, and that is what ends up on the page.
  */
-const streamed = new StreamedMessage(dom.transcript, renderMarkdown);
+const streamed = new StreamedMessage(dom.transcript, (body, text, authoritative) =>
+  renderMarkdown(body, text, authoritative ? markingOptions() : {}),
+);
 
 function appendStreamDelta(chunk: string): void {
   if (!streamed.open) activityGroup = null;
@@ -594,11 +627,40 @@ function appendStreamDelta(chunk: string): void {
 function finishStream(authoritative: string | null): void {
   const handled = streamed.finish(authoritative);
   if (!handled && authoritative !== null) {
-    appendMessage("assistant", authoritative);
+    appendMessage("assistant", authoritative, markingOptions());
   }
 }
 
-function appendMessage(role: "user" | "assistant", text: string): void {
+/**
+ * The renderer options that allow a marker, for the one render per message
+ * that is entitled to one.
+ *
+ * Everything else, a replayed transcript most of all, renders with no options
+ * at all and therefore marks nothing. That is the honest answer for a replay:
+ * the stored transcript keeps the messages and not the tool activity, so
+ * after a reload there is nothing left to check a citation against, and a
+ * badge restored from memory would be a badge nobody verified.
+ */
+function markingOptions(): MarkdownOptions {
+  return { markFinding };
+}
+
+function markFinding(finding: Finding): VerifiedFinding | null {
+  if (findingsLeft <= 0) {
+    return null;
+  }
+  const verified = verifyFinding(finding, turnActivity);
+  if (verified) {
+    findingsLeft -= 1;
+  }
+  return verified;
+}
+
+function appendMessage(
+  role: "user" | "assistant",
+  text: string,
+  options: MarkdownOptions = {},
+): void {
   activityGroup = null;
   const row = el("article", `msg msg-${role}`);
   const label = el("div", "msg-role");
@@ -610,7 +672,7 @@ function appendMessage(role: "user" | "assistant", text: string): void {
   if (role === "user") {
     renderRichText(body, text);
   } else {
-    renderMarkdown(body, text);
+    renderMarkdown(body, text, options);
   }
   row.append(label, body);
   dom.transcript.append(row);

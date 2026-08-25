@@ -800,6 +800,97 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* The finding marker.
+
+   Quieter than the approval card on purpose. That one is a decision the user
+   has to make; this one is a pointer, and it claims only that the sources
+   under it are things the run actually used. The word "Finding" is on the
+   card and the icon is decorative, so none of the meaning is carried by the
+   colour alone. */
+.card-finding {
+  border-color: rgba(94, 234, 212, 0.3);
+  background: linear-gradient(180deg, var(--accent-glow) 0%, rgba(94, 234, 212, 0) 100px),
+    var(--bg-raised);
+}
+
+.card-finding .glyph,
+.card-finding .card-title,
+.card-finding .card-tag {
+  color: var(--accent);
+}
+
+.card-finding .finding-claim {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.62;
+  color: var(--text);
+}
+
+.finding-why {
+  margin-top: 12px;
+}
+
+.finding-why > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  list-style: none;
+}
+
+.finding-why > summary::-webkit-details-marker {
+  display: none;
+}
+
+.finding-why > summary::before {
+  content: "▸ ";
+  color: var(--text-faint);
+}
+
+.finding-why[open] > summary::before {
+  content: "▾ ";
+}
+
+.finding-why > summary:hover,
+.finding-why > summary:focus-visible {
+  color: var(--text);
+}
+
+.finding-why .card-body {
+  margin-top: 9px;
+}
+
+.finding-evidence {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finding-evidence li {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+  padding: 4px 0;
+  font-size: 12.6px;
+}
+
+.finding-source-name {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--accent);
+  flex: none;
+}
+
+.finding-source-summary {
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* A finding that did not earn its marker. It reads as the prose it is, with
+   nothing to suggest anyone checked it. */
+.finding-plain {
+  margin: 0;
+}
+
 /* ---------------------------------------------------------------- working */
 
 .working {

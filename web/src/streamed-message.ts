@@ -68,19 +68,24 @@ export class StreamedMessage {
   // Written out rather than declared as constructor parameter properties:
   // those emit code, and the test runner strips types without compiling.
   private readonly transcript: HTMLElement;
-  private readonly render: (body: HTMLElement, text: string) => void;
+  private readonly render: (body: HTMLElement, text: string, authoritative: boolean) => void;
   private readonly schedule: (fn: () => void) => number;
   private readonly cancel: (handle: number) => void;
 
   /**
    * @param transcript where messages are appended
-   * @param render     puts text on the page; the markdown renderer in practice
+   * @param render     puts text on the page; the markdown renderer in
+   *                   practice. Its third argument says whether this text is
+   *                   the server's finished answer rather than a preview,
+   *                   which is what decides whether anything in it can be
+   *                   marked as a finding. A preview is half a sentence and
+   *                   half a sentence has not found anything.
    * @param schedule   defers a render; one animation frame in practice
    * @param cancel     cancels a deferred render
    */
   constructor(
     transcript: HTMLElement,
-    render: (body: HTMLElement, text: string) => void,
+    render: (body: HTMLElement, text: string, authoritative: boolean) => void,
     // Wrapped, not passed by reference. `requestAnimationFrame` is a method
     // on `window` and browsers brand-check its receiver, so storing the bare
     // function and calling it as `this.schedule(...)` throws "Illegal
@@ -107,10 +112,10 @@ export class StreamedMessage {
    * a message rendered once, so re-rendering a growing string into the same
    * node without clearing produces "hehellhello" rather than "hello".
    */
-  private paint(text: string): void {
+  private paint(text: string, authoritative: boolean): void {
     if (!this.body) return;
     this.body.replaceChildren();
-    this.render(this.body, text);
+    this.render(this.body, text, authoritative);
   }
 
   /** Add a fragment, opening a message if this is the first one. */
@@ -138,7 +143,7 @@ export class StreamedMessage {
       this.pending = true;
       this.frame = this.schedule(() => {
         this.pending = false;
-        this.paint(this.text);
+        this.paint(this.text, false);
       });
     }
   }
@@ -152,6 +157,12 @@ export class StreamedMessage {
    *
    * Returns false when nothing was open, so the caller knows the finished
    * text still needs appending as an ordinary message.
+   *
+   * This is also the one moment a finding can be marked, and only in the
+   * `authoritative` case. The fragments kept after a cancel are text the
+   * server never confirmed, possibly cut off mid-sentence, and badging that
+   * would be exactly the unearned confidence the marker exists to avoid. One
+   * paint, one chance, so a marker cannot end up on the page twice.
    */
   finish(authoritative: string | null): boolean {
     if (this.pending && this.frame !== null) {
@@ -161,11 +172,11 @@ export class StreamedMessage {
     this.frame = null;
     if (!this.row || !this.body) return false;
 
-    const final = authoritative ?? this.text;
-    if (final.trim() === "") {
+    const text = authoritative ?? this.text;
+    if (text.trim() === "") {
       this.row.remove();
     } else {
-      this.paint(final);
+      this.paint(text, authoritative !== null);
       this.row.classList.remove("is-streaming");
     }
     this.row = null;

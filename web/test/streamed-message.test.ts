@@ -228,6 +228,122 @@ test("a turn with a tool call renders two messages, not one", () => {
 });
 
 /*
+ * Finding markers and the streamed-to-final replacement.
+ *
+ * An answer arrives in fragments and is then replaced once by the server's
+ * authoritative text. A marker attached to a fragment is a marker attached to
+ * half a sentence, so nothing is ever marked until that replacement happens,
+ * and the replacement has to leave exactly one of them.
+ */
+
+const FINDING = [
+  "```finding",
+  "claim: the two series disagree for 2019",
+  "because: the filed figure and the published one differ",
+  "source: docs/rates.md",
+  "source: ons.gov.uk",
+  "```",
+].join("\n");
+
+/**
+ * A transcript whose renderer marks findings, but only when told the text is
+ * the authoritative one. That flag is the whole mechanism under test.
+ */
+function markingFixture() {
+  const doc = shared.window.document;
+  const transcript = doc.createElement("div");
+  doc.body.append(transcript);
+  const streamed = new StreamedMessage(
+    transcript,
+    (body, text, authoritative) => {
+      renderMarkdown(
+        body,
+        text,
+        authoritative
+          ? {
+              markFinding: (finding) => ({
+                claim: finding.claim,
+                reason: finding.reason,
+                evidence: [
+                  { name: "read_file", summary: "docs/rates.md" },
+                  { name: "web_search", summary: "ons.gov.uk" },
+                ],
+              }),
+            }
+          : {},
+      );
+    },
+    now,
+    noop,
+  );
+  return { transcript, streamed };
+}
+
+test("nothing is marked while the answer is still arriving", () => {
+  const { transcript, streamed } = markingFixture();
+  streamed.append(FINDING.slice(0, 40));
+  assert.equal(
+    transcript.querySelectorAll(".card-finding").length,
+    0,
+    "a badge appeared on half an answer",
+  );
+  streamed.append(FINDING.slice(40));
+  assert.equal(
+    transcript.querySelectorAll(".card-finding").length,
+    0,
+    "a badge appeared before the server confirmed the answer",
+  );
+});
+
+// The regression this whole arrangement exists to prevent: the fragments and
+// the finished text each leaving a marker behind.
+test("the marker survives the replacement exactly once", () => {
+  const { transcript, streamed } = markingFixture();
+  for (const chunk of [FINDING.slice(0, 25), FINDING.slice(25, 60), FINDING.slice(60)]) {
+    streamed.append(chunk);
+  }
+  streamed.finish(FINDING);
+  assert.equal(
+    transcript.querySelectorAll(".card-finding").length,
+    1,
+    "the marker either duplicated or vanished across the replacement",
+  );
+  assert.equal(transcript.querySelectorAll("article").length, 1);
+});
+
+test("a marker attaches even when nothing streamed first", () => {
+  const { transcript, streamed } = markingFixture();
+  streamed.append("");
+  streamed.finish(FINDING);
+  assert.equal(transcript.querySelectorAll(".card-finding").length, 1);
+});
+
+// finish(null) means the turn died and the fragments are all there is. That
+// text was never confirmed by the server, so it cannot earn a badge.
+test("a turn that ended without an authoritative answer marks nothing", () => {
+  const { transcript, streamed } = markingFixture();
+  streamed.append(FINDING);
+  streamed.finish(null);
+  assert.equal(
+    transcript.querySelectorAll(".card-finding").length,
+    0,
+    "an abandoned turn was allowed to mark a finding",
+  );
+  assert.ok(transcript.textContent?.includes("the two series disagree"), "the text was dropped");
+});
+
+test("the server's answer wins over a finding the fragments claimed", () => {
+  const { transcript, streamed } = markingFixture();
+  streamed.append(FINDING);
+  streamed.finish("On reflection, nothing here is new.");
+  assert.equal(transcript.querySelectorAll(".card-finding").length, 0);
+  assert.equal(
+    transcript.querySelector(".msg-body")?.textContent,
+    "On reflection, nothing here is new.",
+  );
+});
+
+/*
  * The default scheduler.
  *
  * Every test above injects its own, which is why a defaulted
