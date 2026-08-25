@@ -1,0 +1,66 @@
+# NeurIPS 2026, main track.
+#
+# Read off the 2026 call for papers and the 2026 main track handbook on
+# 2026-08-18. The 2026 cycle had already closed by then, which is why every
+# report against this profile opens with a closed-cycle warning.
+#
+# Deliberately absent: a required "broader impacts" section. The NeurIPS
+# guidance says outright that no such section is required and the
+# discussion may go anywhere in the paper, so adding a rule for one would
+# be inventing a requirement.
+
+id      = "neurips-2026"
+name    = "NeurIPS 2026"
+kind    = "conference"
+checked = "2026-08-18"
+stale_after_days = 180
+
+[deadline]
+date   = "2026-05-06"
+label  = "full paper submission"
+source = "https://neurips.cc/Conferences/2026/CallForPapers"
+
+# The page-count model, not a NeurIPS rule. Calibrated against a
+# single-column 10pt paper on letter paper and printed with every estimate
+# so an author can see what the guess rests on.
+[estimate]
+words_per_page = 550
+figure_pages   = 0.3
+table_pages    = 0.25
+
+[[rules]]
+id          = "main-text-page-limit"
+check       = "page_limit"
+requirement = "The main text is at most nine content pages, including all figures and tables."
+pages       = 9
+excludes    = ["reference", "bibliograph", "appendix", "checklist"]
+source      = "https://neurips.cc/Conferences/2026/MainTrackHandbook"
+quote       = "The main text of a submitted paper is limited to nine content pages, including all figures and tables."
+note        = "References, technical appendices and the paper checklist do not count. Accepted papers get one more content page for the camera-ready."
+
+[[rules]]
+id          = "double-blind-anonymity"
+check       = "anonymity"
+requirement = "The submission must be anonymised and must carry no identifying information."
+source      = "https://neurips.cc/Conferences/2026/MainTrackHandbook"
+quote       = "All submissions must be anonymized and may not contain any identifying information that may violate the double-blind reviewing policy."
+note        = "The handbook is explicit about two leaks: leave acknowledgements out at submission, and phrase self-citations in the third person, as in 'In the previous work of Smith et al. [1]' rather than 'In our previous work [1]'."
+
+[[rules]]
+id          = "paper-checklist"
+check       = "required_section"
+requirement = "The NeurIPS paper checklist is a mandatory part of the submission."
+headings    = ["NeurIPS Paper Checklist", "Paper Checklist", "Checklist"]
+source      = "https://neurips.cc/Conferences/2026/MainTrackHandbook"
+quote       = "the NeurIPS paper checklist"
+note        = "The checklist ships inside the LaTeX template and does not count against the page limit. A markdown draft will not have it, so this rule is expected to fail until the paper is put into the template."
+
+[[rules]]
+id             = "official-template"
+check          = "template"
+requirement    = "The submission must use the official NeurIPS LaTeX style file for the year."
+documentclass  = "\\documentclass{article}\n% TODO: add the style file from the official NeurIPS 2026 template zip,\n% linked from the call for papers. Its exact name is not written here,\n% because guessing it is how a paper gets built against the wrong year's\n% style. The zip also carries the paper checklist and a 'preprint' option\n% for non-anonymous preprints posted online."
+style_url      = "https://neurips.cc/Conferences/2026/CallForPapers"
+source         = "https://neurips.cc/Conferences/2026/MainTrackHandbook"
+quote          = "This is the only template we will accept (note: Microsoft Word template has been discontinued)."
+note           = "The handbook says which template to use but the style file name only appears inside the downloadable zip, which this profile has not opened. Take it from the zip."

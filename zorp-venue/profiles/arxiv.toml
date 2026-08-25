@@ -1,0 +1,41 @@
+# arXiv, the preprint server.
+#
+# Short on purpose. arXiv has no page limit, no anonymity policy, and
+# mandates no template, so this profile carries no rule for any of them.
+# Rules that do not exist are left out rather than invented.
+
+id      = "arxiv"
+name    = "arXiv"
+kind    = "preprint server"
+checked = "2026-08-18"
+# arXiv's submission rules move slowly, but a year without re-reading them
+# is still long enough to be wrong.
+stale_after_days = 365
+
+# There is no deadline. Submissions are announced on a daily cycle.
+
+# The page-count model, not an arXiv rule. arXiv imposes no page limit, so
+# these numbers only matter if a user layers a page limit of their own on
+# top of this profile.
+[estimate]
+words_per_page = 520
+figure_pages   = 0.3
+table_pages    = 0.25
+
+[[rules]]
+id          = "abstract-length"
+check       = "abstract_length"
+requirement = "The abstract must be at most 1920 characters."
+max_chars   = 1920
+source      = "https://info.arxiv.org/help/prep.html"
+quote       = "abstracts longer than 1920 characters will not be accepted"
+
+[[rules]]
+id               = "title-format"
+check            = "title_format"
+requirement      = "The title must not be in all capitals and must not contain Unicode characters."
+forbid_all_caps  = true
+forbid_non_ascii = true
+source           = "https://info.arxiv.org/help/prep.html"
+quote            = "No all uppercase letters. No Unicode characters."
+note             = "arXiv accepts some TeX accent commands and some MathJax in the title. This check flags every non-ASCII character, so a title that legitimately needs an accent will show up here and needs a human to wave it through."

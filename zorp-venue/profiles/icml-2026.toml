@@ -1,0 +1,49 @@
+# ICML 2026.
+#
+# Read off the 2026 call for papers on 2026-08-18. The 2026 cycle closed in
+# January 2026, so every report against this profile opens with a
+# closed-cycle warning.
+
+id      = "icml-2026"
+name    = "ICML 2026"
+kind    = "conference"
+checked = "2026-08-18"
+stale_after_days = 180
+
+[deadline]
+date   = "2026-01-28"
+label  = "full paper submission (abstracts due 2026-01-23)"
+source = "https://icml.cc/Conferences/2026/CallForPapers"
+
+# The page-count model, not an ICML rule.
+[estimate]
+words_per_page = 550
+figure_pages   = 0.3
+table_pages    = 0.25
+
+[[rules]]
+id          = "main-text-page-limit"
+check       = "page_limit"
+requirement = "The main paper is at most eight pages."
+pages       = 8
+excludes    = ["reference", "bibliograph", "appendix", "impact statement", "broader impact"]
+source      = "https://icml.cc/Conferences/2026/CallForPapers"
+quote       = "8 pages for the main paper, with unlimited pages for references, the impact statement, and appendices."
+note        = "Accepted papers get one more page of main text for the camera-ready."
+
+[[rules]]
+id          = "double-blind-anonymity"
+check       = "anonymity"
+requirement = "The submission must be anonymised."
+source      = "https://icml.cc/Conferences/2026/CallForPapers"
+quote       = "All submissions must be anonymized and may not contain any information with the intention or consequence of violating the double-blind reviewing policy."
+note        = "ICML also forbids advertising the work as an ICML submission while it is under review. Nothing in the paper source can show whether that has happened."
+
+[[rules]]
+id          = "impact-statement"
+check       = "required_section"
+requirement = "A statement of the potential broader impact of the work is required, in its own section before the references."
+headings    = ["Impact Statement", "Broader Impact", "Broader Impacts"]
+source      = "https://icml.cc/Conferences/2026/CallForPapers"
+quote       = "Authors are required to include a statement of the potential broader impact of their work"
+note        = "This section does not count against the eight pages. Note that ICML requires it where NeurIPS does not: do not carry an assumption from one venue to the other."

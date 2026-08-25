@@ -1,0 +1,68 @@
+# FSE 2027 research papers.
+#
+# Read off the research papers track page on 2026-08-18. Of the venues in
+# docs/paper/venues.md this is the one whose cycle is still open, and every
+# rule here has a source.
+#
+# The page limit is not the ten-plus-two most people expect from an
+# ACM software engineering conference. FSE moved its research track to the
+# acmsmall journal format, so the budget is 18 pages plus 4 for references.
+# That is the kind of number worth reading off the page rather than
+# remembering.
+
+id      = "fse-2027"
+name    = "FSE 2027 (research papers)"
+kind    = "conference"
+checked = "2026-08-18"
+stale_after_days = 180
+
+[deadline]
+date   = "2026-10-02"
+label  = "research paper submission"
+source = "https://conf.researchr.org/track/fse-2027/fse-2027-papers"
+
+# The page-count model, not an FSE rule. acmsmall is a single-column
+# journal format with generous margins, so a page holds fewer words than a
+# conference two-column page would.
+[estimate]
+words_per_page = 500
+figure_pages   = 0.3
+table_pages    = 0.25
+
+[[rules]]
+id          = "main-text-page-limit"
+check       = "page_limit"
+requirement = "Submissions are at most 18 pages of text and figures, plus 4 pages for references."
+pages       = 18
+excludes    = ["reference", "bibliograph", "data availability"]
+source      = "https://conf.researchr.org/track/fse-2027/fse-2027-papers"
+quote       = "no more than 18 pages for all text and figures, plus 4 pages for references"
+note        = "A major revision is allowed 20 pages plus the same 4 for references. This rule checks the submission budget, not the revision one."
+
+[[rules]]
+id          = "double-anonymous"
+check       = "anonymity"
+requirement = "Reviewing is double anonymous, heavyweight, and a paper that breaks it is desk-rejected."
+source      = "https://conf.researchr.org/track/fse-2027/fse-2027-papers"
+quote       = "Papers that do not comply with the double-anonymous review process will be desk-rejected."
+note        = "The track page names the leaks: no author names or affiliations in the body, self-citations in the third person, no URLs to author-revealing sites such as tools or datasets, organisation names anonymised, and no acknowledgements section at submission time."
+
+[[rules]]
+id          = "data-availability"
+check       = "required_section"
+requirement = "A Data Availability section, after the Conclusion, states whether a replication package exists."
+headings    = ["Data Availability"]
+after       = "Conclusion"
+source      = "https://conf.researchr.org/track/fse-2027/fse-2027-papers"
+quote       = "Authors are asked to provide a supporting statement on the availability of a replication package (or lack thereof) in their submitted papers in a section named Data Availability after the Conclusion section."
+note        = "The statement does not count against the page limit, and it still has to keep the authors anonymous, which is the trap: a replication package link is the most common way this section breaks double-anonymous review."
+
+[[rules]]
+id            = "acm-template"
+check         = "template"
+requirement   = "Submissions use the ACM acmart class in the acmsmall review-anonymous configuration."
+documentclass = "\\documentclass[acmsmall,screen,review,anonymous]{acmart}"
+style_url     = "https://www.acm.org/publications/proceedings-template"
+source        = "https://conf.researchr.org/track/fse-2027/fse-2027-papers"
+quote         = "\\documentclass[acmsmall,screen,review,anonymous]{acmart}"
+note          = "The track page points at sample-acmsmall-conf.tex in the samples folder of the acmart package as the file to start from."

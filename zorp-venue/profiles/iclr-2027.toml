@@ -1,0 +1,65 @@
+# ICLR 2027.
+#
+# This profile is mostly unverified on purpose, and it is the honest state
+# of the world on 2026-08-18. ICLR 2027 has published a call for papers
+# with dates and the double-blind policy, and has not published an author
+# guide: https://iclr.cc/Conferences/2027/AuthorGuide returned 404 when
+# this was written. The page limit and the optional statements below are
+# carried over from the ICLR 2026 author guide, which is a source for
+# ICLR 2026 and not for ICLR 2027, so they carry no `source` and every
+# report marks them UNVERIFIED.
+#
+# The deadline is the nearest of any top venue in docs/paper/venues.md, so
+# this is the profile most likely to be used, which is exactly why it must
+# not pretend to know more than it does.
+
+id      = "iclr-2027"
+name    = "ICLR 2027"
+kind    = "conference"
+checked = "2026-08-18"
+# Short, because most of this profile is waiting on a document that has
+# not been published yet.
+stale_after_days = 60
+
+[deadline]
+date   = "2026-09-25"
+label  = "full paper submission (abstracts due 2026-09-18)"
+source = "https://iclr.cc/Conferences/2027/CallForPapers"
+
+# The page-count model, not an ICLR rule.
+[estimate]
+words_per_page = 550
+figure_pages   = 0.3
+table_pages    = 0.25
+
+[[rules]]
+id          = "double-blind-anonymity"
+check       = "anonymity"
+requirement = "Reviewing is double blind: the submission must not reveal author identity."
+source      = "https://iclr.cc/Conferences/2027/CallForPapers"
+quote       = "Submissions will be double blind: reviewers cannot see author names when conducting reviews, and authors cannot see reviewer names."
+note        = "The ICLR 2026 author guide added that any paper revealing author identity in the main text or the supplementary material will be desk rejected, and that related arXiv papers may be cited in the third person. That sentence is from the 2026 guide, not the 2027 one, so it is a note here and not the quote."
+
+[[rules]]
+id          = "main-text-page-limit"
+check       = "page_limit"
+requirement = "The main text is at most nine pages, with references and appendices on top."
+pages       = 9
+excludes    = ["reference", "bibliograph", "appendix", "ethics statement", "reproducibility statement"]
+note        = "UNVERIFIED. ICLR 2027 had not published an author guide when this profile was written; https://iclr.cc/Conferences/2027/AuthorGuide was a 404 on 2026-08-18. The nine pages come from the ICLR 2026 author guide (https://iclr.cc/Conferences/2026/AuthorGuide), which said 'the main text should be 9 pages or fewer' at submission and rose to 10 for the camera-ready. ICLR has changed this number before. Read the 2027 author guide the day it appears and put its URL in this rule."
+
+[[rules]]
+id          = "reproducibility-statement"
+check       = "required_section"
+requirement = "A reproducibility statement, outside the page limit, is expected."
+headings    = ["Reproducibility Statement", "Reproducibility"]
+severity    = "warn"
+note        = "UNVERIFIED, and a warning rather than a failure even so. The ICLR 2026 author guide called this statement strongly encouraged but optional, and said it does not count toward the page limit. Whether ICLR 2027 keeps it optional is not known here."
+
+[[rules]]
+id            = "official-template"
+check         = "template"
+requirement   = "The submission must use the official ICLR style files."
+documentclass = "% TODO: ICLR 2027 style files were not published when this profile was\n% written. ICLR has shipped them from the ICLR/Master-Template repository\n% in past years. Take the class and options from the 2027 template, not\n% from here.\n\\documentclass{article}"
+style_url     = "https://github.com/ICLR/Master-Template"
+note          = "UNVERIFIED. The ICLR 2026 author guide pointed at https://github.com/ICLR/Master-Template/raw/master/iclr2026.zip. The equivalent 2027 file name is a guess and is deliberately not written down here."
