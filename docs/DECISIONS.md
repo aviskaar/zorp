@@ -47,6 +47,21 @@ parse a workspace whose members are absent, so the image had stopped
 building. And `ZORP_BASE_URL` now defaults to the sidecar rather than
 `host.docker.internal`; override it to point back at a model on the host.
 
+The UI container shipped nginx with no configuration, so the whole stack had
+never worked from a browser. `index.html` resolves the API base to the empty
+string when the page is served over http, meaning same origin, and every API
+request landed on the static file server and 404'd, which the page reports as
+"no zorp server here". Neither earlier check caught it, because both curled
+port 7777 directly rather than loading the page. `web/nginx.conf.template`
+proxies `/api/` through, with buffering off and an hour's read timeout so the
+event stream is not held back. It attaches the token itself, so the page never
+holds one; `ZORP_API_TOKEN` had only ever been a commented-out line in
+`index.html` and nothing injected it. Because the proxy authorizes on the
+browser's behalf, both published ports are bound to the host's loopback:
+whatever reaches port 8080 is already talking to the agent. Anyone wanting the
+UI reachable from another machine puts their own authenticating proxy in
+front, rather than widening these bindings.
+
 **Ruled out:** baking the Qwen3-ASR runtime into the image. That is several
 gigabytes of torch and weights for a feature many people never touch, and
 `zorp-voice` already installs it on first use into a marked virtual

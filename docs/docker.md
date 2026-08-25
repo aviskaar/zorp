@@ -9,7 +9,8 @@ ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
 ```
 
 The UI is then on <http://localhost:8080> and the API on
-<http://localhost:7777>. Paste the token into the UI when it asks.
+<http://localhost:7777>. There is nothing to paste: the UI attaches the token
+for you, as described below.
 
 There is one compose file and no `-f` flag to remember. If you ever see a
 warning about multiple config files, something has added a second stack and
@@ -45,6 +46,25 @@ curl -o /dev/null -w '%{http_code}\n' \
 This is a separate thing from the loopback rule that recall and voice
 enforce. That rule is untouched: those still talk to `127.0.0.1` inside the
 shared namespace, and nothing here loosens it.
+
+## How the page reaches the API
+
+`index.html` resolves the API base to the empty string when the page is served
+over http, meaning same origin. So the UI container is not only a static file
+server: nginx carries `/api/` through to the server. Without that the page
+loads and then says "no zorp server here", because every API request lands on
+the file server and 404s.
+
+nginx attaches the token to each proxied request, so the page itself never
+holds one and there is nothing to paste. `/api/sessions/:id/events` is server
+sent events, so buffering is off on that path and the read timeout is an hour;
+a turn can think for a long time before it says anything.
+
+That is also why both published ports are bound to the host's loopback
+(`127.0.0.1:8080` and `127.0.0.1:7777`). Anything that can reach port 8080 is
+already talking to the agent, because the proxy authorizes on its behalf. If
+you want the UI reachable from another machine, put a proxy you control in
+front of it and do the authenticating there; do not widen these bindings.
 
 ## Pull the models
 

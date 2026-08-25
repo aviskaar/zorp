@@ -21,8 +21,12 @@ services:
     # 7777 is published here, not on `server`. A container that shares
     # another's network namespace cannot declare its own ports, so the
     # namespace owner has to.
+    #
+    # Bound to the host's loopback. The UI attaches the token for you, so
+    # anything that can reach these ports is already talking to the agent, and
+    # the agent runs commands on this machine.
     ports:
-      - "7777:7777"
+      - "127.0.0.1:7777:7777"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -65,8 +69,13 @@ services:
   ui:
     build:
       context: ./web
+    environment:
+      # nginx puts the API on this origin and attaches the token to every
+      # proxied request, which is why the page itself never holds one. Same
+      # variable as the server, so there is only one secret to set.
+      ZORP_WEB_TOKEN: ${ZORP_WEB_TOKEN:?set ZORP_WEB_TOKEN, for example with openssl rand -hex 16}
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     depends_on:
       - server
 

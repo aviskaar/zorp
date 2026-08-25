@@ -292,6 +292,11 @@ is agent-driven shell access to whatever the process can see. In the
 compose file that mount is `./workspace`, so the agent sees that directory
 and nothing else; set `ZORP_WORKSPACE` to point it elsewhere.
 
+The UI container proxies the API onto its own origin and attaches the token
+for you, so there is nothing to paste. Both published ports are bound to the
+host's loopback for that reason: whatever reaches them is already talking to
+the agent.
+
 The image is built with voice and recall compiled in, so the microphone and
 the conversation search work rather than answering 501. See
 [`docs/docker.md`](docs/docker.md) for what happens on the first microphone
