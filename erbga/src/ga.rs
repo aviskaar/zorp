@@ -330,19 +330,25 @@ mod tests {
     /// Captured from the run before the Problem trait extraction. If any
     /// assertion here changes, the refactor reordered the RNG draws, and
     /// the seeded history the four benchmarks were run under is gone.
+    /// `two_triangles()` has 7 edges and 15 distinct 3-ones chromosomes
+    /// share this fitness, so the bit pattern itself is pinned, not just
+    /// its popcount.
     #[test]
     fn seeded_run_is_pinned_across_refactors() {
         let g = two_triangles();
         let best = run_island(&g, &Modularity, &small_params(), 42);
+        let bits: u64 = (0..7).fold(0u64, |acc, i| acc | ((best.chromosome.get(i) as u64) << i));
         println!(
-            "capture: fitness_bits={:#018x} generation={} ones={}",
+            "capture: fitness_bits={:#018x} generation={} ones={} chromosome_bits={:#09b}",
             best.fitness.to_bits(),
             best.generation,
-            best.chromosome.count_ones()
+            best.chromosome.count_ones(),
+            bits
         );
         assert_eq!(best.fitness.to_bits(), 0x3fd6db6db6db6db6);
         assert_eq!(best.generation, 1);
         assert_eq!(best.chromosome.count_ones(), 3);
+        assert_eq!(bits, 0b0011001);
     }
 
     #[test]

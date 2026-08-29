@@ -296,6 +296,12 @@ pub fn search(rows: &[ExperimentRow], seed: u64) -> HypothesisReport {
 
 /// The sweep with everything explicit, for tests and callers that need
 /// smaller runs.
+///
+/// Every lambda in the sweep runs from the same base seed. That is
+/// deliberate: it isolates lambda's effect on one seeded trajectory
+/// instead of averaging over independent runs, and it means the
+/// report's `seed` field is enough to reproduce the whole sweep, not
+/// just one point in it.
 pub fn search_with(
     rows: &[ExperimentRow],
     swept: LambdaSweep,
@@ -304,6 +310,7 @@ pub fn search_with(
     islands: usize,
     seed: u64,
 ) -> HypothesisReport {
+    assert!(min_band >= 2, "a band of one lambda value does not sweep");
     let vocabulary = Vocabulary::from_rows(rows);
     let empty = |discarded| HypothesisReport {
         hypotheses: Vec::new(),
@@ -662,43 +669,47 @@ mod tests {
     #[test]
     fn beats_the_permutation_null_on_a_noisy_plant() {
         let rows = noisy_rows();
-        let real = planted_search(&rows, 5);
-        let real_best = real
-            .hypotheses
-            .iter()
-            .map(|h| h.fitness)
-            .fold(f64::NEG_INFINITY, f64::max);
-        assert!(
-            real_best.is_finite(),
-            "the noisy plant produced no stable set"
-        );
-
-        let mut rng = erbga::Rng::new(11);
-        for shuffle in 0..10 {
-            let mut outcomes: Vec<Option<Direction>> = rows.iter().map(|r| r.outcome).collect();
-            // Fisher-Yates with the in-crate RNG, so the null is seeded.
-            for i in (1..outcomes.len()).rev() {
-                let j = rng.below((i + 1) as u64) as usize;
-                outcomes.swap(i, j);
-            }
-            let shuffled: Vec<ExperimentRow> = rows
-                .iter()
-                .zip(outcomes)
-                .map(|(r, outcome)| ExperimentRow {
-                    conditions: r.conditions.clone(),
-                    outcome,
-                })
-                .collect();
-            let null = planted_search(&shuffled, 5);
-            let null_best = null
+        // Checked across two search seeds so the result isn't an
+        // artifact of one seeded trajectory.
+        for search_seed in [5, 6] {
+            let real = planted_search(&rows, search_seed);
+            let real_best = real
                 .hypotheses
                 .iter()
                 .map(|h| h.fitness)
                 .fold(f64::NEG_INFINITY, f64::max);
             assert!(
-                real_best > null_best,
-                "shuffle {shuffle}: null fitness {null_best} reached real {real_best}"
+                real_best.is_finite(),
+                "the noisy plant produced no stable set"
             );
+
+            let mut rng = erbga::Rng::new(11);
+            for shuffle in 0..10 {
+                let mut outcomes: Vec<Option<Direction>> = rows.iter().map(|r| r.outcome).collect();
+                // Fisher-Yates with the in-crate RNG, so the null is seeded.
+                for i in (1..outcomes.len()).rev() {
+                    let j = rng.below((i + 1) as u64) as usize;
+                    outcomes.swap(i, j);
+                }
+                let shuffled: Vec<ExperimentRow> = rows
+                    .iter()
+                    .zip(outcomes)
+                    .map(|(r, outcome)| ExperimentRow {
+                        conditions: r.conditions.clone(),
+                        outcome,
+                    })
+                    .collect();
+                let null = planted_search(&shuffled, search_seed);
+                let null_best = null
+                    .hypotheses
+                    .iter()
+                    .map(|h| h.fitness)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                assert!(
+                    real_best > null_best,
+                    "shuffle {shuffle}: null fitness {null_best} reached real {real_best}"
+                );
+            }
         }
     }
 

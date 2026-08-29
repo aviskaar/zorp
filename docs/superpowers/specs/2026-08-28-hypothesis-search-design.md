@@ -139,7 +139,7 @@ sizes. The exact functional form may be tuned during implementation;
 the acceptance criterion is fixed and is the planted-structure test
 suite, not the formula.
 
-**Lambda is swept, never chosen.** The same discipline `partition.rs`
+**Lambda is swept, never chosen.** The same discipline `families.rs`
 applies to theta. The search runs across a coarse lambda range, and
 only implicated sets stable across a contiguous lambda band are
 reported, with the band recorded next to the result. Nobody picks
