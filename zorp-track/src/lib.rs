@@ -15,6 +15,7 @@ pub mod error;
 pub mod expectations;
 pub mod experiment;
 pub mod families;
+pub mod hypotheses;
 pub mod id;
 pub mod inquiry;
 #[cfg(feature = "library")]
