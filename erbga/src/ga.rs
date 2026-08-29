@@ -91,25 +91,37 @@ pub struct Best {
     pub generation: usize,
 }
 
-/// Run one island to completion and return its best individual.
+/// A search problem the generational loop can run against.
 ///
-/// Elitism guarantees the best never gets worse from one generation to
-/// the next, so `Best` is monotone over the run.
-pub fn run_island<O: Objective>(
-    graph: &Graph,
-    objective: &O,
-    params: &GaParams,
-    seed: u64,
-) -> Best {
+/// The loop needs exactly three things from a problem: how long a genome
+/// is, how fit a chromosome is, and how to repair a child after mutation.
+/// Everything else in the loop, seeded RNG, tournament selection,
+/// elitism, uniform crossover, mutation, never mentions a representation.
+///
+/// The four published benchmarks certify the graph path and nothing
+/// else. A consumer implementing this trait for another representation
+/// is running a new, unvalidated algorithm and needs its own validation.
+pub trait Problem {
+    fn genome_len(&self) -> usize;
+    fn fitness(&self, chromosome: &Chromosome) -> f64;
+    /// Repair a child after mutation. The default does nothing, which is
+    /// correct for representations with no analog of Gene Repair.
+    fn repair(&self, _chromosome: &mut Chromosome, _rng: &mut Rng) {}
+}
+
+/// Run one island of any `Problem` to completion.
+///
+/// This is the loop `run_island` always ran; the graph path delegates
+/// here through a private `Problem` implementation, so there is one loop
+/// and the benchmarks exercise it.
+pub fn run_island_on<P: Problem>(problem: &P, params: &GaParams, seed: u64) -> Best {
     assert!(
         params.population_size >= 2,
         "population must hold at least 2"
     );
-    let genome_len = graph.edge_count();
+    let genome_len = problem.genome_len();
     let mut rng = Rng::new(seed);
 
-    let repair_size = (params.repair_rate * genome_len as f64).round() as usize;
-    let targets = RepairTargets::new(graph, repair_size);
     let elite_count = ((params.elitism_rate * params.population_size as f64).round() as usize)
         .min(params.population_size);
 
@@ -123,10 +135,7 @@ pub fn run_island<O: Objective>(
     // the final population, so the last round of breeding is not thrown
     // away unmeasured.
     for generation in 0..=params.generations {
-        let fitness: Vec<f64> = population
-            .iter()
-            .map(|c| objective.score(graph, &graph.partition(c)))
-            .collect();
+        let fitness: Vec<f64> = population.iter().map(|c| problem.fitness(c)).collect();
 
         for (i, &f) in fitness.iter().enumerate() {
             if best.as_ref().is_none_or(|b| f > b.fitness) {
@@ -158,7 +167,7 @@ pub fn run_island<O: Objective>(
 
             for child in [&mut first, &mut second] {
                 mutate(child, params.mutation_rate, &mut rng);
-                gene_repair(child, graph, &targets, params.repair_chance, &mut rng);
+                problem.repair(child, &mut rng);
             }
 
             next.push(first);
@@ -171,6 +180,83 @@ pub fn run_island<O: Objective>(
     }
 
     best.expect("population is non-empty so a best always exists")
+}
+
+/// The graph problem: fitness through the objective on the canonical
+/// partition, repair through Gene Repair. Private on purpose; graphs
+/// enter through `run_island` and `run_islands` as they always have.
+struct GraphProblem<'a, O: Objective> {
+    graph: &'a Graph,
+    objective: &'a O,
+    targets: RepairTargets,
+    repair_chance: f64,
+}
+
+impl<O: Objective> Problem for GraphProblem<'_, O> {
+    fn genome_len(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    fn fitness(&self, chromosome: &Chromosome) -> f64 {
+        self.objective
+            .score(self.graph, &self.graph.partition(chromosome))
+    }
+
+    fn repair(&self, chromosome: &mut Chromosome, rng: &mut Rng) {
+        gene_repair(
+            chromosome,
+            self.graph,
+            &self.targets,
+            self.repair_chance,
+            rng,
+        );
+    }
+}
+
+fn graph_problem<'a, O: Objective>(
+    graph: &'a Graph,
+    objective: &'a O,
+    params: &GaParams,
+) -> GraphProblem<'a, O> {
+    let repair_size = (params.repair_rate * graph.edge_count() as f64).round() as usize;
+    GraphProblem {
+        graph,
+        objective,
+        targets: RepairTargets::new(graph, repair_size),
+        repair_chance: params.repair_chance,
+    }
+}
+
+/// Run one island to completion and return its best individual.
+///
+/// Elitism guarantees the best never gets worse from one generation to
+/// the next, so `Best` is monotone over the run.
+pub fn run_island<O: Objective>(
+    graph: &Graph,
+    objective: &O,
+    params: &GaParams,
+    seed: u64,
+) -> Best {
+    run_island_on(&graph_problem(graph, objective, params), params, seed)
+}
+
+/// Run several independent islands of any `Problem`.
+pub fn run_islands_on<P: Problem>(
+    problem: &P,
+    params: &GaParams,
+    islands: usize,
+    base_seed: u64,
+) -> Vec<Best> {
+    assert!(islands >= 1, "need at least one island");
+    (0..islands)
+        .map(|i| {
+            run_island_on(
+                problem,
+                params,
+                base_seed.wrapping_add(i as u64 * 0x9E37_79B9),
+            )
+        })
+        .collect()
 }
 
 /// Run several independent islands and return the best across all of them.
@@ -186,17 +272,12 @@ pub fn run_islands<O: Objective>(
     islands: usize,
     base_seed: u64,
 ) -> Vec<Best> {
-    assert!(islands >= 1, "need at least one island");
-    (0..islands)
-        .map(|i| {
-            run_island(
-                graph,
-                objective,
-                params,
-                base_seed.wrapping_add(i as u64 * 0x9E37_79B9),
-            )
-        })
-        .collect()
+    run_islands_on(
+        &graph_problem(graph, objective, params),
+        params,
+        islands,
+        base_seed,
+    )
 }
 
 /// The single best result across islands.

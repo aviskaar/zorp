@@ -33,7 +33,9 @@ pub mod rng;
 pub mod selection;
 
 pub use chromosome::Chromosome;
-pub use ga::{best_of, run_island, run_islands, Best, GaParams};
+pub use ga::{
+    best_of, run_island, run_island_on, run_islands, run_islands_on, Best, GaParams, Problem,
+};
 pub use graph::{Graph, GraphError, Partition};
 pub use objective::{Modularity, Objective};
 pub use rng::Rng;
