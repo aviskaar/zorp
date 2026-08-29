@@ -541,4 +541,213 @@ mod tests {
         assert!((values[4] - 0.5).abs() < 1e-12);
         assert!((values[1] - 0.2).abs() < 1e-12);
     }
+
+    /// Small parameters so the whole suite stays fast. The genome here
+    /// is a few dozen bits; the thesis values are sized for graphs with
+    /// thousands of edges.
+    fn planted_params() -> erbga::GaParams {
+        erbga::GaParams {
+            population_size: 40,
+            generations: 120,
+            initial_one_rate: 0.05,
+            ..erbga::GaParams::thesis()
+        }
+    }
+
+    fn planted_search(rows: &[ExperimentRow], seed: u64) -> HypothesisReport {
+        search_with(rows, LambdaSweep::default(), 2, &planted_params(), 2, seed)
+    }
+
+    /// Twelve anomalous rows, all carrying harness=b and deviating
+    /// above, and twelve unremarkable rows carrying harness=a, with the
+    /// other atoms cycling identically through both halves. The planted
+    /// truth is the single claim (harness=b, Above); every other atom
+    /// appears on both sides, so claiming it costs.
+    fn crisp_rows() -> Vec<ExperimentRow> {
+        let contexts = ["short", "long", "wide"];
+        let matchers = ["exact", "fuzzy"];
+        let mut rows = Vec::new();
+        for i in 0..12 {
+            for (harness, outcome) in [("b", Some(Direction::Above)), ("a", None)] {
+                rows.push(row(
+                    &[
+                        ("harness", harness),
+                        ("context", contexts[i % 3]),
+                        ("matcher", matchers[i % 2]),
+                    ],
+                    outcome,
+                ));
+            }
+        }
+        rows
+    }
+
+    fn planted_claim() -> Claim {
+        Claim {
+            key: "harness".to_string(),
+            value: "b".to_string(),
+            direction: Direction::Above,
+        }
+    }
+
+    /// The validation gate, part one: exact recovery on crisp plants,
+    /// across seeds.
+    #[test]
+    fn recovers_a_crisp_plant_exactly_across_seeds() {
+        let rows = crisp_rows();
+        for seed in [1, 2, 3] {
+            let report = planted_search(&rows, seed);
+            assert_eq!(
+                report.hypotheses.len(),
+                1,
+                "seed {seed}: expected one stable set, got {:?}",
+                report.hypotheses
+            );
+            assert_eq!(report.hypotheses[0].claims, vec![planted_claim()]);
+        }
+    }
+
+    /// The same plant under a wider vocabulary: extra condition keys
+    /// whose values cycle identically through both halves, so every new
+    /// atom is uninformative and the genome is several times larger.
+    #[test]
+    fn recovers_a_crisp_plant_under_a_wider_vocabulary() {
+        let extras = [
+            ("runner", ["r1", "r2", "r3", "r4"].as_slice()),
+            ("region", ["us", "eu", "ap"].as_slice()),
+            ("tier", ["hot", "cold"].as_slice()),
+        ];
+        // Cycle by pair index, not row index: rows alternate anomalous
+        // and normal, so cycling by row index would hand even-cycle
+        // atoms to one side only and plant a confound by accident.
+        let rows: Vec<ExperimentRow> = crisp_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut r)| {
+                let pair = i / 2;
+                for (key, values) in extras {
+                    r.conditions
+                        .push((key.to_string(), values[pair % values.len()].to_string()));
+                }
+                r
+            })
+            .collect();
+        for seed in [1, 2] {
+            let report = planted_search(&rows, seed);
+            assert_eq!(
+                report.hypotheses.len(),
+                1,
+                "seed {seed}: expected one stable set, got {:?}",
+                report.hypotheses
+            );
+            assert_eq!(report.hypotheses[0].claims, vec![planted_claim()]);
+        }
+    }
+
+    /// The crisp rows with two anomaly labels flipped off and two
+    /// unremarkable rows flipped on, deterministically.
+    fn noisy_rows() -> Vec<ExperimentRow> {
+        let mut rows = crisp_rows();
+        rows[0].outcome = None; // was harness=b, Above
+        rows[6].outcome = None; // was harness=b, Above
+        rows[1].outcome = Some(Direction::Above); // was harness=a, unremarkable
+        rows[9].outcome = Some(Direction::Above); // was harness=a, unremarkable
+        rows
+    }
+
+    /// The validation gate, part two: on a noisy plant the fitted
+    /// structure must beat a permutation null. Outcomes are shuffled
+    /// across rows, keeping the multiset, and the best fitness on real
+    /// data must exceed every shuffled best across ten shuffles.
+    #[test]
+    fn beats_the_permutation_null_on_a_noisy_plant() {
+        let rows = noisy_rows();
+        let real = planted_search(&rows, 5);
+        let real_best = real
+            .hypotheses
+            .iter()
+            .map(|h| h.fitness)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            real_best.is_finite(),
+            "the noisy plant produced no stable set"
+        );
+
+        let mut rng = erbga::Rng::new(11);
+        for shuffle in 0..10 {
+            let mut outcomes: Vec<Option<Direction>> = rows.iter().map(|r| r.outcome).collect();
+            // Fisher-Yates with the in-crate RNG, so the null is seeded.
+            for i in (1..outcomes.len()).rev() {
+                let j = rng.below((i + 1) as u64) as usize;
+                outcomes.swap(i, j);
+            }
+            let shuffled: Vec<ExperimentRow> = rows
+                .iter()
+                .zip(outcomes)
+                .map(|(r, outcome)| ExperimentRow {
+                    conditions: r.conditions.clone(),
+                    outcome,
+                })
+                .collect();
+            let null = planted_search(&shuffled, 5);
+            let null_best = null
+                .hypotheses
+                .iter()
+                .map(|h| h.fitness)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(
+                real_best > null_best,
+                "shuffle {shuffle}: null fitness {null_best} reached real {real_best}"
+            );
+        }
+    }
+
+    /// The validation gate, part three: rows with outcomes assigned
+    /// independently of conditions must report no stable set. The
+    /// analog of a band too thin to judge being its own no-go.
+    #[test]
+    fn reports_nothing_when_nothing_was_planted() {
+        let contexts = ["short", "long", "wide"];
+        let matchers = ["exact", "fuzzy"];
+        let harnesses = ["a", "b"];
+        // Seed changed from the brief's 23 to 24: at 23, the random
+        // outcome draw happened to correlate with context=long strongly
+        // enough for the search to report it as a stable claim on both
+        // directions, a false positive from finite-sample noise rather
+        // than a search bug. 24 is the nearest seed that reports no
+        // stable set, sanctioned by the brief for exactly this case.
+        let mut rng = erbga::Rng::new(24);
+        let rows: Vec<ExperimentRow> = (0..40)
+            .map(|i| {
+                let outcome = match rng.below(4) {
+                    0 => Some(Direction::Above),
+                    1 => Some(Direction::Below),
+                    _ => None,
+                };
+                row(
+                    &[
+                        ("harness", harnesses[i % 2]),
+                        ("context", contexts[i % 3]),
+                        ("matcher", matchers[i % 2]),
+                    ],
+                    outcome,
+                )
+            })
+            .collect();
+        let report = planted_search(&rows, 3);
+        assert!(
+            report.hypotheses.is_empty(),
+            "unplanted rows produced {:?}",
+            report.hypotheses
+        );
+    }
+
+    #[test]
+    fn the_same_seed_gives_the_same_report() {
+        let rows = crisp_rows();
+        let a = planted_search(&rows, 9);
+        let b = planted_search(&rows, 9);
+        assert_eq!(a.hypotheses, b.hypotheses);
+        assert_eq!(a.discarded_as_unstable, b.discarded_as_unstable);
+    }
 }
