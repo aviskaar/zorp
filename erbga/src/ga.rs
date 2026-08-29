@@ -246,6 +246,24 @@ mod tests {
         assert_eq!(a.chromosome, b.chromosome);
     }
 
+    /// Captured from the run before the Problem trait extraction. If any
+    /// assertion here changes, the refactor reordered the RNG draws, and
+    /// the seeded history the four benchmarks were run under is gone.
+    #[test]
+    fn seeded_run_is_pinned_across_refactors() {
+        let g = two_triangles();
+        let best = run_island(&g, &Modularity, &small_params(), 42);
+        println!(
+            "capture: fitness_bits={:#018x} generation={} ones={}",
+            best.fitness.to_bits(),
+            best.generation,
+            best.chromosome.count_ones()
+        );
+        assert_eq!(best.fitness.to_bits(), 0x3fd6db6db6db6db6);
+        assert_eq!(best.generation, 1);
+        assert_eq!(best.chromosome.count_ones(), 3);
+    }
+
     #[test]
     fn different_seeds_can_take_different_paths() {
         let g = two_triangles();
