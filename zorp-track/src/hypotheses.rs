@@ -163,7 +163,6 @@ pub(crate) fn score(
 
 /// The rows as a search problem. Repair stays the trait's no-op: a
 /// condition atom has no degree, so Gene Repair has no meaning here.
-#[allow(dead_code)]
 struct LedgerFit<'a> {
     rows: &'a [ExperimentRow],
     vocabulary: &'a Vocabulary,
@@ -178,6 +177,194 @@ impl erbga::Problem for LedgerFit<'_> {
     fn fitness(&self, chromosome: &Chromosome) -> f64 {
         score(self.rows, self.vocabulary, chromosome, self.lambda)
     }
+}
+
+/// The lambda range the sweep covered, and how finely.
+///
+/// The same shape and reasoning as `families::ThetaSweep`: recorded next
+/// to the result, because a band means nothing without the range it was
+/// measured over. Nobody picks lambda, so nobody can pick it to get the
+/// answer they wanted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LambdaSweep {
+    pub low: f64,
+    pub high: f64,
+    pub steps: usize,
+}
+
+impl Default for LambdaSweep {
+    /// 0.02 to 0.50 in seven steps.
+    ///
+    /// Deliberately not tuned, for the reason `ThetaSweep::default`
+    /// gives: tuning against zorp's own ledgers would be a measurement,
+    /// and there is no ledger to measure against yet. The low end avoids
+    /// 0.0, where parsimony charges nothing and the full cover set wins
+    /// by construction.
+    fn default() -> Self {
+        LambdaSweep {
+            low: 0.02,
+            high: 0.50,
+            steps: 7,
+        }
+    }
+}
+
+impl LambdaSweep {
+    /// The lambda values, lowest first.
+    fn values(&self) -> Vec<f64> {
+        if self.steps <= 1 {
+            return vec![self.low];
+        }
+        let span = self.high - self.low;
+        (0..self.steps)
+            .map(|i| self.low + span * (i as f64) / ((self.steps - 1) as f64))
+            .collect()
+    }
+}
+
+/// The contiguous run of lambda values a claim set held together across.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LambdaBand {
+    pub low: f64,
+    pub high: f64,
+    /// How many swept values the run covers, compared against
+    /// `min_band`, and reported so a reader can see how close a kept
+    /// set came to being dropped.
+    pub steps: usize,
+}
+
+/// A claim set that survived a lambda band.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StableHypothesis {
+    /// Sorted claims.
+    pub claims: Vec<Claim>,
+    /// The lambda band the set survived.
+    pub band: LambdaBand,
+    /// Fitness at the low end of the band.
+    pub fitness: f64,
+}
+
+/// Stable hypotheses, and everything needed to know what they are worth.
+#[derive(Debug, Clone)]
+pub struct HypothesisReport {
+    pub hypotheses: Vec<StableHypothesis>,
+    /// The range swept, so the bands above can be read.
+    pub swept: LambdaSweep,
+    /// The band length a set had to survive to be kept.
+    pub min_band: usize,
+    /// How many rows went in. A reader needs this to tell "no
+    /// hypotheses" from "nothing to look at".
+    pub rows_considered: usize,
+    /// How many distinct condition atoms the rows held.
+    pub vocabulary_len: usize,
+    /// Non-empty claim sets that appeared at some lambda but never
+    /// across a long enough band. Counted rather than dropped silently.
+    pub discarded_as_unstable: usize,
+    /// The search is stochastic and seeded; without these the result is
+    /// not reproducible, and reproducible is the whole point.
+    pub seed: u64,
+    pub islands: usize,
+    pub params: erbga::GaParams,
+}
+
+/// Search parameters for the hypothesis problem.
+///
+/// Smaller than the graph thesis values because the genome is small,
+/// and starting near-empty because the parsimony term means a good
+/// hypothesis is sparse. The repair fields are carried but unused: this
+/// problem's repair is the trait's no-op.
+fn hypothesis_params() -> erbga::GaParams {
+    erbga::GaParams {
+        population_size: 60,
+        generations: 200,
+        initial_one_rate: 0.05,
+        ..erbga::GaParams::thesis()
+    }
+}
+
+/// Sweep lambda and report the claim sets that survive a band.
+pub fn search(rows: &[ExperimentRow], seed: u64) -> HypothesisReport {
+    search_with(
+        rows,
+        LambdaSweep::default(),
+        2,
+        &hypothesis_params(),
+        4,
+        seed,
+    )
+}
+
+/// The sweep with everything explicit, for tests and callers that need
+/// smaller runs.
+pub fn search_with(
+    rows: &[ExperimentRow],
+    swept: LambdaSweep,
+    min_band: usize,
+    params: &erbga::GaParams,
+    islands: usize,
+    seed: u64,
+) -> HypothesisReport {
+    let vocabulary = Vocabulary::from_rows(rows);
+    let empty = |discarded| HypothesisReport {
+        hypotheses: Vec::new(),
+        swept,
+        min_band,
+        rows_considered: rows.len(),
+        vocabulary_len: vocabulary.len(),
+        discarded_as_unstable: discarded,
+        seed,
+        islands,
+        params: params.clone(),
+    };
+    if rows.is_empty() || vocabulary.is_empty() {
+        return empty(0);
+    }
+
+    let values = swept.values();
+    let mut per_lambda: Vec<(f64, Vec<Claim>, f64)> = Vec::with_capacity(values.len());
+    for &lambda in &values {
+        let fit = LedgerFit {
+            rows,
+            vocabulary: &vocabulary,
+            lambda,
+        };
+        let results = erbga::run_islands_on(&fit, params, islands, seed);
+        let best = erbga::best_of(&results);
+        per_lambda.push((lambda, vocabulary.decode(&best.chromosome), best.fitness));
+    }
+
+    // Group contiguous runs of identical claim sets.
+    let mut hypotheses = Vec::new();
+    let mut discarded = 0usize;
+    let mut start = 0usize;
+    while start < per_lambda.len() {
+        let mut end = start;
+        while end + 1 < per_lambda.len() && per_lambda[end + 1].1 == per_lambda[start].1 {
+            end += 1;
+        }
+        let steps = end - start + 1;
+        let claims = &per_lambda[start].1;
+        if !claims.is_empty() {
+            if steps >= min_band {
+                hypotheses.push(StableHypothesis {
+                    claims: claims.clone(),
+                    band: LambdaBand {
+                        low: per_lambda[start].0,
+                        high: per_lambda[end].0,
+                        steps,
+                    },
+                    fitness: per_lambda[start].2,
+                });
+            } else {
+                discarded += 1;
+            }
+        }
+        start = end + 1;
+    }
+
+    let mut report = empty(discarded);
+    report.hypotheses = hypotheses;
+    report
 }
 
 #[cfg(test)]
@@ -316,5 +503,42 @@ mod tests {
         let v = Vocabulary::from_rows(&[]);
         let h = Chromosome::zeros(0);
         assert_eq!(score(&[], &v, &h, 0.1), 0.0);
+    }
+
+    #[test]
+    fn the_default_sweep_is_recorded_in_the_report() {
+        let rows = vec![
+            row(&[("harness", "b")], Some(Direction::Above)),
+            row(&[("harness", "a")], None),
+        ];
+        let report = search(&rows, 7);
+        assert_eq!(report.swept, LambdaSweep::default());
+        assert_eq!(report.min_band, 2);
+        assert_eq!(report.rows_considered, 2);
+        assert_eq!(report.vocabulary_len, 2);
+        assert_eq!(report.seed, 7);
+        assert_eq!(report.islands, 4);
+    }
+
+    #[test]
+    fn empty_rows_report_nothing_and_say_why() {
+        let report = search(&[], 7);
+        assert!(report.hypotheses.is_empty());
+        assert_eq!(report.rows_considered, 0);
+        assert_eq!(report.vocabulary_len, 0);
+    }
+
+    #[test]
+    fn sweep_values_are_evenly_spaced_and_inclusive() {
+        let swept = LambdaSweep {
+            low: 0.1,
+            high: 0.5,
+            steps: 5,
+        };
+        let values = swept.values();
+        assert_eq!(values.len(), 5);
+        assert!((values[0] - 0.1).abs() < 1e-12);
+        assert!((values[4] - 0.5).abs() < 1e-12);
+        assert!((values[1] - 0.2).abs() < 1e-12);
     }
 }
