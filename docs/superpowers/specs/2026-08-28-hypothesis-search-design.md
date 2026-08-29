@@ -112,21 +112,25 @@ caller, never by a database read in this module:
 
 The type has no free-text field at all, so integrity rule 5 holds by
 construction: there is nothing in the input a model could have written.
-The vocabulary is the set of distinct condition keys present in the
-input. No model proposes anything, which is narrower than the 2026-08-19
-sketch ("the model proposes the vocabulary once") and deliberately so.
-Condition keys are already code-visible columns; a model adds nothing
-but risk here.
+The vocabulary is the set of distinct condition atoms, key and value
+pairs, present in the input. Atoms rather than bare keys, because a
+real ledger records the same keys on every row with differing values.
+The key set separates nothing; the value is what varies. This is a
+refinement of the 2026-08-19 sketch, which spoke of condition keys. No
+model proposes anything, which is narrower than that sketch's "the
+model proposes the vocabulary once" and deliberately so. Condition keys
+and values are already code-visible columns; a model adds nothing but
+risk here.
 
-**Genome.** A bitmask over the vocabulary of (condition key, deviation
-sign) pairs. A set bit claims that key is implicated in anomalies of
+**Genome.** A bitmask over the vocabulary of (condition atom, deviation
+sign) pairs. A set bit claims that atom is implicated in anomalies of
 that sign. Genome length is twice the vocabulary size. There is no
 label-permutation problem and no vertex degree, which is exactly why the
 graph-specific parts of erbga do not transfer.
 
 **Fitness, all code.** A hypothesis H earns reward for each admitted
-anomaly it covers, meaning some claimed (key, sign) pair matches a
-condition key present on that row and the row's deviation sign. It pays
+anomaly it covers, meaning some claimed (atom, sign) pair matches a
+condition atom present on that row and the row's deviation sign. It pays
 for each non-anomalous experiment it would have flagged by the same
 rule, and it pays a parsimony cost of lambda per set bit. Fitness is
 coverage minus false coverage minus lambda times the bit count,
