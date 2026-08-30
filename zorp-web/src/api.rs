@@ -128,7 +128,7 @@ fn api_router(state: AppState) -> Router {
             get(get_auto_approve).post(set_auto_approve),
         )
         .route("/api/settings", get(get_settings).put(put_settings))
-        .route("/api/settings/models", get(list_models))
+        .route("/api/settings/models", get(list_models).post(list_models))
         .route("/api/settings/test", post(test_connection))
         .route("/api/artifacts", get(list_artifacts))
         .route("/api/artifacts/raw", get(read_artifact))
@@ -736,14 +736,36 @@ struct ModelsQuery {
 /// endpoint is a normal, expected outcome for a settings panel probing
 /// whatever the user just typed, and is reported as an empty list with a
 /// reason instead. See `settings::fetch_models` for the SSRF-shape note.
-async fn list_models(Query(query): Query<ModelsQuery>) -> Json<serde_json::Value> {
-    let base_url = query.base_url.unwrap_or_default();
-    let result = tokio::task::spawn_blocking(move || settings::fetch_models(&base_url))
-        .await
-        .unwrap_or_else(|e| settings::ModelsResult {
-            models: Vec::new(),
-            error: Some(format!("internal error: {e}")),
-        });
+///
+/// The listing goes out with a key when one is available, because a
+/// locally protected endpoint (oMLX with `--api-key`) rejects an
+/// anonymous listing and the panel then reads as "not connecting". A
+/// POST body of `{"base_url": ..., "api_key": ...}` carries a candidate
+/// key the panel has not saved yet; without one the stored key is used.
+/// The candidate rides in a body, never the query string, so a secret
+/// does not end up in URLs.
+async fn list_models(
+    State(state): State<AppState>,
+    Query(query): Query<ModelsQuery>,
+    body: axum::body::Bytes,
+) -> Json<serde_json::Value> {
+    let sent = serde_json::from_slice::<serde_json::Value>(&body).ok();
+    let field = |name: &str| {
+        sent.as_ref()
+            .and_then(|v| v.get(name))
+            .and_then(|u| u.as_str())
+            .map(str::to_string)
+            .filter(|u| !u.trim().is_empty())
+    };
+    let base_url = field("base_url").or(query.base_url).unwrap_or_default();
+    let api_key = field("api_key").or_else(|| state.settings.lock().unwrap().api_key.clone());
+    let result =
+        tokio::task::spawn_blocking(move || settings::fetch_models(&base_url, api_key.as_deref()))
+            .await
+            .unwrap_or_else(|e| settings::ModelsResult {
+                models: Vec::new(),
+                error: Some(format!("internal error: {e}")),
+            });
     Json(json!({"models": result.models, "error": result.error}))
 }
 

@@ -280,6 +280,73 @@ async fn an_unreachable_base_url_yields_200_with_an_empty_list() {
     );
 }
 
+/// The listing used to go out anonymous, so a locally protected endpoint
+/// (oMLX started with `--api-key`, say) answered its `/models` with a 401
+/// and the panel read as unable to connect to a server that was running
+/// fine. A candidate key sent in a POST body has to reach the upstream as
+/// a bearer token.
+#[tokio::test]
+async fn model_listing_sends_a_candidate_api_key() {
+    let _guard = ENV.lock().await;
+    let _iso = Isolated::new();
+    let (base, requests) =
+        common::mock_capture(200, "application/json", r#"{"data":[{"id":"m"}]}"#);
+    let addr = spawn().await;
+
+    let body = format!(r#"{{"base_url":"{base}","api_key":"sk-omlx-probe"}}"#);
+    let _ = tokio::task::spawn_blocking(move || {
+        ureq::post(&format!("http://{addr}/api/settings/models"))
+            .set("content-type", "application/json")
+            .send_string(&body)
+            .map(|r| r.into_string().unwrap_or_default())
+            .unwrap_or_else(|e| e.to_string())
+    })
+    .await
+    .unwrap();
+
+    let seen = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the listing never reached the upstream");
+    assert!(
+        seen.to_lowercase()
+            .contains("authorization: bearer sk-omlx-probe"),
+        "the candidate key was not sent as a bearer token, so a protected \
+         endpoint would still answer 401:\n{seen}"
+    );
+}
+
+/// Reopening the panel leaves the key field blank on purpose (the server
+/// never sends the key back out), so a listing that carries no candidate
+/// key has to fall back to the stored one, or a protected endpoint stops
+/// listing the moment the panel is reopened.
+#[tokio::test]
+async fn model_listing_falls_back_to_the_stored_key() {
+    let _guard = ENV.lock().await;
+    let _iso = Isolated::new();
+    let (base, requests) =
+        common::mock_capture(200, "application/json", r#"{"data":[{"id":"m"}]}"#);
+    let addr = spawn().await;
+
+    let (put_status, put_resp) = put_async(
+        format!("http://{addr}/api/settings"),
+        r#"{"api_key":"sk-stored-key"}"#.to_string(),
+    )
+    .await;
+    assert_eq!(put_status, 200, "body: {put_resp}");
+
+    let query = format!("http://{addr}/api/settings/models?base_url={base}");
+    let _ = get_async(query).await;
+
+    let seen = requests
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the listing never reached the upstream");
+    assert!(
+        seen.to_lowercase()
+            .contains("authorization: bearer sk-stored-key"),
+        "the stored key was not sent with the listing:\n{seen}"
+    );
+}
+
 #[tokio::test]
 async fn test_connection_reports_ok_against_a_reachable_endpoint() {
     let _env = ENV.lock().await;

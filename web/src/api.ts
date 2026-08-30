@@ -957,9 +957,16 @@ export async function putSettings(update: SettingsUpdate): Promise<Settings> {
  * back to its free-text model field instead of showing a request failure for
  * what is usually just "Ollama is not running yet."
  */
-export async function listModels(baseUrl: string): Promise<ModelsList> {
-  const query = new URLSearchParams({ base_url: baseUrl }).toString();
-  const result = await request<Partial<ModelsList>>("GET", `/api/settings/models?${query}`);
+export async function listModels(baseUrl: string, apiKey?: string): Promise<ModelsList> {
+  // POST, with the key (when there is one) in the body: a secret in a query
+  // string is a secret in URLs. The server falls back to its stored key
+  // when none is sent, so a reopened panel with a blank key field still
+  // lists from a protected endpoint.
+  const body: { base_url: string; api_key?: string } = { base_url: baseUrl };
+  if (apiKey) {
+    body.api_key = apiKey;
+  }
+  const result = await request<Partial<ModelsList>>("POST", "/api/settings/models", body);
   return {
     models: Array.isArray(result?.models) ? result.models : [],
     error: typeof result?.error === "string" ? result.error : null,
@@ -969,13 +976,22 @@ export async function listModels(baseUrl: string): Promise<ModelsList> {
 /** Check that the currently saved settings actually reach a server. */
 export async function testConnection(
   baseUrl?: string,
+  apiKey?: string,
 ): Promise<ConnectionTestResult> {
   // With a base URL, the server probes that candidate and stores nothing.
-  // Without one, it probes whatever is already saved.
+  // Without one, it probes whatever is already saved. A key typed but not
+  // yet saved rides along the same way, so Test checks what is on screen.
+  const body: { base_url?: string; api_key?: string } = {};
+  if (baseUrl) {
+    body.base_url = baseUrl;
+  }
+  if (apiKey) {
+    body.api_key = apiKey;
+  }
   return request<ConnectionTestResult>(
     "POST",
     "/api/settings/test",
-    baseUrl ? { base_url: baseUrl } : undefined,
+    Object.keys(body).length > 0 ? body : undefined,
   );
 }
 

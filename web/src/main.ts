@@ -1908,6 +1908,9 @@ function resetTranscript(): void {
  */
 const PRESET_DEFAULTS: Record<string, { baseUrl: string; provider: string; needsKey: boolean }> = {
   ollama: { baseUrl: "http://localhost:11434/v1", provider: "openai", needsKey: false },
+  // oMLX is OpenAI-compatible too, but unlike Ollama it can require an API
+  // key (`--api-key`), so the key field stays visible for it.
+  omlx: { baseUrl: "http://localhost:8000/v1", provider: "openai", needsKey: true },
   openai: { baseUrl: "https://api.openai.com/v1", provider: "openai", needsKey: true },
   anthropic: { baseUrl: "https://api.anthropic.com/v1", provider: "anthropic", needsKey: true },
   custom: { baseUrl: "", provider: "openai", needsKey: true },
@@ -2002,6 +2005,9 @@ function presetFor(provider: string, baseUrl: string): string {
   if (trimmed.includes("11434")) {
     return "ollama";
   }
+  if (trimmed === "http://localhost:8000/v1" || trimmed === "http://127.0.0.1:8000/v1") {
+    return "omlx";
+  }
   if (trimmed === "https://api.openai.com/v1") {
     return "openai";
   }
@@ -2064,7 +2070,10 @@ async function refreshModelOptions(): Promise<void> {
   dom.settingsRefreshModels.disabled = true;
   dom.settingsRefreshModels.textContent = "Listing…";
   try {
-    const { models, error } = await listModels(baseUrl);
+    // A key typed but not yet saved goes along, so a protected endpoint
+    // (oMLX with --api-key) can list before the first save. Blank means
+    // "use whatever key the server has stored".
+    const { models, error } = await listModels(baseUrl, dom.settingsApiKey.value || undefined);
     if (models.length === 0) {
       showModelFallback(error ?? "No models were returned.");
       return;
@@ -2131,6 +2140,9 @@ async function saveSettings(): Promise<void> {
     updateModelBadge(settings);
     updateComposerWarning(settings);
     setSettingsResult("Saved.", "ok");
+    // The key just saved may be the one a protected endpoint was waiting
+    // for, so try the listing again with it.
+    void refreshModelOptions();
   } catch (error) {
     setSettingsResult(`Could not save: ${describeError(error)}`, "fail");
   } finally {
@@ -2147,7 +2159,10 @@ async function runConnectionTest(): Promise<void> {
   dom.settingsTest.disabled = true;
   setSettingsResult("Testing…", null);
   try {
-    const result = await testConnection(dom.settingsBaseUrl.value.trim());
+    const result = await testConnection(
+      dom.settingsBaseUrl.value.trim(),
+      dom.settingsApiKey.value || undefined,
+    );
     if (result.ok) {
       setSettingsResult("Connected.", "ok");
     } else {
