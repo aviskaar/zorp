@@ -393,7 +393,14 @@ const PROBE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 /// valid token, and the scheme restriction below at least rules out
 /// `file://` and friends. An operator who exposes `zorp-web` on a network
 /// without a token has a bigger problem than this one endpoint.
-pub fn fetch_models(base_url: &str) -> ModelsResult {
+///
+/// The key rides along as a bearer token when there is one, because a
+/// locally protected server (oMLX with `--api-key`, for one) answers its
+/// listing with a 401 without it, and the settings panel then looks
+/// unable to connect to a server that is running fine. Sending a key to a
+/// caller-supplied URL is the same exposure `test_connection` already
+/// accepts, and it is bounded the same way.
+pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> ModelsResult {
     let base_url = match validate_scheme(base_url) {
         Ok(u) => u,
         Err(e) => {
@@ -408,7 +415,11 @@ pub fn fetch_models(base_url: &str) -> ModelsResult {
         .timeout_connect(PROBE_CONNECT_TIMEOUT)
         .timeout_read(PROBE_READ_TIMEOUT)
         .build();
-    match agent.get(&url).call() {
+    let mut req = agent.get(&url);
+    if let Some(key) = api_key {
+        req = req.set("Authorization", &format!("Bearer {key}"));
+    }
+    match req.call() {
         Ok(resp) => match resp.into_json::<serde_json::Value>() {
             Ok(body) => {
                 let models = body
