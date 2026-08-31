@@ -29,6 +29,9 @@ docs/paper/zorp-paper.tex
 # driven by hand.
 /.playwright-mcp/
 
+# mdBook build output for docs.zorp.dev. Built in CI, never committed.
+/docs-site/book/
+
 # Generated knowledge-graph output, including its own cache directory.
 # Ignored so it is not committed by accident; un-ignore it deliberately if
 # the report is meant to be tracked.
