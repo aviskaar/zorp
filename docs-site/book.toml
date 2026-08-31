@@ -1,0 +1,10 @@
+[book]
+title = "zorp docs"
+description = "Documentation for zorp, a research agent for scientific discovery."
+authors = ["Aviskaar"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/aviskaar/zorp"
+edit-url-template = "https://github.com/aviskaar/zorp/edit/main/docs-site/{path}"
