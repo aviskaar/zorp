@@ -90,10 +90,12 @@ impl LoopbackUrl {
                 reason: "it is empty",
             });
         }
-        let (scheme, rest) = raw.split_once("://").ok_or(LoopbackError::Malformed {
-            url: raw.to_string(),
-            reason: "it has no scheme",
-        })?;
+        let (scheme, rest) = raw
+            .split_once("://")
+            .ok_or_else(|| LoopbackError::Malformed {
+                url: raw.to_string(),
+                reason: "it has no scheme",
+            })?;
         let scheme = scheme.to_ascii_lowercase();
         if scheme != "http" && scheme != "https" {
             return Err(LoopbackError::Scheme { scheme });
@@ -129,7 +131,7 @@ impl LoopbackUrl {
             Some(ip) => {
                 if !is_loopback(ip) {
                     return Err(LoopbackError::OffDevice {
-                        host: host.clone(),
+                        host,
                         detail: "that is not a loopback address".into(),
                     });
                 }
@@ -140,7 +142,7 @@ impl LoopbackUrl {
                 let name = host.trim_end_matches('.').to_ascii_lowercase();
                 if name != "localhost" {
                     return Err(LoopbackError::OffDevice {
-                        host: host.clone(),
+                        host,
                         detail: "only a loopback address or `localhost` is accepted".into(),
                     });
                 }
@@ -158,7 +160,7 @@ impl LoopbackUrl {
             .collect();
         if addrs.is_empty() {
             return Err(LoopbackError::Unresolvable {
-                host: host.clone(),
+                host,
                 message: "it resolved to no addresses".into(),
             });
         }
@@ -167,7 +169,7 @@ impl LoopbackUrl {
         // else's control, and keeping the good half would be trusting it.
         if let Some(bad) = addrs.iter().find(|a| !is_loopback(a.ip())) {
             return Err(LoopbackError::OffDevice {
-                host: host.clone(),
+                host,
                 detail: format!("it resolves to {}, which is not on this machine", bad.ip()),
             });
         }
@@ -274,12 +276,12 @@ fn split_authority(authority: &str, raw: &str) -> Result<(String, Option<u16>), 
     if let Some(rest) = authority.strip_prefix('[') {
         let (inside, after) = rest
             .split_once(']')
-            .ok_or(malformed("its bracket is unclosed"))?;
+            .ok_or_else(|| malformed("its bracket is unclosed"))?;
         let port = match after {
             "" => None,
             p => Some(
                 p.strip_prefix(':')
-                    .ok_or(malformed("it has junk after the bracket"))?
+                    .ok_or_else(|| malformed("it has junk after the bracket"))?
                     .parse()
                     .map_err(|_| malformed("its port is not a number"))?,
             ),

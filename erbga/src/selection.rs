@@ -186,7 +186,7 @@ mod tests {
         let fitness = [0.1, 0.9, 0.5];
         let elites = elite_indices(&fitness, 99);
         assert_eq!(elites.len(), 3);
-        let mut seen = elites.clone();
+        let mut seen = elites;
         seen.sort_unstable();
         assert_eq!(seen, vec![0, 1, 2], "clamping must not duplicate");
     }

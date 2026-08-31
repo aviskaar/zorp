@@ -542,8 +542,8 @@ mod tests {
             all,
             vec![
                 (a.id.clone(), "m1".to_string(), MetricValue::Number(1.0)),
-                (a.id.clone(), "m3".to_string(), MetricValue::Number(3.0)),
-                (b.id.clone(), "m2".to_string(), MetricValue::Number(2.0)),
+                (a.id, "m3".to_string(), MetricValue::Number(3.0)),
+                (b.id, "m2".to_string(), MetricValue::Number(2.0)),
             ]
         );
         assert!(store.metrics_for_track("nope").unwrap().is_empty());

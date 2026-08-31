@@ -182,9 +182,7 @@ impl Index {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    IndexError::Sqlite(rusqlite::Error::InvalidPath(
-                        parent.join(e.to_string()).to_path_buf(),
-                    ))
+                    IndexError::Sqlite(rusqlite::Error::InvalidPath(parent.join(e.to_string())))
                 })?;
             }
         }

@@ -121,7 +121,7 @@ impl Approver for WebApprover {
         let event = Event {
             seq: self.next_seq(),
             kind: EventKind::ApprovalRequest {
-                id: id.clone(),
+                id,
                 tool: call.name.clone(),
                 arguments: call.arguments.to_string(),
             },

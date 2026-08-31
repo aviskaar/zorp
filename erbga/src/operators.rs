@@ -322,7 +322,7 @@ mod tests {
     fn mutate_is_reproducible_from_a_seed() {
         let base = Chromosome::random(300, 0.3, &mut Rng::new(26));
         let mut a = base.clone();
-        let mut b = base.clone();
+        let mut b = base;
         mutate(&mut a, 0.1, &mut Rng::new(27));
         mutate(&mut b, 0.1, &mut Rng::new(27));
         assert_eq!(a, b);
@@ -476,7 +476,7 @@ mod tests {
         let targets = RepairTargets::new(&graph, 4);
         let base = Chromosome::random(graph.edge_count(), 0.6, &mut setup);
         let mut a = base.clone();
-        let mut b = base.clone();
+        let mut b = base;
         gene_repair(&mut a, &graph, &targets, 0.5, &mut Rng::new(37));
         gene_repair(&mut b, &graph, &targets, 0.5, &mut Rng::new(37));
         assert_eq!(a, b);
