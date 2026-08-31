@@ -54,10 +54,12 @@ impl LoopbackUrl {
                 reason: "it is empty",
             });
         }
-        let (scheme, rest) = raw.split_once("://").ok_or(LoopbackError::Malformed {
-            url: raw.to_string(),
-            reason: "it has no scheme",
-        })?;
+        let (scheme, rest) = raw
+            .split_once("://")
+            .ok_or_else(|| LoopbackError::Malformed {
+                url: raw.to_string(),
+                reason: "it has no scheme",
+            })?;
         let scheme = scheme.to_ascii_lowercase();
         if scheme != "http" && scheme != "https" {
             return Err(LoopbackError::Scheme { scheme });
@@ -209,13 +211,13 @@ fn split_authority(authority: &str, raw: &str) -> Result<(String, Option<u16>), 
     if let Some(rest) = authority.strip_prefix('[') {
         let (inside, after) = rest
             .split_once(']')
-            .ok_or(malformed("its bracket is unclosed"))?;
+            .ok_or_else(|| malformed("its bracket is unclosed"))?;
         let port = match after {
             "" => None,
             value => Some(
                 value
                     .strip_prefix(':')
-                    .ok_or(malformed("it has junk after the bracket"))?
+                    .ok_or_else(|| malformed("it has junk after the bracket"))?
                     .parse()
                     .map_err(|_| malformed("its port is not a number"))?,
             ),

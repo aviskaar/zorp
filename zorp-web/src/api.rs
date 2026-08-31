@@ -376,7 +376,7 @@ async fn start_panel(
             body: body.body,
             lenses: body.lenses,
         },
-        state.settings.clone(),
+        state.settings,
     );
     StatusCode::ACCEPTED.into_response()
 }

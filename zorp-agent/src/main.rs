@@ -719,7 +719,7 @@ fn run(
         overrides.flavor.as_deref(),
         auto_approve,
     );
-    let merged = user_flavor.clone().merge(project_flavor);
+    let merged = user_flavor.merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
@@ -1531,7 +1531,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         overrides.flavor.as_deref(),
         auto_approve,
     );
-    let merged = user_flavor.clone().merge(project_flavor);
+    let merged = user_flavor.merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let user_capsules_dir = default_user_capsules_dir().unwrap_or_default();
     let project_capsules_dir_path = project_capsules_dir(&cwd);
@@ -2207,7 +2207,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         overrides.flavor.as_deref(),
         auto_approve,
     );
-    let merged = user_flavor.clone().merge(project_flavor);
+    let merged = user_flavor.merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {

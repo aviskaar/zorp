@@ -341,7 +341,7 @@ impl Store {
             let Some(track_id) = track_dir.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if !track_ids.iter().any(|t| *t == track_id) {
+            if !track_ids.contains(&track_id) {
                 return Err(TrackError::IntegrityMismatch {
                     track_id: track_id.to_string(),
                     detail: format!(

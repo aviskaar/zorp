@@ -131,11 +131,30 @@ pub fn parse_token_usage(resp: &Value) -> Option<TokenUsage> {
     (!parsed.is_empty()).then_some(parsed)
 }
 
+/// Serialized length of a JSON value, counted without building the string.
+/// This runs over every tool call in the transcript on every estimate, and
+/// tool arguments carry whole file bodies.
+fn json_len(v: &Value) -> u64 {
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let _ = serde_json::to_writer(&mut count, v);
+    count.0
+}
+
 /// A crude token estimate for one message. Bytes over four, plus framing.
 pub fn estimate_message_tokens(m: &Message) -> u64 {
     let mut bytes = m.text().len() as u64;
     for call in &m.tool_calls {
-        bytes += call.name.len() as u64 + call.arguments.to_string().len() as u64;
+        bytes += call.name.len() as u64 + json_len(&call.arguments);
     }
     if let Some(id) = &m.tool_call_id {
         bytes += id.len() as u64;

@@ -1021,7 +1021,7 @@ mod tests {
                 modularity_of(&found).to_bits()
             })
             .collect();
-        let mut distinct = scores.clone();
+        let mut distinct = scores;
         distinct.sort_unstable();
         distinct.dedup();
         assert!(

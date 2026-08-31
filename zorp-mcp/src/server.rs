@@ -457,7 +457,7 @@ mod tests {
             tool_pages: vec![json!({"tools": [{"name": "gated_tool"}]})],
             ..Default::default()
         }));
-        let mut srv = mock_server(state.clone());
+        let mut srv = mock_server(state);
         srv.initialize().unwrap();
         let tools = srv.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
