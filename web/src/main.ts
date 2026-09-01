@@ -36,6 +36,14 @@ import {
   sidebarBounds,
   sidebarIsCollapsed,
 } from "./layout";
+import { PRESET_DEFAULTS, preset, presetFor } from "./providers";
+import {
+  automaticChoices,
+  isFirstRun,
+  modelGroups,
+  renderModelGroups,
+  type ChoiceGroup,
+} from "./onboarding";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
 import {
@@ -79,6 +87,7 @@ import {
   type EventStream,
   type MemoryEvent,
   type Message,
+  type ModelDetail,
   type Preregistration,
   type RecallStatus,
   type Settings,
@@ -182,6 +191,34 @@ interface Elements {
   settingsTest: HTMLButtonElement;
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
+  onboardOverlay: HTMLElement;
+  onboardClose: HTMLButtonElement;
+  onboardStepStart: HTMLElement;
+  onboardSkip: HTMLButtonElement;
+  onboardBegin: HTMLButtonElement;
+  onboardStepProvider: HTMLElement;
+  onboardProviders: HTMLElement;
+  onboardProviderBack: HTMLButtonElement;
+  onboardStepKey: HTMLElement;
+  onboardKeyLead: HTMLElement;
+  onboardKeyLink: HTMLAnchorElement;
+  onboardKey: HTMLInputElement;
+  onboardKeyResult: HTMLElement;
+  onboardKeyBack: HTMLButtonElement;
+  onboardKeyNext: HTMLButtonElement;
+  onboardStepModel: HTMLElement;
+  onboardModelLead: HTMLElement;
+  onboardModels: HTMLElement;
+  onboardModelTextField: HTMLElement;
+  onboardModelText: HTMLInputElement;
+  onboardModelResult: HTMLElement;
+  onboardModelBack: HTMLButtonElement;
+  onboardModelNext: HTMLButtonElement;
+  onboardStepDone: HTMLElement;
+  onboardDoneLead: HTMLElement;
+  onboardDoneResult: HTMLElement;
+  onboardDoneBack: HTMLButtonElement;
+  onboardFinish: HTMLButtonElement;
   artifactsBtn: HTMLButtonElement;
   filesMenu: HTMLElement;
   filesPopover: HTMLElement;
@@ -297,6 +334,7 @@ function start(): void {
   wireRecall();
   wireScroller();
   wireSettings();
+  wireOnboarding();
   wireArtifacts();
   wireApprovalMode();
   wireZorpMode();
@@ -469,6 +507,34 @@ function collectElements(): Elements {
     settingsApiKeySource: byId("settings-api-key-source"),
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
+    onboardOverlay: byId("onboard-overlay"),
+    onboardClose: byId<HTMLButtonElement>("onboard-close"),
+    onboardStepStart: byId("onboard-step-start"),
+    onboardSkip: byId<HTMLButtonElement>("onboard-skip"),
+    onboardBegin: byId<HTMLButtonElement>("onboard-begin"),
+    onboardStepProvider: byId("onboard-step-provider"),
+    onboardProviders: byId("onboard-providers"),
+    onboardProviderBack: byId<HTMLButtonElement>("onboard-provider-back"),
+    onboardStepKey: byId("onboard-step-key"),
+    onboardKeyLead: byId("onboard-key-lead"),
+    onboardKeyLink: byId<HTMLAnchorElement>("onboard-key-link"),
+    onboardKey: byId<HTMLInputElement>("onboard-key"),
+    onboardKeyResult: byId("onboard-key-result"),
+    onboardKeyBack: byId<HTMLButtonElement>("onboard-key-back"),
+    onboardKeyNext: byId<HTMLButtonElement>("onboard-key-next"),
+    onboardStepModel: byId("onboard-step-model"),
+    onboardModelLead: byId("onboard-model-lead"),
+    onboardModels: byId("onboard-models"),
+    onboardModelTextField: byId("onboard-model-text-field"),
+    onboardModelText: byId<HTMLInputElement>("onboard-model-text"),
+    onboardModelResult: byId("onboard-model-result"),
+    onboardModelBack: byId<HTMLButtonElement>("onboard-model-back"),
+    onboardModelNext: byId<HTMLButtonElement>("onboard-model-next"),
+    onboardStepDone: byId("onboard-step-done"),
+    onboardDoneLead: byId("onboard-done-lead"),
+    onboardDoneResult: byId("onboard-done-result"),
+    onboardDoneBack: byId<HTMLButtonElement>("onboard-done-back"),
+    onboardFinish: byId<HTMLButtonElement>("onboard-finish"),
     artifactsBtn: byId<HTMLButtonElement>("artifacts-btn"),
     filesMenu: byId<HTMLElement>("files-menu"),
     filesPopover: byId<HTMLElement>("files-popover"),
@@ -571,6 +637,39 @@ function wireSettings(): void {
   dom.settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void saveSettings();
+  });
+}
+
+/**
+ * The first-run flow.
+ *
+ * Buttons only. Nothing here can start a turn, a panel or an investigate
+ * run: it reads and writes settings and that is all it does.
+ */
+function wireOnboarding(): void {
+  dom.onboardBegin.addEventListener("click", () => showOnboardStep("provider"));
+  dom.onboardSkip.addEventListener("click", closeOnboarding);
+  dom.onboardClose.addEventListener("click", closeOnboarding);
+  dom.onboardProviderBack.addEventListener("click", () => showOnboardStep("start"));
+  dom.onboardKeyBack.addEventListener("click", () => showOnboardStep("provider"));
+  dom.onboardKeyNext.addEventListener("click", () => {
+    onboardKey = dom.onboardKey.value;
+    showOnboardStep("model");
+    void loadOnboardModels();
+  });
+  dom.onboardModelBack.addEventListener("click", () => {
+    showOnboardStep(preset(onboardPreset).needsKey ? "key" : "provider");
+  });
+  dom.onboardModelNext.addEventListener("click", () => void saveOnboarding());
+  dom.onboardDoneBack.addEventListener("click", () => showOnboardStep("provider"));
+  dom.onboardFinish.addEventListener("click", () => {
+    closeOnboarding();
+    dom.input.focus();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.onboardOverlay.hidden) {
+      closeOnboarding();
+    }
   });
 }
 
@@ -2008,22 +2107,6 @@ function resetTranscript(): void {
 /* /api/settings; nothing here keeps its own copy of the API key.       */
 /* ------------------------------------------------------------------ */
 
-/**
- * Preset base URLs and the protocol each one speaks. Ollama is not a
- * separate protocol: it is the OpenAI-compatible wire format pointed at a
- * local server, offered here as a shortcut rather than a distinct provider.
- * "custom" leaves whatever base URL is already in the field alone.
- */
-const PRESET_DEFAULTS: Record<string, { baseUrl: string; provider: string; needsKey: boolean }> = {
-  ollama: { baseUrl: "http://localhost:11434/v1", provider: "openai", needsKey: false },
-  // oMLX is OpenAI-compatible too, but unlike Ollama it can require an API
-  // key (`--api-key`), so the key field stays visible for it.
-  omlx: { baseUrl: "http://localhost:8000/v1", provider: "openai", needsKey: true },
-  openai: { baseUrl: "https://api.openai.com/v1", provider: "openai", needsKey: true },
-  anthropic: { baseUrl: "https://api.anthropic.com/v1", provider: "anthropic", needsKey: true },
-  custom: { baseUrl: "", provider: "openai", needsKey: true },
-};
-
 const SETTINGS_ENV_VARS: Record<string, string> = {
   provider: "ZORP_PROVIDER",
   base_url: "ZORP_BASE_URL",
@@ -2068,6 +2151,10 @@ async function refreshSettingsBadge(): Promise<void> {
     currentSettings = settings;
     updateModelBadge(settings);
     updateComposerWarning(settings);
+    // The one place first run is decided. This runs once, on connect, and
+    // it is the only read that knows nothing has ever been configured
+    // before the person is dropped in front of a composer that cannot send.
+    maybeStartOnboarding(settings);
   } catch {
     // The status pill already reports connectivity problems; a stale model
     // badge on top of that is not worth an error card of its own.
@@ -2087,8 +2174,8 @@ async function loadSettingsIntoForm(): Promise<void> {
 }
 
 function applySettingsToForm(settings: Settings): void {
-  const preset = presetFor(settings.provider, settings.base_url);
-  dom.settingsPreset.value = preset;
+  const name = presetFor(settings.provider, settings.base_url);
+  dom.settingsPreset.value = name;
   dom.settingsBaseUrl.value = settings.base_url;
   dom.settingsBaseUrlSource.textContent = sourceLabel("base_url", settings.base_url_source);
   setModelValue(settings.model);
@@ -2100,26 +2187,7 @@ function applySettingsToForm(settings: Settings): void {
   dom.settingsApiKeySource.textContent = settings.has_api_key
     ? sourceLabel("api_key", settings.api_key_source)
     : "";
-  updateApiKeyVisibility(preset);
-}
-
-/** Guess which preset a resolved (provider, base_url) pair matches, so
- * reopening the panel shows the right choice instead of always "custom". */
-function presetFor(provider: string, baseUrl: string): string {
-  if (provider === "anthropic") {
-    return "anthropic";
-  }
-  const trimmed = baseUrl.replace(/\/+$/, "");
-  if (trimmed.includes("11434")) {
-    return "ollama";
-  }
-  if (trimmed === "http://localhost:8000/v1" || trimmed === "http://127.0.0.1:8000/v1") {
-    return "omlx";
-  }
-  if (trimmed === "https://api.openai.com/v1") {
-    return "openai";
-  }
-  return "custom";
+  updateApiKeyVisibility(name);
 }
 
 function sourceLabel(field: string, source: SettingsSource): string {
@@ -2132,18 +2200,16 @@ function sourceLabel(field: string, source: SettingsSource): string {
   return "default";
 }
 
-function applyPreset(preset: string): void {
-  const config = PRESET_DEFAULTS[preset] ?? PRESET_DEFAULTS.custom;
-  if (preset !== "custom") {
-    dom.settingsBaseUrl.value = config.baseUrl;
+function applyPreset(name: string): void {
+  if (name !== "custom") {
+    dom.settingsBaseUrl.value = preset(name).baseUrl;
   }
-  updateApiKeyVisibility(preset);
+  updateApiKeyVisibility(name);
   void refreshModelOptions();
 }
 
-function updateApiKeyVisibility(preset: string): void {
-  const needsKey = (PRESET_DEFAULTS[preset] ?? PRESET_DEFAULTS.custom).needsKey;
-  dom.settingsApiKeyField.hidden = !needsKey;
+function updateApiKeyVisibility(name: string): void {
+  dom.settingsApiKeyField.hidden = !preset(name).needsKey;
 }
 
 function setModelValue(model: string): void {
@@ -2224,10 +2290,8 @@ function showModelFallback(reason: string): void {
 
 /** What the form currently says, shaped as a `PUT /api/settings` body. */
 function formToUpdate(): SettingsUpdate {
-  const preset = dom.settingsPreset.value;
-  const provider = (PRESET_DEFAULTS[preset] ?? PRESET_DEFAULTS.custom).provider;
   const update: SettingsUpdate = {
-    provider,
+    provider: preset(dom.settingsPreset.value).provider,
     base_url: dom.settingsBaseUrl.value.trim(),
     model: currentModelValue(),
   };
@@ -2305,6 +2369,274 @@ function updateModelBadge(settings: Settings): void {
 /** The whole point of this feature: say so before the first message dies. */
 function updateComposerWarning(settings: Settings): void {
   dom.composerWarning.hidden = settings.configured;
+}
+
+/* ------------------------------------------------------------------ */
+/* first run                                                           */
+/*                                                                      */
+/* A guided way into the settings above, shown only when the server     */
+/* reports that nothing has ever been configured. It writes through the */
+/* same PUT /api/settings and holds no settings of its own. See         */
+/* src/onboarding.ts for the rules, and docs/DECISIONS.md (2026-09-01). */
+/* ------------------------------------------------------------------ */
+
+type OnboardStep = "start" | "provider" | "key" | "model" | "done";
+
+/** Remembered so a dismissal survives a reload. A person who said no to
+ * this once should not be asked again every time they open the page. */
+const ONBOARD_DISMISSED = "zorp.onboarding.dismissed";
+
+/** Which preset is being set up. Empty until the provider step answers. */
+let onboardPreset = "";
+/**
+ * The key typed on the key step, held only until the save that sends it.
+ *
+ * The same exposure the settings panel's field already has and no more: it
+ * is cleared on the way out and on a successful save, and nothing reads it
+ * back from the server, because the server never sends it back.
+ */
+let onboardKey = "";
+
+/**
+ * Open the flow, unless the server is already configured or this browser
+ * has been through it.
+ *
+ * `isFirstRun` reads the server's own provenance fields, so an operator
+ * who exported `ZORP_BASE_URL` is never shown setup for work they did.
+ */
+function maybeStartOnboarding(settings: Settings): void {
+  if (!isFirstRun(settings) || onboardingDismissed()) {
+    return;
+  }
+  openOnboarding();
+}
+
+function onboardingDismissed(): boolean {
+  try {
+    return layoutStorage?.getItem(ONBOARD_DISMISSED) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberOnboardingDismissed(): void {
+  try {
+    layoutStorage?.setItem(ONBOARD_DISMISSED, "1");
+  } catch {
+    // A browser that will not store this is a browser that asks again. The
+    // flow is skippable in one click, so that is a small enough cost.
+  }
+}
+
+function openOnboarding(): void {
+  renderOnboardProviders();
+  showOnboardStep("start");
+  dom.onboardOverlay.hidden = false;
+}
+
+/** Every way out remembers, including the close button and Escape. */
+function closeOnboarding(): void {
+  dom.onboardOverlay.hidden = true;
+  dom.onboardKey.value = "";
+  onboardKey = "";
+  rememberOnboardingDismissed();
+}
+
+function showOnboardStep(step: OnboardStep): void {
+  dom.onboardStepStart.hidden = step !== "start";
+  dom.onboardStepProvider.hidden = step !== "provider";
+  dom.onboardStepKey.hidden = step !== "key";
+  dom.onboardStepModel.hidden = step !== "model";
+  dom.onboardStepDone.hidden = step !== "done";
+}
+
+/** The provider step, drawn from the same table the settings panel uses. */
+function renderOnboardProviders(): void {
+  dom.onboardProviders.replaceChildren();
+  for (const [name, config] of Object.entries(PRESET_DEFAULTS)) {
+    const button = el("button", "onboard-provider") as HTMLButtonElement;
+    button.type = "button";
+    button.append(
+      textNode("span", "onboard-provider-label", config.label),
+      textNode("span", "onboard-provider-summary", config.summary),
+    );
+    button.addEventListener("click", () => chooseOnboardProvider(name));
+    dom.onboardProviders.append(button);
+  }
+}
+
+function chooseOnboardProvider(name: string): void {
+  // The flow knows a handful of endpoints. Anything else is what the
+  // settings panel is for, and a second base URL field here would be a
+  // second copy of that form to keep in step with this one.
+  if (name === "custom") {
+    closeOnboarding();
+    void openSettings();
+    return;
+  }
+  onboardPreset = name;
+  onboardKey = "";
+  dom.onboardKey.value = "";
+  setOnboardResult(dom.onboardKeyResult, "", null);
+  if (preset(name).needsKey) {
+    showOnboardKeyStep();
+    return;
+  }
+  showOnboardStep("model");
+  void loadOnboardModels();
+}
+
+function showOnboardKeyStep(): void {
+  const config = preset(onboardPreset);
+  dom.onboardKeyLead.textContent = config.keyUrl
+    ? `${config.label} needs an API key. Make one, paste it here, and it goes to the zorp server on this machine.`
+    : `${config.label} needs a key only if you started it with one. Leave this blank otherwise.`;
+  if (config.keyUrl) {
+    dom.onboardKeyLink.hidden = false;
+    dom.onboardKeyLink.href = config.keyUrl;
+    dom.onboardKeyLink.textContent = `Create a key at ${config.keyUrl}`;
+  } else {
+    dom.onboardKeyLink.hidden = true;
+    dom.onboardKeyLink.removeAttribute("href");
+    dom.onboardKeyLink.textContent = "";
+  }
+  showOnboardStep("key");
+  dom.onboardKey.focus();
+}
+
+/**
+ * List what the chosen provider serves and draw it grouped.
+ *
+ * The key typed a step ago rides along, exactly as the settings panel's
+ * listing does, because a protected endpoint answers a listing with a 401
+ * without it. A listing that comes back empty or fails is not an error
+ * here: it falls back to a free-text model field, which is the only thing
+ * that works for a provider whose listing needs a header this proxy does
+ * not send.
+ */
+async function loadOnboardModels(): Promise<void> {
+  const config = preset(onboardPreset);
+  dom.onboardModelLead.textContent = `Asking ${config.label} what it serves...`;
+  dom.onboardModels.replaceChildren();
+  dom.onboardModelTextField.hidden = true;
+  dom.onboardModelNext.disabled = true;
+  setOnboardResult(dom.onboardModelResult, "", null);
+  try {
+    const listing = await listModels(config.baseUrl, onboardKey || undefined);
+    // An older server answers with ids and no details. Ids alone still
+    // list; they just carry no price, which is the honest reading of a
+    // server that did not send one.
+    const details: ModelDetail[] =
+      listing.details.length > 0 ? listing.details : listing.models.map((id) => ({ id }));
+    const automatic = automaticChoices(onboardPreset, details);
+    const groups: ChoiceGroup[] = automatic
+      ? [automatic, ...modelGroups(details, automatic.choices.map((choice) => choice.id))]
+      : modelGroups(details);
+    const drawn = renderModelGroups(
+      document,
+      dom.onboardModels,
+      groups,
+      currentSettings?.model ?? "",
+    );
+    if (drawn === 0) {
+      showOnboardModelFallback(listing.error ?? "That endpoint listed no models.");
+      return;
+    }
+    dom.onboardModelLead.textContent =
+      "Pick one to start with. The model button in the top bar changes it later.";
+    dom.onboardModelNext.disabled = false;
+  } catch (error) {
+    showOnboardModelFallback(describeError(error));
+  }
+}
+
+function showOnboardModelFallback(reason: string): void {
+  dom.onboardModels.replaceChildren();
+  dom.onboardModelTextField.hidden = false;
+  dom.onboardModelLead.textContent = "Type the name of the model to use.";
+  setOnboardResult(dom.onboardModelResult, reason, "fail");
+  dom.onboardModelNext.disabled = false;
+}
+
+/** Whichever of the list or the free-text fallback is showing. */
+function onboardModelValue(): string {
+  if (!dom.onboardModelTextField.hidden) {
+    return dom.onboardModelText.value.trim();
+  }
+  return dom.onboardModels.querySelector<HTMLInputElement>("input:checked")?.value ?? "";
+}
+
+async function saveOnboarding(): Promise<void> {
+  const model = onboardModelValue();
+  if (!model) {
+    setOnboardResult(dom.onboardModelResult, "Pick a model first.", "fail");
+    return;
+  }
+  const config = preset(onboardPreset);
+  const update: SettingsUpdate = {
+    provider: config.provider,
+    base_url: config.baseUrl,
+    model,
+  };
+  if (onboardKey) {
+    update.api_key = onboardKey;
+  }
+  dom.onboardModelNext.disabled = true;
+  setOnboardResult(dom.onboardModelResult, "Saving...", null);
+  try {
+    const settings = await putSettings(update);
+    currentSettings = settings;
+    updateModelBadge(settings);
+    updateComposerWarning(settings);
+    applySettingsToForm(settings);
+    onboardKey = "";
+    dom.onboardKey.value = "";
+    showOnboardStep("done");
+    await checkOnboarding(settings);
+  } catch (error) {
+    setOnboardResult(dom.onboardModelResult, `Could not save: ${describeError(error)}`, "fail");
+  } finally {
+    dom.onboardModelNext.disabled = false;
+  }
+}
+
+/**
+ * Spend one tiny completion saying whether this works.
+ *
+ * Better here than on the first real message. A wrong key or a model the
+ * account cannot call reads as a broken product when it surfaces mid
+ * answer, and as a typo when it surfaces on a setup screen.
+ */
+async function checkOnboarding(settings: Settings): Promise<void> {
+  dom.onboardDoneLead.textContent = `Saved. ${settings.model}, through ${preset(onboardPreset).label}.`;
+  setOnboardResult(dom.onboardDoneResult, "Checking that it answers...", null);
+  try {
+    const result = await testConnection();
+    if (result.ok) {
+      setOnboardResult(dom.onboardDoneResult, "It answered. You are set up.", "ok");
+      return;
+    }
+    setOnboardResult(
+      dom.onboardDoneResult,
+      `Saved, but the check did not pass: ${result.reason ?? "the endpoint did not answer."}`,
+      "fail",
+    );
+  } catch (error) {
+    setOnboardResult(
+      dom.onboardDoneResult,
+      `Saved, but the check did not pass: ${describeError(error)}`,
+      "fail",
+    );
+  }
+}
+
+function setOnboardResult(node: HTMLElement, text: string, state: "ok" | "fail" | null): void {
+  node.textContent = text;
+  if (state) {
+    node.dataset.state = state;
+  } else {
+    delete node.dataset.state;
+  }
 }
 
 /* ------------------------------------------------------------------ */

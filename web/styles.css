@@ -2604,6 +2604,157 @@ button {
   color: var(--danger);
 }
 
+/* First run. Reuses the settings overlay and panel; only the steps inside
+   it are new. */
+
+.onboard-body {
+  padding: 16px 20px 20px;
+}
+
+.onboard-step {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.onboard-step[hidden] {
+  display: none;
+}
+
+.onboard-lead {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.onboard-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+.onboard-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboard-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 11px 13px;
+  text-align: left;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-inset);
+  color: var(--text);
+  font: inherit;
+}
+
+.onboard-provider:hover {
+  border-color: rgba(94, 234, 212, 0.45);
+}
+
+.onboard-provider-label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.onboard-provider-summary {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.onboard-keylink a {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-dim);
+  word-break: break-all;
+}
+
+.onboard-keylink a:hover {
+  color: var(--accent);
+}
+
+.onboard-models {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.onboard-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboard-group-title {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.onboard-group-note {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.onboard-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.onboard-choice:hover {
+  border-color: var(--line);
+  background: var(--bg-inset);
+}
+
+.onboard-choice input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.onboard-choice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboard-choice-label {
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.onboard-choice-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  word-break: break-word;
+}
+
 @media (max-width: 560px) {
   .model-btn span {
     display: none;
