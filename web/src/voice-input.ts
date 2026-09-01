@@ -11,6 +11,7 @@ export interface VoiceInputElements {
   microphone: HTMLButtonElement;
   cancel: HTMLButtonElement;
   status: HTMLElement;
+  toast: HTMLElement;
 }
 
 export interface VoiceEnvironment {
@@ -77,10 +78,21 @@ export function createVoiceInput(
   let liveSpan: TrackedSpan | null = null;
   let liveBusy = false;
   let liveAbandoned = false;
+  let primed = true;
 
   const message = (text: string): void => {
     elements.status.hidden = false;
     elements.status.textContent = text;
+  };
+
+  const showToast = (text: string): void => {
+    elements.toast.hidden = false;
+    elements.toast.textContent = text;
+  };
+
+  const hideToast = (): void => {
+    elements.toast.hidden = true;
+    elements.toast.textContent = "";
   };
 
   const releaseStream = (): void => {
@@ -188,6 +200,7 @@ export function createVoiceInput(
         message("Voice input is unavailable right now.");
         return;
       }
+      hideToast();
       message("Transcribing on this machine…");
       const transcript = await api.transcribe(recording);
       // If a live preview span is still sitting untouched in the composer,
@@ -226,24 +239,64 @@ export function createVoiceInput(
     const generation = ++readinessGeneration;
     visibleReadiness = generation;
     recordingGeneration = generation;
+    if (primed) readiness = Promise.resolve({ ready: true });
     let readinessError: unknown;
-    readiness = api
-      .wait((event) => {
-        if (visibleReadiness === generation) message(stageMessage(event.stage));
-        if (event.status === "error") readinessError = event.detail;
-      })
-      .then(
-        () =>
-          readinessError === undefined
-            ? { ready: true }
-            : { ready: false, error: readinessError },
-        (error) => ({ ready: false, error }),
-      );
+    let firstEventResolve: ((event: VoiceWaitEvent) => void) | null = null;
+    let firstEventReject: ((error: unknown) => void) | null = null;
+    const firstEvent = new Promise<VoiceWaitEvent>((resolve, reject) => {
+      firstEventResolve = resolve;
+      firstEventReject = reject;
+    });
+    if (!primed) {
+      readiness = api
+        .wait((event) => {
+          if (visibleReadiness === generation) message(stageMessage(event.stage));
+          if (firstEventResolve) {
+            firstEventResolve(event);
+            firstEventResolve = null;
+            firstEventReject = null;
+          }
+          if (event.status === "error") readinessError = event.detail;
+        })
+        .then(
+          () =>
+            readinessError === undefined
+              ? { ready: true }
+              : { ready: false, error: readinessError },
+          (error) => {
+            if (firstEventReject) {
+              firstEventReject(error);
+              firstEventResolve = null;
+              firstEventReject = null;
+            }
+            return { ready: false, error };
+          },
+        );
+    }
     try {
+      if (!primed) {
+        const initial = await firstEvent;
+        showToast(setupToast(initial.stage, initial.status === "ready"));
+        const outcome = await readiness;
+        if (visibleReadiness === generation) visibleReadiness = 0;
+        primed = outcome?.ready === true;
+        elements.microphone.disabled = false;
+        busy = false;
+        if (outcome?.ready) {
+          showToast("Voice input is ready. Qwen3-ASR finished preparing on this machine. Click the microphone again to start recording.");
+          message("Voice input is ready. Click the microphone again to start recording.");
+        } else {
+          console.error("voice setup failed", outcome?.error);
+          showToast("Voice input could not be prepared on this machine.");
+          message("Voice input is unavailable right now.");
+        }
+        return;
+      }
       stream = await environment.mediaDevices.getUserMedia({ audio: true });
       // Show the level meter as soon as the microphone is live, so the page
       // says it is listening while the runtime is still waking up.
       meter.start(stream);
+      hideToast();
       const Recorder = environment.MediaRecorder;
       const mimeType = MIME_TYPES.find((type) => Recorder.isTypeSupported?.(type));
       recorder = mimeType ? new Recorder(stream, { mimeType }) : new Recorder(stream);
@@ -287,8 +340,10 @@ export function createVoiceInput(
       void reportBackgroundFailure(readiness);
       readiness = null;
     } finally {
-      elements.microphone.disabled = false;
-      busy = false;
+      if (!recorder) {
+        elements.microphone.disabled = false;
+        busy = false;
+      }
     }
   };
 
@@ -298,6 +353,7 @@ export function createVoiceInput(
       return;
     }
     if (!status.runtime_reachable) {
+      primed = false;
       message(
         status.setup_available
           ? "Voice input will be prepared on this machine when you use the microphone."
@@ -306,9 +362,11 @@ export function createVoiceInput(
       return;
     }
     if (!status.model_present) {
+      primed = false;
       message("The local runtime is not serving the configured Qwen3-ASR model.");
       return;
     }
+    primed = true;
     message("Voice input is ready.");
   };
 
@@ -361,6 +419,26 @@ function stageMessage(stage: VoiceWaitEvent["stage"]): string {
       return "Voice input is ready.";
     case "error":
       return "Voice input is unavailable right now.";
+  }
+}
+
+function setupToast(stage: VoiceWaitEvent["stage"], ready: boolean): string {
+  if (ready) {
+    return "Voice input is ready. Qwen3-ASR finished preparing on this machine. Click the microphone again to start recording.";
+  }
+  switch (stage) {
+    case "creating_environment":
+      return "Preparing voice input on this machine. Creating a private runtime for Qwen3-ASR.";
+    case "installing":
+      return "Preparing voice input on this machine. Installing the local Qwen3-ASR runtime.";
+    case "downloading_model":
+      return "Preparing voice input on this machine. Downloading the Qwen3-ASR model. This first use can take a few minutes.";
+    case "loading":
+      return "Preparing voice input on this machine. Loading the Qwen3-ASR model.";
+    case "ready":
+      return "Voice input is ready. Qwen3-ASR finished preparing on this machine. Click the microphone again to start recording.";
+    case "error":
+      return "Voice input could not be prepared on this machine.";
   }
 }
 

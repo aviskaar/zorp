@@ -163,6 +163,7 @@ interface Elements {
   voiceMicrophone: HTMLButtonElement;
   voiceCancel: HTMLButtonElement;
   voiceStatus: HTMLElement;
+  voiceToast: HTMLElement;
   voiceMeter: HTMLElement;
   reviewPanel: HTMLButtonElement;
   zorpBolt: HTMLButtonElement;
@@ -261,6 +262,7 @@ const voiceInput = createVoiceInput(
     microphone: dom.voiceMicrophone,
     cancel: dom.voiceCancel,
     status: dom.voiceStatus,
+    toast: dom.voiceToast,
   },
   {
     wait: waitForVoiceModel,
@@ -490,6 +492,7 @@ function collectElements(): Elements {
     voiceMicrophone: byId<HTMLButtonElement>("voice-mic"),
     voiceCancel: byId<HTMLButtonElement>("voice-cancel"),
     voiceStatus: byId("voice-status"),
+    voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
     settingsOverlay: byId("settings-overlay"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),

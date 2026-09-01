@@ -283,8 +283,12 @@ conversation search needs.
 ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build
 # UI on http://localhost:8080, server on http://localhost:7777
 docker compose exec ollama ollama pull qwen3:4b
-docker compose exec ollama ollama pull qwen3-embedding
 ```
+
+The compose stack now pulls the default chat model and the embedding model for
+recall on startup, so Docker comes up ready for both local chat and
+conversation indexing. Point `ZORP_BASE_URL` and `ZORP_MODEL` somewhere else if
+you want a different model endpoint.
 
 The server binds loopback by default. Binding anything else requires
 `--token` and refuses to start without it, because a reachable `zorp-web`
@@ -592,6 +596,9 @@ cargo build --workspace --exclude zorp-track   # fast path, see note above
 cargo test --workspace --exclude zorp-track    # matches CI; see CONTRIBUTING.md for full coverage
 cargo run -p zorp-eval -- --help               # evaluation harness
 ```
+
+To run zorp-agent against Terminal-Bench, see
+[`docs/benchmarks.md`](docs/benchmarks.md).
 
 Working in this repo? Read [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md)
 first. They cover the inherited vs. zorp-specific code boundary, where

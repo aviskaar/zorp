@@ -1,0 +1,47 @@
+# Test deploy of the zorp-web backend for app.zorp.dev, no Ollama sidecar:
+# recall/voice are compiled out (FEATURES empty) and chat goes to a real
+# hosted OpenAI-compatible endpoint via ZORP_BASE_URL/ZORP_API_KEY instead.
+# The frontend (web/) deploys separately, as a Cloudflare Worker — see
+# web/wrangler.jsonc and web/README.md's "Deploying the UI" section.
+#
+# One-time setup from the repo root:
+#   flyctl launch --no-deploy --copy-config --name <your-app-name>
+#   flyctl volumes create zorp_state --size 1 --region <primary_region below>
+#   flyctl secrets set \
+#     ZORP_WEB_TOKEN=$(openssl rand -hex 16) \
+#     ZORP_ALLOW_ORIGIN=https://app.zorp.dev \
+#     ZORP_BASE_URL=<your model provider's OpenAI-compatible base URL> \
+#     ZORP_MODEL=<model name> \
+#     ZORP_API_KEY=<that provider's key>
+#   flyctl deploy
+#
+# Then point the frontend's ZORP_API_BASE (web/index.html, or wherever it's
+# templated) at this app's https://<name>.fly.dev, or a CNAME onto it, and
+# start the Worker as documented in web/README.md.
+
+app = "zorp-api-test" # rename: must be globally unique on Fly
+primary_region = "ord"
+
+[build]
+  dockerfile = "zorp-web/Dockerfile"
+
+[build.args]
+  FEATURES = ""
+
+[env]
+  ZORP_STATE_DB = "/home/zorp/state/sessions.db"
+
+[[mounts]]
+  source = "zorp_state"
+  destination = "/home/zorp/state"
+
+[http_service]
+  internal_port = 7777
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
