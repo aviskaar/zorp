@@ -362,7 +362,13 @@ resulting artifact, deliver it in the right form.
   assemble an HTML string: everything it puts on the page goes through
   `textContent`, because the text it is rendering came from a model that
   has been reading tool results and web pages. Reach for a markdown
-  library and you have reached for `innerHTML`.
+  library and you have reached for `innerHTML`. `web/src/onboarding.ts`
+  is the first-run flow and the third path under the same rule: a model id
+  and a model name come off a provider's listing, so they land through
+  `textContent` too. That flow is a client for the settings endpoints and
+  nothing more. It holds no settings of its own, it cannot start a turn, a
+  panel or an investigate run, and it calls a model free only when the
+  listing stated a price of zero. See `docs/DECISIONS.md` (2026-09-01).
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` and
