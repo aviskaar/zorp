@@ -18,6 +18,7 @@
 //! mean nothing.
 
 use crate::agent::{Agent, Outcome};
+use crate::blocks::{bare_objects, fenced_blocks};
 use crate::model::Model;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -199,96 +200,6 @@ fn is_forecast_shaped(body: &str) -> bool {
             .and_then(|v| v.as_f64())
             .is_some_and(f64::is_finite)
     })
-}
-
-/// Every fenced block body in `text`, in order.
-///
-/// A fence left open at end of input still yields its body. The model is
-/// asked for the forecast last, so a truncated answer loses its closing
-/// fence and nothing else, and dropping a body that parses because three
-/// backticks never arrived is throwing away the answer over punctuation.
-/// That was 8 of the 25 discarded attempts in the registry run, all of
-/// them reported as "no fenced json block in the forecast".
-fn fenced_blocks(text: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut inside: Option<Vec<&str>> = None;
-    for line in text.lines() {
-        let fence = line.trim_start().starts_with("```");
-        match (&mut inside, fence) {
-            (None, true) => inside = Some(Vec::new()),
-            (Some(body), true) => {
-                blocks.push(body.join("\n"));
-                inside = None;
-            }
-            (Some(body), false) => body.push(line),
-            (None, false) => {}
-        }
-    }
-    if let Some(body) = inside {
-        blocks.push(body.join("\n"));
-    }
-    blocks
-}
-
-/// Every balanced `{...}` span in `text`, in order.
-///
-/// The fallback for a model that answers with the right object and no
-/// backticks. Balanced rather than regular: a forecast is flat today, but a
-/// scan that stops at the first `}` would silently truncate the moment one
-/// nests, and a truncated object parses as nothing rather than as something
-/// wrong. Quotes and escapes are tracked so a brace inside a string cannot
-/// open or close a span.
-///
-/// This finds candidates and judges none of them. Every span still faces
-/// `is_forecast_shaped` and then every coherence check, so widening where a
-/// forecast may be found does not widen what counts as one. A forecast that
-/// cannot be read must never become one that was invented.
-fn bare_objects(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let mut spans = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(end) = balanced_end(bytes, i) {
-                spans.push(text[i..end].to_string());
-                i = end;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    spans
-}
-
-/// The index just past the `}` closing the object that opens at `start`,
-/// or `None` when it never closes.
-fn balanced_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (i, byte) in bytes.iter().enumerate().skip(start) {
-        if in_string {
-            match byte {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Ask for a forecast on a fresh agent with no tools and one step.
