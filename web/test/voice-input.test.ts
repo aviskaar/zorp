@@ -16,6 +16,7 @@ function fixture(): { window: Window; elements: VoiceInputElements } {
     <button id="mic" type="button"></button>
     <button id="cancel" type="button" hidden></button>
     <p id="status" hidden></p>
+    <div id="toast" hidden></div>
   `);
   const doc = dom.window.document;
   return {
@@ -25,6 +26,7 @@ function fixture(): { window: Window; elements: VoiceInputElements } {
       microphone: doc.querySelector<HTMLButtonElement>("#mic")!,
       cancel: doc.querySelector<HTMLButtonElement>("#cancel")!,
       status: doc.querySelector<HTMLElement>("#status")!,
+      toast: doc.querySelector<HTMLElement>("#toast")!,
     },
   };
 }
@@ -85,7 +87,7 @@ test("permission denial is visible", async () => {
   assert.match(elements.status.textContent ?? "", /permission/i);
 });
 
-test("one click requests readiness before permission and records while setup is pending", async () => {
+test("the first click on an unprepared machine opens setup UI and waits to record until a later click", async () => {
   const { window, elements } = fixture();
   const order: string[] = [];
   let ready: (() => void) | undefined;
@@ -105,7 +107,26 @@ test("one click requests readiness before permission and records while setup is 
     },
   });
   const { environment } = recordingEnvironment(() => order.push("permission"));
-  createVoiceInput(elements, voiceApi, environment);
+  const voice = createVoiceInput(elements, voiceApi, environment);
+  voice.observe({
+    available: true,
+    runtime_reachable: false,
+    model_present: false,
+    setup_available: true,
+    endpoint: null,
+    model: null,
+    stage: null,
+    detail: "not ready yet",
+  });
+  click(window, elements.microphone);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ["readiness"]);
+  assert.equal(elements.toast.hidden, false);
+  assert.match(elements.toast.textContent ?? "", /download|prepare|voice/i);
+  ready?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.match(elements.toast.textContent ?? "", /ready|click again/i);
+  assert.equal(order.includes("permission"), false, "permission should wait until setup is complete");
   click(window, elements.microphone);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(order, ["readiness", "permission"]);
@@ -113,16 +134,13 @@ test("one click requests readiness before permission and records while setup is 
   FakeRecorder.instance.finalData = new Blob(["audio"], { type: "audio/webm" });
   click(window, elements.microphone);
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(uploads, 0, "audio uploaded before the local model was ready");
-  ready?.();
-  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(uploads, 1);
 });
 
 test("readiness stages use fixed short copy instead of server detail", async () => {
   const { window, elements } = fixture();
   const messages: string[] = [];
-  createVoiceInput(
+  const voice = createVoiceInput(
     elements,
     api({
       wait: async (onEvent) => {
@@ -145,6 +163,16 @@ test("readiness stages use fixed short copy instead of server detail", async () 
     }),
     recordingEnvironment().environment,
   );
+  voice.observe({
+    available: true,
+    runtime_reachable: false,
+    model_present: false,
+    setup_available: true,
+    endpoint: null,
+    model: null,
+    stage: null,
+    detail: "not ready yet",
+  });
 
   click(window, elements.microphone);
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -166,7 +194,7 @@ test("setup failure keeps raw detail in the console and shows fixed copy", async
   const original = console.error;
   console.error = (...values: unknown[]) => errors.push(values);
   try {
-    createVoiceInput(
+    const voice = createVoiceInput(
       elements,
       api({
         wait: async (onEvent) => {
@@ -176,9 +204,16 @@ test("setup failure keeps raw detail in the console and shows fixed copy", async
       }),
       recordingEnvironment().environment,
     );
-    click(window, elements.microphone);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    FakeRecorder.instance.finalData = new Blob(["audio"], { type: "audio/webm" });
+    voice.observe({
+      available: true,
+      runtime_reachable: false,
+      model_present: false,
+      setup_available: true,
+      endpoint: null,
+      model: null,
+      stage: null,
+      detail: "not ready yet",
+    });
     click(window, elements.microphone);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
