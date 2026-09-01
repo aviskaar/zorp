@@ -440,6 +440,19 @@ impl Store {
         Ok(())
     }
 
+    /// Remove a conversation and everything recorded under it. Returns
+    /// whether a session row actually existed, so a caller can tell "gone"
+    /// from "never was" and answer a 404 rather than a false 204.
+    pub fn delete_session(&mut self, id: &str) -> Result<bool, BoxErr> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM messages WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM file_changes WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM message_images WHERE session_id = ?1", [id])?;
+        let deleted = tx.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(deleted > 0)
+    }
+
     pub fn record_change(&self, id: &str, seq: i64, c: &FileChange) -> Result<(), BoxErr> {
         self.conn.execute(
             "INSERT INTO file_changes (session_id, seq, path, before, after) \
@@ -745,6 +758,60 @@ CREATE TABLE file_changes (
         assert_eq!(loaded[2].tool_calls[0].name, "read_file");
         assert_eq!(loaded[2].tool_calls[0].arguments, json!({"path": "a.rs"}));
         assert_eq!(loaded[3].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn delete_session_removes_the_row_and_everything_recorded_under_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store.record_message("s1", 0, &Message::user("hi")).unwrap();
+        store
+            .record_message(
+                "s1",
+                1,
+                &Message::user_multimodal(vec![
+                    ContentPart::Text("look".into()),
+                    ContentPart::Image {
+                        data: vec![0xFF, 0xD8, 0xFF, 0xE0],
+                        mime_type: "image/jpeg".into(),
+                    },
+                ]),
+            )
+            .unwrap();
+        store
+            .record_change(
+                "s1",
+                2,
+                &FileChange {
+                    path: "a.rs".into(),
+                    before: None,
+                    after: "fn main() {}".into(),
+                },
+            )
+            .unwrap();
+
+        assert!(store.delete_session("s1").unwrap());
+
+        assert!(store.sessions().unwrap().is_empty());
+        assert!(store.load_messages("s1").unwrap().is_empty());
+        assert_eq!(store.change_count("s1").unwrap(), 0);
+        let images: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_images WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(images, 0);
+    }
+
+    /// A caller tells "deleted" from "never existed" by the return value, so
+    /// the API layer can answer 404 rather than a false 204.
+    #[test]
+    fn delete_session_says_whether_anything_was_there() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert!(!store.delete_session("never-existed").unwrap());
     }
 
     #[test]

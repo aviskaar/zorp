@@ -430,11 +430,22 @@ button {
   color: var(--text-faint);
 }
 
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* Anchors the menu popover below the kebab button in this row and no
+     other, the same trick `.files-menu` uses for the one workspace-wide
+     popover. */
+  position: relative;
+}
+
 .session-button {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 8px 10px;
   border-radius: 8px;
   text-align: left;
@@ -466,6 +477,70 @@ button {
 .session-time {
   font-size: 11.5px;
   color: var(--text-faint);
+}
+
+.session-actions {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.session-menu-btn {
+  width: 28px;
+  height: 28px;
+  opacity: 0.65;
+}
+
+.session-menu-btn:hover,
+.session-menu-btn[aria-expanded="true"] {
+  opacity: 1;
+  background: var(--bg-hover);
+}
+
+.session-menu-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: none;
+}
+
+.session-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.session-menu-item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-menu-item:hover {
+  background: var(--bg-inset);
+}
+
+.session-delete {
+  color: var(--danger);
+}
+
+.session-delete:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .sidebar-foot {
@@ -1469,6 +1544,23 @@ button {
   gap: 8px;
   max-width: var(--reading);
   margin: 7px auto 0;
+}
+
+.voice-toast {
+  max-width: min(var(--reading), calc(100vw - 24px));
+  margin: 10px auto 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-raised) 82%, var(--accent) 18%);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+}
+
+.voice-toast[hidden] {
+  display: none;
 }
 
 .voice-feedback:not(:has(> :not([hidden]))),
