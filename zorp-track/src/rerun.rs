@@ -118,6 +118,19 @@ impl GateOutcome {
     }
 }
 
+/// An outcome that surprised its own forecast, and the interval it
+/// surprised.
+///
+/// Returned by [`Store::gate_candidate`] and carried so a caller can say
+/// what it is about to spend repeats on without asking the database for
+/// numbers it has already been handed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GateCandidate {
+    pub observed_value: f64,
+    pub interval_low: f64,
+    pub interval_high: f64,
+}
+
 /// One repeat of the original experiment, and what it measured.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Repeat {
@@ -405,6 +418,53 @@ impl Store {
             repeats,
             divergences,
         })
+    }
+
+    /// Whether this experiment's outcome is worth gating at all.
+    ///
+    /// `None` in three cases, and all three mean the same thing to a
+    /// caller: do not spend model calls on repeats. There is no forecast
+    /// for the metric, so nothing was predicted and nothing can be
+    /// surprising. There is no numeric outcome, so nothing was measured.
+    /// Or the outcome fell inside its stated interval, which is a
+    /// forecast that was right, and `classify` refuses one of those
+    /// outright rather than classifying it.
+    ///
+    /// This exists so the decision to replay is made on the same forecast
+    /// and the same outcome [`Store::rerun_gate`] will later use, read by
+    /// the same two private readers. A caller picking the rows itself
+    /// could admit a candidate the gate then refuses for disagreeing
+    /// about which row counted, and it would have paid for the repeats
+    /// before finding out.
+    pub fn gate_candidate(
+        &self,
+        experiment_id: &str,
+        metric_key: &str,
+    ) -> Result<Option<GateCandidate>, TrackError> {
+        let expectation = match self.last_expectation(experiment_id, metric_key) {
+            Ok(e) => e,
+            // No forecast is a normal state, not a failure: forecasting
+            // is off by default and an unforecast attempt is the honest
+            // shape of a record nobody asked to predict.
+            Err(TrackError::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some(observed_value) = self.first_number_outcome(experiment_id, metric_key)? else {
+            return Ok(None);
+        };
+        if side_of(
+            observed_value,
+            expectation.interval_low,
+            expectation.interval_high,
+        ) == Side::Inside
+        {
+            return Ok(None);
+        }
+        Ok(Some(GateCandidate {
+            observed_value,
+            interval_low: expectation.interval_low,
+            interval_high: expectation.interval_high,
+        }))
     }
 
     pub(crate) fn track_id_for_experiment(

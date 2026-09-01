@@ -1,13 +1,33 @@
-//! Zorp mode: running one pre-registered `investigate` attempt from the
-//! browser, and reading back what it recorded.
+//! The bolt: pre-registered `investigate` attempts from the browser, the
+//! write-up they produce, and a read of what they recorded.
 //!
 //! There is no aryabhatta engine and this does not add one. aryabhatta is
 //! record plus readers, nine modules inside `zorp-track`, and it ships no
 //! command on purpose. What writes to it is `investigate`: every attempt
 //! records the conditions it ran under before the work starts, and, when
-//! `ZORP_FORECAST` is set, a forecast before that. So the browser-facing
-//! shape of "Zorp mode" is one `investigate` attempt plus a read of what
-//! landed. This module is those two things and nothing else.
+//! `ZORP_FORECAST` is set, a forecast before that.
+//!
+//! One press runs several attempts (`ZORP_BOLT_ATTEMPTS`, three by
+//! default), then hands the track to `co_write` and `critique` and
+//! reports the draft's path for the artifact pane. That is the whole
+//! shape: attempts, a write-up audited against what the attempts
+//! recorded, and a ledger read.
+//!
+//! # Every attempt starts where the first one did
+//!
+//! The transcript is truncated back to the seed before each one. An
+//! attempt that could read the previous attempt's answer is not an
+//! independent measurement of the metric, and comparing several of them
+//! is the only reason to run several. Same rule and same call as the
+//! re-run gate.
+//!
+//! # A killed track gets no write-up
+//!
+//! A breach of the pre-registered kill threshold is the answer to the
+//! question, not a failure to reach one. The loop stops, and no draft is
+//! written: `co_write` and `critique` both refuse a killed track, and
+//! producing a document arguing for a hypothesis its own threshold just
+//! rejected is the one artifact this must never make.
 //!
 //! It mirrors `panel.rs`. An attempt occupies the session exactly as a
 //! turn does: it sets `running`, it answers the existing stop endpoint,
@@ -330,6 +350,7 @@ pub fn spawn_investigate(
                     track_id,
                     approved: None,
                     needs_prereg: failure.needs_prereg,
+                    artifact: None,
                 },
                 EventKind::Error {
                     message: failure.message,
@@ -444,7 +465,7 @@ fn run_attempt(
     .with_renderer(renderer);
     let mut agent = agent;
 
-    let prereg_params = match (direction, &inferred) {
+    let mut prereg_params = match (direction, &inferred) {
         (Some(threshold_direction), _) => Some(zorp_agent::investigate::PreregParams {
             // Unwraps are safe: `check_request` returns a direction
             // only when all three arrived together.
@@ -477,28 +498,181 @@ fn run_attempt(
     // and it will read `auto-approve` in the ledger below.
     let checkpoint_mode = CheckpointMode::AutoApprove;
 
-    let approved = zorp_agent::investigate::run(
+    // Where the transcript stands before any attempt, so each one can
+    // start from here. See the loop below.
+    let seed_len = agent.transcript_len();
+    let wanted = attempts();
+    let mut approved = false;
+
+    for n in 1..=wanted {
+        // Every attempt starts where the first one did. This is the
+        // difference between measuring a thing several times and asking
+        // a model to agree with itself: an attempt that can read the
+        // previous answer is not an independent measurement of the
+        // metric, and the whole point of putting several of them in one
+        // evidence record is that they can be compared. Same reason the
+        // re-run gate truncates, and it uses the same call.
+        agent.truncate_transcript(seed_len);
+
+        if wanted > 1 {
+            agent.notice(&format!("Attempt {n} of {wanted}."));
+        }
+
+        // The commitment goes in on the first attempt only. Afterwards
+        // `investigate::run` reads the recorded trio for itself, and
+        // passing it again would only give a mismatch something to
+        // refuse.
+        let params = if n == 1 { prereg_params.take() } else { None };
+
+        approved = zorp_agent::investigate::run(
+            &mut agent,
+            &project,
+            &track_id,
+            &request.question,
+            params,
+            &checkpoint_mode,
+        )
+        .map_err(|e| AttemptFailure {
+            // The one error the page acts on rather than only displays.
+            // It means nobody has committed a metric and a threshold for
+            // this question: none typed, none recorded, and no proposal
+            // the model stood behind. The form is the answer, so say so
+            // in a field.
+            needs_prereg: matches!(e, InvestigateError::PreregRequired { .. }),
+            message: describe(e),
+        })?;
+
+        // A breach killed the track, which is the pre-registered answer
+        // to the question and not a failure to get one. Stop: further
+        // attempts would be refused by `investigate::run` anyway, since
+        // it will not start on a killed track.
+        if is_killed(&project, &track_id) {
+            agent.notice(
+                "The kill threshold was breached, so the track is closed. \
+                 That is the pre-registered answer to the question, and no \
+                 write-up is produced for it.",
+            );
+            return Ok(EventKind::InvestigateDone {
+                track_id,
+                approved: Some(approved),
+                needs_prereg: false,
+                artifact: None,
+            });
+        }
+    }
+
+    // The attempts are the evidence. This is the artifact.
+    let artifact = write_up(
         &mut agent,
         &project,
         &track_id,
         &request.question,
-        prereg_params,
         &checkpoint_mode,
-    )
-    .map_err(|e| AttemptFailure {
-        // The one error the page acts on rather than only displays. It
-        // means nobody has committed a metric and a threshold for this
-        // question: none typed, none recorded, and no proposal the model
-        // stood behind. The form is the answer, so say so in a field.
-        needs_prereg: matches!(e, InvestigateError::PreregRequired { .. }),
-        message: describe(e),
-    })?;
+    );
 
     Ok(EventKind::InvestigateDone {
         track_id,
         approved: Some(approved),
         needs_prereg: false,
+        artifact,
     })
+}
+
+/// Turns the bolt from one attempt into several.
+pub const ATTEMPTS_ENV: &str = "ZORP_BOLT_ATTEMPTS";
+
+/// Three, because one attempt is a single measurement and cannot show
+/// its own spread, and because each one is a whole agent run against a
+/// person watching a page. Somebody who wants a real distribution wants
+/// a batch harness, not a browser click, which is what `MAX_ATTEMPTS` is
+/// there to say.
+pub const DEFAULT_ATTEMPTS: usize = 3;
+pub const MAX_ATTEMPTS: usize = 10;
+
+/// How many attempts one bolt press runs.
+///
+/// A zero or an unparseable value falls back to the default rather than
+/// running nothing, for the same reason `ZORP_RERUN_REPEATS` does: a typo
+/// in a count must not silently turn the feature off.
+fn attempts() -> usize {
+    std::env::var(ATTEMPTS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_ATTEMPTS)
+        .min(MAX_ATTEMPTS)
+}
+
+fn is_killed(project: &Project, track_id: &str) -> bool {
+    project
+        .store
+        .get_track(track_id)
+        .map(|t| t.status == zorp_track::track::TrackStatus::Killed)
+        .unwrap_or(false)
+}
+
+/// Write the track up and audit the write-up, and return the artifact's
+/// path for the page to open.
+///
+/// Returns `None` rather than failing the run, and says why on the way
+/// past. The attempts are recorded whatever happens here, and throwing
+/// away an evidence record because the prose stage stumbled would be the
+/// worst trade available. This is also why `critique` failing still
+/// returns the draft: an unaudited draft is worth strictly more than no
+/// draft, as long as nobody is told it was audited.
+fn write_up(
+    agent: &mut Agent,
+    project: &Project,
+    track_id: &str,
+    question: &str,
+    checkpoint_mode: &CheckpointMode,
+) -> Option<String> {
+    if let Err(e) = zorp_agent::co_write::run(agent, project, track_id, question, checkpoint_mode) {
+        agent.notice(&format!("No write-up: {e}"));
+        return None;
+    }
+
+    // Bounded by the same variable the CLI uses. The audit is what makes
+    // the draft evidence-backed rather than merely written: it inventories
+    // the draft's claims and revises the ones the track's own record does
+    // not support.
+    let rounds = std::env::var("ZORP_CRITIQUE_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    match zorp_agent::critique::run(agent, project, track_id, rounds, checkpoint_mode) {
+        Ok(report) => {
+            let audited = if report.was_clean() {
+                "the record supported every claim in it".to_string()
+            } else {
+                format!(
+                    "{} claims were not supported by the record, {} still are not after revision",
+                    report.initial(),
+                    report.remaining()
+                )
+            };
+            agent.notice(&format!("Draft audited: {audited}."));
+        }
+        Err(e) => agent.notice(&format!(
+            "Draft written but not audited: {e}. Its claims have not been \
+             checked against the track's evidence record."
+        )),
+    }
+
+    // Relative to the working directory, which is what the artifact pane
+    // serves paths against. An absolute path would not open.
+    let draft = project.track_dir(track_id).join("draft.md");
+    if !draft.is_file() {
+        return None;
+    }
+    let cwd = std::env::current_dir().ok()?;
+    Some(
+        draft
+            .strip_prefix(&cwd)
+            .unwrap_or(&draft)
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Why an attempt did not finish, and whether the page can act on it.
@@ -842,5 +1016,60 @@ mod tests {
         );
         assert_eq!(ledger.experiments[0].expectations.len(), 1);
         assert_eq!(ledger.experiments[0].expectations[0].expected_value, 80.0);
+    }
+
+    /// A typo in the count must not silently run zero attempts, and one
+    /// bolt press must not be able to ask for fifty agent runs.
+    #[test]
+    fn the_attempt_count_falls_back_rather_than_running_nothing_and_is_capped() {
+        let parse = |v: Option<&str>| {
+            v.and_then(|v| v.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(DEFAULT_ATTEMPTS)
+                .min(MAX_ATTEMPTS)
+        };
+        assert_eq!(parse(None), DEFAULT_ATTEMPTS);
+        assert_eq!(parse(Some("banana")), DEFAULT_ATTEMPTS);
+        assert_eq!(parse(Some("0")), DEFAULT_ATTEMPTS);
+        assert_eq!(parse(Some("1")), 1);
+        assert_eq!(parse(Some("900")), MAX_ATTEMPTS);
+    }
+
+    /// The loop stops on a kill, so this is what it stops on. A track
+    /// that is merely open must never read as killed, or one attempt
+    /// would be the most the bolt ever runs.
+    #[test]
+    fn a_killed_track_is_recognised_and_an_open_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
+        assert!(!is_killed(&project, "t1"));
+
+        project
+            .store
+            .set_track_status("t1", zorp_track::track::TrackStatus::Killed)
+            .unwrap();
+        assert!(is_killed(&project, "t1"));
+
+        // A track that does not exist is not a killed one, and must not
+        // read as one: that would stop the loop for the wrong reason.
+        assert!(!is_killed(&project, "no-such-track"));
+    }
+
+    /// The page opens whatever this returns, and it opens it against the
+    /// workspace root. An absolute path would simply fail to load.
+    #[test]
+    fn a_draft_path_is_reported_relative_to_the_workspace() {
+        let cwd = std::env::current_dir().unwrap();
+        let draft = cwd.join(".zorp").join("tracks").join("t1").join("draft.md");
+        let relative = draft.strip_prefix(&cwd).unwrap();
+        assert_eq!(
+            relative.to_string_lossy(),
+            ".zorp/tracks/t1/draft.md",
+            "the artifact pane serves paths relative to the workspace root"
+        );
     }
 }

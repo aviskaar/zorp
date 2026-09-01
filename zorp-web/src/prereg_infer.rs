@@ -364,11 +364,11 @@ mod tests {
     /// the track out of every later attempt that tried to match it.
     #[test]
     fn a_non_finite_threshold_escalates() {
-        for raw in [
-            "{\"metric_name\": \"a\", \"kill_threshold\": 1e400, \"threshold_direction\": \"lower-is-better\", \"confidence\": 0.9}",
-        ] {
-            assert_eq!(clamp(raw), None, "{raw:?} should have escalated");
-        }
+        // `1e400` is how serde_json spells an infinite float; a literal
+        // NaN is not valid JSON, so infinity is the only way this
+        // arrives from a model.
+        let raw = "{\"metric_name\": \"a\", \"kill_threshold\": 1e400, \"threshold_direction\": \"lower-is-better\", \"confidence\": 0.9}";
+        assert_eq!(clamp(raw), None);
     }
 
     #[test]

@@ -3,6 +3,9 @@
 
 mod agent;
 mod approval;
+// Both users, `investigate` and `validate`, are behind `research`.
+#[cfg(feature = "research")]
+mod blocks;
 mod capsule;
 mod chat;
 #[cfg(feature = "research")]

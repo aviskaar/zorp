@@ -447,6 +447,17 @@ export interface InvestigateDoneEvent {
    * wording would fail by silently never opening the form.
    */
   needs_prereg?: boolean;
+  /**
+   * The write-up the attempts produced, as a workspace path the artifact
+   * pane can open. Absent when the track was killed by its own threshold
+   * (the breach is the answer, and no draft is written for one) or when
+   * the writing stage could not finish.
+   *
+   * A path and not the prose. The pane serves and re-reads the file, so
+   * sending the text here would put a second copy on the page that goes
+   * stale as soon as `critique` revises it.
+   */
+  artifact?: string;
 }
 
 export type ZorpEvent =

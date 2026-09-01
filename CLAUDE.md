@@ -43,7 +43,17 @@ resulting artifact, deliver it in the right form.
   an expectation recorded afterwards is a postdiction. Forecasting is
   off by default because it costs a model call on every attempt. Leave
   it off and the ledger stays empty, which is the honest state for a
-  record nobody has fed. Two rules hold the whole thing up and
+  record nobody has fed. The `anomalies` table has its own producer and
+  its own switch: `zorp-agent/src/investigate/gate.rs` runs after an
+  attempt, and only when the outcome fell outside its own stated
+  interval, repeats the attempt and hands the repeats to
+  `Store::rerun_gate`. It is off unless `ZORP_RERUN_GATE` is set, because
+  each repeat is a whole agent run, and it truncates the transcript back
+  to the seed before each one so a repeat cannot read the original's
+  answer. It runs before the kill threshold, since a breach kills the
+  track and repeats would then be impossible. See `docs/DECISIONS.md`
+  (2026-09-01) before changing any of it. Two rules hold the whole thing
+  up and
   neither is negotiable. Detection is code and the model only
   interprets, the same split `critique` already uses. And no detector,
   and nothing in the search layer, may read a column holding
@@ -93,10 +103,19 @@ resulting artifact, deliver it in the right form.
   `POST /api/sessions/:id/panel` on the existing event stream, and it
   occupies the session exactly as a turn does. See `docs/DECISIONS.md`
   (2026-08-20) before changing any of that.
-- "Zorp mode" in the browser is one `investigate` attempt plus a read of
-  what landed in the aryabhatta ledger. It is not a fifth capability and
-  there is no aryabhatta engine behind it; `investigate` is the only
-  thing that writes to the record. It lives in
+- The bolt in the composer (once "Zorp mode") is `investigate` attempts
+  from the browser, the write-up they produce, and a read of what landed
+  in the aryabhatta ledger. It is not a fifth capability and there is no
+  aryabhatta engine behind it; `investigate` is the only thing that
+  writes to the record. One press runs `ZORP_BOLT_ATTEMPTS` attempts,
+  three by default and capped at ten, truncating the transcript back to
+  the seed before each one so no attempt can read the previous answer,
+  then hands the track to `co_write` and `critique` and reports the
+  draft's path for the artifact pane. A track killed by its own
+  threshold stops the loop and gets no write-up: that breach is the
+  answer, and a document arguing for a hypothesis its own threshold just
+  rejected is the one artifact this must never make. See
+  `docs/DECISIONS.md` (2026-09-01) before changing any of it. It lives in
   `zorp-web/src/investigate.rs` behind a non-default `research` feature
   on `zorp-web`, mirrors `panel`'s shape at
   `POST /api/sessions/:id/investigate` on the existing event stream, and

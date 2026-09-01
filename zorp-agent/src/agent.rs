@@ -402,6 +402,18 @@ impl Agent {
         self
     }
 
+    /// Say something to whoever is watching, between runs.
+    ///
+    /// The renderer is owned by the agent once it is installed, so a
+    /// caller that wants to narrate a sequence of runs (a re-run gate, a
+    /// several-attempt investigation) would otherwise have to keep a
+    /// second handle to the same channel and hope the two stay in order.
+    /// This is not on the message list and never reaches the model: it
+    /// goes to the same place tool activity does.
+    pub fn notice(&mut self, text: &str) {
+        self.renderer.notice(text);
+    }
+
     /// Change the approval mode mid-session (used by the chat REPL).
     pub fn set_approval(&mut self, approval: ApprovalMode) {
         self.approval = approval;
@@ -415,6 +427,30 @@ impl Agent {
         self.recorded_messages = self.messages.len();
         self.recorded_changes = 0;
         self.cx.clear_changes();
+    }
+
+    /// How many messages the transcript holds right now.
+    ///
+    /// Paired with [`Agent::truncate_transcript`] so a caller can run the
+    /// same task twice and have the second run be a repeat rather than a
+    /// continuation. `run` appends, so without this the second call would
+    /// see the first one's whole transcript and answer from it.
+    pub fn transcript_len(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Drop everything after the first `len` messages.
+    ///
+    /// This is what makes a replay independent, which is the only reason
+    /// it exists. The re-run gate classifies repeats against the interval
+    /// the original surprised, and a repeat that could read the original's
+    /// answer would agree with it for the wrong reason: `Reproduced` would
+    /// stop meaning "it happened again" and start meaning "it was told
+    /// what it said last time". Longer than the transcript is a no-op.
+    pub fn truncate_transcript(&mut self, len: usize) {
+        self.messages.truncate(len);
+        self.message_metadata.truncate(len);
+        self.recorded_messages = self.recorded_messages.min(len);
     }
 
     /// Replace the seed transcript (used by `resume`). The provided messages are

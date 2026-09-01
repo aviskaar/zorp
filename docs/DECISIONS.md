@@ -12,6 +12,172 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-09-01: the bolt runs several attempts and ends in a write-up, and `deliver` was not the thing to end in
+
+**Decision:** one press of the bolt runs `ZORP_BOLT_ATTEMPTS` attempts
+(three by default, capped at ten), then hands the track to `co_write`
+and `critique` and reports the draft's path so the artifact pane opens
+it. That completes the last two items of #140.
+
+**`deliver` is not what the issue thought it was.** It searches huiban
+for conferences and journals and writes `venues.md`, a ranked
+publication shortlist. It is where to send a paper, not the paper. The
+document a person wants out of the bolt is `co_write`'s `draft.md`,
+audited by `critique` against the track's own evidence record. So the
+pipeline is investigate, co-write, critique, and `deliver` stays a
+separate step for work actually aimed at publication. It also requires
+huiban MCP tools, which most runs will not have, and making every bolt
+press depend on them would have been wrong on its own.
+
+Four things about the loop.
+
+**Every attempt starts where the first one did.** The transcript is
+truncated back to the seed before each, using the call the re-run gate
+added. An attempt that can read the previous attempt's answer is not an
+independent measurement, and being able to compare them is the only
+reason to run several. Without this the ledger would hold one
+measurement and two echoes of it.
+
+**The pre-registration is committed once.** Attempt one writes it;
+later attempts pass nothing and `investigate::run` reads the record for
+itself. Re-submitting it would only give the mismatch check something
+to refuse.
+
+**A killed track stops the loop and gets no write-up.** A breach is the
+pre-registered answer to the question, not a failure to reach one.
+`co_write` and `critique` both refuse a killed track anyway, and a
+document arguing for a hypothesis its own threshold just rejected is
+the one artifact this must never produce.
+
+**The write-up cannot fail the run.** `co_write` or `critique` falling
+over returns no artifact and says so on the stream; the attempts stay
+recorded. A `critique` that fails still returns the draft, because an
+unaudited draft is worth more than none as long as nobody is told it
+was audited. The notice says which happened.
+
+Ruled out: a success threshold to iterate against. The pre-registration
+has a kill threshold and no pass mark, and inventing one so the loop
+could stop early would be the model choosing its own pass mark, which
+is the exact thing #140 flagged and the whole evidence record exists to
+prevent. The loop runs a fixed, stated number of attempts and stops
+early only on the one criterion that was actually pre-registered.
+
+Also ruled out: sending the draft's text on the event stream. The
+artifact pane already serves and re-reads files under the workspace, so
+the text would be a second copy that goes stale the moment `critique`
+revises the file. The event carries a path.
+
+## 2026-09-01: the fence is the model's punctuation, not its answer
+
+**Decision:** `parse_attempt_result` and `parse_validation_result` now
+read the same way `parse_forecast` does. They share one set of
+extractors (`zorp-agent/src/blocks.rs`), read backwards to the last
+block that is actually the answer, accept a fence left open at end of
+input, and fall back to a bare `{...}` object when no fence carries one.
+
+Run 7's corpus lost 10 of 20 attempts to
+`no fenced JSON block found in the agent's answer`. Every failure was
+the same small local model and every one had a complete result object in
+its raw text with no backticks around it. That was recorded on
+2026-08-31 as an output-contract problem, which it is, but the contract
+that was wrong was ours: the model answered the question and we threw
+the answer away over punctuation. `parse_forecast` had already been
+through this twice, once for unclosed fences and once for bare objects,
+and the fix here is that fix applied to the other two parsers rather
+than a third invention.
+
+Two things beyond the reported bug came out of it.
+
+**Backwards, not forwards.** The old attempt parser took the *first*
+block carrying a `metric_value`. A model that fills in the requested
+shape while narrating ("I'll report `{"metric_value": 0, ...}` once I've
+measured") would have that placeholder recorded. This is the worse
+failure of the two, because it does not fail the attempt: it writes a
+wrong number into the evidence record and carries on. Nobody had
+observed it, and nothing would have shown it if it had happened.
+
+**`validate` had the same defect** and was fixed with it. Its parser is
+where the attempt parser was forked from, it faces the same models, and
+fixing only the path that was reported would have left the sibling
+broken while looking finished.
+
+Widening where an answer may be found does not widen what counts as one.
+Every candidate still faces a shape check before it is selected, and
+then every check that was already there: `metric_value` must be present
+and finite, and `validate`'s "no citation, no claim" rule is untouched.
+An answer that cannot be read must never become one that was invented.
+
+Not fixed, and deliberately named rather than quietly left:
+`critique/claims.rs`, `panel/verdict.rs` and `capsule.rs` each still
+carry their own fence scanner with the same blind spots. None of them
+writes a number to the evidence record, which is why they were not
+bundled in here, and they should move to `blocks.rs` when someone next
+touches them.
+
+## 2026-09-01: the anomaly ledger gets a producer, and it is off by default
+
+The entry below found that nothing outside a test had ever called
+`rerun_gate`, so the `anomalies` table had no producer and no number of
+attempts would have put a row in it. `zorp-agent/src/investigate/gate.rs`
+is that producer.
+
+It runs after an attempt records its outcome. If the outcome fell inside
+its own stated interval, or there was no forecast, or the outcome was not
+a number, nothing happens and nothing is said. Otherwise the attempt is
+repeated and the repeats go to `Store::rerun_gate`, which classifies
+them. `Reproduced` and `Unverifiable` admit, `Transient` and `Volatile`
+are counted as noise rather than discarded, so the noise rate stays
+readable afterwards.
+
+Five things were decided and are worth having written down.
+
+**It is off by default**, behind `ZORP_RERUN_GATE`, with the count in
+`ZORP_RERUN_REPEATS` defaulting to 2 and capped at 5. A gated attempt
+costs one full agent run per repeat, so the default triples the price of
+any attempt that surprises its forecast. This is the more expensive of
+the two opt-ins and `ZORP_FORECAST` is off for the same reason. A ledger
+nobody paid for is empty, and empty is the honest state for a record
+nobody has fed. Two repeats and not one because `classify` measures
+spread across the repeats alone: one repeat has zero spread and can never
+fail the agreement check, so it can reach `Reproduced` but can never be
+contradicted.
+
+**It runs before the kill threshold is enforced.** A breach kills the
+track and `investigate::run` refuses to start on a killed track, so
+repeats after the kill could not run at all. It is also right on its own
+terms: a breach is the largest deviation an attempt can produce, and a
+ledger that excluded exactly those would hold only the anomalies that
+were not bad enough to matter, which is a selection effect in the worst
+available direction.
+
+**A repeat starts where the original started.** `Agent::run` appends to
+the transcript rather than resetting it, which was found the hard way, so
+`gate_inner` truncates back to the seed before each repeat. Without that,
+`Reproduced` would stop meaning "it happened again" and start meaning "it
+was shown its own previous answer". `a_surprise_that_repeats_puts_a_row_in_the_anomaly_ledger`
+asserts the transcript length is unchanged after a one-repeat gate, which
+fails if the truncation is deleted.
+
+**A repeat that produces no number is still handed to the gate**, which
+makes the verdict `Unverifiable`, which is admitted and flagged. Failing
+to look is not evidence that there was nothing to see, and dropping the
+repeat would turn a broken replay into a clean `Reproduced`.
+
+**No model takes part in the decision.** `classify` is arithmetic and
+equality, `gate_candidate` is two reads and a comparison, and nothing
+here asks a model whether something was an anomaly. The model's only job
+is running the repeat exactly as it ran the original. Same split
+`critique` uses, same one integrity rule 5 protects.
+
+A failed gate never fails the attempt. The outcome is already recorded
+and a replay that goes wrong must not throw away a result that was
+earned.
+
+Ruled out: gating on surprise alone. Most prediction error in a software
+environment is a changed default or a mis-parsed file, and the ones that
+reproduce forever are flaky tests. Also ruled out: asking a model whether
+a deviation was interesting, for the reason above.
+
 ## 2026-09-01: the model proposes a pre-registration, a person still commits it, and an unsure model asks
 
 **Decision:** Zorp mode is a lightning bolt in the composer. The question
