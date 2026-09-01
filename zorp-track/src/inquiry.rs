@@ -1,4 +1,4 @@
-//! aryabhatta step 7: where findings go.
+//! aryabhatta step 7b: where findings go.
 //!
 //! A candidate question is handed to `validate`, which already scores
 //! redundancy and feasibility and already exists. Boredom is a question

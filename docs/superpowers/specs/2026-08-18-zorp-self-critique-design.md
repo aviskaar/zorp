@@ -122,7 +122,10 @@ exists to provide. Three places, in decreasing order of authority:
   clean pass writes a row with zero findings: "the pass ran and found
   nothing" and "the pass never ran" are different facts.
 - **`draft.pre-critique.md`**, written beside `draft.md` whenever the
-  pass changed anything. `diff` of the two is exactly what changed.
+  pass changed anything. `diff` of the two is exactly what this pass
+  changed. It holds the draft as the pass found it, so a second pass
+  overwrites it with the first pass's output rather than the original.
+  The `critiques` rows are where the whole history lives.
 - **`critique.md`**, the readable rendering: every round, every finding
   with the sentence it is about, and whether each revision was kept or
   discarded and why.

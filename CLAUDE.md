@@ -379,4 +379,6 @@ the discovery layer, is built and tested as nine modules inside
 ships no CLI command on purpose. `investigate` records conditions on
 every attempt and, behind `ZORP_FORECAST`, a forecast before each one,
 so the record now has a producer. Reading it back is still Rust against
-the library. It has not been run against real data yet.
+the library. Run 7 scored 151 forecasts from a crates.io corpus, which
+is the observed curve that set the calibration tolerance at 0.10; see
+`docs/DECISIONS.md` (2026-08-24). Beyond that it is barely exercised.
