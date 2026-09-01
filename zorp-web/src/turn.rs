@@ -159,7 +159,12 @@ pub fn spawn_turn(
         guard.cancel = Some(Arc::clone(&cancel));
         (Arc::clone(&guard.seq), Arc::clone(&guard.auto_approve))
     };
-    let approver = Arc::new(WebApprover::new(tx.clone(), Arc::clone(&seq), auto_approve));
+    let approver = Arc::new(WebApprover::new(
+        tx.clone(),
+        Arc::clone(&seq),
+        auto_approve,
+        settings.clone(),
+    ));
     session.lock().unwrap().approver = Some(Arc::clone(&approver));
 
     // Drain into the backlog on its own thread so a slow browser cannot

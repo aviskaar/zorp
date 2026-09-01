@@ -215,6 +215,12 @@ async fn auto_approve_on_an_unknown_session_is_not_found() {
 /// The feature itself: several machine changing tools in one run, and the
 /// browser is never asked. Both files have to be on disk, because "nobody was
 /// asked" is only good news if the work actually happened.
+///
+/// Auto-approve now runs each call past a safety reviewer before it fires
+/// (2026-08-31), which is one more request to the same mock endpoint per
+/// tool call: the reviewer is asked, answers SAFE, and only then does the
+/// standing yes fire. The script below is the real order of every request
+/// this run makes, reviewer calls included.
 #[tokio::test]
 async fn a_multi_tool_run_under_auto_approve_never_asks() {
     let _env = ENV.lock().await;
@@ -225,10 +231,12 @@ async fn a_multi_tool_run_under_auto_approve_never_asks() {
             "write_file",
             r#"{\"path\":\"one.txt\",\"content\":\"1\\n\"}"#,
         ),
+        &answers("SAFE"),
         &calls(
             "write_file",
             r#"{\"path\":\"two.txt\",\"content\":\"2\\n\"}"#,
         ),
+        &answers("SAFE"),
         &answers("wrote both"),
     ]);
     configure_model(dir.path(), &base);
