@@ -1,9 +1,11 @@
 mod error;
 pub mod forecast;
+pub mod gate;
 mod result;
 
 pub use error::InvestigateError;
 pub use forecast::{parse_forecast, Forecast, ForecastError};
+pub use gate::GateReport;
 pub use result::{parse_attempt_result, AttemptResult, ParseError};
 
 use crate::agent::{Agent, Outcome};
@@ -176,6 +178,10 @@ pub fn run(
         "{TASK_PROMPT_PREFIX}{}{TASK_PROMPT_SUFFIX}{hypothesis}",
         prereg.metric_name
     );
+    // Where the transcript stands before the attempt, so the re-run gate
+    // can put it back here for each repeat. Taken now rather than
+    // computed later because only this line knows what "before" meant.
+    let seed_len = agent.transcript_len();
     let outcome = agent.run(&task);
     let text = match outcome {
         Outcome::Complete(text) => text,
@@ -205,6 +211,30 @@ pub fn run(
     project
         .store
         .set_experiment_status(&experiment.id, ExperimentStatus::Completed)?;
+
+    // aryabhatta, after the work. The re-run gate is the only producer
+    // the `anomalies` table has, and it runs here rather than after the
+    // kill check below for two reasons. A breach kills the track and
+    // `run` refuses to start on a killed one, so repeats would be
+    // impossible afterwards. And a breach is the largest deviation an
+    // attempt can produce: a ledger that skipped exactly those would hold
+    // only the anomalies that were not bad enough to matter, which is a
+    // selection effect in the worst available direction.
+    //
+    // It cannot fail the attempt. The outcome above is already recorded
+    // and a replay that goes wrong must not throw it away.
+    let replay = gate::Replay {
+        project,
+        track_id,
+        prereg: &prereg,
+        original_experiment_id: &experiment.id,
+        task: &task,
+        seed_len,
+        checkpoint_mode,
+    };
+    if let Some(line) = gate::run_gate(agent, &replay).describe() {
+        eprintln!("zorp-agent: {line}");
+    }
 
     // Enforce the pre-registered kill threshold. This is not a
     // checkpoint: a breach kills the track unconditionally, so
@@ -426,11 +456,11 @@ mod tests {
         }
     }
 
-    fn well_formed_response() -> String {
+    pub(super) fn well_formed_response() -> String {
         "Done.\n```json\n{\"metric_value\": 42.0, \"summary\": \"worked\"}\n```\n".to_string()
     }
 
-    fn build_agent(response: String) -> Agent {
+    pub(super) fn build_agent(response: String) -> Agent {
         let calls = Arc::new(AtomicUsize::new(0));
         let model = StubModel { response, calls };
         Agent::new(

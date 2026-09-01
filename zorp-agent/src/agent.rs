@@ -417,6 +417,30 @@ impl Agent {
         self.cx.clear_changes();
     }
 
+    /// How many messages the transcript holds right now.
+    ///
+    /// Paired with [`Agent::truncate_transcript`] so a caller can run the
+    /// same task twice and have the second run be a repeat rather than a
+    /// continuation. `run` appends, so without this the second call would
+    /// see the first one's whole transcript and answer from it.
+    pub fn transcript_len(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Drop everything after the first `len` messages.
+    ///
+    /// This is what makes a replay independent, which is the only reason
+    /// it exists. The re-run gate classifies repeats against the interval
+    /// the original surprised, and a repeat that could read the original's
+    /// answer would agree with it for the wrong reason: `Reproduced` would
+    /// stop meaning "it happened again" and start meaning "it was told
+    /// what it said last time". Longer than the transcript is a no-op.
+    pub fn truncate_transcript(&mut self, len: usize) {
+        self.messages.truncate(len);
+        self.message_metadata.truncate(len);
+        self.recorded_messages = self.recorded_messages.min(len);
+    }
+
     /// Replace the seed transcript (used by `resume`). The provided messages are
     /// treated as already recorded so `resume` only persists new turns.
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {

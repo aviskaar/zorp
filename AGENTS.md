@@ -43,7 +43,17 @@ resulting artifact, deliver it in the right form.
   an expectation recorded afterwards is a postdiction. Forecasting is
   off by default because it costs a model call on every attempt. Leave
   it off and the ledger stays empty, which is the honest state for a
-  record nobody has fed. Two rules hold the whole thing up and
+  record nobody has fed. The `anomalies` table has its own producer and
+  its own switch: `zorp-agent/src/investigate/gate.rs` runs after an
+  attempt, and only when the outcome fell outside its own stated
+  interval, repeats the attempt and hands the repeats to
+  `Store::rerun_gate`. It is off unless `ZORP_RERUN_GATE` is set, because
+  each repeat is a whole agent run, and it truncates the transcript back
+  to the seed before each one so a repeat cannot read the original's
+  answer. It runs before the kill threshold, since a breach kills the
+  track and repeats would then be impossible. See `docs/DECISIONS.md`
+  (2026-09-01) before changing any of it. Two rules hold the whole thing
+  up and
   neither is negotiable. Detection is code and the model only
   interprets, the same split `critique` already uses. And no detector,
   and nothing in the search layer, may read a column holding
