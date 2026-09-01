@@ -605,6 +605,7 @@
             <select id="settings-preset">
               <option value="ollama">Ollama (local)</option>
               <option value="omlx">oMLX (local)</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="openai">OpenAI</option>
               <option value="anthropic">Anthropic</option>
               <option value="custom">Custom (OpenAI-compatible)</option>
@@ -667,6 +668,111 @@
           </div>
           <p class="settings-result" id="settings-result"></p>
         </form>
+      </div>
+    </div>
+
+    <!--
+      First run. Shown only when the server reports that nothing has ever
+      been configured: no saved setting, no ZORP_* env var, no key. It is a
+      guided way into the settings panel above and writes through the same
+      PUT /api/settings, so there is no second copy of the settings here.
+      Every step can be left with Skip, because a person who wants the panel
+      should not have to answer a wizard first.
+    -->
+    <div class="settings-overlay onboard-overlay" id="onboard-overlay" hidden>
+      <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
+        <div class="settings-head">
+          <h2 id="onboard-title">Set up zorp</h2>
+          <button class="icon-btn" id="onboard-close" type="button" aria-label="Close setup">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <div class="onboard-body">
+          <section class="onboard-step" id="onboard-step-start">
+            <p class="onboard-lead">
+              zorp runs on your machine and talks to a model somewhere. It does not ship with one, so
+              the first thing to do is say which model to use.
+            </p>
+            <ul class="onboard-list">
+              <li>Local models work, and nothing you type leaves this machine when you use one.</li>
+              <li>A hosted provider needs a key. It is kept in the server's memory, never written to
+                the config file.</li>
+              <li>You can change all of it later from the model button in the top bar.</li>
+            </ul>
+            <div class="settings-actions">
+              <button class="btn btn-deny" id="onboard-skip" type="button">Skip for now</button>
+              <button class="btn btn-allow" id="onboard-begin" type="button">Choose a provider</button>
+            </div>
+          </section>
+
+          <section class="onboard-step" id="onboard-step-provider" hidden>
+            <p class="onboard-lead">Where should the models come from?</p>
+            <div class="onboard-providers" id="onboard-providers"></div>
+            <div class="settings-actions">
+              <button class="btn btn-deny" id="onboard-provider-back" type="button">Back</button>
+            </div>
+          </section>
+
+          <section class="onboard-step" id="onboard-step-key" hidden>
+            <p class="onboard-lead" id="onboard-key-lead"></p>
+            <p class="onboard-keylink">
+              <a id="onboard-key-link" href="#" target="_blank" rel="noreferrer noopener"></a>
+            </p>
+            <div class="settings-field">
+              <label for="onboard-key">API key</label>
+              <input
+                id="onboard-key"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="paste the key here"
+              />
+            </div>
+            <p class="settings-note">
+              The key is sent to the zorp server on this machine and held in its memory for as long as
+              it keeps running. It is never written to <code>~/.config/zorp/web.toml</code> and never
+              sent back to this page. Set <code>ZORP_API_KEY</code> where the server runs to have it
+              survive a restart.
+            </p>
+            <p class="settings-result" id="onboard-key-result"></p>
+            <div class="settings-actions">
+              <button class="btn btn-deny" id="onboard-key-back" type="button">Back</button>
+              <button class="btn btn-allow" id="onboard-key-next" type="button">Continue</button>
+            </div>
+          </section>
+
+          <section class="onboard-step" id="onboard-step-model" hidden>
+            <p class="onboard-lead" id="onboard-model-lead"></p>
+            <div class="onboard-models" id="onboard-models"></div>
+            <div class="settings-field" id="onboard-model-text-field" hidden>
+              <label for="onboard-model-text">Model</label>
+              <input
+                id="onboard-model-text"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="model name"
+              />
+            </div>
+            <p class="settings-result" id="onboard-model-result"></p>
+            <div class="settings-actions">
+              <button class="btn btn-deny" id="onboard-model-back" type="button">Back</button>
+              <button class="btn btn-allow" id="onboard-model-next" type="button">
+                Save and check
+              </button>
+            </div>
+          </section>
+
+          <section class="onboard-step" id="onboard-step-done" hidden>
+            <p class="onboard-lead" id="onboard-done-lead"></p>
+            <p class="settings-result" id="onboard-done-result"></p>
+            <div class="settings-actions">
+              <button class="btn btn-deny" id="onboard-done-back" type="button">Change something</button>
+              <button class="btn btn-allow" id="onboard-finish" type="button">Start using zorp</button>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
 

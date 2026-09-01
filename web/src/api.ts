@@ -116,7 +116,43 @@ export interface SettingsUpdate {
  */
 export interface ModelsList {
   models: string[];
+  /**
+   * The same models, in the same order, with whatever else the endpoint
+   * said about each. Empty on an older server, which is why `models` is
+   * still the list every existing caller reads.
+   */
+  details: ModelDetail[];
   error: string | null;
+}
+
+/**
+ * One model as the endpoint described it.
+ *
+ * Everything past `id` is optional because only some providers say it, and
+ * a missing price is not a price of zero. A provider that states nothing
+ * has not said a model is free, and the first-run flow keeps those apart
+ * rather than sorting an unpriced listing into free and paid.
+ *
+ * Prices are per token, as the provider stated them. OpenRouter states a
+ * negative price for a model whose cost is decided per request, so a
+ * negative number is not a price either.
+ *
+ * `id` and `name` are remote text. They reach the page through
+ * `textContent` and nothing else.
+ */
+export interface ModelDetail {
+  id: string;
+  name?: string;
+  context_length?: number;
+  prompt_price?: number;
+  completion_price?: number;
+  /**
+   * What the model answers with, when the listing says. OpenRouter serves
+   * image and audio models beside the chat ones and separates them only
+   * here. Absent is a provider that said nothing, which is not the same as
+   * one that said "not text".
+   */
+  output_modalities?: string[];
 }
 
 /** What `POST /api/settings/test` answers with. */
@@ -999,6 +1035,7 @@ export async function listModels(baseUrl: string, apiKey?: string): Promise<Mode
   const result = await request<Partial<ModelsList>>("POST", "/api/settings/models", body);
   return {
     models: Array.isArray(result?.models) ? result.models : [],
+    details: Array.isArray(result?.details) ? result.details : [],
     error: typeof result?.error === "string" ? result.error : null,
   };
 }

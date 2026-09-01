@@ -368,9 +368,107 @@ pub fn save(settings: &PersistedSettings) -> io::Result<()> {
 /// on any failure. There is deliberately no "this failed" variant that isn't
 /// just this: the whole point is that a caller-supplied endpoint being
 /// unreachable is not a server error.
+///
+/// `details` carries the same models in the same order, plus whatever else
+/// the endpoint said about each one. It is additive: `models` keeps the
+/// shape every existing caller reads, and a provider that says nothing but
+/// an id (Ollama, oMLX, most OpenAI-compatible servers) produces details
+/// with only `id` set.
+#[derive(Default)]
 pub struct ModelsResult {
     pub models: Vec<String>,
+    pub details: Vec<ModelDetail>,
     pub error: Option<String>,
+}
+
+/// One model, as the endpoint described it.
+///
+/// Everything past `id` is optional because only some providers say it, and
+/// the difference between "this costs nothing" and "nobody said what this
+/// costs" is the whole reason this type exists. `Some(0.0)` is a provider
+/// stating a price of zero. `None` is a provider stating nothing, and a UI
+/// that turns the second into the first is telling someone a model is free
+/// on no evidence.
+///
+/// Prices are per token, as the provider stated them, and are not compared
+/// across providers or converted into anything. OpenRouter uses a negative
+/// price for a model whose cost is decided per request (`openrouter/auto`),
+/// which is neither free nor a stated price, and it stays negative here.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ModelDetail {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_price: Option<f64>,
+    /// What the model answers with, when the listing says. OpenRouter
+    /// serves image and audio models beside the chat ones and separates
+    /// them only here, so without this a picker sorting on context window
+    /// can land on a music model. `None` is a provider that said nothing,
+    /// which is not the same as one that said "not text".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_modalities: Option<Vec<String>>,
+}
+
+/// Read an OpenAI-shaped `{"data":[{"id":...}, ...]}` listing.
+///
+/// Split out of `fetch_models` so the parsing has a test that does not need
+/// a network. Anything without a string `id` is dropped: an entry nobody can
+/// name is an entry nobody can select.
+fn parse_models(body: &serde_json::Value) -> (Vec<String>, Vec<ModelDetail>) {
+    let Some(items) = body.get("data").and_then(|d| d.as_array()) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut models = Vec::new();
+    let mut details = Vec::new();
+    for item in items {
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        models.push(id.to_string());
+        details.push(ModelDetail {
+            id: id.to_string(),
+            name: item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            context_length: item.get("context_length").and_then(|v| v.as_u64()),
+            prompt_price: price(item, "prompt"),
+            completion_price: price(item, "completion"),
+            output_modalities: modalities(item),
+        });
+    }
+    (models, details)
+}
+
+/// What the model answers with, out of OpenRouter's `architecture` object.
+/// An empty or non-array value reads as nothing said, because a provider
+/// that listed no modalities has not ruled text out.
+fn modalities(item: &serde_json::Value) -> Option<Vec<String>> {
+    let listed: Vec<String> = item
+        .get("architecture")?
+        .get("output_modalities")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(str::to_string)
+        .collect();
+    (!listed.is_empty()).then_some(listed)
+}
+
+/// One price out of OpenRouter's `pricing` object. It sends them as decimal
+/// strings ("0", "0.0000004"), so a number is accepted too rather than
+/// depending on a wire detail nobody promised.
+fn price(item: &serde_json::Value, field: &str) -> Option<f64> {
+    let value = item.get("pricing")?.get(field)?;
+    match value {
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        other => other.as_f64(),
+    }
 }
 
 /// How long to wait for a models-listing/test-connection probe. Short on
@@ -405,8 +503,8 @@ pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> ModelsResult {
         Ok(u) => u,
         Err(e) => {
             return ModelsResult {
-                models: Vec::new(),
                 error: Some(e),
+                ..ModelsResult::default()
             }
         }
     };
@@ -422,41 +520,31 @@ pub fn fetch_models(base_url: &str, api_key: Option<&str>) -> ModelsResult {
     match req.call() {
         Ok(resp) => match resp.into_json::<serde_json::Value>() {
             Ok(body) => {
-                let models = body
-                    .get("data")
-                    .and_then(|d| d.as_array())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|m| {
-                                m.get("id").and_then(|v| v.as_str()).map(str::to_string)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let (models, details) = parse_models(&body);
                 ModelsResult {
                     models,
+                    details,
                     error: None,
                 }
             }
             Err(e) => ModelsResult {
-                models: Vec::new(),
                 error: Some(format!("{url} did not answer with JSON: {e}")),
+                ..ModelsResult::default()
             },
         },
         Err(ureq::Error::Status(code, resp)) => ModelsResult {
-            models: Vec::new(),
             error: Some(format!(
                 "{url}: status code {code}: {}",
                 resp.into_string().unwrap_or_default()
             )),
+            ..ModelsResult::default()
         },
         // No `{url}` prefix here. ureq's transport errors already start with
         // the URL, and prefixing produced "http://…/models: http://…/models:
         // Connection Failed: …", which reads like two different failures.
         Err(e) => ModelsResult {
-            models: Vec::new(),
             error: Some(e.to_string()),
+            ..ModelsResult::default()
         },
     }
 }
@@ -657,6 +745,105 @@ mod tests {
                 "{bad} was stored anyway despite the error"
             );
         }
+    }
+
+    /// A provider that says only an id keeps working exactly as it did.
+    /// This is Ollama, oMLX, and most OpenAI-compatible servers: `models`
+    /// is the same list it always was, and every detail carries no price,
+    /// which is what tells the UI not to sort them into free and paid.
+    #[test]
+    fn a_listing_with_only_ids_reports_no_prices() {
+        let body = serde_json::json!({"data": [{"id": "qwen3:4b"}, {"id": "llama3.2"}]});
+        let (models, details) = parse_models(&body);
+        assert_eq!(models, vec!["qwen3:4b", "llama3.2"]);
+        assert_eq!(details.len(), 2);
+        assert!(details.iter().all(|d| d.prompt_price.is_none()));
+        assert!(details.iter().all(|d| d.completion_price.is_none()));
+        assert!(details.iter().all(|d| d.context_length.is_none()));
+    }
+
+    /// OpenRouter's shape. The prices arrive as decimal strings, a free
+    /// model states zero for both, and `openrouter/auto` states a negative
+    /// price because its cost is decided per request. All three have to
+    /// come out different: "free", "costs this much" and "nobody said" are
+    /// three different facts and the UI groups on them.
+    #[test]
+    fn openrouter_prices_are_parsed_out_of_the_pricing_object() {
+        let body = serde_json::json!({"data": [
+            {
+                "id": "meta-llama/llama-3.3-70b-instruct:free",
+                "name": "Llama 3.3 70B Instruct (free)",
+                "context_length": 65536,
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "anthropic/claude-sonnet-4",
+                "name": "Claude Sonnet 4",
+                "context_length": 200000,
+                "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+            },
+            {
+                "id": "openrouter/auto",
+                "name": "Auto Router",
+                "pricing": {"prompt": "-1", "completion": "-1"},
+            },
+            {
+                "id": "google/lyria-3-clip-preview",
+                "name": "Lyria 3 Clip Preview",
+                "context_length": 1048576,
+                "pricing": {"prompt": "0", "completion": "0"},
+                "architecture": {"output_modalities": ["text", "audio"]},
+            },
+        ]});
+        let (models, details) = parse_models(&body);
+        assert_eq!(models.len(), 4);
+        // A free model that answers with audio is still free and still
+        // listed. What it is not is a chat model, and only the listing
+        // says so.
+        assert_eq!(
+            details[3].output_modalities.as_deref(),
+            Some(["text".to_string(), "audio".to_string()].as_slice())
+        );
+        assert!(details[0].output_modalities.is_none());
+        assert_eq!(details[0].prompt_price, Some(0.0));
+        assert_eq!(details[0].completion_price, Some(0.0));
+        assert_eq!(details[0].context_length, Some(65536));
+        assert_eq!(
+            details[0].name.as_deref(),
+            Some("Llama 3.3 70B Instruct (free)")
+        );
+        assert_eq!(details[1].prompt_price, Some(0.000003));
+        assert_eq!(details[2].prompt_price, Some(-1.0));
+    }
+
+    /// A price sent as a number rather than a string still reads. Nobody
+    /// promised the string form and a listing that used numbers would
+    /// otherwise look like a listing that stated no price at all.
+    #[test]
+    fn a_numeric_price_reads_the_same_as_a_string_one() {
+        let body =
+            serde_json::json!({"data": [{"id": "x", "pricing": {"prompt": 0, "completion": 0}}]});
+        let (_, details) = parse_models(&body);
+        assert_eq!(details[0].prompt_price, Some(0.0));
+    }
+
+    /// An entry with no id is dropped rather than listed as an empty
+    /// string, and it must not shift `models` and `details` out of step.
+    #[test]
+    fn an_entry_with_no_id_is_dropped_from_both_lists() {
+        let body = serde_json::json!({"data": [{"id": "a"}, {"name": "no id here"}, {"id": "b"}]});
+        let (models, details) = parse_models(&body);
+        assert_eq!(models, vec!["a", "b"]);
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[1].id, "b");
+    }
+
+    /// A body that is JSON but not a listing is an empty list, not a panic.
+    #[test]
+    fn a_body_with_no_data_array_lists_nothing() {
+        let (models, details) = parse_models(&serde_json::json!({"error": "nope"}));
+        assert!(models.is_empty());
+        assert!(details.is_empty());
     }
 
     /// The good case, so the check above cannot be satisfied by rejecting

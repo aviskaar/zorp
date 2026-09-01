@@ -798,10 +798,18 @@ async fn list_models(
         tokio::task::spawn_blocking(move || settings::fetch_models(&base_url, api_key.as_deref()))
             .await
             .unwrap_or_else(|e| settings::ModelsResult {
-                models: Vec::new(),
                 error: Some(format!("internal error: {e}")),
+                ..settings::ModelsResult::default()
             });
-    Json(json!({"models": result.models, "error": result.error}))
+    // `models` is the bare id list every existing caller reads and it does
+    // not change. `details` is the same models with whatever else the
+    // endpoint said about each, which for OpenRouter is what separates a
+    // free model from a paid one.
+    Json(json!({
+        "models": result.models,
+        "details": result.details,
+        "error": result.error,
+    }))
 }
 
 /// Check that an endpoint answers at all. Reuses the models probe: a 2xx
