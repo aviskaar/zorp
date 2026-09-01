@@ -217,6 +217,17 @@ pub enum EventKind {
         /// apart would fail by silently never opening it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         needs_prereg: bool,
+        /// The write-up the attempts produced, as a path the artifact
+        /// pane can open. `None` when the track was killed (a breach is
+        /// the answer, and no draft is written for one) or when the
+        /// writing stage could not finish.
+        ///
+        /// A path rather than the text. The pane already serves files
+        /// under the workspace and re-reads them, so sending the prose
+        /// through the event stream would put a second copy of it on the
+        /// page that goes stale the moment `critique` revises the file.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        artifact: Option<String>,
     },
     /// This turn was told to look at earlier conversations, and here is
     /// exactly what it found.

@@ -114,6 +114,12 @@ fn configure(dir: &std::path::Path, responses: Vec<&str>) {
     // default. A forecast costs an extra model call, so a test that
     // forgot this would hang waiting for a response nobody queued.
     std::env::remove_var("ZORP_FORECAST");
+    // One attempt unless a test says otherwise. The product default is
+    // three, but every response here is queued by hand, so the count has
+    // to be pinned or each test would silently depend on how many
+    // attempts the default happens to be. `several_attempts_all_land_in_the_ledger`
+    // is the one that sets it back up.
+    std::env::set_var("ZORP_BOLT_ATTEMPTS", "1");
 }
 
 /// A model endpoint that accepts a connection and never answers, so a
@@ -131,6 +137,74 @@ fn mock_hang() -> String {
         }
     });
     format!("http://{addr}")
+}
+
+/// The loop. One press is several attempts, each one recorded as its own
+/// experiment, and each one starting from the same place.
+///
+/// The last part is what makes several attempts worth more than one. If
+/// the transcript were not truncated between them, attempt two would be
+/// answering with attempt one's answer in view, and the three rows in
+/// the ledger would be one measurement and two echoes of it. The stub
+/// here answers the same number every time and so cannot show that on
+/// its own; what it does show is that the loop runs, that a metric lands
+/// for each pass, and that the pre-registration is committed once rather
+/// than re-submitted and refused on the second pass.
+#[tokio::test]
+async fn several_attempts_all_land_in_the_ledger() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let answer = attempt_response(42.0);
+    // Two attempts, then one more for `co_write`, which is allowed to
+    // fail: the attempts are the evidence and the write-up stage must
+    // never be able to throw them away.
+    configure(dir.path(), vec![&answer, &answer, &answer]);
+    std::env::set_var("ZORP_BOLT_ATTEMPTS", "2");
+
+    let addr = spawn().await;
+    let id = new_session(addr).await;
+    let events = EventStream::connect(addr, &id);
+
+    let (status, body) = start_investigate(
+        addr,
+        &id,
+        r#"{"question":"does caching help","metric_name":"latency_ms",
+            "kill_threshold":100.0,"threshold_direction":"lower-is-better"}"#,
+    )
+    .await;
+    assert_eq!(status, 202, "the attempt was not accepted: {body}");
+
+    let events = on_stream(events, |s| {
+        assert!(
+            s.wait_for("\"type\":\"investigate_done\"", PATIENCE),
+            "the attempts never closed: {}",
+            s.text()
+        )
+    })
+    .await;
+    let text = events.text();
+    assert!(text.contains("\"approved\":true"), "{text}");
+
+    let question = urlencoding("does caching help");
+    let (status, body) = blocking_get(format!(
+        "http://{addr}/api/investigate/ledger?question={question}"
+    ))
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let ledger: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let experiments = ledger["experiments"].as_array().unwrap();
+    assert_eq!(
+        experiments.len(),
+        2,
+        "one press should have run two attempts: {body}"
+    );
+    for run in experiments {
+        assert_eq!(run["status"], "completed", "{body}");
+        let metrics = run["metrics"].as_array().unwrap();
+        assert_eq!(metrics.len(), 1, "every attempt records its metric: {body}");
+        assert_eq!(metrics[0]["key"], "latency_ms", "{body}");
+    }
 }
 
 /// The feature end to end. One attempt runs, the closing frame says the

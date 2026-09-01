@@ -402,6 +402,18 @@ impl Agent {
         self
     }
 
+    /// Say something to whoever is watching, between runs.
+    ///
+    /// The renderer is owned by the agent once it is installed, so a
+    /// caller that wants to narrate a sequence of runs (a re-run gate, a
+    /// several-attempt investigation) would otherwise have to keep a
+    /// second handle to the same channel and hope the two stay in order.
+    /// This is not on the message list and never reaches the model: it
+    /// goes to the same place tool activity does.
+    pub fn notice(&mut self, text: &str) {
+        self.renderer.notice(text);
+    }
+
     /// Change the approval mode mid-session (used by the chat REPL).
     pub fn set_approval(&mut self, approval: ApprovalMode) {
         self.approval = approval;

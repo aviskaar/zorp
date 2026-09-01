@@ -1230,6 +1230,14 @@ function applyEvent(event: ZorpEvent): void {
       if (event.needs_prereg && zorpQuestion) {
         openPreregEscalation(zorpQuestion);
       }
+      // The point of the run. The attempts are the evidence and this is
+      // the thing a person actually takes away, so it is opened rather
+      // than mentioned: a link in the transcript would leave the work one
+      // more click away than the chat answer it replaces.
+      if (event.artifact) {
+        showArtifactsPane();
+        void showArtifact(event.artifact);
+      }
       break;
 
     case "done":
