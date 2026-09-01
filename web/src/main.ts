@@ -12,6 +12,7 @@ import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
+import { queueView, renderQueue, type QueueView } from "./message-queue";
 import {
   renderSearchIndicator,
   searchIndicatorView,
@@ -254,11 +255,14 @@ let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
 const approvalMode: AutoApproveView = autoApproveView(document);
 const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
+const queue: QueueView = queueView(document);
+/** Messages typed while a turn was running, oldest first. */
+const messageQueue: string[] = [];
 /**
  * Whether this session has stood its approvals down.
  *
  * A cache of the server's answer, never a decision of its own. It is set from
- * a server response and from nowhere else, so the banner cannot claim a state
+ * a server response and from nowhere else, so the pill cannot claim a state
  * the server does not hold. The one moment it leads is between the user asking
  * for the mode and a session existing to hold it, and the request is sent the
  * instant one does.
@@ -572,13 +576,12 @@ function wireSettings(): void {
 /* ------------------------------------------------------------------ */
 /* approval mode                                                       */
 /*                                                                      */
-/* One switch, two places it shows, and the server is the only thing    */
+/* One switch, one place it shows, and the server is the only thing     */
 /* that decides what it currently is. See src/approval-mode.ts.         */
 /* ------------------------------------------------------------------ */
 
 function wireApprovalMode(): void {
   approvalMode.button.addEventListener("click", () => void changeApprovalMode(!autoApprove));
-  approvalMode.bannerOff.addEventListener("click", () => void changeApprovalMode(false));
 }
 
 /** Draw the mode, and keep the empty state from contradicting it. */
@@ -594,7 +597,7 @@ function paintApprovalMode(): void {
  *
  * A failed request leaves the page showing the state the server still holds,
  * which is the only honest thing to draw. Turning it off is the direction that
- * matters most here: if that request fails the banner stays up, because the
+ * matters most here: if that request fails the pill stays red, because the
  * gate really is still down.
  */
 async function changeApprovalMode(on: boolean): Promise<boolean> {
@@ -643,12 +646,30 @@ async function refreshApprovalMode(): Promise<void> {
 
 async function submitMessage(): Promise<void> {
   const message = dom.input.value.trim();
-  if (!message || turnRunning) {
+  if (!message) {
+    return;
+  }
+  dom.input.value = "";
+  autoGrowInput();
+
+  if (turnRunning) {
+    messageQueue.push(message);
+    paintQueue();
     return;
   }
 
-  dom.input.value = "";
-  autoGrowInput();
+  await sendMessage(message);
+}
+
+/** Draw the queue from current state. Called on every push and every drain. */
+function paintQueue(): void {
+  renderQueue(document, queue, messageQueue, (index) => {
+    messageQueue.splice(index, 1);
+    paintQueue();
+  });
+}
+
+async function sendMessage(message: string): Promise<void> {
   clearEmptyState();
   appendMessage("user", message);
   scrollToBottomIfFollowing(true);
@@ -668,7 +689,7 @@ async function submitMessage(): Promise<void> {
         // The switch was thrown before there was a session to hold it. Tell
         // the server now, before the first tool runs, and if that does not
         // land, say so and put the page back to asking rather than leave a
-        // banner claiming a mode the server never took.
+        // pill claiming a mode the server never took.
         autoApprove = await setAutoApprove(sessionId, true).catch(() => false);
         paintApprovalMode();
         if (!autoApprove) {
@@ -1193,6 +1214,12 @@ function finishTurn(): void {
   // Forced past the poll interval: this is the last chance to notice what the
   // run wrote, and a file written in the final second is the interesting one.
   void checkForProducedArtifacts(true);
+
+  const next = messageQueue.shift();
+  if (next !== undefined) {
+    paintQueue();
+    void sendMessage(next);
+  }
 }
 
 function setTurnRunning(running: boolean): void {
@@ -1482,8 +1509,9 @@ function appendApproval(id: string, tool: string, args: string): void {
   denyButton.textContent = "Deny";
   // The third choice, offered here because this is the moment a long run
   // becomes a click per step. It is spelled out rather than abbreviated, it
-  // is not the primary button, and taking it puts a banner over the composer
-  // that stays there until the mode is turned off.
+  // is not the primary button, and taking it turns the toolbar pill red
+  // until the mode is turned off. Every call it then lets through is still
+  // reviewed before it runs; see `zorp-web/src/tool_safety.rs`.
   const allowAllButton = el("button", "btn btn-allow-all") as HTMLButtonElement;
   allowAllButton.type = "button";
   allowAllButton.textContent = "Allow all for this chat";

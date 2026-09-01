@@ -23,5 +23,6 @@ pub mod renderer;
 pub mod settings;
 pub mod state;
 pub mod title;
+pub mod tool_safety;
 pub mod turn;
 pub mod voice;

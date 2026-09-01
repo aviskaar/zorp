@@ -244,7 +244,8 @@ export interface ArtifactStamp {
 }
 
 /**
- * Which files a run produced, newest first.
+ * Which files a run produced, new files before edited ones, newest first
+ * within each group.
  *
  * The listing is the only input, on purpose. A tool summary cannot answer
  * this: a PDF written by pandoc under `run_command` and one written by
@@ -255,6 +256,11 @@ export interface ArtifactStamp {
  * With no snapshot to compare against, the answer is "nothing". Treating
  * every file as new the first time would badge the button on page load for
  * files that have been sitting there for a week.
+ *
+ * A file with no entry in `before` is a creation; one that was already there
+ * is an edit. `main.ts` opens `fresh[0]` in the pane, and a turn that edits
+ * an existing file after creating a new one must not let that edit's later
+ * timestamp bury the file the turn actually made.
  */
 export function producedSince(
   before: readonly ArtifactStamp[] | null,
@@ -270,5 +276,12 @@ export function producedSince(
       return previous === undefined || file.modified_ms > previous;
     })
     .slice()
-    .sort((a, b) => b.modified_ms - a.modified_ms);
+    .sort((a, b) => {
+      const aCreated = !was.has(a.path);
+      const bCreated = !was.has(b.path);
+      if (aCreated !== bCreated) {
+        return aCreated ? -1 : 1;
+      }
+      return b.modified_ms - a.modified_ms;
+    });
 }

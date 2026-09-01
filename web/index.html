@@ -294,26 +294,21 @@
           Jump to latest
         </button>
 
-        <!--
-          The second half of saying so. The toolbar pill is small and this is
-          not: it sits between the reader and the box they type into, for as
-          long as the gate is down, and the way back up is the button in it.
-        -->
-        <div class="auto-approve-banner" id="auto-approve-banner" hidden>
-          <span>
-            Auto-approve is on. Every tool the agent asks for runs without asking you, for
-            the rest of this session. The hard denylist still refuses what it always refused.
-          </span>
-          <button class="auto-approve-off" id="auto-approve-off" type="button">
-            Start asking again
-          </button>
-        </div>
-
         <div class="composer-warning" id="composer-warning" hidden>
           <span>No model is configured yet, so nothing typed here can be sent.</span>
           <button class="composer-warning-btn" id="composer-warning-settings" type="button">
             Open settings
           </button>
+        </div>
+
+        <!--
+          What Enter used to do while a turn was running: nothing. The
+          message vanished with no sign it had been read. This holds it in
+          view instead, in the order it was typed, until the run in front
+          of it ends and it goes out as the next turn.
+        -->
+        <div class="message-queue" id="message-queue" hidden>
+          <ul class="message-queue-list" id="message-queue-list"></ul>
         </div>
 
         <form class="composer" id="composer">

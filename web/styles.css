@@ -2220,40 +2220,6 @@ button {
   color: var(--danger);
 }
 
-.auto-approve-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  max-width: var(--reading);
-  margin: 0 auto 12px;
-  padding: 10px 16px;
-  border: 1px solid var(--danger-line);
-  border-radius: 12px;
-  background: var(--danger-soft);
-  color: #f8c7c7;
-  font-size: 13px;
-}
-
-.auto-approve-banner[hidden] {
-  display: none;
-}
-
-.auto-approve-off {
-  flex: none;
-  padding: 5px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--danger-line);
-  color: var(--danger);
-  font-size: 12.5px;
-  font-weight: 600;
-  transition: background 120ms ease;
-}
-
-.auto-approve-off:hover {
-  background: rgba(248, 113, 113, 0.16);
-}
-
 /* ---------------------------------------------------------------- composer warning */
 
 .composer-warning {
@@ -2288,6 +2254,56 @@ button {
 
 .composer-warning-btn:hover {
   background: rgba(245, 181, 68, 0.16);
+}
+
+/* ---------------------------------------------------------------- message queue */
+
+.message-queue {
+  max-width: var(--reading);
+  margin: 0 auto 12px;
+}
+
+.message-queue[hidden] {
+  display: none;
+}
+
+.message-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+
+.message-queue-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.message-queue-remove {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.message-queue-remove:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 /* ---------------------------------------------------------------- settings dialog */

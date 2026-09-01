@@ -372,3 +372,18 @@ test("a file produced by any means at all is caught, because only the listing is
 test("with no snapshot at all, nothing is claimed to be new", () => {
   assert.deepEqual(producedSince(null, [stamp("draft.md", 200)]), []);
 });
+
+/**
+ * A turn that edits an existing file and then creates a new one, in that
+ * order, must still open the new one: the edit's later timestamp is not
+ * allowed to bury the file the turn actually made. `main.ts` opens
+ * `fresh[0]`, so this ordering is what decides what the pane shows.
+ */
+test("a newly created file is shown ahead of an edit made later in the same turn", () => {
+  const before = [stamp("existing.md", 100)];
+  const after = [stamp("existing.md", 300), stamp("new.md", 200)];
+  assert.deepEqual(
+    producedSince(before, after).map((f) => f.path),
+    ["new.md", "existing.md"],
+  );
+});
