@@ -342,6 +342,11 @@ fn record_conditions(
             .to_string(),
         ),
     )?;
+    project.store.record_condition(
+        experiment_id,
+        "max_steps",
+        &MetricValue::Number(agent.config().max_steps as f64),
+    )?;
     Ok(())
 }
 
@@ -610,6 +615,52 @@ mod tests {
         assert!(
             !conditions.iter().any(|(k, _)| k == "model"),
             "a model with no identity must record no model condition: {conditions:?}"
+        );
+    }
+
+    /// `model` and `checkpoint_mode` were, until this test, the only two
+    /// condition keys any real run ever wrote, which makes 3 distinct
+    /// keys, the hypothesis-search admission gate's stated minimum,
+    /// unreachable no matter how many attempts run. `max_steps` is a
+    /// third harness-observed fact, already on `AgentConfig`, so no new
+    /// accessor is needed.
+    #[test]
+    fn an_attempt_records_the_step_limit_it_ran_under() {
+        let mut agent = build_agent(well_formed_response());
+        let dir = tempdir().unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        project
+            .store
+            .create_track("t1", "does caching help")
+            .unwrap();
+        let mode = CheckpointMode::terminal(true).unwrap();
+
+        run(
+            &mut agent,
+            &project,
+            "t1",
+            "does caching help",
+            Some(PreregParams {
+                metric_name: "latency_ms",
+                kill_threshold: 100.0,
+                threshold_direction: ThresholdDirection::LowerIsBetter,
+            }),
+            &mode,
+        )
+        .unwrap();
+
+        let experiments = project.store.experiments_for("t1").unwrap();
+        let conditions = project
+            .store
+            .conditions_for(&experiments[0].id)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.condition_key, c.value))
+            .collect::<Vec<_>>();
+
+        assert!(
+            conditions.contains(&("max_steps".to_string(), MetricValue::Number(5.0))),
+            "{conditions:?}"
         );
     }
 
