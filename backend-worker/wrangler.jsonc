@@ -1,0 +1,42 @@
+{
+  // Fronts the zorp-web backend as a Cloudflare Container for the
+  // app.zorp.dev test deploy. Frontend is separate: see web/wrangler.jsonc.
+  //
+  // One-time setup, from this directory:
+  //   npm install
+  //   npx wrangler secret put ZORP_WEB_TOKEN
+  //   npx wrangler secret put ZORP_API_KEY
+  //   npx wrangler deploy
+  //
+  // Disk is ephemeral on this platform (Cloudflare's own docs: a fresh disk
+  // on every sleep), so ZORP_STATE_DB resets on idle. Accepted for this test
+  // deploy; revisit with a persistent-volume host if that stops being fine.
+  "name": "zorp-backend-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "containers": [
+    {
+      "class_name": "ZorpBackend",
+      // Repo root, so the Dockerfile's `COPY zorp-agent ./zorp-agent` etc.
+      // can see the whole workspace, same as the compose.yml build.
+      "image": "../zorp-web/Dockerfile",
+      "image_build_context": "..",
+      // Equivalent to `docker build --build-arg FEATURES=`: no voice, no
+      // recall, so no local Ollama sidecar is needed at all.
+      "image_vars": { "FEATURES": "" },
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "ZorpBackend", "name": "ZORP_BACKEND" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ZorpBackend"] }],
+  // Non-secret runtime config. ZORP_WEB_TOKEN and ZORP_API_KEY are Worker
+  // secrets (see setup above), never written here.
+  "vars": {
+    "ZORP_ALLOW_ORIGIN": "https://app.zorp.dev",
+    "ZORP_BASE_URL": "https://openrouter.ai/api/v1",
+    "ZORP_MODEL": "openai/gpt-4o-mini"
+  }
+}

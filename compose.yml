@@ -6,8 +6,8 @@
 # Then open http://localhost:8080. There is nothing to paste: the UI attaches
 # the token to every request it proxies.
 #
-# See docs/docker.md for pulling the models and for what happens the first
-# time someone clicks the microphone.
+# See docs/docker.md for what happens on first startup, and on the first
+# microphone click.
 services:
   # Serves both the chat model and the embeddings the conversation search
   # needs. It is here rather than on the host because zorp-recall requires
@@ -17,6 +17,24 @@ services:
   # not one guard has to be weakened.
   ollama:
     image: ollama/ollama
+    environment:
+      # The default local chat path in zorp uses qwen3:4b, so pull it on
+      # startup unless the operator points ZORP_MODEL somewhere else.
+      ZORP_OLLAMA_BOOTSTRAP_CHAT_MODEL: ${ZORP_MODEL:-qwen3:4b}
+      # Recall needs this model for conversation indexing, so the sidecar
+      # pulls it on startup and keeps it on the named volume below.
+      ZORP_OLLAMA_BOOTSTRAP_EMBED_MODEL: ${ZORP_EMBED_MODEL:-qwen3-embedding:latest}
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        ollama serve &
+        ollama_pid=$$!
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$$ZORP_OLLAMA_BOOTSTRAP_CHAT_MODEL"
+        ollama pull "$$ZORP_OLLAMA_BOOTSTRAP_EMBED_MODEL"
+        wait "$$ollama_pid"
     volumes:
       - ollama_models:/root/.ollama
     # 7777 is published here, not on `server`. A container that shares
@@ -59,7 +77,7 @@ services:
       ZORP_RECALL_DB: /home/zorp/state/recall.db
       # Several gigabytes of runtime and model weights, installed on first
       # use. On a volume so a restart does not download them again.
-      ZORP_VOICE_SETUP_DIR: /home/zorp/voice
+      ZORP_VOICE_SETUP_DIR: /home/zorp/voice/runtime
     volumes:
       # The agent works on your project. Mount the directory you want it to
       # see, and nothing more: it can read and, with approval, write here.
