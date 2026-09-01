@@ -593,6 +593,9 @@ cargo test --workspace --exclude zorp-track    # matches CI; see CONTRIBUTING.md
 cargo run -p zorp-eval -- --help               # evaluation harness
 ```
 
+To run zorp-agent against Terminal-Bench, see
+[`docs/benchmarks.md`](docs/benchmarks.md).
+
 Working in this repo? Read [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md)
 first. They cover the inherited vs. zorp-specific code boundary, where
 design specs live, and repo conventions.
