@@ -24,6 +24,12 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 /// its own names for the same reason.
 const TOOL_NAME_MAX_BYTES: usize = 40;
 
+/// A stand-in for `tool_safety::check`, tool name and arguments in, a verdict
+/// out. Test-only; named so the field it types stays under clippy's
+/// complexity threshold.
+#[cfg(test)]
+type SafetyChecker = Arc<dyn Fn(&str, &str) -> Verdict + Send + Sync>;
+
 /// Parks the agent thread until the browser answers.
 ///
 /// `confirm` is called on the agent's blocking thread, so waiting here is
@@ -60,7 +66,7 @@ pub struct WebApprover {
     /// Test-only seam so the safety verdict can be fixed without a socket.
     /// `None` means the real `tool_safety::check`.
     #[cfg(test)]
-    checker: Option<Arc<dyn Fn(&str, &str) -> Verdict + Send + Sync>>,
+    checker: Option<SafetyChecker>,
 }
 
 impl WebApprover {

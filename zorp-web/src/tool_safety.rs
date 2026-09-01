@@ -135,7 +135,6 @@ pub fn clamp(raw: &str) -> Verdict {
         .lines()
         .next()
         .unwrap_or("")
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("")
