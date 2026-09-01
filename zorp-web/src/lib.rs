@@ -17,6 +17,8 @@ pub mod investigate;
 pub mod memory;
 pub mod panel;
 pub mod pdf;
+#[cfg(feature = "research")]
+pub mod prereg_infer;
 #[cfg(feature = "recall")]
 pub mod recall;
 pub mod renderer;

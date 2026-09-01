@@ -1468,6 +1468,50 @@ button {
   color: var(--text-faint);
 }
 
+/*
+  Zorp mode, beside the microphone. Shaped like the mic rather than like
+  send, because send is the composer's one primary control and this is not
+  a second one: it is a different thing to do with what was typed.
+*/
+.composer-bolt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text-dim);
+  background: var(--bg-inset);
+}
+
+.composer-bolt svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: none;
+}
+
+.composer-bolt:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: rgba(94, 234, 212, 0.45);
+}
+
+/*
+  The question the form is open for, shown back so a person naming a
+  metric can see what they are naming it for. Set through textContent.
+*/
+.zorp-panel-question {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--line);
+  color: var(--text-dim);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .voice-mic {
   display: inline-flex;
   align-items: center;

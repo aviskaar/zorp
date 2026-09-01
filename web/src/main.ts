@@ -156,11 +156,11 @@ interface Elements {
   voiceStatus: HTMLElement;
   voiceMeter: HTMLElement;
   reviewPanel: HTMLButtonElement;
-  zorpMode: HTMLButtonElement;
+  zorpBolt: HTMLButtonElement;
   zorpPanel: HTMLElement;
   zorpStatus: HTMLElement;
   zorpForm: HTMLFormElement;
-  zorpQuestion: HTMLTextAreaElement;
+  zorpPanelQuestion: HTMLElement;
   zorpMetric: HTMLInputElement;
   zorpThreshold: HTMLInputElement;
   zorpDirection: HTMLSelectElement;
@@ -435,11 +435,11 @@ function collectElements(): Elements {
     workingVerb: byId("working-verb"),
     jump: byId<HTMLButtonElement>("jump"),
     reviewPanel: byId<HTMLButtonElement>("review-panel"),
-    zorpMode: byId<HTMLButtonElement>("zorp-mode"),
+    zorpBolt: byId<HTMLButtonElement>("zorp-bolt"),
     zorpPanel: byId<HTMLElement>("zorp-panel"),
     zorpStatus: byId("zorp-status"),
     zorpForm: byId<HTMLFormElement>("zorp-form"),
-    zorpQuestion: byId<HTMLTextAreaElement>("zorp-question"),
+    zorpPanelQuestion: byId("zorp-panel-question"),
     zorpMetric: byId<HTMLInputElement>("zorp-metric"),
     zorpThreshold: byId<HTMLInputElement>("zorp-threshold"),
     zorpDirection: byId<HTMLSelectElement>("zorp-direction"),
@@ -509,8 +509,8 @@ function wireComposer(): void {
     void submitPanel();
   });
 
-  dom.zorpMode.addEventListener("click", () => {
-    toggleZorpPanel();
+  dom.zorpBolt.addEventListener("click", () => {
+    void submitInvestigate(dom.input.value.trim(), null);
   });
 
   dom.input.addEventListener("keydown", (event) => {
@@ -730,10 +730,22 @@ let zorpQuestion: string | null = null;
 /** Whether the running turn is a Zorp mode attempt rather than a turn. */
 let zorpRunning = false;
 
+/**
+ * The question waiting on a pre-registration typed by hand.
+ *
+ * Set when the server says an attempt could not start because nothing had
+ * committed a metric and a threshold for it, and read back when the form
+ * is submitted. Held here rather than left in the composer because the
+ * composer is cleared on send and the person may well type something else
+ * into it while deciding what to measure.
+ */
+let pendingPrereg: string | null = null;
+
 function wireZorpMode(): void {
   dom.zorpForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    void submitInvestigate();
+    const question = pendingPrereg ?? dom.input.value.trim();
+    void submitInvestigate(question, readPreregFields());
   });
   // Asked once, on load. Both facts are properties of the server binary
   // and its environment, and neither changes while the page is open.
@@ -741,18 +753,43 @@ function wireZorpMode(): void {
 }
 
 /**
- * Open or close the Zorp mode form.
+ * Open the pre-registration form for a question the model would not
+ * commit one for.
  *
- * A toggle rather than a modal, because the form has to sit next to the
- * transcript the attempt will write into.
+ * The escalation, and the only thing that opens this panel now. It shows
+ * the question through `textContent`, which is the rule everywhere model
+ * output and user text reach the page.
  */
-function toggleZorpPanel(): void {
-  const open = dom.zorpPanel.hidden;
-  dom.zorpPanel.hidden = !open;
-  dom.zorpMode.setAttribute("aria-expanded", String(open));
-  if (open) {
-    dom.zorpQuestion.focus();
+function openPreregEscalation(question: string): void {
+  pendingPrereg = question;
+  dom.zorpPanelQuestion.textContent = question;
+  dom.zorpPanel.hidden = false;
+  dom.zorpMetric.focus();
+}
+
+/** Close the form and forget what it was for. */
+function closePreregEscalation(): void {
+  pendingPrereg = null;
+  dom.zorpPanel.hidden = true;
+}
+
+/**
+ * The three fields, as a pre-registration, or null when they are empty.
+ *
+ * All three or none, the rule the server enforces too. Half of one is
+ * left to the server to refuse rather than second-guessed here.
+ */
+function readPreregFields(): Preregistration | null {
+  const metric = dom.zorpMetric.value.trim();
+  const thresholdText = dom.zorpThreshold.value.trim();
+  if (metric === "" && thresholdText === "") {
+    return null;
   }
+  return {
+    metric_name: metric,
+    kill_threshold: Number(thresholdText),
+    threshold_direction: dom.zorpDirection.value as Preregistration["threshold_direction"],
+  };
 }
 
 /**
@@ -776,6 +813,10 @@ async function refreshZorpStatus(): Promise<void> {
       dom.zorpRun.disabled = true;
       return;
     }
+    // The bolt ships hidden and is revealed only once the server says it
+    // has the feature, for the reason the status line gives: a control
+    // that 501s is worse than one that is not there.
+    dom.zorpBolt.hidden = false;
     dom.zorpStatus.textContent = status.forecasting
       ? "Forecasting is on, so each attempt records an expectation before it runs."
       : "Forecasting is off, so no expectation is recorded and nothing can be scored for calibration. It is set where the server runs, not here.";
@@ -792,47 +833,48 @@ async function refreshZorpStatus(): Promise<void> {
  * and to the aryabhatta ledger, so a model that could start one could
  * feed the record it is later read against.
  *
- * The pre-registration is all three fields or none. None means reuse
- * what is recorded for this question, which is what a second attempt on
- * the same track does. Half of one is refused here rather than sent, so
- * a typo does not cost a round trip.
+ * `prereg` is null on the normal path: the bolt sends the question with
+ * no commitment, the server reads one out of it, and only a model that
+ * would not stand behind a proposal sends the person to the form. When
+ * it is not null it is all three fields, checked here so a typo does not
+ * cost a round trip.
  */
-async function submitInvestigate(): Promise<void> {
+async function submitInvestigate(
+  question: string,
+  prereg: Preregistration | null,
+): Promise<void> {
   if (turnRunning) {
     return;
   }
-  const question = dom.zorpQuestion.value.trim();
   if (!question) {
     appendError("Zorp mode needs a question. There is nothing to pre-register an attempt against.");
     scrollToBottomIfFollowing(true);
     return;
   }
 
-  const metric = dom.zorpMetric.value.trim();
-  const thresholdText = dom.zorpThreshold.value.trim();
-  const given = [metric, thresholdText].filter((v) => v !== "").length;
-  if (given === 1) {
-    appendError(
-      "A pre-registration is a metric and a kill threshold together. Give both, or leave both empty to reuse the one already recorded for this question.",
-    );
-    scrollToBottomIfFollowing(true);
-    return;
-  }
-
-  let prereg: Preregistration | null = null;
-  if (given === 2) {
-    const threshold = Number(thresholdText);
-    if (!Number.isFinite(threshold)) {
+  if (prereg) {
+    if (prereg.metric_name === "") {
+      appendError(
+        "A pre-registration is a metric and a kill threshold together. Give both, or leave both empty to reuse the one already recorded for this question.",
+      );
+      scrollToBottomIfFollowing(true);
+      return;
+    }
+    if (!Number.isFinite(prereg.kill_threshold)) {
       appendError("The kill threshold has to be a finite number.");
       scrollToBottomIfFollowing(true);
       return;
     }
-    prereg = {
-      metric_name: metric,
-      kill_threshold: threshold,
-      threshold_direction: dom.zorpDirection.value as Preregistration["threshold_direction"],
-    };
   }
+
+  // Whichever control started this, the question has been taken. The
+  // composer is cleared so the run reads like a sent message, and the
+  // form closes because what it was open for is now in flight.
+  if (dom.input.value.trim() === question) {
+    dom.input.value = "";
+    autoGrowInput();
+  }
+  closePreregEscalation();
 
   clearEmptyState();
   appendMessage("user", question);
@@ -1180,6 +1222,14 @@ function applyEvent(event: ZorpEvent): void {
     case "investigate_done":
       activityGroup = null;
       zorpView.done(event);
+      // Nothing committed a metric for this question and the model would
+      // not propose one. The person is asked, which is the whole point of
+      // letting a model propose in the first place: a threshold it had to
+      // invent is worse than no attempt, because it looks like evidence
+      // afterwards.
+      if (event.needs_prereg && zorpQuestion) {
+        openPreregEscalation(zorpQuestion);
+      }
       break;
 
     case "done":

@@ -325,12 +325,15 @@ pub fn spawn_investigate(
         let track_id = zorp_track::id::track_id(&request.question);
         let kinds = match run_attempt(&request, &settings, &cancel, Box::new(renderer)) {
             Ok(done) => vec![done, EventKind::Done],
-            Err(message) => vec![
+            Err(failure) => vec![
                 EventKind::InvestigateDone {
                     track_id,
                     approved: None,
+                    needs_prereg: failure.needs_prereg,
                 },
-                EventKind::Error { message },
+                EventKind::Error {
+                    message: failure.message,
+                },
                 EventKind::Done,
             ],
         };
@@ -349,12 +352,14 @@ fn run_attempt(
     settings: &SettingsHandle,
     cancel: &zorp_agent::CancelToken,
     renderer: Box<dyn zorp_agent::Renderer>,
-) -> Result<EventKind, String> {
+) -> Result<EventKind, AttemptFailure> {
     let direction = check_request(request).map_err(|e| e.message().to_string())?;
 
     let resolved = settings.lock().unwrap().effective_model();
     if !resolved.configured {
-        return Err("no model configured, open settings and pick one".to_string());
+        return Err("no model configured, open settings and pick one"
+            .to_string()
+            .into());
     }
     let url = zorp_agent::join_url(&resolved.base_url, resolved.provider.path_suffix());
     let model = HttpModel {
@@ -382,6 +387,41 @@ fn run_attempt(
         crate::turn::system_prompt()
     );
 
+    let project = Project::open(&cwd).map_err(|e| e.to_string())?;
+    let track_id = zorp_track::id::track_id(&request.question);
+    get_or_create_track(&project.store, &track_id, &request.question)?;
+
+    // What the person typed wins. Then the track's own record, which
+    // `investigate::run` reads for itself. Only when there is neither is
+    // the model asked to propose one, so nothing here can ever revise a
+    // commitment that already exists: a second attempt on a track uses
+    // the recorded trio and a mismatch is refused exactly as before.
+    let inferred = if direction.is_none()
+        && zorp_track::prereg::get_preregistration(&project.store, &track_id)
+            .map_err(|e| e.to_string())?
+            .is_none()
+    {
+        crate::prereg_infer::infer(settings, &request.question)
+    } else {
+        None
+    };
+
+    // Say what is about to be committed, before it is committed, and
+    // before the work starts. A person who never filled in the form still
+    // has to be able to see what they are being held to and stop the run
+    // if it is measuring the wrong thing. This is why the confidence is
+    // carried out of `prereg_infer` at all.
+    let mut renderer = renderer;
+    if let Some(proposed) = &inferred {
+        renderer.notice(&format!(
+            "Pre-registering {} with a kill threshold of {} ({}), read from the question with {:.0}% confidence. It is committed before this attempt runs and cannot be changed afterwards.",
+            proposed.metric_name,
+            proposed.kill_threshold,
+            proposed.threshold_direction.as_str(),
+            proposed.confidence * 100.0,
+        ));
+    }
+
     // No recorder and no seed. An attempt is not a chat turn: the record
     // it belongs to is the track's, and seeding it with whatever was said
     // earlier in this conversation would put the browser's chat history
@@ -404,20 +444,25 @@ fn run_attempt(
     .with_renderer(renderer);
     let mut agent = agent;
 
-    let project = Project::open(&cwd).map_err(|e| e.to_string())?;
-    let track_id = zorp_track::id::track_id(&request.question);
-    get_or_create_track(&project.store, &track_id, &request.question)?;
-
-    let prereg_params =
-        direction.map(
-            |threshold_direction| zorp_agent::investigate::PreregParams {
-                // Unwraps are safe: `check_request` returns a direction
-                // only when all three arrived together.
-                metric_name: request.metric_name.as_deref().unwrap_or_default(),
-                kill_threshold: request.kill_threshold.unwrap_or_default(),
-                threshold_direction,
-            },
-        );
+    let prereg_params = match (direction, &inferred) {
+        (Some(threshold_direction), _) => Some(zorp_agent::investigate::PreregParams {
+            // Unwraps are safe: `check_request` returns a direction
+            // only when all three arrived together.
+            metric_name: request.metric_name.as_deref().unwrap_or_default(),
+            kill_threshold: request.kill_threshold.unwrap_or_default(),
+            threshold_direction,
+        }),
+        (None, Some(proposed)) => Some(zorp_agent::investigate::PreregParams {
+            metric_name: &proposed.metric_name,
+            kill_threshold: proposed.kill_threshold,
+            threshold_direction: proposed.threshold_direction,
+        }),
+        // No commitment from anywhere. `investigate::run` answers with
+        // `PreregRequired`, which is the escalation: the page shows the
+        // form and a person fills it in. A declining model must not be
+        // able to turn into a guessed threshold here.
+        (None, None) => None,
+    };
 
     // There is no terminal behind a browser, so the interactive
     // checkpoint decider has nothing to read from and
@@ -440,12 +485,41 @@ fn run_attempt(
         prereg_params,
         &checkpoint_mode,
     )
-    .map_err(describe)?;
+    .map_err(|e| AttemptFailure {
+        // The one error the page acts on rather than only displays. It
+        // means nobody has committed a metric and a threshold for this
+        // question: none typed, none recorded, and no proposal the model
+        // stood behind. The form is the answer, so say so in a field.
+        needs_prereg: matches!(e, InvestigateError::PreregRequired { .. }),
+        message: describe(e),
+    })?;
 
     Ok(EventKind::InvestigateDone {
         track_id,
         approved: Some(approved),
+        needs_prereg: false,
     })
+}
+
+/// Why an attempt did not finish, and whether the page can act on it.
+///
+/// A struct rather than a string because one case, a question with no
+/// pre-registration anywhere, opens a form. Recognising that from the
+/// wording of a message would be two copies of a sentence that must never
+/// drift, and the failure mode of drift is the form silently never
+/// opening.
+struct AttemptFailure {
+    message: String,
+    needs_prereg: bool,
+}
+
+impl From<String> for AttemptFailure {
+    fn from(message: String) -> Self {
+        AttemptFailure {
+            message,
+            needs_prereg: false,
+        }
+    }
 }
 
 /// Say what went wrong in the browser's terms.
