@@ -386,6 +386,14 @@
               Cancel recording
             </button>
           </div>
+          <!--
+            First-use setup can take minutes, so it gets a notice a person
+            cannot miss rather than only the status line above. Decoration in
+            the same sense the meter is: it says the same thing the status
+            line already says, at more length, so it is hidden from screen
+            readers to keep one live region and one announcement.
+          -->
+          <p class="voice-toast" id="voice-toast" aria-hidden="true" hidden></p>
           <p class="composer-hint">
             <kbd>Enter</kbd> to send, <kbd>Shift</kbd><span>+</span><kbd>Enter</kbd> for a newline
           </p>
