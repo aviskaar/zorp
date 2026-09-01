@@ -436,6 +436,17 @@ export interface InvestigateDoneEvent {
   type: "investigate_done";
   track_id: string;
   approved?: boolean;
+  /**
+   * The attempt did not start because nothing had committed a metric and
+   * a kill threshold for this question: none was typed, none was on
+   * record, and the model would not propose one it was confident enough
+   * about. The page opens the form.
+   *
+   * A flag and not a sentence to match on. The escalation is the one
+   * error the page acts on rather than only shows, so recognising it from
+   * wording would fail by silently never opening the form.
+   */
+  needs_prereg?: boolean;
 }
 
 export type ZorpEvent =

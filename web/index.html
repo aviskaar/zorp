@@ -333,6 +333,34 @@
               </svg>
             </button>
             <!--
+              Zorp mode, as a bolt beside send. What is in the composer is
+              the question, so there is no second box to fill in and no
+              form to open first: the metric and the kill threshold are
+              read out of the question by a model and committed before the
+              attempt runs.
+
+              Still a button, and still the sharper reason the review one
+              is: an attempt writes to a pre-registered evidence record, so
+              a model that could start one could feed the record it is
+              later read against. A person clicks this. A model cannot.
+
+              When the proposal is not confident enough, the panel below
+              opens with the fields to fill in by hand. That is the
+              escalation, and it is the same path a person was always on.
+            -->
+            <button
+              class="composer-bolt"
+              id="zorp-bolt"
+              type="button"
+              aria-label="Investigate this question"
+              title="Investigate: run one pre-registered attempt"
+              hidden
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5Z" />
+              </svg>
+            </button>
+            <!--
               One control, two jobs. It sends while the composer is idle and
               stops the run while one is going. Both icons are here and the
               stylesheet shows one; the label is set from script, because a
@@ -389,20 +417,11 @@
             investigate is what writes to it, so this runs one attempt and
             then shows what landed.
 
-            A button, for the same reason the one above it is a button,
-            and a sharper one: an attempt writes to a pre-registered
-            evidence record, so a model that could start one could feed
-            the record it is later read against.
+            The button that used to be here is gone. Zorp mode is the bolt
+            in the composer now: the question is what a person already
+            typed, and the pre-registration is read out of it rather than
+            asked for up front.
           -->
-          <button
-            class="composer-action-btn"
-            id="zorp-mode"
-            type="button"
-            aria-expanded="false"
-            aria-controls="zorp-panel"
-          >
-            Zorp mode
-          </button>
 
           <!--
             Read earlier conversations before answering this one.
@@ -429,35 +448,34 @@
         </div>
 
         <!--
-          The Zorp mode form. Hidden until the button above opens it, and
-          outside the composer form so the composer keeps its one control.
+          The escalation, not the front door. The bolt in the composer is
+          how an attempt starts; this opens only when the model would not
+          propose a pre-registration confidently enough to commit one, and
+          it is outside the composer form so the composer keeps its one
+          control.
 
           The pre-registration is three fields and they are required
           together on a question's first attempt: the metric, the value
           that kills the track, and which side of it kills. There is no
           way to run an attempt without them, because an attempt with no
-          commitment recorded before it is not evidence of anything.
+          commitment recorded before it is not evidence of anything. That
+          is exactly why a model that is unsure lands a person here rather
+          than picking a number: an invented threshold is worse than no
+          attempt, because it looks like evidence afterwards.
         -->
         <section class="zorp-panel" id="zorp-panel" aria-labelledby="zorp-panel-title" hidden>
-          <h2 class="zorp-panel-title" id="zorp-panel-title">Zorp mode</h2>
+          <h2 class="zorp-panel-title" id="zorp-panel-title">Pre-register this question</h2>
           <p class="zorp-panel-lead">
-            One pre-registered attempt on a question. The metric and the kill
-            threshold are committed before the work starts and the model
-            cannot change them. What the attempt ran under is recorded in the
-            aryabhatta ledger, and shown here when it ends.
+            The metric and the kill threshold could not be read from the
+            question confidently enough to commit them, so they need naming by
+            hand. They are committed before the work starts and the model
+            cannot change them afterwards. What the attempt ran under is
+            recorded in the aryabhatta ledger, and shown here when it ends.
           </p>
+          <p class="zorp-panel-question" id="zorp-panel-question"></p>
           <p class="zorp-panel-status" id="zorp-status"></p>
 
           <form class="zorp-form" id="zorp-form">
-            <label class="zorp-field" for="zorp-question">
-              <span class="zorp-label">Question</span>
-              <textarea
-                id="zorp-question"
-                rows="2"
-                placeholder="does caching cut median latency"
-              ></textarea>
-            </label>
-
             <label class="zorp-field" for="zorp-metric">
               <span class="zorp-label">Metric name</span>
               <input id="zorp-metric" type="text" placeholder="latency_ms" />
@@ -477,9 +495,9 @@
             </label>
 
             <p class="zorp-note">
-              Leave the three pre-registration fields empty to reuse the one
-              already recorded for this question. On the first attempt they are
-              required, and after that they have to match.
+              Leave all three empty to reuse the one already recorded for this
+              question. On the first attempt they are required, and after that
+              they have to match.
             </p>
             <p class="zorp-note">
               Checkpoints are auto-approved from the browser, because there is

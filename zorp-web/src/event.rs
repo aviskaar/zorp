@@ -206,6 +206,17 @@ pub enum EventKind {
         track_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         approved: Option<bool>,
+        /// The attempt did not run because nothing had committed a metric
+        /// and a kill threshold for this question: none was typed, none
+        /// was on record, and the model would not propose one it was
+        /// confident enough about.
+        ///
+        /// A flag rather than a sentence the browser matches on. The
+        /// escalation opens a form, so the page has to recognise this
+        /// exact case reliably, and two copies of an error string drifting
+        /// apart would fail by silently never opening it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_prereg: bool,
     },
     /// This turn was told to look at earlier conversations, and here is
     /// exactly what it found.
