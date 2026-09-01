@@ -66,26 +66,25 @@ already talking to the agent, because the proxy authorizes on its behalf. If
 you want the UI reachable from another machine, put a proxy you control in
 front of it and do the authenticating there; do not widen these bindings.
 
-## Pull the models
+## Models on startup
 
-The sidecar starts empty. Pull a chat model and an embedding model into it:
+The sidecar now pulls both the default local chat model and the embedding model
+it needs for recall on startup, and keeps them on the `ollama_models` volume.
+That makes Docker come up ready for both local chat and conversation indexing
+without a separate step.
 
-```bash
-docker compose exec ollama ollama pull qwen3:4b
-docker compose exec ollama ollama pull qwen3-embedding
-```
-
-Until the embedding model is there the conversation search answers with the
-embedder's own error rather than results:
+Until that first startup pull finishes the conversation search can still answer
+with the embedder's own error rather than results:
 
 ```
 the local embedder answered 404: model "qwen3-embedding:latest" not found
 ```
 
-Point `ZORP_MODEL` and `ZORP_EMBED_MODEL` at whatever you pulled if you want
+Point `ZORP_MODEL` and `ZORP_EMBED_MODEL` at whatever you want if you need
 something else. `ZORP_BASE_URL` can go anywhere an OpenAI-compatible endpoint
 lives, including a model already running on the host at
-`http://host.docker.internal:11434/v1`. `ZORP_EMBED_URL` cannot: recall checks
+`http://host.docker.internal:11434/v1`. `ZORP_EMBED_URL` cannot:
+recall checks
 the written form and then the resolution, so a non-loopback value is refused.
 
 ## Why the sidecar shares a network namespace
@@ -104,10 +103,11 @@ the namespace owner has to.
 
 The image ships `python3` and its venv and pip, not the Qwen3-ASR runtime.
 Several gigabytes of model weights and torch are not baked into the image; the
-runtime installs itself into `/home/zorp/voice` the first time someone clicks
-the microphone, and that path is a named volume so a restart does not download
-it again. Expect the first click to take minutes. The page reports the real
-create, install, download, load, and ready stages while it happens.
+runtime installs itself into `/home/zorp/voice/runtime` the first time someone
+clicks the microphone, and that path lives inside a named volume so a restart
+does not download it again. Expect the first click to take minutes. The page
+reports the real create, install, download, load, and ready stages while it
+happens.
 
 The container runs as uid 1000 rather than root, which is not just good
 practice here: `zorp-voice` refuses to set itself up as root on purpose, so a

@@ -33,8 +33,16 @@ COPY zorp-voice ./zorp-voice
 COPY erbga ./erbga
 # voice and recall are both non-default. Without them the microphone and the
 # conversation search are compiled out and the endpoints answer 501, which
-# looks like a broken image rather than a deliberate build.
-RUN cargo build --release --locked -p zorp-web --features voice,recall
+# looks like a broken image rather than a deliberate build. Overridable
+# because a deploy with no local Ollama sidecar (recall's embedder must stay
+# loopback, so it has nothing to reach) has no use for either: pass
+# `--build-arg FEATURES=` for that build.
+ARG FEATURES=voice,recall
+RUN if [ -n "$FEATURES" ]; then \
+      cargo build --release --locked -p zorp-web --features "$FEATURES"; \
+    else \
+      cargo build --release --locked -p zorp-web; \
+    fi
 
 FROM debian:12-slim
 # ca-certificates is required: the agent calls an OpenAI-compatible endpoint
@@ -65,4 +73,9 @@ EXPOSE 7777
 # bind, which is the behavior we want here rather than something to work
 # around.
 ENV ZORP_WEB_TOKEN=""
-ENTRYPOINT ["/bin/sh", "-c", "exec zorp-web --bind 0.0.0.0 --port 7777 --token \"$ZORP_WEB_TOKEN\""]
+# Space-separated origins, e.g. "https://app.zorp.dev". Empty by default, which
+# reproduces the old fixed command exactly: no flag added, nothing allowed,
+# same as every deploy before this existed (the compose.yml `ui` service talks
+# same-origin through nginx and never needs this).
+ENV ZORP_ALLOW_ORIGIN=""
+ENTRYPOINT ["/bin/sh", "-c", "set -- --bind 0.0.0.0 --port 7777 --token \"$ZORP_WEB_TOKEN\"; for o in $ZORP_ALLOW_ORIGIN; do set -- \"$@\" --allow-origin \"$o\"; done; exec zorp-web \"$@\""]
