@@ -591,6 +591,14 @@ export async function getSession(id: string): Promise<SessionTranscript> {
 }
 
 /**
+ * Delete a conversation and everything recorded under it. A 409 means a
+ * turn is running on it; the server's own message says so.
+ */
+export async function deleteSession(id: string): Promise<void> {
+  await request<void>("DELETE", `/api/sessions/${segment(id)}`);
+}
+
+/**
  * Send a user message. The server answers 202 and the result arrives on the
  * event stream. A 409 means a turn is already running.
  *

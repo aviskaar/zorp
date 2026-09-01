@@ -105,7 +105,7 @@ fn api_router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/sessions", post(create_session).get(list_sessions))
-        .route("/api/sessions/:id", get(get_session))
+        .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/panel", post(start_panel))
@@ -242,6 +242,41 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
             Json(json!({"messages": out})).into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+/// Delete a conversation: its messages, its recorded file changes, and the
+/// sidebar row itself.
+///
+/// A running turn is refused with the same 409 `start_turn` uses for a
+/// second turn on a busy session, because the turn's own thread still holds
+/// `id` and would otherwise go on writing to a session that no longer has a
+/// row. Only the in-memory state is checked; a session this process has not
+/// loaded cannot be running. On success the in-memory entry is dropped too,
+/// so a stale backlog cannot reappear if the same id is ever reused.
+async fn delete_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.delete_session(&id) {
+        Ok(existed) => {
+            let removed_live = state.remove(&id).is_some();
+            if existed || removed_live {
+                StatusCode::NO_CONTENT.into_response()
+            } else {
+                (StatusCode::NOT_FOUND, "no such session").into_response()
+            }
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 

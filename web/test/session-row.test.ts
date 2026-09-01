@@ -37,7 +37,12 @@ function summary(over: Partial<SessionSummary> = {}): SessionSummary {
 }
 
 function render(doc: Document, session: SessionSummary, active = false): HTMLElement {
-  const row = sessionRow(doc, session, { active, when: "2m ago", onOpen: () => {} });
+  const row = sessionRow(doc, session, {
+    active,
+    when: "2m ago",
+    onOpen: () => {},
+    onDelete: () => {},
+  });
   doc.body.querySelector("#list")!.append(row);
   return row;
 }
@@ -146,6 +151,7 @@ test("clicking a row opens that session", () => {
     active: false,
     when: "2m ago",
     onOpen: (chosen) => opened.push(chosen.id),
+    onDelete: () => {},
   });
 
   (row.querySelector(".session-button") as HTMLButtonElement).click();
@@ -162,4 +168,110 @@ test("the row carries its session id", () => {
   ) as HTMLButtonElement;
 
   assert.equal(button.dataset.id, "18cdefd3142f21b0-9dc2");
+});
+
+/* ------------------------------------------------------------------ */
+/* the three-dot menu and delete                                       */
+/* ------------------------------------------------------------------ */
+
+test("the menu is closed until the kebab button is clicked", () => {
+  const doc = fixture();
+  const row = render(doc, summary());
+
+  assert.equal(row.querySelector(".session-menu")!.hasAttribute("hidden"), true);
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+  assert.equal(row.querySelector(".session-menu")!.hasAttribute("hidden"), false);
+});
+
+test("clicking the kebab button a second time closes the menu again", () => {
+  const doc = fixture();
+  const row = render(doc, summary());
+  const menuBtn = row.querySelector(".session-menu-btn") as HTMLButtonElement;
+
+  menuBtn.click();
+  menuBtn.click();
+
+  assert.equal(row.querySelector(".session-menu")!.hasAttribute("hidden"), true);
+});
+
+test("opening the menu never opens the session", () => {
+  const doc = fixture();
+  const opened: string[] = [];
+  const row = sessionRow(doc, summary(), {
+    active: false,
+    when: "2m ago",
+    onOpen: (chosen) => opened.push(chosen.id),
+    onDelete: () => {},
+  });
+
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+
+  assert.deepEqual(opened, []);
+});
+
+/**
+ * Delete asks first, in the browser's own dialog, and only tells the
+ * caller once that comes back true. `window.confirm` is stubbed rather
+ * than driven for real: jsdom's own implementation is "not implemented"
+ * and this test needs to control what it returns.
+ */
+test("declining the confirmation deletes nothing", () => {
+  const doc = fixture();
+  const view = doc.defaultView as unknown as { confirm: () => boolean };
+  view.confirm = () => false;
+  const deleted: string[] = [];
+  const row = sessionRow(doc, summary({ id: "s9" }), {
+    active: false,
+    when: "2m ago",
+    onOpen: () => {},
+    onDelete: (chosen) => deleted.push(chosen.id),
+  });
+
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+  (row.querySelector(".session-delete") as HTMLButtonElement).click();
+
+  assert.deepEqual(deleted, []);
+});
+
+test("confirming the dialog calls onDelete with the session and closes the menu", () => {
+  const doc = fixture();
+  const view = doc.defaultView as unknown as { confirm: () => boolean };
+  view.confirm = () => true;
+  const deleted: string[] = [];
+  const row = sessionRow(doc, summary({ id: "s9" }), {
+    active: false,
+    when: "2m ago",
+    onOpen: () => {},
+    onDelete: (chosen) => deleted.push(chosen.id),
+  });
+
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+  (row.querySelector(".session-delete") as HTMLButtonElement).click();
+
+  assert.deepEqual(deleted, ["s9"]);
+  assert.equal(row.querySelector(".session-menu")!.hasAttribute("hidden"), true);
+});
+
+/** The confirmation text names the conversation rather than reading as a
+ * generic warning, so deleting the wrong row from a long list is caught
+ * before the dialog is even dismissed. */
+test("the confirmation names the conversation being deleted", () => {
+  const doc = fixture();
+  const view = doc.defaultView as unknown as { confirm: (message?: string) => boolean };
+  let asked = "";
+  view.confirm = (message) => {
+    asked = message ?? "";
+    return false;
+  };
+  const row = sessionRow(doc, summary({ title: "Writing hello.txt" }), {
+    active: false,
+    when: "2m ago",
+    onOpen: () => {},
+    onDelete: () => {},
+  });
+
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+  (row.querySelector(".session-delete") as HTMLButtonElement).click();
+
+  assert.match(asked, /Writing hello\.txt/);
 });

@@ -211,4 +211,10 @@ impl AppState {
     pub fn ids(&self) -> Vec<String> {
         self.sessions.lock().unwrap().keys().cloned().collect()
     }
+
+    /// Drop a session's live state. Called after it is deleted from the
+    /// store, so a reopened id does not resurrect a stale backlog.
+    pub fn remove(&self, id: &str) -> Option<Arc<Mutex<SessionState>>> {
+        self.sessions.lock().unwrap().remove(id)
+    }
 }

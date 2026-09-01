@@ -6,13 +6,18 @@
 //! a message. So a content-free row is not a message the transcript is
 //! missing detail for, it is not a message at all.
 
+mod common;
+use common::{mock_script, EventStream};
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use zorp_agent::{Message, Store, ToolCall};
 
 /// `ZORP_STATE_DB` is process wide, so tests that set it take turns.
 static ENV: Mutex<()> = Mutex::const_new(());
+
+const PATIENCE: Duration = Duration::from_secs(20);
 
 /// Port 0 so parallel test runs never collide on a fixed port.
 async fn spawn() -> SocketAddr {
@@ -53,6 +58,16 @@ async fn post_status(url: String, body: &'static str) -> u16 {
 
 async fn get_status(url: String) -> u16 {
     tokio::task::spawn_blocking(move || match ureq::get(&url).call() {
+        Ok(response) => response.status(),
+        Err(ureq::Error::Status(code, _)) => code,
+        Err(e) => panic!("{e}"),
+    })
+    .await
+    .unwrap()
+}
+
+async fn delete_status(url: String) -> u16 {
+    tokio::task::spawn_blocking(move || match ureq::delete(&url).call() {
         Ok(response) => response.status(),
         Err(ureq::Error::Status(code, _)) => code,
         Err(e) => panic!("{e}"),
@@ -245,5 +260,104 @@ async fn an_unknown_session_is_still_not_found() {
     assert_eq!(
         get_status(format!("http://{addr}/api/sessions/not-a-session/events")).await,
         404
+    );
+}
+
+/// Deleting a conversation removes its row and its messages, so it is gone
+/// from the sidebar and a replay comes back 404.
+#[tokio::test]
+async fn deleting_a_session_removes_it_from_the_list_and_the_store() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    let id = seed(&db);
+
+    let addr = spawn().await;
+
+    assert_eq!(
+        delete_status(format!("http://{addr}/api/sessions/{id}")).await,
+        204
+    );
+    let transcript = get_json(format!("http://{addr}/api/sessions/{id}")).await;
+    assert_eq!(
+        transcript["messages"].as_array().unwrap().len(),
+        0,
+        "a deleted session's messages should be gone: {transcript}"
+    );
+    let listed = get_json(format!("http://{addr}/api/sessions")).await;
+    let rows = listed.as_array().unwrap();
+    assert!(
+        !rows.iter().any(|s| s["id"] == id),
+        "deleted session still listed: {listed}"
+    );
+}
+
+/// The other half: deleting an id nobody has heard of is a 404, not a
+/// silent success.
+#[tokio::test]
+async fn deleting_an_unknown_session_is_not_found() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    seed(&db);
+
+    let addr = spawn().await;
+
+    assert_eq!(
+        delete_status(format!("http://{addr}/api/sessions/not-a-session")).await,
+        404
+    );
+}
+
+/// A session with a turn in flight is refused rather than deleted out from
+/// under the thread still writing to it.
+///
+/// The turn is parked on an approval, the same trick `tests/stop.rs` uses to
+/// stop a genuinely running turn rather than one that raced past before the
+/// request landed.
+#[tokio::test]
+async fn deleting_a_running_session_is_refused() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    std::env::set_var("ZORP_BASE_URL", &base);
+    std::env::set_var("ZORP_MODEL", "m");
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::remove_var("ZORP_API_KEY");
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/turn"),
+            r#"{"message":"carry on"}"#,
+        )
+        .await,
+        202
+    );
+
+    let mut events = EventStream::connect(addr, &id);
+    let parked = tokio::task::spawn_blocking(move || {
+        let ok = events.wait_for("\"type\":\"approval_request\"", PATIENCE);
+        (events, ok)
+    })
+    .await
+    .unwrap();
+    assert!(parked.1, "the agent never parked on an approval");
+
+    assert_eq!(
+        delete_status(format!("http://{addr}/api/sessions/{id}")).await,
+        409
+    );
+    assert_eq!(
+        get_status(format!("http://{addr}/api/sessions/{id}")).await,
+        200,
+        "a refused delete must leave the session in place"
     );
 }

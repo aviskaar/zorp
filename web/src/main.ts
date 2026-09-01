@@ -52,6 +52,7 @@ import {
   getAutoApprove,
   setAutoApprove,
   getCapabilities,
+  deleteSession,
   getSession,
   getSettings,
   listModels,
@@ -1755,8 +1756,29 @@ function renderSessions(): void {
           void openSession(chosen);
           closeSidebar();
         },
+        onDelete: (chosen) => void deleteSessionRow(chosen),
       }),
     );
+  }
+}
+
+/**
+ * The row already got the person's confirmation. This is what happens once
+ * they mean it: ask the server, then update the sidebar and, if the deleted
+ * conversation was the open one, leave it the way closing a tab does rather
+ * than showing a transcript that no longer has anywhere to send a reply.
+ */
+async function deleteSessionRow(session: SessionSummary): Promise<void> {
+  try {
+    await deleteSession(session.id);
+  } catch (error) {
+    window.alert(`Could not delete "${session.title || UNTITLED}": ${describeError(error)}`);
+    return;
+  }
+  sessions = sessions.filter((s) => s.id !== session.id);
+  renderSessions();
+  if (session.id === sessionId) {
+    startNewChat();
   }
 }
 
