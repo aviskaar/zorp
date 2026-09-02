@@ -167,20 +167,27 @@ pub(crate) fn file_stamp(path: &Path) -> Option<(i64, i64)> {
 
 /// Insert a preregistration row into the database. This is the single
 /// authoritative place where the preregistration INSERT statement is defined.
+///
+/// These fields describe one row. Keeping them together makes each call site
+/// name the pre-registration values it persists.
+pub(crate) struct PreregistrationRow<'a> {
+    pub(crate) track_id: &'a str,
+    pub(crate) hypothesis: &'a str,
+    pub(crate) metric_name: &'a str,
+    pub(crate) kill_threshold: f64,
+    pub(crate) threshold_direction: Option<ThresholdDirection>,
+    pub(crate) file_path: &'a Path,
+    pub(crate) file_hash: &'a str,
+    pub(crate) git_commit_hash: Option<&'a str>,
+    pub(crate) committed_at: i64,
+}
+
 pub(crate) fn insert_preregistration_row(
     store: &Store,
-    track_id: &str,
-    hypothesis: &str,
-    metric_name: &str,
-    kill_threshold: f64,
-    threshold_direction: Option<ThresholdDirection>,
-    file_path: &Path,
-    file_hash: &str,
-    git_commit_hash: Option<&str>,
-    committed_at: i64,
+    row: PreregistrationRow<'_>,
 ) -> Result<(), TrackError> {
-    let id = format!("{track_id}-prereg");
-    let (file_mtime_ms, file_len) = match file_stamp(file_path) {
+    let id = format!("{}-prereg", row.track_id);
+    let (file_mtime_ms, file_len) = match file_stamp(row.file_path) {
         Some((m, l)) => (Some(m), Some(l)),
         None => (None, None),
     };
@@ -190,15 +197,15 @@ pub(crate) fn insert_preregistration_row(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         duckdb::params![
             id,
-            track_id,
-            hypothesis,
-            metric_name,
-            kill_threshold,
-            threshold_direction.map(|d| d.as_str()),
-            file_path.to_string_lossy().to_string(),
-            file_hash,
-            git_commit_hash,
-            committed_at,
+            row.track_id,
+            row.hypothesis,
+            row.metric_name,
+            row.kill_threshold,
+            row.threshold_direction.map(|d| d.as_str()),
+            row.file_path.to_string_lossy().to_string(),
+            row.file_hash,
+            row.git_commit_hash,
+            row.committed_at,
             file_mtime_ms,
             file_len
         ],
@@ -273,15 +280,17 @@ pub fn write_prereg(
     let committed_at = now_millis();
     insert_preregistration_row(
         store,
-        track_id,
-        hypothesis,
-        metric_name,
-        kill_threshold,
-        Some(threshold_direction),
-        &file_path,
-        &file_hash,
-        git_commit_hash.as_deref(),
-        committed_at,
+        PreregistrationRow {
+            track_id,
+            hypothesis,
+            metric_name,
+            kill_threshold,
+            threshold_direction: Some(threshold_direction),
+            file_path: &file_path,
+            file_hash: &file_hash,
+            git_commit_hash: git_commit_hash.as_deref(),
+            committed_at,
+        },
     )?;
 
     Ok(Preregistration {

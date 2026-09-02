@@ -105,11 +105,12 @@ jobs:
     # 3. `--all-targets`, so tests are linted too. Most of the warnings this
     #    found were in test code. Linting the library alone would have
     #    gated the easy half.
-    # 4. Same exclusion as the test job: zorp-track builds DuckDB from
-    #    source and would dominate this job the way it dominates that one.
-    #    That leaves zorp-track and the research feature unlinted, which is
-    #    a known gap, not an oversight. Closing it belongs with the research
-    #    jobs and their shared cache, not here.
+    # 4. The whole workspace, `zorp-track` included. It was excluded for
+    #    the same build-time reason as the test job, which left the crate
+    #    holding the evidence record and the whole aryabhatta ledger as
+    #    the one place no lint ran (issue #146). The DuckDB build is paid
+    #    once per cache entry, so it is a cold-start cost and not a
+    #    per-run one.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,14 +120,16 @@ jobs:
         with:
           components: clippy
 
-      # Its own cache entry, keyed on the job name by default. Small, because
-      # the DuckDB tree is excluded, so it does not threaten the shared
-      # research entry the way a full-workspace entry would.
+      # Its own cache entry, keyed on the job name by default. It now holds
+      # the DuckDB build too, so it is not small, but it is separate from
+      # the shared research entry and cannot evict it.
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # The `library` feature stays off. It pulls in the Arrow tree and makes
+      # this job much slower.
       - name: Clippy
-        run: cargo clippy --workspace --exclude zorp-track --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   web:
     # The chat UI is TypeScript, and no Rust job compiles a line of it.
