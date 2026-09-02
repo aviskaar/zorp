@@ -95,9 +95,12 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::NoFencedBlock => {
-                write!(f, "no fenced JSON block found in the reviewer's answer")
+                write!(
+                    f,
+                    "no verdict object in the reviewer's answer, fenced or bare"
+                )
             }
-            ParseError::InvalidJson(msg) => write!(f, "fenced block was not valid JSON: {msg}"),
+            ParseError::InvalidJson(msg) => write!(f, "verdict object was not valid JSON: {msg}"),
             ParseError::EmptyClaim => {
                 write!(f, "a finding has an empty claim, so it says nothing")
             }
@@ -107,24 +110,9 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Every fenced block in `text`, in order.
-///
-/// All of them, not the first. The prompt asks for the JSON block last,
-/// and nothing stops a reviewer quoting the passage it is objecting to
-/// in a fence above it. Taking the first block would then parse the
-/// quoted material as the verdict.
-fn fenced_blocks(text: &str) -> Vec<&str> {
-    let mut blocks = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("```") {
-        let after_open = &rest[start + 3..];
-        let body_start = after_open.find('\n').map(|i| i + 1).unwrap_or(0);
-        let body = &after_open[body_start..];
-        let Some(end) = body.find("```") else { break };
-        blocks.push(body[..end].trim());
-        rest = &body[end + 3..];
-    }
-    blocks
+/// Whether `body` has the one field a verdict requires.
+fn is_verdict_shaped(body: &str) -> bool {
+    serde_json::from_str::<RawVerdict>(body).is_ok()
 }
 
 /// Read a reviewer's answer into findings.
@@ -133,28 +121,36 @@ fn fenced_blocks(text: &str) -> Vec<&str> {
 /// reviewer that looked and found nothing is a result, and treating it
 /// as a failure would quietly bias the panel towards objection.
 pub fn parse_verdict(answer: &str) -> Result<Vec<PanelFinding>, ParseError> {
-    let blocks = fenced_blocks(answer);
-    if blocks.is_empty() {
+    let blocks = crate::blocks::fenced_blocks(answer);
+    let bare = crate::blocks::bare_objects(answer);
+    if blocks.is_empty() && bare.is_empty() {
         return Err(ParseError::NoFencedBlock);
     }
-    // Last first. The verdict is asked for at the end, and a reviewer
-    // that quoted the target above it should not have the quote parsed
-    // as its answer.
-    let mut last_error = ParseError::NoFencedBlock;
-    for block in blocks.iter().rev() {
-        match serde_json::from_str::<RawVerdict>(block) {
-            Ok(raw) => {
-                for finding in &raw.findings {
-                    if finding.claim.trim().is_empty() {
-                        return Err(ParseError::EmptyClaim);
-                    }
-                }
-                return Ok(raw.findings);
-            }
-            Err(e) => last_error = ParseError::InvalidJson(e.to_string()),
+    let found = blocks
+        .iter()
+        .rev()
+        .find(|block| is_verdict_shaped(block))
+        .or_else(|| bare.iter().rev().find(|block| is_verdict_shaped(block)));
+    let Some(block) = found else {
+        let last_err = blocks
+            .iter()
+            .chain(bare.iter())
+            .filter_map(|block| serde_json::from_str::<RawVerdict>(block).err())
+            .next_back();
+        return Err(ParseError::InvalidJson(
+            last_err.map(|e| e.to_string()).unwrap_or_default(),
+        ));
+    };
+
+    // Shaped, so this cannot fail: the shape check parsed it and
+    // confirmed the required field.
+    let raw = serde_json::from_str::<RawVerdict>(block).expect("shaped verdict object");
+    for finding in &raw.findings {
+        if finding.claim.trim().is_empty() {
+            return Err(ParseError::EmptyClaim);
         }
     }
-    Err(last_error)
+    Ok(raw.findings)
 }
 
 /// One locus, and every lens that raised something about it.
@@ -341,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn prose_with_no_fence_is_not_a_verdict() {
+    fn prose_with_no_object_is_not_a_verdict() {
         assert_eq!(
             parse_verdict("Looks fine to me.").unwrap_err(),
             ParseError::NoFencedBlock
@@ -352,6 +348,20 @@ mod tests {
     fn a_fenced_block_that_is_not_json_is_refused() {
         let err = parse_verdict("```\nnot json at all\n```").unwrap_err();
         assert!(matches!(err, ParseError::InvalidJson(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_bare_verdict_object_is_still_read() {
+        let answer = r#"My verdict is {"findings": [{"severity": "note", "claim": "small issue", "locus": "section 3"}]}"#;
+        let findings = parse_verdict(answer).unwrap();
+        assert_eq!(findings[0].claim, "small issue");
+    }
+
+    #[test]
+    fn an_unclosed_final_fence_is_still_read() {
+        let answer = "My verdict:\n```json\n{\"findings\": [{\"severity\": \"note\", \"claim\": \"small issue\", \"locus\": \"section 3\"}]}";
+        let findings = parse_verdict(answer).unwrap();
+        assert_eq!(findings[0].claim, "small issue");
     }
 
     /// A finding with no claim would count towards corroboration while

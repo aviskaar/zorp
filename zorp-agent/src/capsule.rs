@@ -2,18 +2,19 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Pull the contents of the first fenced code block (```` ``` ````...```` ``` ````,
-/// optional language tag on the opening fence ignored) out of `text`. Used by
-/// `/capsule-create` to extract the drafted `CAPSULE.md` body from the model's
-/// reply.
+/// Pull the contents of the first fenced code block out of `text`.
+///
+/// Used by `/capsule-create` to extract the drafted `CAPSULE.md` body
+/// from the model's reply. It does not use bare-object fallback because
+/// a capsule is Markdown, not a JSON object. `Capsule::parse` validates
+/// the selected body before anything is written.
 pub fn extract_fenced_block(text: &str) -> Result<String, String> {
     const ERR: &str = "no fenced code block found in model output";
-    let start = text.find("```").ok_or_else(|| ERR.to_string())?;
-    let after_start = &text[start + 3..];
-    let content_start = after_start.find('\n').map(|i| i + 1).unwrap_or(0);
-    let rest = &after_start[content_start..];
-    let end = rest.find("```").ok_or_else(|| ERR.to_string())?;
-    Ok(rest[..end].trim_end().to_string())
+    crate::blocks::fenced_blocks(text)
+        .into_iter()
+        .next()
+        .map(|block| block.trim_end().to_string())
+        .ok_or_else(|| ERR.to_string())
 }
 
 /// One capsule: instructions (and optionally scripts) parsed from a `CAPSULE.md`.
@@ -800,9 +801,9 @@ mod tests {
     }
 
     #[test]
-    fn extract_fenced_block_errors_when_fence_never_closes() {
-        let err = extract_fenced_block("```\nname: demo\nno closing fence").unwrap_err();
-        assert_eq!(err, "no fenced code block found in model output");
+    fn extract_fenced_block_reads_an_unclosed_final_fence() {
+        let block = extract_fenced_block("```\n---\nname: demo\n---\nbody").unwrap();
+        assert_eq!(block, "---\nname: demo\n---\nbody");
     }
 
     #[test]
