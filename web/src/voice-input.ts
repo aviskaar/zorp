@@ -11,6 +11,8 @@ export interface VoiceInputElements {
   microphone: HTMLButtonElement;
   cancel: HTMLButtonElement;
   status: HTMLElement;
+  /** The running transcript while recording. Untrusted text, one text node. */
+  preview: HTMLElement;
   toast: HTMLElement;
 }
 
@@ -26,19 +28,24 @@ export interface VoiceInput {
 
 const MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
 
-// ponytail: each live tick re-sends the whole growing clip, not just the new
-// audio, so request size and latency grow with recording length. Fine for a
-// typical few-second-to-a-minute voice message; chunked transcription of
-// fixed-length segments was rejected because it loses accuracy across chunk
-// boundaries.
-const LIVE_TRANSCRIBE_INTERVAL_MS = 3000;
-
-/** A character range in the composer holding text this module inserted, so a later step can tell whether the user has since edited it. */
-interface TrackedSpan {
-  start: number;
-  end: number;
-  text: string;
-}
+// The live transcript is segments. The runtime only transcribes whole files,
+// so the recorder is stopped and restarted to get one standalone blob per
+// segment, and each finished segment goes to the same loopback endpoint the
+// final recording always went to. A MediaRecorder timeslice is not used on
+// purpose: its chunks are not files on their own.
+//
+// A segment ends at the first quiet moment after this long, so most words
+// come out whole.
+const MIN_SEGMENT_MS = 3000;
+// How long the meter has to read quiet before a moment counts as one. A gap
+// between words is shorter than this.
+const QUIET_MS = 300;
+// ponytail: a segment is cut here whether or not someone is mid-word, so a
+// word can still split at a boundary and come back as two halves. The fix is
+// streaming ASR on the server, which the runtime does not offer.
+const MAX_SEGMENT_MS = 8000;
+// What a segment that could not be transcribed leaves in its place.
+const UNCLEAR = "[unclear]";
 
 function paddedInsertion(
   value: string,
@@ -54,31 +61,45 @@ function paddedInsertion(
   return { before, inserted, after };
 }
 
+/** Elapsed time as m:ss. */
+function clock(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 export function createVoiceInput(
   elements: VoiceInputElements,
   api: VoiceApi,
   environment: VoiceEnvironment = browserEnvironment(),
   // The level meter is passed in rather than built here, so a caller that
-  // draws no meter costs nothing and recording never depends on one.
+  // draws no meter costs nothing and recording never depends on one. Without
+  // a meter there is no level, so segments end only at the ceiling.
   meter: VoiceMeter = { start: () => {}, stop: () => {} },
 ): VoiceInput {
   let recorder: MediaRecorder | null = null;
   let stream: MediaStream | null = null;
-  let chunks: Blob[] = [];
   let cancelled = false;
+  let stopping = false;
   let busy = false;
   let readiness: Promise<{ ready: boolean; error?: unknown }> | null = null;
+  let gate: Promise<{ ready: boolean; error?: unknown }> = Promise.resolve({ ready: true });
   let readinessGeneration = 0;
   let visibleReadiness = 0;
   let recordingGeneration = 0;
-  // The live preview's own state: the last-inserted interim span, whether a
-  // live request is already in flight (so the next tick is skipped rather
-  // than queued), and whether the user has edited the span away (which
-  // retires live preview for the rest of this recording).
-  let liveSpan: TrackedSpan | null = null;
-  let liveBusy = false;
-  let liveAbandoned = false;
   let primed = true;
+  // Segments go to the server in order, one request at a time, by extending
+  // one promise chain. A result is pushed when its request returns, so
+  // `texts` is always the recording so far, in order.
+  let texts: string[] = [];
+  let language = "";
+  let chain: Promise<void> = Promise.resolve();
+  let starts = 0;
+  let stops = 0;
+  let segmentStart = 0;
+  let quietSince: number | null = null;
+  let forceCut: ReturnType<typeof setTimeout> | null = null;
+  let recordingStart = 0;
+  let timer: ReturnType<typeof setInterval> | null = null;
 
   const message = (text: string): void => {
     elements.status.hidden = false;
@@ -106,10 +127,46 @@ export function createVoiceInput(
   const idleControls = (): void => {
     elements.microphone.dataset.state = "idle";
     elements.microphone.setAttribute("aria-label", "Record a voice message");
+    elements.microphone.setAttribute("aria-pressed", "false");
     elements.microphone.title = "Record a voice message";
+    elements.microphone.disabled = false;
     elements.cancel.hidden = true;
     recorder = null;
     busy = false;
+  };
+
+  const recordingControls = (): void => {
+    elements.microphone.dataset.state = "recording";
+    elements.microphone.setAttribute("aria-label", "Stop and transcribe recording");
+    elements.microphone.setAttribute("aria-pressed", "true");
+    elements.microphone.title = "Stop and transcribe recording";
+    // It is the stop button now, so it has to be clickable.
+    elements.microphone.disabled = false;
+    elements.cancel.hidden = false;
+  };
+
+  const stopTimer = (): void => {
+    if (timer === null) return;
+    clearInterval(timer);
+    timer = null;
+  };
+
+  // "Listening" plus a ticking m:ss. The status line is a polite live
+  // region and the time changes every second, so the time is visual only:
+  // the region announces "Listening" once rather than counting out loud.
+  const startTimer = (): void => {
+    const document = elements.status.ownerDocument;
+    const elapsed = document.createElement("span");
+    elapsed.className = "voice-timer";
+    elapsed.setAttribute("aria-hidden", "true");
+    recordingStart = Date.now();
+    const tick = (): void => {
+      elapsed.textContent = clock(Date.now() - recordingStart);
+    };
+    tick();
+    elements.status.hidden = false;
+    elements.status.replaceChildren(document.createTextNode("Listening "), elapsed);
+    timer = setInterval(tick, 1000);
   };
 
   const dispatchInputEvent = (): void => {
@@ -117,55 +174,92 @@ export function createVoiceInput(
     elements.input.dispatchEvent(new EventClass("input", { bubbles: true }));
   };
 
-  // Replaces exactly [start, end) with text (padded to keep a word boundary
-  // against whatever surrounds it), moves the caret to the end of what was
-  // inserted, and reports the resulting span so a caller can track it.
-  const replaceSpan = (start: number, end: number, text: string): TrackedSpan => {
+  const insertTranscript = (text: string): void => {
+    const start = elements.input.selectionStart ?? elements.input.value.length;
+    const end = elements.input.selectionEnd ?? start;
     const { before, inserted, after } = paddedInsertion(elements.input.value, start, end, text);
     elements.input.value = `${before}${inserted}${after}`;
     const caret = before.length + inserted.length;
     elements.input.setSelectionRange(caret, caret);
     dispatchInputEvent();
-    return { start: before.length, end: caret, text: inserted };
-  };
-
-  const insertTranscript = (text: string): TrackedSpan => {
-    const start = elements.input.selectionStart ?? elements.input.value.length;
-    const end = elements.input.selectionEnd ?? start;
-    const span = replaceSpan(start, end, text);
     elements.input.focus();
-    return span;
   };
 
-  const currentBlob = (): Blob =>
-    new Blob(chunks, { type: recorder?.mimeType || chunks[0]?.type || "audio/webm" });
+  // The preview came from a model that heard a microphone. It is set as one
+  // text node and nothing else: no markup, no markdown, nothing run.
+  const renderPreview = (): void => {
+    const text = texts.join(" ");
+    elements.preview.textContent = text;
+    elements.preview.hidden = text === "";
+  };
 
-  // One periodic, non-final re-transcribe of the whole clip recorded so far.
-  // Failures are swallowed on purpose (point 5 of the design): only the
-  // final, stop-triggered transcribe is allowed to surface an error.
-  const runLiveTick = async (generation: number): Promise<void> => {
-    liveBusy = true;
+  const clearPreview = (): void => {
+    texts = [];
+    renderPreview();
+  };
+
+  const transcribeSegment = async (generation: number, segment: Blob): Promise<void> => {
+    if (generation !== recordingGeneration) return;
+    let text = UNCLEAR;
     try {
-      const result = await api.transcribe(currentBlob());
-      // The recording this tick belongs to may have stopped, been
-      // cancelled, or already been superseded by a new recording while the
-      // request was in flight. Any of those makes the result stale.
-      if (generation !== recordingGeneration || cancelled || recorder?.state !== "recording") return;
-      if (liveSpan === null) {
-        liveSpan = insertTranscript(result.text);
-      } else if (elements.input.value.slice(liveSpan.start, liveSpan.end) === liveSpan.text) {
-        liveSpan = replaceSpan(liveSpan.start, liveSpan.end, result.text);
-      } else {
-        // The user edited the span since the last live update. Abandon live
-        // preview for the rest of this recording rather than clobber it.
-        liveSpan = null;
-        liveAbandoned = true;
-      }
-    } catch {
-      // Silent on purpose: see the function comment above.
-    } finally {
-      liveBusy = false;
+      // The first segment waits for readiness the way the single final call
+      // always did; after that the gate is already settled.
+      const outcome = await gate;
+      if (!outcome.ready) throw outcome.error;
+      const result = await api.transcribe(segment);
+      text = result.text;
+      language = result.language;
+    } catch (error) {
+      console.error("voice segment failed", error);
     }
+    if (generation !== recordingGeneration) return;
+    texts.push(text);
+    renderPreview();
+  };
+
+  const enqueueSegment = (data: Blob): void => {
+    const generation = recordingGeneration;
+    const segment = new Blob([data], { type: recorder?.mimeType || data.type || "audio/webm" });
+    chain = chain.then(() => transcribeSegment(generation, segment));
+  };
+
+  const beginSegment = (): void => {
+    if (!recorder) return;
+    recorder.start();
+    starts += 1;
+    segmentStart = Date.now();
+    quietSince = null;
+    if (forceCut !== null) clearTimeout(forceCut);
+    forceCut = setTimeout(cut, MAX_SEGMENT_MS);
+  };
+
+  // stop() hands the segment over as one standalone blob and start() opens
+  // the next one. The gap between them is the recorder's own, a few
+  // milliseconds.
+  const cut = (): void => {
+    if (!recorder || recorder.state !== "recording" || stopping) return;
+    recorder.stop();
+    beginSegment();
+  };
+
+  const onQuiet = (quiet: boolean): void => {
+    const now = Date.now();
+    if (!quiet) {
+      quietSince = null;
+      return;
+    }
+    if (quietSince === null) quietSince = now;
+    if (now - segmentStart >= MIN_SEGMENT_MS && now - quietSince >= QUIET_MS) cut();
+  };
+
+  const stopRecording = (): void => {
+    if (!recorder || recorder.state !== "recording" || stopping) return;
+    stopping = true;
+    if (forceCut !== null) {
+      clearTimeout(forceCut);
+      forceCut = null;
+    }
+    recorder.stop();
   };
 
   const finishRecording = async (): Promise<void> => {
@@ -173,52 +267,42 @@ export function createVoiceInput(
     const wasCancelled = cancelled;
     const pendingReadiness = readiness;
     readiness = null;
-    const spanAtStop = liveSpan;
-    liveSpan = null;
-    const recording = currentBlob();
+    stopTimer();
     releaseStream();
     idleControls();
+    if (visibleReadiness === generation) visibleReadiness = 0;
     if (wasCancelled) {
-      if (visibleReadiness === generation) visibleReadiness = 0;
+      // Segments still queued or in flight belong to a recording that no
+      // longer exists: a stale generation drops them before they are sent,
+      // or on return, and nothing lands in the preview after it clears.
+      recordingGeneration = 0;
+      clearPreview();
       void reportBackgroundFailure(pendingReadiness);
       message("Recording cancelled.");
       return;
     }
-    if (recording.size === 0) {
-      if (visibleReadiness === generation) visibleReadiness = 0;
-      void reportBackgroundFailure(pendingReadiness);
-      message("No audio was recorded. Try again.");
-      return;
-    }
     busy = true;
     elements.microphone.disabled = true;
+    message("Transcribing on this machine…");
     try {
-      const outcome = await pendingReadiness;
-      if (visibleReadiness === generation) visibleReadiness = 0;
-      if (!outcome?.ready) {
-        console.error("voice setup failed", outcome?.error);
-        message("Voice input is unavailable right now.");
+      // Every segment, the last one included, is already queued, so waiting
+      // for the queue is waiting for the whole transcript.
+      await chain;
+      const transcript = texts.join(" ");
+      clearPreview();
+      if (transcript === "") {
+        void reportBackgroundFailure(pendingReadiness);
+        message("No audio was recorded. Try again.");
         return;
       }
-      hideToast();
-      message("Transcribing on this machine…");
-      const transcript = await api.transcribe(recording);
-      // If a live preview span is still sitting untouched in the composer,
-      // the final, authoritative transcript replaces it rather than being
-      // appended after it. Otherwise this is exactly today's cursor insert.
-      if (
-        spanAtStop &&
-        elements.input.value.slice(spanAtStop.start, spanAtStop.end) === spanAtStop.text
-      ) {
-        replaceSpan(spanAtStop.start, spanAtStop.end, transcript.text);
-        elements.input.focus();
-      } else {
-        insertTranscript(transcript.text);
+      if (language === "") {
+        message("The recording could not be transcribed. Try again.");
+        return;
       }
-      message(`Transcript ready. Detected language: ${transcript.language}. Review it before sending.`);
-    } catch (error) {
-      console.error("voice transcription failed", error);
-      message("The recording could not be transcribed. Try again.");
+      // Exactly where a transcript always landed: editable, at the caret,
+      // and never sent from here.
+      insertTranscript(transcript);
+      message(`Transcript ready. Detected language: ${language}. Review it before sending.`);
     } finally {
       elements.microphone.disabled = false;
       busy = false;
@@ -294,35 +378,35 @@ export function createVoiceInput(
       }
       stream = await environment.mediaDevices.getUserMedia({ audio: true });
       // Show the level meter as soon as the microphone is live, so the page
-      // says it is listening while the runtime is still waking up.
-      meter.start(stream);
+      // says it is listening while the runtime is still waking up. Its read of
+      // the level is also what finds a quiet moment to end a segment on.
+      meter.start(stream, onQuiet);
       hideToast();
       const Recorder = environment.MediaRecorder;
       const mimeType = MIME_TYPES.find((type) => Recorder.isTypeSupported?.(type));
       recorder = mimeType ? new Recorder(stream, { mimeType }) : new Recorder(stream);
-      chunks = [];
       cancelled = false;
-      liveSpan = null;
-      liveBusy = false;
-      liveAbandoned = false;
+      stopping = false;
+      starts = 0;
+      stops = 0;
+      language = "";
+      gate = readiness ?? gate;
+      clearPreview();
       recorder.addEventListener("dataavailable", (event) => {
+        // With no timeslice, data arrives once per stop(): one finished
+        // segment, a file on its own.
         const data = (event as BlobEvent).data;
-        if (data?.size) chunks.push(data);
-        // A tick fired by the timeslice while still actively recording (not
-        // the final dataavailable stop() fires, whose state is already
-        // "inactive" by the time it arrives). Skip rather than queue if a
-        // live request is already in flight or live preview was abandoned.
-        if (recorder?.state === "recording" && !cancelled && !liveBusy && !liveAbandoned) {
-          void runLiveTick(generation);
-        }
+        if (data?.size) enqueueSegment(data);
       });
-      recorder.addEventListener("stop", () => void finishRecording(), { once: true });
-      recorder.start(LIVE_TRANSCRIBE_INTERVAL_MS);
-      elements.microphone.dataset.state = "recording";
-      elements.microphone.setAttribute("aria-label", "Stop and transcribe recording");
-      elements.microphone.title = "Stop and transcribe recording";
-      elements.cancel.hidden = false;
-      message("Recording. Press the microphone to stop, or cancel to discard it.");
+      recorder.addEventListener("stop", () => {
+        stops += 1;
+        // A cut's stop event can land after the person pressed stop, so the
+        // recording is over only once every segment started has ended.
+        if (stopping && stops === starts) void finishRecording();
+      });
+      beginSegment();
+      recordingControls();
+      startTimer();
     } catch (error) {
       if (visibleReadiness === generation) visibleReadiness = 0;
       releaseStream();
@@ -372,7 +456,7 @@ export function createVoiceInput(
 
   elements.microphone.addEventListener("click", () => {
     if (recorder?.state === "recording") {
-      recorder.stop();
+      stopRecording();
       return;
     }
     if (!busy) void startRecording();
@@ -381,17 +465,13 @@ export function createVoiceInput(
   elements.cancel.addEventListener("click", () => {
     if (!recorder || recorder.state !== "recording") return;
     cancelled = true;
-    releaseStream();
-    // Splice out a still-untouched live preview span rather than leaving it
-    // behind; an edited span is left alone.
-    if (liveSpan && elements.input.value.slice(liveSpan.start, liveSpan.end) === liveSpan.text) {
-      const before = elements.input.value.slice(0, liveSpan.start);
-      const after = elements.input.value.slice(liveSpan.end);
-      elements.input.value = `${before}${after}`;
-      dispatchInputEvent();
-    }
-    liveSpan = null;
-    recorder.stop();
+    stopRecording();
+  });
+
+  // Escape stops the recording the same way the button does, from anywhere
+  // on the page, since focus may be on the button or in the composer.
+  elements.microphone.ownerDocument.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && recorder?.state === "recording") stopRecording();
   });
 
   return { observe };

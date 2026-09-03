@@ -1513,6 +1513,7 @@ button {
 }
 
 .voice-mic {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1544,12 +1545,56 @@ button {
   background: rgba(255, 90, 90, 0.09);
 }
 
-.voice-mic[data-state="recording"] svg {
+/* Two icons, one shown: the microphone while idle, a stop square while
+   recording. Same pattern as the send button. */
+.voice-mic .stop-icon {
+  display: none;
   fill: currentColor;
+  stroke: none;
+}
+
+.voice-mic[data-state="recording"] .mic-icon {
+  display: none;
+}
+
+.voice-mic[data-state="recording"] .stop-icon {
+  display: block;
+}
+
+/* A red dot pulsing on the button's corner while the microphone is open. The
+   meter says it is listening too; this one is readable from across the room. */
+.voice-mic[data-state="recording"]::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff4d4d;
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 .voice-mic:disabled {
   opacity: 0.45;
+}
+
+.voice-timer {
+  font-variant-numeric: tabular-nums;
+}
+
+.voice-preview {
+  max-width: var(--reading);
+  margin: 6px auto 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.voice-preview[hidden] {
+  display: none;
 }
 
 .voice-meter {
@@ -1577,6 +1622,10 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .voice-meter-bar {
     transition: none;
+  }
+
+  .voice-mic[data-state="recording"]::after {
+    animation: none;
   }
 }
 

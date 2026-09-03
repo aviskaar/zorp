@@ -164,6 +164,7 @@ interface Elements {
   voiceMicrophone: HTMLButtonElement;
   voiceCancel: HTMLButtonElement;
   voiceStatus: HTMLElement;
+  voicePreview: HTMLElement;
   voiceToast: HTMLElement;
   voiceMeter: HTMLElement;
   reviewPanel: HTMLButtonElement;
@@ -264,6 +265,7 @@ const voiceInput = createVoiceInput(
     microphone: dom.voiceMicrophone,
     cancel: dom.voiceCancel,
     status: dom.voiceStatus,
+    preview: dom.voicePreview,
     toast: dom.voiceToast,
   },
   {
@@ -494,6 +496,7 @@ function collectElements(): Elements {
     voiceMicrophone: byId<HTMLButtonElement>("voice-mic"),
     voiceCancel: byId<HTMLButtonElement>("voice-cancel"),
     voiceStatus: byId("voice-status"),
+    voicePreview: byId("voice-preview"),
     voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
     settingsOverlay: byId("settings-overlay"),

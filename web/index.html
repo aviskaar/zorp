@@ -320,16 +320,27 @@
               autocomplete="off"
               placeholder="Ask zorp to do something in this workspace…"
             ></textarea>
+            <!--
+              One control, two jobs, the same shape as the send button: it
+              records while idle and stops while recording. Both icons are
+              here and the stylesheet shows one by data-state; the label and
+              aria-pressed are set from script. While recording a red dot
+              pulses on its corner, so the state reads from across the room.
+            -->
             <button
               class="voice-mic"
               id="voice-mic"
               type="button"
               aria-label="Record a voice message"
+              aria-pressed="false"
               title="Record a voice message"
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
+              <svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <rect x="9" y="3" width="6" height="11" rx="3" />
                 <path d="M6.5 11.5a5.5 5.5 0 0 0 11 0M12 17v4M9 21h6" />
+              </svg>
+              <svg class="stop-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="1.5" />
               </svg>
             </button>
             <!--
@@ -386,6 +397,15 @@
               Cancel recording
             </button>
           </div>
+          <!--
+            The transcript so far, while still recording: each finished
+            segment comes back from the local runtime and lands here as plain
+            text. Untrusted, like everything a model writes, so the script
+            sets it through textContent and nothing in it is markup. When
+            recording stops the whole thing moves into the composer above,
+            still editable and still unsent, and this line clears.
+          -->
+          <p class="voice-preview" id="voice-preview" hidden></p>
           <!--
             First-use setup can take minutes, so it gets a notice a person
             cannot miss rather than only the status line above. Decoration in
