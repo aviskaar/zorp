@@ -14,9 +14,10 @@
 //! certify the graph path and nothing here: this module's validation is
 //! its planted-structure tests, which certify it on synthetic ledgers
 //! only. Running it against the real anomaly ledger is behind the
-//! admission gate in `docs/DECISIONS.md` (2026-08-28): at least 12
-//! admitted anomalies spanning at least 3 distinct condition keys, and a
-//! person's recorded decision. No function in this module reads a
+//! admission gate in `docs/DECISIONS.md` (2026-09-02): at least 12
+//! reproduced admissions, 3 condition keys that varied, one re-run
+//! rejection, and a calibration Go, followed by a person's recorded
+//! decision. No function in this module reads a
 //! database, and no adapter to the real ledger exists.
 //!
 //! **Integrity.** The input type holds condition atoms and a direction

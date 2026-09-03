@@ -65,9 +65,14 @@ resulting artifact, deliver it in the right form.
   code enforces it. Nothing consults a calibration result before the
   anomaly ledger gets written, so bad coverage will not stop anything on
   its own. `CalibrationReport::verdict` turns a report into a go/no-go,
-  but a caller still has to choose to ask for it. If the stated
-  intervals do not have real coverage, the right move is to stop and not
-  build the ledger, and that is a decision a person makes. A band with
+  but a caller still has to choose to ask for it. The hypothesis-search
+  admission gate is four numbers read from the ledger by
+  `zorp-track/src/admission.rs`: reproduced admissions, varying condition
+  keys, at least one re-run rejection, and a calibration Go. All four must
+  hold. `gate_status` prints them, and crossing is still a person's
+  decision. See `docs/DECISIONS.md` (2026-09-02). If the stated intervals
+  do not have real coverage, the right move is to stop and not build the
+  ledger, and that is a decision a person makes. A band with
   too few forecasts to judge is its own no-go and never a miss: a gap
   computed over three rows is arithmetic about three rows, and reporting
   it as a demonstrated miss makes it look exactly like one. A band is a
