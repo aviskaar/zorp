@@ -370,7 +370,13 @@ resulting artifact, deliver it in the right form.
   the store. The window is unknown unless `ZORP_CONTEXT_TOKENS` says otherwise,
   on purpose: no endpoint can be asked and no default is right for everyone.
   `zorp-web` and the CLI's `resume` both seed a turn through its `plan_seed`,
-  which is what gives the browser conversational memory. See
+  which is what gives the browser conversational memory. A provider that
+  states its window while refusing a request for its size has said it:
+  `stated_window` reads the number out of the error, the agent loop adopts
+  it, compacts, and sends the step once more, and a second refusal becomes
+  a readable error naming both numbers and `ZORP_CONTEXT_TOKENS`. That is
+  one retry and never a loop, and it neither guesses a window nor sends
+  `num_ctx`. See
   `docs/DECISIONS.md` (2026-08-19, 2026-09-03) before changing any of that.
 - `web/` is TypeScript and no Rust job compiles a line of it. After
   changing anything in there run `npm run check`, `npm test` and

@@ -1,6 +1,7 @@
 use crate::approval::ApprovalMode;
 use crate::context_window::{
-    compact_tool_results, estimate_tokens, ContextBudget, ContextUsage, UsageSource,
+    compact_tool_results, estimate_tokens, stated_window, CompactionReport, ContextBudget,
+    ContextUsage, StatedWindow, UsageSource,
 };
 use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, Model};
 use crate::policy::{Decision, Policy};
@@ -707,7 +708,7 @@ impl Agent {
     ///
     /// The elision never reaches the store. What the model is sent shrinks;
     /// what was said does not.
-    fn enforce_history_budget(&mut self) {
+    fn enforce_history_budget(&mut self) -> CompactionReport {
         let budget = self.context_budget.clone();
         let report = compact_tool_results(&mut self.messages, &budget);
         // Silent context loss is how an agent starts confidently
@@ -715,6 +716,42 @@ impl Agent {
         if let Some(text) = report.notice() {
             self.renderer.notice(&text);
         }
+        report
+    }
+
+    /// Take the window a provider stated while refusing the request, and
+    /// make room under it. True when the transcript changed and the estimate
+    /// now fits, so the same step is worth sending once more.
+    ///
+    /// The window stays unknown by default. This is not a guess and not a
+    /// probe: the provider put the number in its own error, and that is the
+    /// one number it is safe to adopt. The compaction is the same
+    /// deterministic one every other trigger uses, and nothing here reaches
+    /// the store. A window already at or under what the provider stated
+    /// changes nothing, because the transcript was compacted under it before
+    /// the request went out. See docs/DECISIONS.md (2026-09-03).
+    fn adopt_stated_window(&mut self, stated: &StatedWindow) -> bool {
+        if self
+            .context_budget
+            .limit_tokens
+            .is_some_and(|limit| limit <= stated.n_ctx)
+        {
+            return false;
+        }
+        self.context_budget.limit_tokens = Some(stated.n_ctx);
+        self.renderer.notice(&format!(
+            "the provider stated a {} token context window; compacting to fit it and \
+             sending this step once more",
+            stated.n_ctx
+        ));
+        let report = self.enforce_history_budget();
+        let fits = self
+            .context_budget
+            .target_tokens()
+            .is_some_and(|target| estimate_tokens(&self.messages) <= target);
+        // Nothing elided means the same bytes would go out again, and the
+        // provider has already answered those.
+        !report.is_empty() && fits
     }
 
     #[cfg(test)]
@@ -756,7 +793,7 @@ impl Agent {
         let mut failed_verify_changes: Option<usize> = None;
         let mut failed_verify_attempts = 0;
         let mut denial_streak = 0usize;
-        let outcome = loop {
+        let outcome = 'run: loop {
             self.sync();
             self.enforce_history_budget();
             if step >= self.max_steps {
@@ -772,48 +809,66 @@ impl Agent {
             #[cfg(feature = "otel")]
             let _step_guard = step_span.enter();
 
-            self.renderer.working();
-            let start = std::time::Instant::now();
-            // Streaming path. Models that cannot stream fall back to the
-            // buffered call and report their answer as one delta, so this is
-            // the same code path for both and there is no second branch here
-            // to keep in step.
-            let renderer = &mut self.renderer;
-            let completed = self.model.complete_streaming(
-                &self.messages,
-                &schemas,
-                &crate::reasoning::CompletionOptions::default(),
-                Some(&self.cancel),
-                &mut |chunk| renderer.assistant_delta(chunk),
-            );
-            let duration = start.elapsed().as_millis() as u64;
-            self.renderer.working_done();
-            let completion = match completed {
-                Ok(completion) => completion,
-                Err(e) => {
-                    // A cancel raised while the model was replying surfaces
-                    // here, because abandoning a half-arrived response is a
-                    // read that stopped early and that is what a transport
-                    // failure looks like from below. The token says which it
-                    // was, not the message.
-                    //
-                    // Nothing is pushed for the abandoned response, and that
-                    // is the point. A message cut off partway has text that
-                    // stops mid-sentence and tool calls that may be half
-                    // parsed, and recording one would leave an assistant turn
-                    // with calls that no tool result ever answers. The next
-                    // turn would then send the provider a transcript it is
-                    // entitled to reject. Better to have not spoken.
-                    if self.cancel.load(Ordering::SeqCst) {
-                        break Outcome::Cancelled;
-                    }
-                    self.trace(|seq, identity| TraceEvent::InfrastructureError {
-                        seq,
-                        message: e.to_string(),
-                        identity,
-                    });
-                    break Outcome::Error(e);
+            // One step is sent at most twice. A provider that states its
+            // window while refusing the request for its size has said what
+            // the window is, so it is adopted, the transcript is compacted
+            // under it, and the same request goes once more. Never a loop:
+            // a second refusal ends the run with an error a person can read.
+            // See docs/DECISIONS.md (2026-09-03).
+            let mut retried = false;
+            let (completion, duration) = loop {
+                self.renderer.working();
+                let start = std::time::Instant::now();
+                // Streaming path. Models that cannot stream fall back to the
+                // buffered call and report their answer as one delta, so this
+                // is the same code path for both and there is no second
+                // branch here to keep in step.
+                let renderer = &mut self.renderer;
+                let completed = self.model.complete_streaming(
+                    &self.messages,
+                    &schemas,
+                    &crate::reasoning::CompletionOptions::default(),
+                    Some(&self.cancel),
+                    &mut |chunk| renderer.assistant_delta(chunk),
+                );
+                let duration = start.elapsed().as_millis() as u64;
+                self.renderer.working_done();
+                let e = match completed {
+                    Ok(completion) => break (completion, duration),
+                    Err(e) => e,
+                };
+                // A cancel raised while the model was replying surfaces
+                // here, because abandoning a half-arrived response is a
+                // read that stopped early and that is what a transport
+                // failure looks like from below. The token says which it
+                // was, not the message.
+                //
+                // Nothing is pushed for the abandoned response, and that
+                // is the point. A message cut off partway has text that
+                // stops mid-sentence and tool calls that may be half
+                // parsed, and recording one would leave an assistant turn
+                // with calls that no tool result ever answers. The next
+                // turn would then send the provider a transcript it is
+                // entitled to reject. Better to have not spoken.
+                if self.cancel.load(Ordering::SeqCst) {
+                    break 'run Outcome::Cancelled;
                 }
+                self.trace(|seq, identity| TraceEvent::InfrastructureError {
+                    seq,
+                    message: e.to_string(),
+                    identity,
+                });
+                let Some(stated) = stated_window(&e.to_string()) else {
+                    break 'run Outcome::Error(e);
+                };
+                // The raw refusal stays on stderr, where the workspace says
+                // this kind of thing, so the readable error hides nothing.
+                eprintln!("zorp-agent: the provider refused the request for its size: {e}");
+                if !retried && self.adopt_stated_window(&stated) {
+                    retried = true;
+                    continue;
+                }
+                break 'run Outcome::Error(stated.explain().into());
             };
             let msg = completion.message;
             let telemetry = completion.telemetry;
@@ -1230,21 +1285,33 @@ mod tests {
 
     #[derive(Clone)]
     struct Scripted {
-        replies: Arc<Mutex<Vec<ModelCompletion>>>,
+        replies: Arc<Mutex<Vec<Result<ModelCompletion, String>>>>,
     }
     impl Scripted {
         fn new(replies: Vec<AssistantMessage>) -> Self {
-            Scripted {
-                replies: Arc::new(Mutex::new(
-                    replies.into_iter().map(ModelCompletion::from).collect(),
-                )),
-            }
+            Self::new_with_results(replies.into_iter().map(Ok).collect())
         }
 
         fn new_with_completions(replies: Vec<ModelCompletion>) -> Self {
             Scripted {
-                replies: Arc::new(Mutex::new(replies)),
+                replies: Arc::new(Mutex::new(replies.into_iter().map(Ok).collect())),
             }
+        }
+
+        /// A script in which some calls fail the way a transport error would.
+        fn new_with_results(replies: Vec<Result<AssistantMessage, String>>) -> Self {
+            Scripted {
+                replies: Arc::new(Mutex::new(
+                    replies
+                        .into_iter()
+                        .map(|reply| reply.map(ModelCompletion::from))
+                        .collect(),
+                )),
+            }
+        }
+
+        fn remaining(&self) -> usize {
+            self.replies.lock().unwrap().len()
         }
 
         fn pop(&self) -> Result<ModelCompletion, BoxErr> {
@@ -1252,7 +1319,7 @@ mod tests {
             if replies.is_empty() {
                 return Err("no more scripted replies".into());
             }
-            Ok(replies.remove(0))
+            replies.remove(0).map_err(BoxErr::from)
         }
     }
     impl Model for Scripted {
@@ -1749,6 +1816,132 @@ mod tests {
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said[0].contains("context compaction"), "{said:?}");
         assert!(said[0].contains("still on disk"), "{said:?}");
+    }
+
+    /// The report behind docs/DECISIONS.md (2026-09-03): a 20 KiB read, a
+    /// small listing, and a refusal from a 4096 token Ollama in between.
+    fn refused_once_then(model_after: Vec<Result<AssistantMessage, String>>) -> Scripted {
+        let mut replies = vec![
+            Ok(wants_tool_with("read_file", json!({"path": "big.txt"}))),
+            Ok(wants_tool_with("list_files", json!({}))),
+            Err(crate::context_window::OLLAMA_REFUSAL.to_string()),
+        ];
+        replies.extend(model_after);
+        Scripted::new_with_results(replies)
+    }
+
+    fn agent_with_a_big_read(model: Scripted, notices: &Arc<Mutex<Vec<String>>>) -> Agent {
+        agent(model)
+            .register(Box::new(FixedOutput {
+                name: "read_file",
+                content: "x".repeat(20 * 1024),
+            }))
+            .register(Box::new(FixedOutput {
+                name: "list_files",
+                content: "big.txt".to_string(),
+            }))
+            .with_renderer(Box::new(ContextRenderer {
+                notices: notices.clone(),
+                ..ContextRenderer::default()
+            }))
+    }
+
+    /// A provider that states its window has said it: the window is adopted,
+    /// the old read is elided, the user is told twice over, and the step is
+    /// sent again and completes.
+    #[test]
+    fn a_stated_window_is_adopted_and_the_step_is_sent_once_more() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let model = refused_once_then(vec![Ok(text("done"))]);
+        let mut a = agent_with_a_big_read(model.clone(), &notices);
+
+        assert!(matches!(a.run("read it"), Outcome::Complete(_)));
+
+        assert_eq!(a.context_budget.limit_tokens, Some(4096));
+        assert_eq!(model.remaining(), 0, "the retry never went out");
+        let said = notices.lock().unwrap().clone();
+        assert!(
+            said.iter()
+                .any(|n| n.contains("stated a 4096 token context window")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|n| n.contains("context compaction")),
+            "{said:?}"
+        );
+        assert!(
+            a.messages.iter().any(|m| m.role == "tool"
+                && m.text()
+                    .starts_with(crate::context_window::ELIDED_MARKER_PREFIX)),
+            "the old read was not elided"
+        );
+    }
+
+    /// A second refusal ends the run, in words with the numbers in them and
+    /// none of the provider's nested JSON. One retry, never a loop.
+    #[test]
+    fn a_repeated_refusal_becomes_a_readable_error_after_one_retry() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let model = refused_once_then(vec![
+            Err(crate::context_window::OLLAMA_REFUSAL.to_string()),
+            Ok(text("never reached")),
+        ]);
+        let mut a = agent_with_a_big_read(model.clone(), &notices);
+
+        let Outcome::Error(e) = a.run("read it") else {
+            panic!("a repeated refusal must end the run");
+        };
+
+        let shown = e.to_string();
+        assert!(shown.contains("Context length"), "{shown}");
+        assert!(shown.contains("ZORP_CONTEXT_TOKENS"), "{shown}");
+        assert!(shown.contains("8919"), "{shown}");
+        assert!(shown.contains("4096"), "{shown}");
+        assert!(!shown.contains("{\"error\""), "{shown}");
+        assert_eq!(model.remaining(), 1, "the step was sent more than twice");
+    }
+
+    /// When nothing can be elided the same bytes would go out again, and the
+    /// provider has already answered those. No retry, readable error.
+    #[test]
+    fn a_refusal_with_nothing_to_elide_is_not_retried() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new_with_results(vec![
+            Ok(wants_tool_with("read_file", json!({"path": "big.txt"}))),
+            Err(crate::context_window::OLLAMA_REFUSAL.to_string()),
+            Ok(text("never reached")),
+        ]);
+        let mut a = agent_with_a_big_read(model.clone(), &notices);
+
+        let Outcome::Error(e) = a.run("read it") else {
+            panic!("an unrecoverable refusal must end the run");
+        };
+
+        assert!(e.to_string().contains("ZORP_CONTEXT_TOKENS"), "{e}");
+        assert_eq!(a.context_budget.limit_tokens, Some(4096));
+        assert_eq!(model.remaining(), 1, "the step was sent again unchanged");
+    }
+
+    /// A 400 that states no window is the error it always was, at once.
+    #[test]
+    fn an_unrelated_400_is_an_error_immediately_with_no_retry() {
+        let model = Scripted::new_with_results(vec![
+            Err(
+                "http://localhost:11434/v1/chat/completions: status code 400: \
+                 {\"error\":{\"message\":\"model 'x' not found\",\"type\":\"api_error\"}}"
+                    .to_string(),
+            ),
+            Ok(text("never reached")),
+        ]);
+        let mut a = agent(model.clone());
+
+        let Outcome::Error(e) = a.run("hi") else {
+            panic!("an unrelated 400 must end the run");
+        };
+
+        assert!(e.to_string().contains("model 'x' not found"), "{e}");
+        assert_eq!(model.remaining(), 1, "the step was retried");
+        assert_eq!(a.context_budget.limit_tokens, None);
     }
 
     #[test]
