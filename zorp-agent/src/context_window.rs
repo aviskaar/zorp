@@ -231,6 +231,85 @@ impl ContextBudget {
     }
 }
 
+/// A context window a provider stated while refusing a request for its size.
+///
+/// The window stays unknown by default and nothing here changes that: no
+/// endpoint is asked and no number is guessed. But a provider that names its
+/// window in a 400 has said it, and that is the one number it is safe to take.
+/// See `docs/DECISIONS.md` (2026-09-03).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatedWindow {
+    /// The window the provider is serving, in tokens.
+    pub n_ctx: u64,
+    /// What the refused request needed, when the provider said.
+    pub n_prompt: Option<u64>,
+}
+
+impl StatedWindow {
+    /// The error a person reads when the turn could not be made to fit. The
+    /// numbers and what to do about them, and no JSON: the raw refusal is on
+    /// stderr, and a nested escaped object on an error card tells nobody
+    /// anything.
+    pub fn explain(&self) -> String {
+        let needed = match self.n_prompt {
+            Some(n) => format!("this turn needed about {n} tokens but"),
+            None => "this turn did not fit and".to_string(),
+        };
+        format!(
+            "{needed} the model is serving a {} token context window. Raise the window \
+             where the model runs: in the Ollama app under Settings > Context length, or \
+             OLLAMA_CONTEXT_LENGTH for `ollama serve`. Then set ZORP_CONTEXT_TOKENS to the \
+             same number so zorp compacts before the model refuses.",
+            self.n_ctx
+        )
+    }
+}
+
+/// Read the window out of a provider's refusal, if it stated one.
+///
+/// Three shapes are recognised. Ollama's `exceed_context_size_error`, whose
+/// JSON arrives nested and escaped inside the message string of an outer
+/// error object, so `n_ctx` and `n_prompt_tokens` are found by name wherever
+/// they sit rather than by walking one layout. llama.cpp's sentence "exceeds
+/// the available context size (N tokens)". And the OpenAI-style sentence
+/// "maximum context length is N tokens". Anything else is `None`: a 400 that
+/// does not state a window says nothing about it.
+pub fn stated_window(error_text: &str) -> Option<StatedWindow> {
+    fn number_after(text: &str, pattern: &str) -> Option<u64> {
+        regex::Regex::new(pattern)
+            .ok()?
+            .captures(text)?
+            .get(1)?
+            .as_str()
+            .parse()
+            .ok()
+    }
+    // The field form is only trusted under the error type that owns it. The
+    // key may sit behind any number of escaping backslashes and quotes.
+    let n_ctx = error_text
+        .contains("exceed_context_size_error")
+        .then(|| number_after(error_text, r#"n_ctx[\\"\s]*:\s*(\d+)"#))
+        .flatten()
+        .or_else(|| {
+            number_after(
+                error_text,
+                r"exceeds the available context size \((\d+) tokens\)",
+            )
+        })
+        .or_else(|| number_after(error_text, r"maximum context length is (\d+) tokens"))
+        .filter(|n| *n > 0)?;
+    let n_prompt = number_after(error_text, r#"n_prompt_tokens[\\"\s]*:\s*(\d+)"#)
+        .or_else(|| number_after(error_text, r"request \((\d+) tokens\)"))
+        .or_else(|| number_after(error_text, r"you requested (\d+) tokens"));
+    Some(StatedWindow { n_ctx, n_prompt })
+}
+
+/// The refusal from the report that put `stated_window` here, as the transport
+/// hands it up: the provider's JSON nested and escaped inside an outer error
+/// object.
+#[cfg(test)]
+pub(crate) const OLLAMA_REFUSAL: &str = r#"http://localhost:11434/v1/chat/completions: status code 400: {"error":{"message":"{\"error\":{\"code\":400,\"message\":\"request (8919 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":8919,\"n_ctx\":4096}}","type":"api_error","param":null,"code":null}}"#;
+
 /// What one compaction pass threw away. Empty means the transcript was left
 /// exactly as it was.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -988,5 +1067,63 @@ mod tests {
         assert!(notice.contains("3 older messages dropped"), "{notice}");
         assert!(notice.contains("still on disk"), "{notice}");
         assert_eq!(CompactionReport::default().notice(), None);
+    }
+
+    #[test]
+    fn an_ollama_refusal_states_its_window() {
+        let stated = stated_window(OLLAMA_REFUSAL).unwrap();
+        assert_eq!(stated.n_ctx, 4096);
+        assert_eq!(stated.n_prompt, Some(8919));
+    }
+
+    #[test]
+    fn a_maximum_context_length_sentence_states_its_window() {
+        let text = "status code 400: {\"error\":{\"message\":\"This model's maximum \
+                    context length is 8192 tokens. However, you requested 9100 tokens \
+                    (8600 in the messages, 500 in the completion). Please reduce the \
+                    length of the messages or completion.\",\"type\":\"invalid_request_error\"}}";
+        let stated = stated_window(text).unwrap();
+        assert_eq!(stated.n_ctx, 8192);
+        assert_eq!(stated.n_prompt, Some(9100));
+    }
+
+    #[test]
+    fn a_bare_context_size_sentence_states_its_window() {
+        let stated =
+            stated_window("request (5000 tokens) exceeds the available context size (2048 tokens)")
+                .unwrap();
+        assert_eq!(stated.n_ctx, 2048);
+        assert_eq!(stated.n_prompt, Some(5000));
+    }
+
+    #[test]
+    fn an_unrelated_error_states_no_window() {
+        for text in [
+            "",
+            "status code 400: {\"error\":{\"message\":\"model 'x' not found\",\"type\":\"api_error\"}}",
+            "status code 400: {\"error\":{\"message\":\"tool_choice is not supported\"}}",
+            "status code 401: {\"error\":{\"message\":\"invalid api key\"}}",
+            "the provider sent nothing for 900 seconds while zorp waited for response headers",
+            "status code 400: {\"error\":{\"type\":\"exceed_context_size_error\"}}",
+        ] {
+            assert_eq!(stated_window(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_stated_window_explains_itself_without_json() {
+        let text = stated_window(OLLAMA_REFUSAL).unwrap().explain();
+        assert!(text.contains("8919"), "{text}");
+        assert!(text.contains("4096"), "{text}");
+        assert!(text.contains("Context length"), "{text}");
+        assert!(text.contains("ZORP_CONTEXT_TOKENS"), "{text}");
+        assert!(!text.contains("{\"error\""), "{text}");
+        let unknown = StatedWindow {
+            n_ctx: 4096,
+            n_prompt: None,
+        }
+        .explain();
+        assert!(unknown.contains("4096"), "{unknown}");
+        assert!(!unknown.contains("about"), "{unknown}");
     }
 }
