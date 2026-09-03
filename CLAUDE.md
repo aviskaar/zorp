@@ -224,7 +224,17 @@ resulting artifact, deliver it in the right form.
   draws a live level meter from the stream, so the page says it is listening
   through a setup that can take minutes. It reads amplitude only, keeps no
   sample and copies the audio nowhere, and a browser with no Web Audio gets an
-  inert meter rather than a failed recording. A transcript is untrusted
+  inert meter rather than a failed recording. While it is open the microphone
+  is a stop button with a pulsing red dot and `aria-pressed`, the status line
+  reads "Listening" with a ticking elapsed time, and Escape stops it the way
+  the button does. The live transcript is segments: the recorder is stopped
+  and restarted at a quiet moment after three seconds, or at eight regardless,
+  and each finished segment goes in order, one request at a time, to the same
+  `/api/voice/transcribe` route, its text joining a preview line under the
+  composer that is one text node set through `textContent`; a failed segment
+  leaves `[unclear]` and the recording goes on. On stop the joined text lands
+  in the composer as a transcript always did. See `docs/DECISIONS.md`
+  (2026-09-03). A transcript is untrusted
   editable composer text. It grants no tool, changes no approval, bypasses no
   denylist, and is never sent automatically. Run `cargo test -p zorp-web
   --features voice` and `cargo test -p zorp-voice` whenever it changes. See

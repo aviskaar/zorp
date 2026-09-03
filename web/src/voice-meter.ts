@@ -3,14 +3,17 @@
 //
 // This reads amplitude only. It never keeps a sample, never copies the audio
 // anywhere, and holds nothing after stop(). The recording itself still goes
-// only where the loopback client sends it.
+// only where the loopback client sends it. A caller may ask to be told, once
+// per frame, whether the level is under the noise floor, so the segmenter in
+// voice-input can find a quiet moment without reading the audio itself.
 //
 // Everything here builds DOM nodes. Nothing assembles an HTML string, for the
 // same reason the markdown renderer does not.
 
 const BAR_COUNT = 28;
 // Below this the bars sit at their resting height, so room noise does not make
-// the meter twitch while nobody is speaking.
+// the meter twitch while nobody is speaking. It is also what "quiet" means to
+// a caller listening for one.
 const NOISE_FLOOR = 0.012;
 // Loud speech lands well under 1.0 in RMS terms, so the scale is stretched to
 // make normal talking fill the meter rather than nudge it.
@@ -24,7 +27,8 @@ export interface VoiceMeterEnvironment {
 }
 
 export interface VoiceMeter {
-  start(stream: MediaStream): void;
+  /** Draw from the stream, telling `onQuiet` once per frame whether the level is under the noise floor. */
+  start(stream: MediaStream, onQuiet?: (quiet: boolean) => void): void;
   stop(): void;
 }
 
@@ -48,6 +52,7 @@ export function createVoiceMeter(
   let source: MediaStreamAudioSourceNode | null = null;
   let analyser: AnalyserNode | null = null;
   let frame: number | null = null;
+  let listener: ((quiet: boolean) => void) | null = null;
 
   const buildBars = (): void => {
     if (bars.length) return;
@@ -79,6 +84,7 @@ export function createVoiceMeter(
       sum += centred * centred;
     }
     const rms = Math.sqrt(sum / samples.length);
+    listener?.(rms <= NOISE_FLOOR);
     const level =
       rms <= NOISE_FLOOR ? REST : Math.min(1, REST + (rms - NOISE_FLOOR) / FULL_SCALE);
 
@@ -99,6 +105,7 @@ export function createVoiceMeter(
     analyser?.disconnect();
     source = null;
     analyser = null;
+    listener = null;
     void context?.close().catch(() => {});
     context = null;
     levels.fill(REST);
@@ -106,8 +113,9 @@ export function createVoiceMeter(
     container.hidden = true;
   };
 
-  const start = (stream: MediaStream): void => {
+  const start = (stream: MediaStream, onQuiet?: (quiet: boolean) => void): void => {
     stop();
+    listener = onQuiet ?? null;
     try {
       buildBars();
       context = new AudioContextClass();
