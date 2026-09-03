@@ -268,15 +268,17 @@ impl Store {
                 .unwrap_or(0);
             crate::prereg::insert_preregistration_row(
                 self,
-                track_id,
-                &hypothesis,
-                &metric_name,
-                kill_threshold,
-                threshold_direction,
-                &prereg_path,
-                &stored_hash,
-                git_commit_hash.as_deref(),
-                committed_at_ms,
+                crate::prereg::PreregistrationRow {
+                    track_id,
+                    hypothesis: &hypothesis,
+                    metric_name: &metric_name,
+                    kill_threshold,
+                    threshold_direction,
+                    file_path: &prereg_path,
+                    file_hash: &stored_hash,
+                    git_commit_hash: git_commit_hash.as_deref(),
+                    committed_at: committed_at_ms,
+                },
             )?;
             rebuilt += 1;
         }

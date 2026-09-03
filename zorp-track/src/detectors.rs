@@ -461,15 +461,17 @@ mod tests {
             store.create_track(&track, "hyp").unwrap();
             crate::prereg::insert_preregistration_row(
                 store,
-                &track,
-                "hyp",
-                "accuracy",
-                0.9,
-                Some(direction),
-                std::path::Path::new("prereg.md"),
-                "hash",
-                None,
-                0,
+                crate::prereg::PreregistrationRow {
+                    track_id: &track,
+                    hypothesis: "hyp",
+                    metric_name: "accuracy",
+                    kill_threshold: 0.9,
+                    threshold_direction: Some(direction),
+                    file_path: std::path::Path::new("prereg.md"),
+                    file_hash: "hash",
+                    git_commit_hash: None,
+                    committed_at: 0,
+                },
             )
             .unwrap();
         }
