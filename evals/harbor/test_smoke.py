@@ -14,7 +14,8 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Skip only when Harbor itself is absent. An adapter that fails to import
 # against an installed Harbor is a drifted interface, which is the one
@@ -67,6 +68,14 @@ class TestZorpAgentAdapter(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             env = self.agent("openai/gemma4:e4b")._zorp_env()
         self.assertNotIn("ZORP_API_KEY", env)
+
+    def test_the_agent_runs_from_the_filesystem_root(self):
+        # The path policy's root is the working directory, and a task may
+        # write anywhere in its disposable container.
+        agent = self.agent("openai/gemma4:e4b")
+        agent.exec_as_agent = AsyncMock()
+        asyncio.run(agent.run("do the task", MagicMock(), MagicMock()))
+        self.assertEqual(agent.exec_as_agent.call_args.kwargs["cwd"], "/")
 
     def test_binary_path_follows_the_container_architecture(self):
         with patch.dict(os.environ, {}, clear=True):
