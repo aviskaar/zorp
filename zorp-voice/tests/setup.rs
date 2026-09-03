@@ -2,10 +2,22 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use zorp_voice::{
     QwenAsr, SetupBackend, SetupError, SetupStage, VoiceSetup, QWEN_ASR_PACKAGE,
     QWEN_ASR_VLLM_PACKAGE, VOICE_AUTOSTART_VAR,
 };
+
+/// Every test here writes a script and then runs it. Linux refuses to run a
+/// file that any process holds open for writing, and a child forked by another
+/// test's spawn holds every open descriptor until it execs, so one test's write
+/// can make another test's exec fail with ETXTBSY. Holding this for the whole
+/// test keeps the write and the fork apart. It failed once in CI as
+/// PythonMissing before the spawn error kept its reason.
+fn serial() -> MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn executable(path: &std::path::Path, body: &str) {
     fs::write(path, body).unwrap();
@@ -41,6 +53,7 @@ exit 0
 
 #[test]
 fn setup_installs_the_pinned_runtime_in_a_private_environment() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("argv.log");
     let python = temp.path().join("python3");
@@ -78,6 +91,7 @@ fn setup_installs_the_pinned_runtime_in_a_private_environment() {
 
 #[test]
 fn failed_vllm_resolution_recreates_the_environment_and_uses_transformers() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("argv.log");
     let python = temp.path().join("python3");
@@ -109,6 +123,7 @@ fn failed_vllm_resolution_recreates_the_environment_and_uses_transformers() {
 
 #[test]
 fn setup_never_reuses_an_unmarked_environment() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("voice-runtime");
     fs::create_dir_all(home.join("bin")).unwrap();
@@ -125,6 +140,7 @@ fn setup_never_reuses_an_unmarked_environment() {
 
 #[test]
 fn autostart_zero_returns_before_python_or_pip_can_run() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("argv.log");
     let python = temp.path().join("python3");
@@ -145,6 +161,7 @@ fn autostart_zero_returns_before_python_or_pip_can_run() {
 
 #[test]
 fn setup_launches_only_the_validated_target_without_a_shell() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("runtime-argv.log");
     let marker = temp.path().join("shell-injection");
@@ -189,6 +206,7 @@ fn setup_launches_only_the_validated_target_without_a_shell() {
 
 #[test]
 fn transformers_server_reports_download_and_binds_an_explicit_loopback_address() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let log = temp.path().join("runtime-argv.log");
     let home = temp.path().join("voice-runtime");
@@ -230,6 +248,7 @@ fn transformers_server_reports_download_and_binds_an_explicit_loopback_address()
 
 #[test]
 fn the_embedded_transformers_server_is_valid_python() {
+    let _serial = serial();
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -250,6 +269,7 @@ fn the_embedded_transformers_server_is_valid_python() {
 
 #[test]
 fn embedded_audio_helpers_use_dtype_max_and_the_verified_result_type() {
+    let _serial = serial();
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -310,6 +330,7 @@ assert namespace["result_fields"]([ASRTranscription("English", "hello")]) == ("E
 
 #[test]
 fn automatic_setup_refuses_an_operator_managed_proxy() {
+    let _serial = serial();
     let temp = tempfile::tempdir().unwrap();
     let client = QwenAsr::at("https://127.0.0.1:8123/proxy", "Qwen/model").unwrap();
     let error = VoiceSetup::new(

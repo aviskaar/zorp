@@ -353,7 +353,13 @@ impl VoiceSetup {
             }
             self.run_venv(Path::new("python"))
         });
-        let status = status.map_err(|_| SetupError::PythonMissing)?;
+        // Only a missing program means Python is missing. Anything else,
+        // permissions, a busy file, a full disk, is its own reason and is
+        // said as such.
+        let status = status.map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => SetupError::PythonMissing,
+            _ => filesystem("start Python to create its private environment", error),
+        })?;
         if !status.success() {
             return Err(SetupError::CommandFailed {
                 step: "create its private Python environment",
