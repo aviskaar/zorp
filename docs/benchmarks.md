@@ -25,8 +25,12 @@ Other datasets work the same way, for example
 
 ## What you need
 
-    pip install harbor
+    pip install 'harbor>=0.22'
     evals/harbor/build-agent.sh
+
+The adapter is written against Harbor 0.22. Older releases lack
+`harbor.agents.model_connection` and the adapter will not import, which
+the adapter tests below report as a failure rather than a skip.
 
 The build script compiles `zorp-agent` for Linux inside a `rust:slim-bookworm`
 container and leaves it at `target/harbor/<arch>/zorp-agent`. The adapter

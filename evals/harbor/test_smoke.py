@@ -16,12 +16,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# Skip only when Harbor itself is absent. An adapter that fails to import
+# against an installed Harbor is a drifted interface, which is the one
+# thing these tests exist to catch, so that import is deliberately not
+# guarded: it must fail, not skip. Harbor 0.18 had no
+# `harbor.agents.model_connection`, and a guarded import read that as
+# seven passes.
 try:
-    from evals.harbor.zorp_agent import ZorpAgent
+    import harbor  # noqa: F401
 
     HARBOR_MISSING = ""
 except ImportError as exc:  # pragma: no cover - depends on the environment
     HARBOR_MISSING = str(exc)
+
+if not HARBOR_MISSING:
+    from evals.harbor.zorp_agent import ZorpAgent
 
 
 @unittest.skipIf(HARBOR_MISSING, f"harbor not installed: {HARBOR_MISSING}")
