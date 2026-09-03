@@ -32,65 +32,59 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::NoFencedBlock => {
-                write!(f, "no fenced JSON block found in the critic's answer")
+                write!(f, "no claims object in the critic's answer, fenced or bare")
             }
-            ParseError::InvalidJson(msg) => write!(f, "fenced block was not valid JSON: {msg}"),
+            ParseError::InvalidJson(msg) => write!(f, "claims object was not valid JSON: {msg}"),
         }
     }
 }
 
 impl std::error::Error for ParseError {}
 
-/// Pull the contents of every fenced code block out of `text`, in order
-/// of appearance. A third copy of the scanner `validate::result` and
-/// `investigate::result` already carry: those two are private to their
-/// modules and are covered by their own tests, and folding all three
-/// into one helper means editing two tested modules for no behaviour
-/// change. Worth doing, but not in the change that adds the third.
-fn all_fenced_blocks(text: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("```") {
-        let after_start = &rest[start + 3..];
-        let content_start = after_start.find('\n').map(|i| i + 1).unwrap_or(0);
-        let after_open = &after_start[content_start..];
-        let Some(end) = after_open.find("```") else {
-            break;
-        };
-        blocks.push(after_open[..end].trim_end().to_string());
-        rest = &after_open[end + 3..];
-    }
-    blocks
+/// Whether `body` has the one field a claims answer requires.
+fn is_claims_shaped(body: &str) -> bool {
+    serde_json::from_str::<RawClaims>(body).is_ok()
 }
 
-/// Parse a critic's answer into the claims it extracted. Scans every
-/// fenced block, not just the first, for the same reason the other two
-/// parsers do: the model may quote the draft in a fence before its
-/// answer.
+/// Parse a critic's answer into the claims it extracted.
+///
+/// Checks every candidate, last first, because the critic may quote the
+/// draft before answering. Fences are preferred, but a bare object is
+/// still an answer when it has the required `claims` array.
 pub fn parse_claims(agent_output: &str) -> Result<Vec<Claim>, ParseError> {
-    let blocks = all_fenced_blocks(agent_output);
-    if blocks.is_empty() {
+    let blocks = crate::blocks::fenced_blocks(agent_output);
+    let bare = crate::blocks::bare_objects(agent_output);
+    if blocks.is_empty() && bare.is_empty() {
         return Err(ParseError::NoFencedBlock);
     }
-    let mut last_err = None;
-    for block in &blocks {
-        match serde_json::from_str::<RawClaims>(block) {
-            Ok(raw) => {
-                return Ok(raw
-                    .claims
-                    .into_iter()
-                    .map(|c| Claim {
-                        text: c.claim,
-                        evidence: c.evidence.filter(|e| !e.trim().is_empty()),
-                    })
-                    .collect())
-            }
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(ParseError::InvalidJson(
-        last_err.map(|e| e.to_string()).unwrap_or_default(),
-    ))
+
+    let found = blocks
+        .iter()
+        .rev()
+        .find(|block| is_claims_shaped(block))
+        .or_else(|| bare.iter().rev().find(|block| is_claims_shaped(block)));
+    let Some(block) = found else {
+        let last_err = blocks
+            .iter()
+            .chain(bare.iter())
+            .filter_map(|block| serde_json::from_str::<RawClaims>(block).err())
+            .next_back();
+        return Err(ParseError::InvalidJson(
+            last_err.map(|e| e.to_string()).unwrap_or_default(),
+        ));
+    };
+
+    // Shaped, so this cannot fail: the shape check parsed it and
+    // confirmed the required field.
+    let raw = serde_json::from_str::<RawClaims>(block).expect("shaped claims object");
+    Ok(raw
+        .claims
+        .into_iter()
+        .map(|c| Claim {
+            text: c.claim,
+            evidence: c.evidence.filter(|e| !e.trim().is_empty()),
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -155,5 +149,20 @@ mod tests {
         );
         let claims = parse_claims(&text).unwrap();
         assert_eq!(claims.len(), 1);
+    }
+
+    #[test]
+    fn a_bare_claims_object_is_still_read() {
+        let text = r#"The extracted claims are {"claims": [{"claim": "Latency was 42ms."}]}"#;
+        let claims = parse_claims(text).unwrap();
+        assert_eq!(claims[0].text, "Latency was 42ms.");
+    }
+
+    #[test]
+    fn an_unclosed_final_fence_is_still_read() {
+        let text =
+            "Here is my answer.\n```json\n{\"claims\": [{\"claim\": \"Latency was 42ms.\"}]}";
+        let claims = parse_claims(text).unwrap();
+        assert_eq!(claims[0].text, "Latency was 42ms.");
     }
 }
