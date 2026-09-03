@@ -573,47 +573,83 @@ fn attach_verifier(mut agent: Agent, no_verify: bool, user_flavor: &Flavor) -> A
     agent
 }
 
-fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
-    let status = match &outcome {
+fn report_outcome(
+    outcome: &Outcome,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> &'static str {
+    match outcome {
         Outcome::Complete(answer) => {
             let rendered = render_assistant_text(answer, std::io::stdout().is_terminal());
-            println!("{rendered}");
+            let _ = writeln!(stdout, "{rendered}");
             "done"
         }
         Outcome::StepLimit => {
-            eprintln!("zorp-agent: {}", outcome.describe());
+            let _ = writeln!(stderr, "zorp-agent: {}", outcome.describe());
             "step_limit"
         }
         Outcome::VerificationFailed { .. } => {
-            eprintln!("zorp-agent: {}", outcome.describe());
+            let _ = writeln!(stderr, "zorp-agent: {}", outcome.describe());
             "verification_failed"
         }
         Outcome::Error(e) => {
-            eprintln!("zorp-agent: {e}");
+            let _ = writeln!(stderr, "zorp-agent: {e}");
             "error"
         }
         Outcome::Cancelled => {
-            eprintln!("zorp-agent: {}", outcome.describe());
+            let _ = writeln!(stderr, "zorp-agent: {}", outcome.describe());
             "cancelled"
         }
         Outcome::RepeatedAction => {
-            eprintln!("zorp-agent: {}", outcome.describe());
+            let _ = writeln!(stderr, "zorp-agent: {}", outcome.describe());
             "repeated_action"
         }
         Outcome::Blocked => {
-            eprintln!(
+            let _ = writeln!(
+                stderr,
                 "zorp-agent: {}. Re-run with --yes to auto-approve edits and \
                  commands, or set an approval preset in a flavor.",
                 outcome.describe()
             );
             "blocked"
         }
-    };
+    }
+}
+
+fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let status = report_outcome(&outcome, &mut stdout, &mut stderr);
     if let Some((store, id)) = store_status {
         let _ = store.set_status(id, status);
     }
     if !matches!(outcome, Outcome::Complete(_)) {
+        let _ = stdout.flush();
+        let _ = stderr.flush();
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod finish_tests {
+    use super::*;
+
+    #[test]
+    fn refused_request_is_reported_with_the_agent_prefix_before_exit() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let status = report_outcome(
+            &Outcome::Error("prefill rejected".into()),
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(status, "error");
+        assert!(stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(stderr).unwrap(),
+            "zorp-agent: prefill rejected\n"
+        );
     }
 }
 

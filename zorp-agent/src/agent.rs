@@ -6,7 +6,7 @@ use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, Model};
 use crate::policy::{Decision, Policy};
 use crate::render::{stderr_renderer, Renderer};
 use crate::sandbox::CancelToken;
-use crate::tools::{Context, FileChange, Registry, Tool, ToolOutput};
+use crate::tools::{Context, FileChange, Registry, Tool, ToolOutput, TURN_TOOL_OUTPUT_CAP};
 use crate::verify::Verifier;
 use crate::BoxErr;
 use serde::Serialize;
@@ -877,6 +877,7 @@ impl Agent {
                 break Outcome::Complete(msg.content);
             }
             let mut stop: Option<Outcome> = None;
+            let mut turn_tool_output_bytes = 0usize;
             for call in &msg.tool_calls {
                 if self.cancel.load(Ordering::SeqCst) {
                     stop = Some(Outcome::Cancelled);
@@ -904,7 +905,7 @@ impl Agent {
                     identity,
                 });
 
-                let out = if let Some((error, raw)) = call.malformed_arguments() {
+                let mut out = if let Some((error, raw)) = call.malformed_arguments() {
                     // The provider sent an argument string that was not valid
                     // JSON. Surface the parse error to the model instead of
                     // dispatching the tool with garbage arguments.
@@ -927,6 +928,31 @@ impl Agent {
                         }
                     }
                 };
+                if turn_tool_output_bytes.saturating_add(out.content.len()) > TURN_TOOL_OUTPUT_CAP {
+                    let target = call
+                        .arguments
+                        .get("path")
+                        .and_then(|value| value.as_str())
+                        .map(|path| format!(" path {path}"))
+                        .or_else(|| {
+                            call.arguments
+                                .get("command")
+                                .and_then(|value| value.as_str())
+                                .map(|command| format!(" command {command}"))
+                        })
+                        .unwrap_or_default();
+                    out = ToolOutput::new(
+                        format!(
+                            "tool output withheld because this turn's tool output is already over \
+                             budget: {}{}. Read a smaller range or run the command with head.",
+                            call.name, target
+                        ),
+                        "withheld: turn tool output budget",
+                    );
+                } else {
+                    turn_tool_output_bytes =
+                        turn_tool_output_bytes.saturating_add(out.content.len());
+                }
                 if self.cancel.load(Ordering::SeqCst) {
                     stop = Some(Outcome::Cancelled);
                     break;
@@ -1437,6 +1463,29 @@ mod tests {
         }
     }
 
+    struct FixedOutput {
+        name: &'static str,
+        content: String,
+    }
+
+    impl Tool for FixedOutput {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            "returns fixed output for testing"
+        }
+
+        fn schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn run(&self, _args: &Value, _cx: &mut Context) -> ToolResult {
+            Ok(ToolOutput::new(self.content.clone(), "ok"))
+        }
+    }
+
     struct CaptureRenderer {
         tools: Arc<Mutex<Vec<String>>>,
         events: Arc<Mutex<Vec<String>>>,
@@ -1454,6 +1503,64 @@ mod tests {
         fn verify(&mut self, _command: &str, _passed: bool) {}
         fn notice(&mut self, _text: &str) {}
         fn assistant(&mut self, _text: &str) {}
+    }
+
+    #[test]
+    fn one_turn_with_three_large_tool_results_withholds_the_third() {
+        let calls = (1..=3)
+            .map(|id| ToolCall {
+                id: id.to_string(),
+                name: "read_file".to_string(),
+                arguments: json!({"path": format!("large-{id}.csv")}),
+            })
+            .collect();
+        let reply = AssistantMessage {
+            content: String::new(),
+            tool_calls: calls,
+            finish_reason: "tool_calls".to_string(),
+            reasoning_content: None,
+        };
+        let mut a =
+            agent(Scripted::new(vec![reply, text("done")])).register(Box::new(FixedOutput {
+                name: "read_file",
+                content: "x".repeat(20 * 1024),
+            }));
+
+        assert!(matches!(a.run("read files"), Outcome::Complete(_)));
+        let results: Vec<_> = a
+            .messages
+            .iter()
+            .filter(|message| message.role == "tool")
+            .map(|message| message.text().into_owned())
+            .collect();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].len(), 20 * 1024);
+        assert_eq!(results[1].len(), 20 * 1024);
+        assert!(results[2].contains("withheld"), "{}", results[2]);
+        assert!(results[2].contains("read_file"), "{}", results[2]);
+        assert!(results[2].contains("large-3.csv"), "{}", results[2]);
+    }
+
+    #[test]
+    fn one_tool_result_under_the_turn_cap_is_unchanged() {
+        let mut a = agent(Scripted::new(vec![
+            wants_tool_with("read_file", json!({"path": "small.txt"})),
+            text("done"),
+        ]))
+        .register(Box::new(FixedOutput {
+            name: "read_file",
+            content: "x".repeat(20 * 1024),
+        }));
+
+        assert!(matches!(a.run("read file"), Outcome::Complete(_)));
+        let result = a
+            .messages
+            .iter()
+            .find(|message| message.role == "tool")
+            .unwrap()
+            .text();
+        assert_eq!(result.len(), 20 * 1024);
+        assert!(!result.contains("withheld"));
     }
 
     /// Collects what a surface would draw a context meter and a compaction

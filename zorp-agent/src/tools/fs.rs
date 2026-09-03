@@ -1,4 +1,7 @@
-use crate::tools::{cap_output, Context, Tool, ToolError, ToolOutput, ToolResult};
+use crate::tools::{
+    cap_output, Context, Tool, ToolError, ToolOutput, ToolResult, LIST_FILES_OUTPUT_CAP,
+    READ_FILE_OUTPUT_CAP,
+};
 use serde_json::{json, Value};
 
 pub struct ReadFile;
@@ -45,7 +48,7 @@ impl Tool for ReadFile {
         };
         let n = selected.lines().count();
         Ok(ToolOutput::new(
-            cap_output(&selected, 64_000),
+            cap_output(&selected, READ_FILE_OUTPUT_CAP),
             format!("{path} ({n} lines)"),
         ))
     }
@@ -99,7 +102,7 @@ impl Tool for ListFiles {
         entries.sort();
         let n = entries.len();
         Ok(ToolOutput::new(
-            cap_output(&entries.join("\n"), 32_000),
+            cap_output(&entries.join("\n"), LIST_FILES_OUTPUT_CAP),
             format!("{} ({} entries)", rel, n),
         ))
     }
@@ -182,6 +185,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(out.content, "two\nthree");
+    }
+
+    #[test]
+    fn read_file_caps_a_whole_file_but_returns_a_requested_range_in_full() {
+        let dir = tempdir().unwrap();
+        let text = (1..=20_000)
+            .map(|line| format!("{line:08}\n"))
+            .collect::<String>();
+        fs::write(dir.path().join("numbers.csv"), &text).unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+
+        let whole = ReadFile
+            .run(&json!({"path":"numbers.csv"}), &mut cx)
+            .unwrap();
+        assert!(
+            whole.content.len() <= 16 * 1024 + 256,
+            "{}",
+            whole.content.len()
+        );
+        assert!(whole.content.contains("start_line"), "{}", whole.content);
+
+        let ranged = ReadFile
+            .run(
+                &json!({"path":"numbers.csv", "start_line": 10, "end_line": 12}),
+                &mut cx,
+            )
+            .unwrap();
+        assert_eq!(ranged.content, "00000010\n00000011\n00000012");
     }
 
     #[test]

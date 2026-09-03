@@ -195,7 +195,8 @@ fn cap_separate_head_tail(head: &str, tail: &str, omitted: usize, cap: usize) ->
     if cap < "truncated".len() {
         return head[..nearest_char_boundary(head, cap)].to_string();
     }
-    let marker = format!("\n[… {omitted} bytes truncated …]\n");
+    let marker =
+        format!("\n[… {omitted} bytes truncated. Pipe the command through head or tail. …]\n");
     let marker = if marker.len() <= cap {
         marker
     } else {
