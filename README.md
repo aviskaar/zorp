@@ -316,6 +316,14 @@ ollama serve
 cargo run -p zorp-web    # then pick "Ollama (local)" in the panel
 ```
 
+Ollama serves every model with a 4k context window unless you raise it.
+zorp never guesses a window, so with that default a long conversation is
+refused by the model before zorp compacts anything. Raise it in the
+Ollama app under Settings > Context length, or set `OLLAMA_CONTEXT_LENGTH`
+for `ollama serve`, and start zorp with `ZORP_CONTEXT_TOKENS` set to the
+same number so it compacts first. The first-run flow says the same thing
+under the model list when Ollama is the provider.
+
 A setting saved here beats the matching `ZORP_*` environment variable,
 which beats the built-in default, and every field says which of the three
 it came from. The API key is the exception to what gets saved: it is held
