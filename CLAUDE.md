@@ -354,8 +354,9 @@ resulting artifact, deliver it in the right form.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides oldest tool-result bodies, then
-  oldest assistant tool-call arguments, and on the seed path only drops oldest
-  whole exchanges. No model writes a summary, and nothing in it ever writes to
+  oldest assistant tool-call arguments, never a `command`, and on the seed path
+  only drops oldest whole exchanges. A marker copied back as an argument is
+  refused before it reaches a tool. No model writes a summary, and nothing in it ever writes to
   the store. The window is unknown unless `ZORP_CONTEXT_TOKENS` says otherwise,
   on purpose: no endpoint can be asked and no default is right for everyone.
   `zorp-web` and the CLI's `resume` both seed a turn through its `plan_seed`,

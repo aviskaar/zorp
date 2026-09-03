@@ -262,6 +262,16 @@ pub struct AgentConfig {
     pub approval: ApprovalMode,
 }
 
+/// The name of the first argument whose value is a compaction marker, if any.
+fn copied_marker_argument(call: &crate::model::ToolCall) -> Option<&str> {
+    call.arguments.as_object()?.iter().find_map(|(key, value)| {
+        value
+            .as_str()
+            .is_some_and(|s| s.starts_with(crate::context_window::ELIDED_ARGUMENT_MARKER_PREFIX))
+            .then_some(key.as_str())
+    })
+}
+
 impl Agent {
     pub fn config(&self) -> AgentConfig {
         AgentConfig {
@@ -931,6 +941,20 @@ impl Agent {
                         ),
                         "error",
                     )
+                } else if let Some(key) = copied_marker_argument(call) {
+                    // Compaction replaced an old argument with a marker and the
+                    // model copied the marker back as this call's value. It is
+                    // a placeholder, not an argument, and must never reach a
+                    // tool: the shell ran one and said 127.
+                    ToolOutput::new(
+                        format!(
+                            "error: argument '{key}' is a compaction placeholder copied from \
+                             an older turn, not a value. The original was left out of this \
+                             request to save space and the file on disk is the source of \
+                             truth. Supply the real {key}, or read the file with read_file."
+                        ),
+                        "error",
+                    )
                 } else {
                     match self.policy.decide(call) {
                         Decision::Allow => self.registry.dispatch(call, &mut self.cx),
@@ -1575,6 +1599,35 @@ mod tests {
         assert!(reason.contains("output limit"), "{reason}");
         assert!(reason.contains("finish_reason=length"), "{reason}");
         assert!(reason.contains("not an answer"), "{reason}");
+    }
+
+    #[test]
+    fn a_copied_compaction_marker_is_refused_before_it_reaches_a_tool() {
+        let marker = crate::context_window::ELIDED_ARGUMENT_MARKER_PREFIX.to_string()
+            + " 5064 bytes. The file on disk is the source of truth; use read_file to retrieve it.]";
+        let mut a = agent(Scripted::new(vec![
+            wants_tool_with("run_command", json!({"command": marker})),
+            text("done"),
+        ]))
+        .register(Box::new(FixedOutput {
+            name: "run_command",
+            content: "RAN".to_string(),
+        }));
+
+        assert!(matches!(a.run("rerun it"), Outcome::Complete(_)));
+        let result = a
+            .messages
+            .iter()
+            .find(|message| message.role == "tool")
+            .unwrap()
+            .text()
+            .into_owned();
+        assert!(
+            !result.contains("RAN"),
+            "the marker was dispatched: {result}"
+        );
+        assert!(result.contains("placeholder"), "{result}");
+        assert!(result.contains("'command'"), "{result}");
     }
 
     #[test]

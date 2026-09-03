@@ -74,6 +74,14 @@ and changing the stored transcript. The recorder has the original assistant
 message before compaction rewrites its in-memory copy by index. The durable
 record remains what was said.
 
+**Amended the same day, after trial 3 of the second run:** a 5 KB `python -c`
+command was elided, the model copied the marker back as its next command, and
+the shell ran `[tool argument elided: ...]` three times before the repeat
+detector stopped it. Two things changed. A `command` argument is never
+elided, because a command is the one argument a model re-issues from its own
+history. And the agent refuses any argument whose value is a marker before it
+reaches a tool, with an error telling the model it copied a placeholder.
+
 **Not changed:** the window remains unknown by default. Tool results still go
 first. The 512 KiB floor still applies when no window is configured. The
 2026-08-19 rules remain: no model summary, no store write from compaction, and
