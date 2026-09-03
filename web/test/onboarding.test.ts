@@ -33,6 +33,7 @@ import {
   isFirstRun,
   modelGroups,
   priceClass,
+  renderContextNote,
   renderModelGroups,
 } from "../src/onboarding.ts";
 import { PRESET_DEFAULTS, presetFor } from "../src/providers.ts";
@@ -308,4 +309,40 @@ test("reopening the panel on an OpenRouter base URL shows OpenRouter, not custom
   assert.equal(presetFor("openai", "http://localhost:11434/v1"), "ollama");
   assert.equal(presetFor("anthropic", "https://api.anthropic.com/v1"), "anthropic");
   assert.equal(presetFor("openai", "https://example.invalid/v1"), "custom");
+});
+
+/* ---------------------------------------------------------------- */
+/* the Ollama context note                                           */
+/* ---------------------------------------------------------------- */
+
+test("setting up Ollama says where its context length lives and what to tell zorp", () => {
+  const { doc, into } = page();
+  assert.equal(renderContextNote(doc, into, "ollama"), true);
+  assert.equal(into.hidden, false);
+  const text = into.textContent ?? "";
+  assert.match(text, /4k context window/);
+  assert.match(text, /Settings > Context length/);
+  assert.match(text, /OLLAMA_CONTEXT_LENGTH/);
+  assert.match(text, /ZORP_CONTEXT_TOKENS/);
+});
+
+test("any other preset gets no note, and one drawn for Ollama does not linger", () => {
+  const { doc, into } = page();
+  for (const other of ["openrouter", "openai", "anthropic", "omlx", "custom"]) {
+    assert.equal(renderContextNote(doc, into, other), false, other);
+    assert.equal(into.children.length, 0, other);
+    assert.equal(into.hidden, true, other);
+  }
+  renderContextNote(doc, into, "ollama");
+  renderContextNote(doc, into, "openrouter");
+  assert.equal(into.children.length, 0, "going back and picking another provider clears it");
+  assert.equal(into.hidden, true);
+});
+
+test("the note's angle bracket is text and not markup", () => {
+  const { doc, into } = page();
+  renderContextNote(doc, into, "ollama");
+  assert.equal(into.querySelectorAll("*").length, 1, "one paragraph and nothing inside it");
+  assert.equal(into.firstElementChild?.tagName, "P");
+  assert.match(into.firstElementChild?.textContent ?? "", /Settings > Context length/);
 });

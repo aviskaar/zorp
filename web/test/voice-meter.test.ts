@@ -148,6 +148,23 @@ test("a loud frame raises the newest bar and quiet frames carry it left", () => 
   assert.equal(later[later.length - 1], later[0], "silence rests the newest bar");
 });
 
+test("a listener is told once per frame whether it is quiet, and nothing after stop", () => {
+  const element = container();
+  const rig = harness(255);
+  const meter = createVoiceMeter(element, rig.environment);
+  const frames: boolean[] = [];
+  meter.start(stream, (quiet) => frames.push(quiet));
+
+  rig.step();
+  rig.speak(128);
+  rig.step();
+  assert.deepEqual(frames, [false, true], "a loud frame is not quiet, silence is");
+
+  meter.stop();
+  rig.step();
+  assert.equal(frames.length, 2, "a frame after stop reports nothing");
+});
+
 test("stopping cancels the frame, closes the context, and clears the meter", async () => {
   const element = container();
   const rig = harness(255);
