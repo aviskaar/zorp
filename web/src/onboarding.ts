@@ -340,3 +340,34 @@ export function renderModelGroups(
   }
   return count;
 }
+
+/**
+ * The one thing a person setting up Ollama needs to hear before their first
+ * long conversation.
+ *
+ * Ollama serves every model with a 4k context window unless it is raised,
+ * and the setting that raises it lives in Ollama, not here. Nothing the
+ * server reports says which program is behind a base URL: a listing is
+ * ids and prices, and Ollama's `/v1/models` does not name itself. What the
+ * flow does know is which preset the person chose, and that is the same
+ * key `automaticChoices` reads. So this is drawn for the Ollama preset and
+ * for nothing else.
+ *
+ * It is a note and not a setting. It asks for nothing, sends nothing and
+ * remembers nothing, and it lands through `textContent` like everything
+ * else here. Returns whether anything was drawn.
+ */
+export function renderContextNote(doc: Document, into: HTMLElement, preset: string): boolean {
+  into.replaceChildren();
+  if (preset !== "ollama") {
+    into.hidden = true;
+    return false;
+  }
+  const note = doc.createElement("p");
+  note.className = "onboard-group-note";
+  note.textContent =
+    "Ollama gives every model a 4k context window unless you raise it. In the Ollama app: Settings > Context length. With ollama serve: set OLLAMA_CONTEXT_LENGTH. Then start zorp with ZORP_CONTEXT_TOKENS set to the same number, so it compacts before the model refuses.";
+  into.append(note);
+  into.hidden = false;
+  return true;
+}

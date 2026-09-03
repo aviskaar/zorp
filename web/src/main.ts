@@ -41,6 +41,7 @@ import {
   automaticChoices,
   isFirstRun,
   modelGroups,
+  renderContextNote,
   renderModelGroups,
   type ChoiceGroup,
 } from "./onboarding";
@@ -210,6 +211,7 @@ interface Elements {
   onboardStepModel: HTMLElement;
   onboardModelLead: HTMLElement;
   onboardModels: HTMLElement;
+  onboardModelNote: HTMLElement;
   onboardModelTextField: HTMLElement;
   onboardModelText: HTMLInputElement;
   onboardModelResult: HTMLElement;
@@ -528,6 +530,7 @@ function collectElements(): Elements {
     onboardStepModel: byId("onboard-step-model"),
     onboardModelLead: byId("onboard-model-lead"),
     onboardModels: byId("onboard-models"),
+    onboardModelNote: byId("onboard-model-note"),
     onboardModelTextField: byId("onboard-model-text-field"),
     onboardModelText: byId<HTMLInputElement>("onboard-model-text"),
     onboardModelResult: byId("onboard-model-result"),
@@ -2521,6 +2524,9 @@ async function loadOnboardModels(): Promise<void> {
   const config = preset(onboardPreset);
   dom.onboardModelLead.textContent = `Asking ${config.label} what it serves...`;
   dom.onboardModels.replaceChildren();
+  // Drawn before the listing answers, so it is there whether the list or
+  // the free-text fallback ends up under it.
+  renderContextNote(document, dom.onboardModelNote, onboardPreset);
   dom.onboardModelTextField.hidden = true;
   dom.onboardModelNext.disabled = true;
   setOnboardResult(dom.onboardModelResult, "", null);
