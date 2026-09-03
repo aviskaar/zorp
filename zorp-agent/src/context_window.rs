@@ -355,7 +355,13 @@ fn elide_first_large_argument(value: &mut Value) -> Option<usize> {
             Some(body_len)
         }
         Value::Array(values) => values.iter_mut().find_map(elide_first_large_argument),
-        Value::Object(values) => values.values_mut().find_map(elide_first_large_argument),
+        // A command is the one argument a model re-issues from its own
+        // history, so it stays whole: a marker in its place was copied back
+        // verbatim and run, and the shell said 127.
+        Value::Object(values) => values
+            .iter_mut()
+            .filter(|(key, _)| key.as_str() != "command")
+            .find_map(|(_, value)| elide_first_large_argument(value)),
         _ => None,
     }
 }
@@ -858,6 +864,39 @@ mod tests {
         assert_eq!(messages[2].tool_calls[0].arguments["content"], latest_body);
         assert_eq!(report.elided_tool_arguments, 1);
         assert_eq!(report.elided_argument_bytes, 2_000);
+    }
+
+    /// Trial 3 of the second Terminal-Bench run: a 5 KB python -c command
+    /// was elided, the model copied the marker back as its next command,
+    /// and the shell ran it three times.
+    #[test]
+    fn compaction_never_elides_a_command() {
+        let budget = ContextBudget {
+            tool_result_bytes: 100,
+            ..ContextBudget::default()
+        };
+        let command = format!("python3 -c '{}'", "x".repeat(5_000));
+        let mut messages = vec![
+            Message::assistant_with_calls(
+                "",
+                vec![ToolCall {
+                    id: "c1".to_string(),
+                    name: "run_command".to_string(),
+                    arguments: json!({"command": command}),
+                }],
+            ),
+            Message::assistant_with_calls("", vec![write_call("c2", "y".repeat(5_000))]),
+            Message::assistant_with_calls("", vec![]),
+        ];
+
+        let report = compact_tool_results(&mut messages, &budget);
+
+        assert_eq!(messages[0].tool_calls[0].arguments["command"], command);
+        assert!(messages[1].tool_calls[0].arguments["content"]
+            .as_str()
+            .unwrap()
+            .starts_with(ELIDED_ARGUMENT_MARKER_PREFIX));
+        assert_eq!(report.elided_tool_arguments, 1);
     }
 
     #[test]
