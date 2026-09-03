@@ -39,6 +39,9 @@ from harbor.models.agent.context import AgentContext
 # BaseInstalledAgent.setup() creates /installed-agent before calling install().
 REMOTE_BIN = "/installed-agent/zorp-agent"
 
+# Where the agent runs, and so the root of its path policy. See the class doc.
+AGENT_CWD = "/"
+
 # `uname -m` in the container to the arch name build-agent.sh writes under.
 _ARCH_DIRS = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64"}
 
@@ -51,10 +54,18 @@ class ZorpAgent(BaseInstalledAgent):
     `--yes` answers the asks an approval preset produces. It does not touch
     the hard denylist in zorp-agent/src/policy.rs, which still refuses sudo,
     backticks, `git push`, recursive force-rm outside the working directory
-    and shell redirects whose target escapes it. That last one is the rule
-    most likely to bite a benchmark task: the working directory is the
-    policy's root, so `cmd > /root/results/out.json` is denied while
-    `cmd > ./out.json` is allowed.
+    and shell redirects whose target escapes it.
+
+    The agent runs with `/` as its working directory, so that root is the
+    policy's root and every absolute path in the container is inside it.
+    The task's own WORKDIR would be the natural choice, but eleven of the
+    seventy science tasks want their output outside it (`/results`,
+    `/root/results`, `/output`, `/logs`), twenty of them live in `/root`
+    where every `> /tmp/x` is a denied redirect, and the file tools refuse
+    any absolute path that leaves the root. The container is disposable, so
+    nothing is lost by widening the root to all of it. The model then has to
+    use absolute paths with the file tools, which the instructions already
+    give it.
     """
 
     # No default_provider, so the provider comes from `-m provider/model`.
@@ -118,7 +129,9 @@ class ZorpAgent(BaseInstalledAgent):
         )
 
         try:
-            await self.exec_as_agent(environment, command=command, env=env)
+            await self.exec_as_agent(
+                environment, command=command, env=env, cwd=AGENT_CWD
+            )
         except ApiError:
             # Reaching the model failed. That is a harness problem, and
             # --retry-include wants to see the specific type.

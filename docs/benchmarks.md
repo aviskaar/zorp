@@ -63,10 +63,26 @@ A local Ollama, which the container reaches through the host gateway:
     export OPENAI_BASE_URL=http://host.docker.internal:11434/v1
     harbor run ... -m openai/gemma4:e4b
 
+A local oMLX, same gateway, which wants its key:
+
+    export OPENAI_BASE_URL=http://host.docker.internal:8000/v1
+    export OPENAI_API_KEY=$(jq -r .auth.api_key ~/.omlx/settings.json)
+    harbor run ... -m openai/Qwen3.6-35B-A3B-MLX-4bit
+
+Tell zorp how big a local model's window is, or it will not compact: zorp
+never guesses a context window (`docs/DECISIONS.md`, 2026-08-19), and a
+sixty-step run that is never compacted reaches 120k tokens of prompt. Pass
+`--ae ZORP_CONTEXT_TOKENS=32768`, or whatever the server is configured to
+serve, on every local run.
+
 ## Running it
 
 Run from the repo root, with the repo root on `PYTHONPATH` so Harbor can
 import the adapter by path.
+
+Inside the container the agent runs from `/`, so the path policy's root is
+the whole filesystem and a task may write to `/results` or `/root/results`
+as its instruction says. The file tools take absolute paths as a result.
 
 One task:
 
