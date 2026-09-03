@@ -828,6 +828,21 @@ impl Agent {
             self.push_message(assistant_msg, metadata);
 
             if msg.tool_calls.is_empty() {
+                // The provider stopped the model at its output limit. What
+                // came back is the front half of something, not an answer,
+                // and a run that returns it as one reads exactly like a run
+                // that finished. See docs/DECISIONS.md (2026-09-03).
+                if msg.finish_reason == "length" {
+                    break Outcome::Error(
+                        format!(
+                            "the model's reply was cut off at the provider's output limit \
+                         (finish_reason=length) after {} bytes; the partial text is in the \
+                         transcript and is not an answer",
+                            msg.content.len()
+                        )
+                        .into(),
+                    );
+                }
                 if self
                     .verifier
                     .as_ref()
@@ -1539,6 +1554,27 @@ mod tests {
         assert!(results[2].contains("withheld"), "{}", results[2]);
         assert!(results[2].contains("read_file"), "{}", results[2]);
         assert!(results[2].contains("large-3.csv"), "{}", results[2]);
+    }
+
+    /// A 32768-token reply that was one line repeated until the provider
+    /// stopped it came back as a finished answer and exit 0.
+    #[test]
+    fn a_reply_cut_off_at_the_output_limit_is_an_error_not_an_answer() {
+        let cut_off = AssistantMessage {
+            content: "ch0 = load('a.tif')\n".repeat(200),
+            tool_calls: vec![],
+            finish_reason: "length".to_string(),
+            reasoning_content: None,
+        };
+        let mut a = agent(Scripted::new(vec![cut_off]));
+
+        let reason = match a.run("segment the image") {
+            Outcome::Error(e) => e.to_string(),
+            other => panic!("a cut-off reply was accepted: {}", other.describe()),
+        };
+        assert!(reason.contains("output limit"), "{reason}");
+        assert!(reason.contains("finish_reason=length"), "{reason}");
+        assert!(reason.contains("not an answer"), "{reason}");
     }
 
     #[test]
