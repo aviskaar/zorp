@@ -14,15 +14,15 @@
 //! - `TokenUsage`, what the provider said the last request actually cost.
 //! - `estimate_tokens`, what zorp can work out on its own when the provider
 //!   said nothing. Always labelled as an estimate, never mixed with the above.
-//! - `compact_tool_results` and `plan_seed`, what to throw away when the
+//! - `compact_tool_results` and `plan_seed`, what to elide when the
 //!   transcript will not fit.
 //!
 //! Compaction here is deterministic and mechanical. No model writes a summary
 //! of the conversation, on purpose: a summary is a second chance to
 //! hallucinate, and when it is wrong the thing it replaced is no longer in the
-//! request to contradict it. Eliding a tool result leaves a marker saying
-//! exactly how many bytes went and where, which the model can read and the
-//! user is told about.
+//! request to contradict it. Eliding a tool result or an old tool-call body
+//! leaves a marker saying exactly how many bytes went and where, which the
+//! model can read and the user is told about.
 //!
 //! Nothing here writes to the store. Compaction changes what is *sent*, never
 //! what was *said*. The durable transcript is evidence and must not move under
@@ -31,14 +31,21 @@
 use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord};
 use serde_json::Value;
 
-/// Total bytes of tool-result content a transcript may accumulate before the
-/// oldest tool-result bodies are elided. Generous on purpose: below this the
-/// transcript is sent verbatim. This is the floor that applies when no context
-/// window is configured, which is the default.
+/// Total bytes of tool-result content and assistant tool-call arguments a
+/// transcript may accumulate before old bodies are elided. Generous on
+/// purpose: below this the transcript is sent verbatim. This is the floor that
+/// applies when no context window is configured, which is the default.
 pub const TOOL_RESULT_HISTORY_BUDGET_BYTES: usize = 512 * 1024;
 
 /// Marker prefix left in place of an elided tool-result body.
 pub const ELIDED_MARKER_PREFIX: &str = "[tool result elided:";
+
+/// Marker prefix left in place of an elided assistant tool-call argument.
+pub const ELIDED_ARGUMENT_MARKER_PREFIX: &str = "[tool argument elided:";
+
+/// String arguments at or below this size still tell the model what the tool
+/// did. Larger ones can hold whole source files and are eligible for elision.
+const SMALL_TOOL_ARGUMENT_BYTES: usize = 1024;
 
 /// Body left in place of a tool result that was never recorded, so a persisted
 /// assistant turn carrying tool calls is never replayed with a dangling call.
@@ -176,7 +183,7 @@ pub struct ContextBudget {
     pub limit_tokens: Option<u64>,
     /// Share of the window the transcript may fill.
     pub headroom: f64,
-    /// The always-on byte cap on accumulated tool results.
+    /// The always-on byte cap on tool results and tool-call arguments.
     pub tool_result_bytes: usize,
 }
 
@@ -232,6 +239,10 @@ pub struct CompactionReport {
     pub elided_tool_results: usize,
     /// Bytes of tool-result body removed.
     pub elided_bytes: usize,
+    /// Assistant tool-call argument bodies replaced with a marker.
+    pub elided_tool_arguments: usize,
+    /// Bytes of assistant tool-call argument body removed.
+    pub elided_argument_bytes: usize,
     /// Whole messages dropped from the front of a seeded transcript. Only ever
     /// non-zero on the seed path, never inside a live run.
     pub dropped_messages: usize,
@@ -239,7 +250,9 @@ pub struct CompactionReport {
 
 impl CompactionReport {
     pub fn is_empty(&self) -> bool {
-        self.elided_tool_results == 0 && self.dropped_messages == 0
+        self.elided_tool_results == 0
+            && self.elided_tool_arguments == 0
+            && self.dropped_messages == 0
     }
 
     /// One line for a user, because silent context loss is how an agent starts
@@ -259,6 +272,18 @@ impl CompactionReport {
                     "s"
                 },
                 self.elided_bytes
+            ));
+        }
+        if self.elided_tool_arguments > 0 {
+            parts.push(format!(
+                "{} older tool call argument{} elided ({} bytes)",
+                self.elided_tool_arguments,
+                if self.elided_tool_arguments == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                self.elided_argument_bytes
             ));
         }
         if self.dropped_messages > 0 {
@@ -287,9 +312,21 @@ fn tool_result_bytes(messages: &[Message]) -> usize {
         .sum()
 }
 
+/// Serialized bytes in assistant tool-call arguments. This includes the small
+/// path and command fields too: they stay in the prompt, so they count toward
+/// the floor even though only large string values are eligible for elision.
+fn tool_call_argument_bytes(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .flat_map(|m| &m.tool_calls)
+        .map(|call| json_len(&call.arguments) as usize)
+        .sum()
+}
+
 /// True when the transcript is over either budget.
 fn over_budget(messages: &[Message], budget: &ContextBudget) -> bool {
-    if tool_result_bytes(messages) > budget.tool_result_bytes {
+    if tool_result_bytes(messages) + tool_call_argument_bytes(messages) > budget.tool_result_bytes {
         return true;
     }
     match budget.target_tokens() {
@@ -298,8 +335,44 @@ fn over_budget(messages: &[Message], budget: &ContextBudget) -> bool {
     }
 }
 
-/// Elide the oldest tool-result bodies until the transcript fits, leaving a
-/// marker saying how much went.
+fn argument_marker(body_len: usize) -> String {
+    format!(
+        "{ELIDED_ARGUMENT_MARKER_PREFIX} {body_len} bytes. The file on disk is the source of truth; use read_file to retrieve it.]"
+    )
+}
+
+/// Replace the first eligible string value in a JSON argument tree. Object
+/// iteration and array order are deterministic, so a transcript is compacted
+/// the same way every time.
+fn elide_first_large_argument(value: &mut Value) -> Option<usize> {
+    match value {
+        Value::String(body)
+            if body.len() > SMALL_TOOL_ARGUMENT_BYTES
+                && !body.starts_with(ELIDED_ARGUMENT_MARKER_PREFIX) =>
+        {
+            let body_len = body.len();
+            *body = argument_marker(body_len);
+            Some(body_len)
+        }
+        Value::Array(values) => values.iter_mut().find_map(elide_first_large_argument),
+        Value::Object(values) => values.values_mut().find_map(elide_first_large_argument),
+        _ => None,
+    }
+}
+
+fn elide_first_assistant_argument(message: &mut Message) -> Option<usize> {
+    for call in &mut message.tool_calls {
+        if let Some(body_len) = elide_first_large_argument(&mut call.arguments) {
+            message.invalidate_body_cache();
+            return Some(body_len);
+        }
+    }
+    None
+}
+
+/// Elide the oldest tool-result bodies, then old assistant tool-call argument
+/// bodies, until the transcript fits. Each leaves a marker saying how much
+/// went.
 ///
 /// Tool results belonging to the most recent assistant turn are never touched:
 /// the model is mid-thought about those, and taking them away is how a run
@@ -307,9 +380,10 @@ fn over_budget(messages: &[Message], budget: &ContextBudget) -> bool {
 /// the agent's recorder tracks how much it has persisted by index and a
 /// shifting index would re-record or skip.
 ///
-/// Tool results go first because they are where the bytes are. A run that read
-/// four files and ran a build is nine tenths command output by weight, and the
-/// user's own words are what the conversation is actually about.
+/// Tool results go first because they are usually where the bytes are. After
+/// them, old assistant arguments go in transcript order. Tool calls from the
+/// most recent assistant turn stay intact because the model is mid-thought
+/// about them.
 pub fn compact_tool_results(messages: &mut [Message], budget: &ContextBudget) -> CompactionReport {
     let mut report = CompactionReport::default();
     if !over_budget(messages, budget) {
@@ -333,6 +407,19 @@ pub fn compact_tool_results(messages: &mut [Message], budget: &ContextBudget) ->
         m.invalidate_body_cache();
         report.elided_tool_results += 1;
         report.elided_bytes += body_len;
+    }
+
+    for i in 0..last_assistant {
+        while over_budget(messages, budget) {
+            let Some(body_len) = elide_first_assistant_argument(&mut messages[i]) else {
+                break;
+            };
+            report.elided_tool_arguments += 1;
+            report.elided_argument_bytes += body_len;
+        }
+        if !over_budget(messages, budget) {
+            break;
+        }
     }
     report
 }
@@ -452,6 +539,8 @@ pub fn plan_seed(stored: Vec<MessageRecord>, system: &str, budget: &ContextBudge
     let elision = compact_tool_results(&mut messages, budget);
     report.elided_tool_results += elision.elided_tool_results;
     report.elided_bytes += elision.elided_bytes;
+    report.elided_tool_arguments += elision.elided_tool_arguments;
+    report.elided_argument_bytes += elision.elided_argument_bytes;
 
     SeedPlan {
         records: messages
@@ -476,6 +565,14 @@ mod tests {
             id: id.to_string(),
             name: "read_file".to_string(),
             arguments: json!({"path": "a.txt"}),
+        }
+    }
+
+    fn write_call(id: &str, content: String) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: "write_file".to_string(),
+            arguments: json!({"path": "/app/solve.py", "content": content}),
         }
     }
 
@@ -727,6 +824,92 @@ mod tests {
         assert_eq!(report.elided_bytes, 100);
     }
 
+    /// Removing argument bodies must catch the old drafts that made a long
+    /// write_file run grow forever, while preserving enough of the call for
+    /// the model to read the file again.
+    #[test]
+    fn compaction_elides_old_assistant_argument_bodies_but_not_the_latest_turn() {
+        let budget = ContextBudget {
+            tool_result_bytes: 150,
+            ..ContextBudget::default()
+        };
+        let old_body = "x".repeat(2_000);
+        let latest_body = "y".repeat(2_000);
+        let mut messages = vec![
+            Message::system("prompt"),
+            Message::assistant_with_calls("", vec![write_call("c1", old_body.clone())]),
+            Message::assistant_with_calls("", vec![write_call("c2", latest_body.clone())]),
+        ];
+
+        let report = compact_tool_results(&mut messages, &budget);
+
+        let old = &messages[1].tool_calls[0];
+        assert_eq!(old.name, "write_file");
+        assert_eq!(old.id, "c1");
+        assert_eq!(old.arguments["path"], "/app/solve.py");
+        let marker = old.arguments["content"].as_str().unwrap();
+        assert!(
+            marker.starts_with(ELIDED_ARGUMENT_MARKER_PREFIX),
+            "{marker}"
+        );
+        assert!(marker.contains("2000 bytes"), "{marker}");
+        assert!(marker.contains("source of truth"), "{marker}");
+        assert!(marker.contains("read_file"), "{marker}");
+        assert_eq!(messages[2].tool_calls[0].arguments["content"], latest_body);
+        assert_eq!(report.elided_tool_arguments, 1);
+        assert_eq!(report.elided_argument_bytes, 2_000);
+    }
+
+    #[test]
+    fn compaction_leaves_argument_bodies_byte_for_byte_under_budget() {
+        let calls = vec![write_call("c1", "x".repeat(2_000))];
+        let mut messages = vec![
+            Message::assistant_with_calls("", calls),
+            Message::assistant(""),
+        ];
+        let original = messages.clone();
+
+        let report = compact_tool_results(&mut messages, &ContextBudget::default());
+
+        assert_eq!(messages, original);
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn compaction_elides_tool_results_before_assistant_arguments() {
+        let budget = ContextBudget {
+            tool_result_bytes: 2_100,
+            ..ContextBudget::default()
+        };
+        let mut messages = vec![
+            Message::assistant_with_calls("", vec![write_call("c1", "x".repeat(2_000))]),
+            Message::tool_result("r1", "r".repeat(2_000)),
+            Message::assistant_with_calls("", vec![]),
+        ];
+
+        let report = compact_tool_results(&mut messages, &budget);
+
+        assert!(messages[1].text().starts_with(ELIDED_MARKER_PREFIX));
+        assert_eq!(
+            messages[0].tool_calls[0].arguments["content"],
+            "x".repeat(2_000)
+        );
+        assert_eq!(report.elided_tool_results, 1);
+        assert_eq!(report.elided_tool_arguments, 0);
+    }
+
+    #[test]
+    fn estimating_tokens_counts_tool_argument_bytes() {
+        let without_body = Message::assistant_with_calls("", vec![write_call("c1", String::new())]);
+        let with_body =
+            Message::assistant_with_calls("", vec![write_call("c1", "x".repeat(4_000))]);
+
+        assert!(
+            estimate_message_tokens(&with_body) > estimate_message_tokens(&without_body) + 900,
+            "tool argument bytes did not materially change the estimate"
+        );
+    }
+
     /// A token budget compacts a transcript the byte cap would wave through.
     #[test]
     fn a_token_budget_compacts_below_the_byte_cap() {
@@ -753,10 +936,16 @@ mod tests {
         let report = CompactionReport {
             elided_tool_results: 2,
             elided_bytes: 4096,
+            elided_tool_arguments: 3,
+            elided_argument_bytes: 8192,
             dropped_messages: 3,
         };
         let notice = report.notice().unwrap();
         assert!(notice.contains("2 older tool results elided"), "{notice}");
+        assert!(
+            notice.contains("3 older tool call arguments elided"),
+            "{notice}"
+        );
         assert!(notice.contains("3 older messages dropped"), "{notice}");
         assert!(notice.contains("still on disk"), "{notice}");
         assert_eq!(CompactionReport::default().notice(), None);
