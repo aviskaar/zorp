@@ -326,7 +326,10 @@ resulting artifact, deliver it in the right form.
   ends before the provider says it has finished, no `[DONE]` and no
   `finish_reason`, is an error and not a short answer, because a truncated
   answer that returns `Ok` is indistinguishable from a model that replied
-  badly and that is how a nine hour run was misread twice. See
+  badly and that is how a nine hour run was misread twice. A reply with no
+  tool calls whose `finish_reason` is `length` is the same thing with the
+  provider saying so, and the loop ends it as an error rather than returning
+  the cut-off text as an answer; see `docs/DECISIONS.md` (2026-09-03). See
   `docs/DECISIONS.md` (2026-08-23) before changing either.
 - A 429 or a 503 is retried and nothing else is. `zorp::send_json` is the
   one place it happens, so the buffered path and `stream_sse` share it;
