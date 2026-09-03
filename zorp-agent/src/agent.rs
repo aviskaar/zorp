@@ -679,16 +679,16 @@ impl Agent {
         }
     }
 
-    /// Keep the transcript inside the context budget by replacing the oldest
-    /// tool-result bodies with a short elision marker.
+    /// Keep the transcript inside the context budget by replacing old
+    /// tool-result and tool-call argument bodies with short elision markers.
     ///
     /// This is the same mechanism the byte cap has always used, now driven by
     /// two triggers instead of one: the 512 KiB cap on accumulated tool
-    /// results, which is always on, and a token target derived from the
-    /// context window when anybody has said how large it is. One mechanism,
-    /// two triggers, deliberately: a second pass eliding the same bodies for
-    /// its own reasons would double-count what it freed and the two would
-    /// disagree about what is left.
+    /// results and tool-call arguments, which is always on, and a token target
+    /// derived from the context window when anybody has said how large it is.
+    /// One mechanism, two triggers, deliberately: a second pass eliding the
+    /// same bodies for its own reasons would double-count what it freed and the
+    /// two would disagree about what is left.
     ///
     /// Messages are rewritten in place and never removed. `sync` tracks how
     /// much of the transcript has been persisted by index, so a shifting
@@ -1555,6 +1555,41 @@ mod tests {
         assert!(said[0].contains("still on disk"), "{said:?}");
     }
 
+    #[test]
+    fn compaction_notice_names_elided_tool_call_arguments() {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget {
+                tool_result_bytes: 50,
+                ..ContextBudget::default()
+            })
+            .with_renderer(Box::new(ContextRenderer {
+                notices: notices.clone(),
+                ..ContextRenderer::default()
+            }));
+        a.messages.push(Message::assistant_with_calls(
+            "",
+            vec![ToolCall {
+                id: "c1".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({
+                    "path": "/app/solve.py",
+                    "content": "x".repeat(2_000),
+                }),
+            }],
+        ));
+        a.messages.push(Message::assistant_with_calls("", vec![]));
+
+        a.enforce_history_budget();
+
+        let said = notices.lock().unwrap().clone();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].contains("1 older tool call argument elided (2000 bytes)"),
+            "{said:?}"
+        );
+    }
+
     /// The transcript below the budget is sent verbatim and nobody is warned
     /// about nothing.
     #[test]
@@ -1578,10 +1613,10 @@ mod tests {
     #[test]
     fn compaction_does_not_re_record_the_elided_transcript() {
         #[derive(Default)]
-        struct Recorded(Arc<Mutex<Vec<String>>>);
+        struct Recorded(Arc<Mutex<Vec<Message>>>);
         impl RunRecorder for Recorded {
             fn message(&mut self, m: &Message) {
-                self.0.lock().unwrap().push(m.text().into_owned());
+                self.0.lock().unwrap().push(m.clone());
             }
             fn change(&mut self, _c: &FileChange) {}
         }
@@ -1592,8 +1627,17 @@ mod tests {
                 ..ContextBudget::default()
             })
             .with_recorder(Box::new(Recorded(seen.clone())));
-        a.messages.push(Message::assistant_with_calls("", vec![]));
-        a.messages.push(Message::tool_result("c1", "x".repeat(200)));
+        a.messages.push(Message::assistant_with_calls(
+            "",
+            vec![ToolCall {
+                id: "c1".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({
+                    "path": "/app/solve.py",
+                    "content": "x".repeat(2_000),
+                }),
+            }],
+        ));
         a.messages.push(Message::assistant_with_calls("", vec![]));
 
         a.sync();
@@ -1602,13 +1646,22 @@ mod tests {
 
         let recorded = seen.lock().unwrap().clone();
         assert!(
-            recorded.iter().any(|t| t == &"x".repeat(200)),
+            recorded.iter().any(|m| {
+                m.tool_calls
+                    .first()
+                    .and_then(|call| call.arguments.get("content"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("x".repeat(2_000).as_str())
+            }),
             "the original never reached the recorder: {recorded:?}"
         );
         assert!(
             !recorded
                 .iter()
-                .any(|t| t.starts_with(crate::context_window::ELIDED_MARKER_PREFIX)),
+                .flat_map(|m| &m.tool_calls)
+                .filter_map(|call| call.arguments.get("content"))
+                .filter_map(serde_json::Value::as_str)
+                .any(|body| body.starts_with(crate::context_window::ELIDED_ARGUMENT_MARKER_PREFIX)),
             "an elided body was written to the record: {recorded:?}"
         );
     }
