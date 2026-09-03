@@ -72,7 +72,7 @@ impl Sandbox {
             repo_root,
             cancel,
             timeout: Duration::from_secs(120),
-            output_cap: 32 * 1024,
+            output_cap: crate::tools::RUN_COMMAND_OUTPUT_CAP,
             reader_finalize_delay: Duration::ZERO,
             secrets: OnceLock::new(),
         }
@@ -493,12 +493,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _env = EnvVarGuard::set("ZORP_TEST_SECRET_TOKEN", "m4-secret-value");
         let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
-            .with_output_cap(64)
+            .with_output_cap(128)
             .run("printf '%s' \"$ZORP_TEST_SECRET_TOKEN\"; yes x | head -c 256")
             .unwrap();
         assert!(!out.stdout.contains("m4-secret-value"));
         assert!(out.stdout.contains("[REDACTED]"));
         assert!(out.stdout.contains("truncated"));
+        assert!(out.stdout.contains("head or tail"));
     }
 
     #[test]

@@ -18,6 +18,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Child;
 
+// These are byte caps, not token caps. Numeric data can use about one token
+// per byte, so large byte limits can still overwhelm a model context.
+pub const READ_FILE_OUTPUT_CAP: usize = 16 * 1024;
+pub const LIST_FILES_OUTPUT_CAP: usize = 8 * 1024;
+pub const RUN_COMMAND_OUTPUT_CAP: usize = 16 * 1024;
+pub const TURN_TOOL_OUTPUT_CAP: usize = 48 * 1024;
+
 pub struct ToolOutput {
     pub content: String,
     pub summary: String,
@@ -329,7 +336,11 @@ pub fn cap_output(s: &str, max: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n[… {} bytes truncated …]", &s[..end], s.len() - end)
+    format!(
+        "{}\n[… {} bytes truncated; for read_file use start_line and end_line. …]",
+        &s[..end],
+        s.len() - end
+    )
 }
 
 #[cfg(test)]
@@ -393,6 +404,16 @@ mod tests {
         let mut cx = Context::new(PathBuf::from("."), cancel_token());
         let out = r.dispatch(&call("nope", json!({})), &mut cx);
         assert!(out.content.contains("not available"));
+    }
+
+    #[test]
+    fn capped_output_tells_the_model_to_request_a_smaller_range() {
+        let capped = cap_output(&"x".repeat(32), 8);
+
+        assert!(
+            capped.contains("start_line") && capped.contains("end_line"),
+            "a truncated read gives no way to ask for the rest: {capped}"
+        );
     }
 
     #[test]
