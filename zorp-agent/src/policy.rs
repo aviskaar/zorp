@@ -219,7 +219,8 @@ fn deny_reason_with(
     own_server_port: Option<u16>,
 ) -> Option<String> {
     let normalized = command.to_ascii_lowercase();
-    let denied = "command matches the hard denylist".to_string();
+    // Checked on the whole text, heredoc bodies included: a URL inside a
+    // Python heredoc is still a request to this server once Python runs it.
     if let Some(port) = own_server_port {
         if calls_own_server(&normalized, port) {
             // No "denied" prefix here: the caller already formats this as
@@ -231,30 +232,66 @@ fn deny_reason_with(
             );
         }
     }
-    if normalized.contains('`') {
-        return Some(denied);
+    let tokenized = match tokenize_command(&normalized) {
+        Ok(tokenized) => tokenized,
+        Err(()) => return Some("the command could not be parsed as shell".to_string()),
+    };
+    if tokenized
+        .segments
+        .iter()
+        .flatten()
+        .any(|word| word.contains('`'))
+    {
+        return Some("backticks run shell commands".to_string());
     }
     // Command and process substitution bodies run whatever they contain,
     // so each body is analyzed like an `sh -c` payload. Unbalanced
     // substitution syntax fails closed.
-    match substitution_bodies(&normalized) {
-        Err(()) => return Some(denied),
+    match substitution_bodies(&tokenized.shell) {
+        Err(()) => return Some("the command could not be parsed as shell".to_string()),
         Ok(bodies) => {
             for body in bodies {
-                if deny_reason_with(&body, repo_root, own_server_port).is_some() {
-                    return Some(denied);
+                if let Some(reason) = deny_reason_with(&body, repo_root, own_server_port) {
+                    return Some(format!("a substitution contains {reason}"));
                 }
             }
         }
     }
-    let forbidden = tokenize_command(&normalized)
-        .map(|segments| {
-            segments
-                .iter()
-                .any(|words| segment_is_forbidden(words, repo_root, own_server_port))
-        })
-        .unwrap_or(true);
-    forbidden.then_some(denied)
+    // A heredoc handed to a shell is a script, quoted delimiter or not, so it
+    // gets the same reading as an `sh -c` payload. Any other bare body still
+    // expands substitutions and backticks; a quoted one is data.
+    let feeds_shell = tokenized
+        .segments
+        .iter()
+        .any(|words| segment_runs_shell(words));
+    for (body, literal) in tokenized.heredoc_bodies {
+        if feeds_shell {
+            if let Some(reason) = deny_reason_with(&body, repo_root, own_server_port) {
+                return Some(format!("a heredoc fed to a shell contains {reason}"));
+            }
+            continue;
+        }
+        if literal {
+            continue;
+        }
+        if body.contains('`') {
+            return Some("backticks run shell commands".to_string());
+        }
+        match substitution_bodies(&body) {
+            Err(()) => return Some("the command could not be parsed as shell".to_string()),
+            Ok(bodies) => {
+                for body in bodies {
+                    if let Some(reason) = deny_reason_with(&body, repo_root, own_server_port) {
+                        return Some(format!("a substitution contains {reason}"));
+                    }
+                }
+            }
+        }
+    }
+    tokenized
+        .segments
+        .iter()
+        .find_map(|words| segment_is_forbidden(words, repo_root, own_server_port))
 }
 
 /// Collect the bodies of `$(...)`, `<(...)`, and `>(...)` substitutions.
@@ -293,19 +330,24 @@ fn segment_is_forbidden(
     words: &[String],
     repo_root: Option<&Path>,
     own_server_port: Option<u16>,
-) -> bool {
-    if redirects_escape_repo(words, repo_root) {
-        return true;
+) -> Option<String> {
+    if let Some(target) = redirects_escape_repo(words, repo_root) {
+        if target.is_empty() {
+            return Some("redirect is missing its target".to_string());
+        }
+        return Some(format!(
+            "redirect target '{target}' leaves the working directory"
+        ));
     }
     let Some(words) = unwrap_common_wrappers(words) else {
-        return true;
+        return Some("the command could not be parsed as shell".to_string());
     };
     if words.is_empty() {
-        return false;
+        return None;
     }
     let executable = executable_name(&words[0]);
     if executable == "eval" {
-        return true;
+        return Some("denylisted program 'eval'".to_string());
     }
     if matches!(executable, "sh" | "bash" | "zsh") {
         if let Some(index) = words
@@ -313,9 +355,10 @@ fn segment_is_forbidden(
             .position(|word| word == "-c" || (word.starts_with('-') && word[1..].contains('c')))
         {
             let Some(payload) = words.get(index + 1) else {
-                return true;
+                return Some("the command could not be parsed as shell".to_string());
             };
-            return deny_reason_with(payload, repo_root, own_server_port).is_some();
+            return deny_reason_with(payload, repo_root, own_server_port)
+                .map(|reason| format!("shell payload contains {reason}"));
         }
     }
     let destructive_rm = executable == "rm"
@@ -325,12 +368,21 @@ fn segment_is_forbidden(
             .skip(1)
             .filter(|word| !word.starts_with('-'))
             .any(|word| path_escapes_repo(word, repo_root));
-    executable == "sudo"
-        || destructive_rm
+    if destructive_rm {
+        return Some("the destructive rm rule".to_string());
+    }
+    let denied_program = if executable == "sudo"
         || executable.starts_with("mkfs")
         || executable == "fdisk"
         || (executable == "diskutil" && words.iter().any(|word| word == "erasedisk"))
-        || git_subcommand(words) == Some("push")
+    {
+        executable
+    } else if git_subcommand(words) == Some("push") {
+        "git push"
+    } else {
+        return None;
+    };
+    Some(format!("denylisted program '{denied_program}'"))
 }
 
 /// Recursive plus force in any spelling: `-rf`, `-fr`, `-r -f`, combined
@@ -349,7 +401,7 @@ fn rm_has_recursive_force(words: &[String]) -> bool {
 /// Deny redirects whose target lies outside the repo. Redirect operators
 /// are distinct tokens after `tokenize_command`, so this walks operator
 /// and target pairs. A missing target fails closed.
-fn redirects_escape_repo(words: &[String], repo_root: Option<&Path>) -> bool {
+fn redirects_escape_repo(words: &[String], repo_root: Option<&Path>) -> Option<String> {
     let mut index = 0;
     while index < words.len() {
         if !is_redirect_operator(&words[index]) {
@@ -357,14 +409,14 @@ fn redirects_escape_repo(words: &[String], repo_root: Option<&Path>) -> bool {
             continue;
         }
         let Some(target) = words.get(index + 1) else {
-            return true;
+            return Some(String::new());
         };
         if is_redirect_operator(target) || redirect_target_escapes(target, repo_root) {
-            return true;
+            return Some(target.clone());
         }
         index += 2;
     }
-    false
+    None
 }
 
 fn is_redirect_operator(word: &str) -> bool {
@@ -451,6 +503,17 @@ fn relative_escapes(target: &str) -> bool {
         }
     }
     false
+}
+
+fn segment_runs_shell(words: &[String]) -> bool {
+    unwrap_common_wrappers(words)
+        .and_then(|words| words.first())
+        .is_some_and(|word| {
+            matches!(
+                executable_name(word),
+                "sh" | "bash" | "zsh" | "eval" | "source"
+            )
+        })
 }
 
 fn executable_name(word: &str) -> &str {
@@ -557,12 +620,164 @@ fn git_subcommand(words: &[String]) -> Option<&str> {
     None
 }
 
-fn tokenize_command(command: &str) -> Result<Vec<Vec<String>>, ()> {
+struct TokenizedCommand {
+    segments: Vec<Vec<String>>,
+    shell: String,
+    /// Each heredoc body and whether its delimiter was quoted.
+    heredoc_bodies: Vec<(String, bool)>,
+}
+
+struct Heredoc {
+    delimiter: String,
+    literal: bool,
+    strip_tabs: bool,
+}
+
+/// Remove heredoc bodies before word tokenization. Multiple heredocs on one
+/// line are consumed in shell order: the first delimiter ends the first body,
+/// then the next delimiter ends the next body.
+fn split_heredocs(command: &str) -> (String, Vec<(String, bool)>) {
+    let lines: Vec<&str> = command.split_inclusive('\n').collect();
+    let mut shell = String::new();
+    let mut bodies = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let header = lines[index];
+        let heredocs = heredocs_on_line(header);
+        shell.push_str(header);
+        index += 1;
+        for heredoc in heredocs {
+            let mut body = String::new();
+            while index < lines.len() {
+                let line = lines[index];
+                let content = line.strip_suffix('\n').unwrap_or(line);
+                let compared = if heredoc.strip_tabs {
+                    content.trim_start_matches('\t')
+                } else {
+                    content
+                };
+                index += 1;
+                if compared == heredoc.delimiter {
+                    break;
+                }
+                if heredoc.strip_tabs {
+                    body.push_str(line.trim_start_matches('\t'));
+                } else {
+                    body.push_str(line);
+                }
+            }
+            bodies.push((body, heredoc.literal));
+        }
+    }
+    (shell, bodies)
+}
+
+fn heredocs_on_line(line: &str) -> Vec<Heredoc> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut heredocs = Vec::new();
+    let mut index = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    while index < chars.len() {
+        let ch = chars[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            index += 1;
+            continue;
+        }
+        if ch == '<' && chars.get(index + 1) == Some(&'<') && chars.get(index + 2) != Some(&'<') {
+            let mut delimiter_start = index + 2;
+            let strip_tabs = chars.get(delimiter_start) == Some(&'-');
+            if strip_tabs {
+                delimiter_start += 1;
+            }
+            if let Some((delimiter, literal, end)) =
+                parse_heredoc_delimiter(&chars, delimiter_start)
+            {
+                heredocs.push(Heredoc {
+                    delimiter,
+                    literal,
+                    strip_tabs,
+                });
+                index = end;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    heredocs
+}
+
+fn parse_heredoc_delimiter(chars: &[char], mut index: usize) -> Option<(String, bool, usize)> {
+    while chars.get(index).is_some_and(|ch| ch.is_whitespace()) {
+        index += 1;
+    }
+    let mut delimiter = String::new();
+    let mut literal = false;
+    let mut quote = None;
+    let mut escaped = false;
+    while let Some(&ch) = chars.get(index) {
+        if escaped {
+            delimiter.push(ch);
+            literal = true;
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            literal = true;
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            } else {
+                delimiter.push(ch);
+            }
+            index += 1;
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            literal = true;
+            quote = Some(ch);
+            index += 1;
+            continue;
+        }
+        if ch.is_whitespace() || matches!(ch, ';' | '&' | '|' | '<' | '>') {
+            break;
+        }
+        delimiter.push(ch);
+        index += 1;
+    }
+    (!delimiter.is_empty() && quote.is_none() && !escaped).then_some((delimiter, literal, index))
+}
+
+fn tokenize_command(command: &str) -> Result<TokenizedCommand, ()> {
+    let (shell, heredoc_bodies) = split_heredocs(command);
     let mut segments = vec![Vec::new()];
     let mut word = String::new();
     let mut quote = None;
     let mut escaped = false;
-    let mut chars = command.chars().peekable();
+    let mut chars = shell.chars().peekable();
     while let Some(ch) = chars.next() {
         if escaped {
             word.push(ch);
@@ -624,7 +839,11 @@ fn tokenize_command(command: &str) -> Result<Vec<Vec<String>>, ()> {
         segments.last_mut().unwrap().push(word);
     }
     segments.retain(|segment| !segment.is_empty());
-    Ok(segments)
+    Ok(TokenizedCommand {
+        segments,
+        shell,
+        heredoc_bodies,
+    })
 }
 
 #[cfg(test)]
@@ -909,6 +1128,101 @@ mod tests {
                 "{command}"
             );
         }
+    }
+
+    fn denied_reason(policy: &Policy, command: &str) -> String {
+        match policy.decide(&call("run_command", json!({"command": command}))) {
+            Decision::Deny(reason) => reason,
+            decision => panic!("expected denial for {command:?}, got {decision:?}"),
+        }
+    }
+
+    #[test]
+    fn quoted_heredoc_body_is_literal_data() {
+        let p = Policy::from_preset(Preset::Full).with_repo_root("/app");
+        for command in [
+            "cd /app && python3 << 'PYEOF'\n# Let's check the fixed points\nPYEOF",
+            "python3 << 'EOF'\n$(rm -rf /) and `rm -rf /`\nEOF",
+            "python3 << E\\OF\n$(rm -rf /) and `rm -rf /`\nEOF",
+            "python3 <<- 'EOF'\n\t# Let's go\n\tEOF",
+            "python3 /dev/stdin << 'EOF'\nprint(1)\nEOF",
+            "python3 << 'EOF'\n# Let's go",
+        ] {
+            assert_eq!(
+                p.decide(&call("run_command", json!({"command": command}))),
+                Decision::Allow,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_heredoc_body_checks_shell_expansions() {
+        let p = Policy::from_preset(Preset::Full).with_repo_root("/app");
+        assert_eq!(
+            denied_reason(&p, "python3 << EOF\n$(rm -rf /)\nEOF"),
+            "a substitution contains the destructive rm rule"
+        );
+        assert_eq!(
+            denied_reason(&p, "python3 << EOF\n`rm -rf /`\nEOF"),
+            "backticks run shell commands"
+        );
+    }
+
+    #[test]
+    fn heredoc_fed_to_a_shell_is_read_as_shell() {
+        let p = Policy::from_preset(Preset::Full).with_repo_root("/app");
+        assert_eq!(
+            denied_reason(&p, "bash << 'EOF'\nrm -rf /\nEOF"),
+            "a heredoc fed to a shell contains the destructive rm rule"
+        );
+        assert_eq!(
+            denied_reason(&p, "cat <<'EOF' | sh\nsudo true\nEOF"),
+            "a heredoc fed to a shell contains denylisted program 'sudo'"
+        );
+        assert_eq!(
+            p.decide(&call(
+                "run_command",
+                json!({"command": "sh << 'EOF'\necho ok\nEOF"})
+            )),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn heredoc_body_still_cannot_call_the_own_server() {
+        let p = Policy::from_preset(Preset::Full)
+            .with_repo_root("/app")
+            .with_own_server(7777);
+        let reason = denied_reason(
+            &p,
+            "python3 << 'EOF'\nrequests.get('http://127.0.0.1:7777/api')\nEOF",
+        );
+        assert!(reason.contains("zorp server"), "{reason}");
+    }
+
+    #[test]
+    fn heredoc_header_still_checks_redirects() {
+        let p = Policy::from_preset(Preset::Full).with_repo_root("/app");
+        assert_eq!(
+            denied_reason(&p, "python3 << 'EOF' > /tmp/x\nprint(1)\nEOF"),
+            "redirect target '/tmp/x' leaves the working directory"
+        );
+    }
+
+    #[test]
+    fn denial_reasons_name_the_rule_that_fired() {
+        let p = Policy::from_preset(Preset::Full).with_repo_root("/app");
+        assert_eq!(
+            denied_reason(&p, "echo `date`"),
+            "backticks run shell commands"
+        );
+        assert_eq!(
+            denied_reason(&p, "echo 'unterminated"),
+            "the command could not be parsed as shell"
+        );
+        assert_eq!(denied_reason(&p, "rm -rf /"), "the destructive rm rule");
+        assert_eq!(denied_reason(&p, "sudo true"), "denylisted program 'sudo'");
     }
 
     #[test]
