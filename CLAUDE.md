@@ -367,8 +367,16 @@ resulting artifact, deliver it in the right form.
   loud. It came from a 250 crate calibration run losing 25 of its first
   48 attempts to one 429 whose own body said "Please retry shortly", and
   502 joined when nine of nine benchmark trials died to one delivered
-  inside a 200 stream. See `docs/DECISIONS.md` (2026-08-23, 2026-09-04)
-  before changing any of it.
+  inside a 200 stream. The agent loop is a different layer with a
+  different rule: it records nothing for a reply that never finished, so a
+  stream dropped after deltas were delivered is discarded there and the
+  step is asked again with a fresh request, `REASKS_PER_STEP` times at
+  most (2, a constant and not an env var), each re-ask counted as a step.
+  `stream_sse` reports that case as `InStreamError::Dropped`, the browser
+  gets an `assistant_withdrawn` frame and takes the fragments down, and
+  the transport still never re-sends after a delta;
+  `reask_dropped_stream.rs` counts connections to prove it. See
+  `docs/DECISIONS.md` (2026-08-23, 2026-09-04) before changing any of it.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides oldest tool-result bodies, then

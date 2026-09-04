@@ -301,6 +301,15 @@ pub trait Renderer: Send {
     /// which is every terminal renderer here, is unaffected by streaming.
     /// Only text a user may see arrives; reasoning is filtered out upstream.
     fn assistant_delta(&mut self, _chunk: &str) {}
+    /// The fragments delivered so far are withdrawn: the provider dropped
+    /// the answer after `events` payloads and the loop is asking again,
+    /// re-ask `reask` of `bound`.
+    ///
+    /// Empty by default, like `assistant_delta`, and for the same reason: a
+    /// renderer that never showed the fragments has nothing to take back.
+    /// The browser did show them, and without this it would stream the
+    /// fresh answer onto the end of the dead one.
+    fn assistant_withdrawn(&mut self, _events: usize, _reask: usize, _bound: usize) {}
     fn tool(&mut self, name: &str, summary: &str);
     fn verify(&mut self, command: &str, passed: bool);
     fn notice(&mut self, text: &str);

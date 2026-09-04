@@ -243,6 +243,23 @@ export interface AssistantDeltaEvent {
   text: string;
 }
 
+/**
+ * The fragments streamed so far are withdrawn.
+ *
+ * The provider dropped the answer after `events` payloads had reached the
+ * page, and the agent is asking again, re-ask `reask` of `bound`. The
+ * fragments come down and the fresh answer streams into their place;
+ * without this the start of the new answer would land on the end of the
+ * dead one.
+ */
+export interface AssistantWithdrawnEvent {
+  seq: number;
+  type: "assistant_withdrawn";
+  events: number;
+  reask: number;
+  bound: number;
+}
+
 /** Model output meant for the reader. */
 export interface AssistantEvent {
   seq: number;
@@ -503,6 +520,7 @@ export type ZorpEvent =
   | VerifyEvent
   | NoticeEvent
   | AssistantDeltaEvent
+  | AssistantWithdrawnEvent
   | AssistantEvent
   | ApprovalRequestEvent
   | ContextEvent
@@ -1212,6 +1230,7 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   verify: true,
   notice: true,
   assistant_delta: true,
+  assistant_withdrawn: true,
   assistant: true,
   approval_request: true,
   context: true,

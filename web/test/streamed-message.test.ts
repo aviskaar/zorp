@@ -325,3 +325,42 @@ test("a message with nothing in it is not offered", () => {
 
   assert.deepEqual(seen, [], "an empty message was decorated anyway");
 });
+
+/*
+ * A withdrawal. The provider dropped the answer after fragments had reached
+ * the page and the agent is asking again, so the fragments come down, a line
+ * says why, and the fresh answer streams in under it. The line is the second
+ * string this module puts on the page, so it gets the same hostile input the
+ * fragments do.
+ */
+test("a withdrawal takes the fragments down, says why as text, and keeps the row for the re-ask", () => {
+  const { transcript, streamed } = fixture();
+  streamed.append("the start of a dead ans");
+  const hostile = "dropped <img src=x onerror=alert(1)><script>alert(2)</script>; asking again (1 of 2)";
+  assert.equal(streamed.withdraw(hostile), true);
+
+  assert.equal(transcript.querySelectorAll("article").length, 1, "the row was closed or duplicated");
+  assert.equal(
+    transcript.querySelector(".msg-body")?.textContent,
+    "",
+    "the dead fragments stayed on the page",
+  );
+  const line = transcript.querySelector(".msg-withdrawn");
+  assert.ok(line, "no status line where the fragments were");
+  assert.equal(line?.textContent, hostile);
+  assert.equal(transcript.querySelectorAll("img").length, 0);
+  assert.equal(transcript.querySelectorAll("script").length, 0);
+  assert.equal(endsStreamedMessage("assistant_withdrawn"), false);
+
+  streamed.append("the fresh answer");
+  streamed.finish("the fresh answer");
+  assert.equal(transcript.querySelectorAll("article").length, 1);
+  assert.equal(transcript.querySelector(".msg-body")?.textContent, "the fresh answer");
+  assert.ok(transcript.querySelector(".msg-withdrawn"), "the status line was lost when the answer landed");
+});
+
+test("withdrawing when nothing is open reports that the caller must say it elsewhere", () => {
+  const { transcript, streamed } = fixture();
+  assert.equal(streamed.withdraw("status"), false);
+  assert.equal(transcript.querySelectorAll("article").length, 0);
+});

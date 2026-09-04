@@ -162,4 +162,13 @@ class ZorpAgent(BaseInstalledAgent):
             # OpenAI-compatible, which is what its default already is.
             env["ZORP_PROVIDER"] = "anthropic"
 
+        # The crate defaults for the retry bound, 4 sends and 30 seconds of
+        # added waiting, are tuned for a person at a browser, where a minute
+        # of spinner reads as broken. A batch run has nobody watching and
+        # waits. These are defaults, not overrides: Harbor lays `--ae` values
+        # over this dict (BaseEnvironment._merge_env, per-exec env under the
+        # scoped env that carries `--ae`), so a value on the command line wins.
+        env["ZORP_RETRY_ATTEMPTS"] = "20"
+        env["ZORP_RETRY_BUDGET_SECS"] = "300"
+
         return env

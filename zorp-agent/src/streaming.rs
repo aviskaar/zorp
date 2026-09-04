@@ -135,6 +135,55 @@ fn truncated(events: usize) -> BoxErr {
     .into()
 }
 
+/// An error the provider delivered inside a 200 stream, and which side of
+/// the line it landed on.
+///
+/// A type rather than a sentence, because the agent loop has to tell the two
+/// apart and matching on words is how a reworded message silently turns a
+/// re-ask off. The Display text is unchanged from when these were strings,
+/// so a log reads the same.
+///
+/// The transport never sends again once a delta has reached the caller; that
+/// rule is the whole of `retry_rate_limit.rs` and it stands. But the loop
+/// above records nothing for a dead step, so it may discard the step and ask
+/// with a fresh request, and [`InStreamError::Dropped`] is how it knows it
+/// may. [`InStreamError::Refused`] is the other case: nothing reached the
+/// caller, the core's bound was spent on it, and `ZORP_RETRY_ATTEMPTS` is the
+/// knob for that. See `docs/DECISIONS.md` (2026-09-04).
+#[derive(Debug)]
+pub enum InStreamError {
+    /// Nothing had been handed up, the request was sent again under the
+    /// core's bound, and the bound ran out. `tail` is what the bound said.
+    Refused {
+        error: zorp::ProviderError,
+        tail: String,
+    },
+    /// `events` payloads had already reached the caller, so the request was
+    /// not sent again.
+    Dropped {
+        error: zorp::ProviderError,
+        events: usize,
+    },
+}
+
+impl std::fmt::Display for InStreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InStreamError::Refused { error, tail } => {
+                write!(f, "{}: {error}{tail}", zorp::IN_STREAM_ERROR)
+            }
+            InStreamError::Dropped { error, events } => write!(
+                f,
+                "{}: {error}; {events} events had already reached the caller, so the \
+                 request was not sent again",
+                zorp::IN_STREAM_ERROR
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InStreamError {}
+
 /// What the provider actually did when asked to stream.
 pub enum StreamOutcome {
     /// It streamed. Payloads were handed to the callback as they arrived.
@@ -235,7 +284,7 @@ pub fn stream_sse(
                     continue;
                 }
                 let tail = error.code.map_or(String::new(), |c| retrying.exhausted(c));
-                return Err(format!("{}: {error}{tail}", zorp::IN_STREAM_ERROR).into());
+                return Err(InStreamError::Refused { error, tail }.into());
             }
         }
     }
@@ -280,17 +329,16 @@ impl Delivery {
 
     /// An error object arrived. Before any delta it is a refusal the loop
     /// may retry. After one it is an error, full stop, because the deltas
-    /// that arrived are already on somebody's screen.
+    /// that arrived are already on somebody's screen. It is typed so the
+    /// agent loop, which recorded nothing for the step, can ask again.
     fn refused(&self, error: zorp::ProviderError) -> Result<Body, BoxErr> {
         if self.events == 0 {
             return Ok(Body::Refused(error));
         }
-        Err(format!(
-            "{}: {error}; {} events had already reached the caller, so the \
-             request was not sent again",
-            zorp::IN_STREAM_ERROR,
-            self.events
-        )
+        Err(InStreamError::Dropped {
+            error,
+            events: self.events,
+        }
         .into())
     }
 

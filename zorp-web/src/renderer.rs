@@ -87,6 +87,14 @@ impl Renderer for WebRenderer {
         });
     }
 
+    fn assistant_withdrawn(&mut self, events: usize, reask: usize, bound: usize) {
+        self.emit(EventKind::AssistantWithdrawn {
+            events,
+            reask,
+            bound,
+        });
+    }
+
     fn assistant(&mut self, text: &str) {
         self.emit(EventKind::Assistant {
             text: text.to_string(),
@@ -158,6 +166,32 @@ mod tests {
             vec!["delta", "delta", "final"],
             "the browser cannot tell a preview from the answer"
         );
+    }
+
+    /// A withdrawal is its own frame, between the dead fragments and the
+    /// fresh ones, so the browser can take the first lot down.
+    #[test]
+    fn a_withdrawal_is_its_own_frame_carrying_the_count_and_the_re_ask() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut r = WebRenderer::new(tx);
+        r.assistant_delta("he");
+        r.assistant_withdrawn(1618, 1, 2);
+        r.assistant_delta("hello");
+        drop(r);
+
+        let json: Vec<String> = rx
+            .iter()
+            .map(|e| serde_json::to_string(&e).unwrap())
+            .collect();
+        assert_eq!(json.len(), 3);
+        assert!(
+            json[1].contains("\"type\":\"assistant_withdrawn\""),
+            "{}",
+            json[1]
+        );
+        assert!(json[1].contains("\"events\":1618"), "{}", json[1]);
+        assert!(json[1].contains("\"reask\":1"), "{}", json[1]);
+        assert!(json[1].contains("\"bound\":2"), "{}", json[1]);
     }
 
     /// A browser that closed its stream must not take the agent down with it.

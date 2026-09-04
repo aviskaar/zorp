@@ -1257,6 +1257,17 @@ function applyEvent(event: ZorpEvent): void {
       appendStreamDelta(event.text);
       break;
 
+    case "assistant_withdrawn": {
+      const status =
+        `the provider dropped this answer after ${event.events} events; ` +
+        `asking again (${event.reask} of ${event.bound})`;
+      // Nothing open means nothing visible streamed, which happens when
+      // the dead reply was all reasoning. The line still belongs on the
+      // page, so it goes in with the activity.
+      if (!streamed.withdraw(status)) appendActivity(noticeLine(status));
+      break;
+    }
+
     case "assistant":
       finishStream(event.text);
       break;
