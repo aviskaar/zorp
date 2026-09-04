@@ -1,0 +1,20 @@
+{{!--
+  Rendered above mdBook's own menu bar on every page. mdBook merges a theme
+  directory with its defaults, so this is the whole override: index.hbs is not
+  forked and nothing here has to be re-reconciled on an mdBook upgrade.
+
+  It exists because docs.zorp.dev is a different origin with a different
+  generator, and a reader who followed the Docs link off zorp.dev had no link
+  back. The site's own header stops at the origin boundary; this is the half
+  that carries across it. Absolute URLs for the same reason.
+--}}
+<div class="zorp-sitebar">
+  {{!-- The wordmark is the way home, which is where it is on zorp.dev too.
+        The label spells that out, because "zorp" alone does not. --}}
+  <a class="zorp-sitebar-brand" href="https://zorp.dev/" aria-label="zorp.dev, the main site">zorp</a>
+  <nav class="zorp-sitebar-nav" aria-label="zorp.dev">
+    <a href="https://zorp.dev/research/">Research</a>
+    <a href="https://zorp.dev/blogs/">Blogs</a>
+    <a href="https://github.com/aviskaar/zorp">GitHub</a>
+  </nav>
+</div>

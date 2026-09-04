@@ -1,0 +1,117 @@
+/* zorp docs: the site bar, and the palette the rest of zorp.dev uses.
+
+   Colours are copied from zorp-landing/src/styles/tokens.css, which in turn
+   copies them from web/styles.css. Three places, because the three are built by
+   three different generators and none of them can import from the others. If
+   one of them changes, all three do. */
+
+/* ---------------------------------------------------------------- site bar */
+
+/* Fixed colours rather than mdBook's theme variables: this strip belongs to
+   zorp.dev, not to the book, and it should look the same whichever theme the
+   reader picks out of the paintbrush menu. It deliberately does not stick. The
+   menu bar below it does, and it drives its own `top` from JavaScript on every
+   scroll event; a second sticky element above it is a fight over one pixel
+   offset that a future mdBook release wins. */
+.zorp-sitebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+    /* .page carries margin-block-start: calc(0px - var(--menu-bar-height)) to
+       compensate for the sticky hover placeholder that follows this element.
+       Being the first child, this bar wore that offset and rendered 50px above
+       the viewport. Adding it back is what puts it on screen; the placeholder
+       still gets the compensation it was written for.
+       The inline margins bleed to the edges of the page column, the same way
+       the menu bar below does. */
+    margin: var(--menu-bar-height) calc(0px - var(--page-padding)) 0;
+    padding: 0.5rem var(--page-padding);
+    background: #0d0e11;
+    border-block-end: 1px solid #23262d;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.4;
+}
+
+.zorp-sitebar-brand {
+    color: #e7e9ee;
+    font-size: 1rem;
+    font-weight: 300;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-decoration: none;
+}
+
+.zorp-sitebar-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.1rem;
+}
+
+.zorp-sitebar-nav a {
+    color: #99a1af;
+    font-size: 0.833rem;
+    text-decoration: none;
+    transition: color 0.2s ease-out;
+}
+
+.zorp-sitebar-brand:hover,
+.zorp-sitebar-nav a:hover {
+    color: #5eead4;
+}
+
+.zorp-sitebar :focus-visible {
+    outline: 2px solid #5eead4;
+    outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ dark palette */
+
+/* mdBook's theme list is baked into index.hbs, so a book cannot add a sixth
+   theme without forking the template. Repainting one of the five is the whole
+   of the alternative: navy is the one that was already the dark default, and
+   it is now zorp's dark. The picker still calls it Navy. */
+.navy {
+    --bg: #0d0e11;
+    --fg: #e7e9ee;
+
+    --sidebar-bg: #14161a;
+    --sidebar-fg: #c3c8d1;
+    --sidebar-non-existant: #5b616e;
+    --sidebar-active: #5eead4;
+    --sidebar-spacer: #23262d;
+
+    --icons: #6a7180;
+    --icons-hover: #e7e9ee;
+
+    --links: #5eead4;
+
+    --inline-code-color: #f5b544;
+
+    --theme-popup-bg: #14161a;
+    --theme-popup-border: #23262d;
+    --theme-hover: #1a1d23;
+
+    --quote-bg: #14161a;
+    --quote-border: #23262d;
+
+    --warning-border: #f5b544;
+
+    --table-border-color: #23262d;
+    --table-header-bg: #1a1d23;
+    --table-alternate-bg: #101216;
+
+    --searchbar-border-color: #23262d;
+    --searchbar-bg: #14161a;
+    --searchbar-fg: #e7e9ee;
+    --searchbar-shadow-color: #23262d;
+    --searchresults-header-fg: #6a7180;
+    --searchresults-border-color: #23262d;
+    --searchresults-li-bg: #14161a;
+    --search-mark-bg: #2dd4bf;
+
+    --footnote-highlight: #5eead4;
+    --overlay-bg: rgba(13, 14, 17, 0.6);
+    --sidebar-header-border-color: #23262d;
+}

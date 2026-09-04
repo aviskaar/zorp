@@ -6,5 +6,10 @@ language = "en"
 src = "src"
 
 [output.html]
+# Dark in both OS preferences, because zorp.dev is dark in both and the docs are
+# one link away from it. See theme/zorp.css for what "navy" is painted as here.
+default-theme = "navy"
+preferred-dark-theme = "navy"
+additional-css = ["theme/zorp.css"]
 git-repository-url = "https://github.com/aviskaar/zorp"
 edit-url-template = "https://github.com/aviskaar/zorp/edit/main/docs-site/{path}"
