@@ -341,26 +341,34 @@ resulting artifact, deliver it in the right form.
   provider saying so, and the loop ends it as an error rather than returning
   the cut-off text as an answer; see `docs/DECISIONS.md` (2026-09-03). See
   `docs/DECISIONS.md` (2026-08-23) before changing either.
-- A 429 or a 503 is retried and nothing else is. `zorp::send_json` is the
-  one place it happens, so the buffered path and `stream_sse` share it;
-  the streaming path used to keep its own copy of the core's error
-  handling, which is how it went months with no timeout at all. The bound
-  is two sided, `ZORP_RETRY_ATTEMPTS` sends in total (4) and
-  `ZORP_RETRY_BUDGET_SECS` of added waiting (30), and both numbers are
-  picked for the person watching a browser rather than for a batch run. A
-  `Retry-After` is waited out in full, with jitter on top and never
-  inside, and one that will not fit the budget ends the retrying rather
-  than being clamped. Three things are not negotiable. Nothing is retried
-  once a response body has started arriving, because those payloads
-  already went to the caller and a second send would replay the start of
-  one answer over the middle of another; `stream_sse` gets that for free
-  by retrying before the body exists and `retry_rate_limit.rs` counts
-  connections to prove it. 400, 401 and 404 are never retried, because a
-  slow misconfiguration reads like a network problem. And every retry
-  says so on stderr, for the same reason the bound above is loud. It came
-  from a 250 crate calibration run losing 25 of its first 48 attempts to
-  one 429 whose own body said "Please retry shortly". See
-  `docs/DECISIONS.md` (2026-08-23) before changing any of it.
+- A 429, a 502 or a 503 is retried and nothing else is. `zorp::Retrying`
+  is the one place the bound is counted: `zorp::send_json` uses it for a
+  status, and `zorp_raw` and `stream_sse` carry the same one across a 200
+  whose body turns out to be an error object, so there is one copy of the
+  backoff and one count of sends. The streaming path used to keep its own
+  copy of the core's error handling, which is how it went months with no
+  timeout at all. The bound is two sided, `ZORP_RETRY_ATTEMPTS` sends in
+  total (4) and `ZORP_RETRY_BUDGET_SECS` of added waiting (30), and both
+  numbers are picked for the person watching a browser rather than for a
+  batch run. A `Retry-After` is waited out in full, with jitter on top and
+  never inside, and one that will not fit the budget ends the retrying
+  rather than being clamped. Three things are not negotiable. Nothing is
+  retried once a payload has reached the caller, because a second send
+  would replay the start of one answer over the middle of another. The
+  line is the first payload handed up and not the status line: a `data:`
+  event carrying a top-level `error` object, which is how OpenRouter
+  reports an overloaded upstream inside an HTTP 200, is named with its
+  code and message, never handed up as a payload, and retried while no
+  delta has reached the caller; the same event after a delta is named and
+  not retried, and `retry_rate_limit.rs` counts connections to prove
+  both. 400, 401 and 404 are never retried, inside a stream or outside
+  one, because a slow misconfiguration reads like a network problem. And
+  every retry says so on stderr, for the same reason the bound above is
+  loud. It came from a 250 crate calibration run losing 25 of its first
+  48 attempts to one 429 whose own body said "Please retry shortly", and
+  502 joined when nine of nine benchmark trials died to one delivered
+  inside a 200 stream. See `docs/DECISIONS.md` (2026-08-23, 2026-09-04)
+  before changing any of it.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides oldest tool-result bodies, then

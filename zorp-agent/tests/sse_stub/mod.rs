@@ -160,6 +160,11 @@ pub enum Reply {
     /// Some events, and then the response ends with nothing saying it was
     /// over. What a gateway hitting its own idle limit leaves behind.
     CutOff { events: usize },
+    /// A 200 event stream: `after` content deltas, then one event that is
+    /// an error object, then the body ends with no `[DONE]`. With `after` of
+    /// zero this is what OpenRouter sends for an overloaded upstream, comment
+    /// lines and all.
+    ErrorEvent { after: usize, event: &'static str },
 }
 
 /// Answer each connection from `script`, repeating its last entry for
@@ -262,6 +267,25 @@ fn serve(framing: Framing, reply: Reply, mut socket: TcpStream) {
             for i in 0..events {
                 let _ = socket.write_all(event(framing, i).as_bytes());
             }
+            let _ = socket.flush();
+            close_body(framing, socket);
+        }
+        Reply::ErrorEvent {
+            after,
+            event: error,
+        } => {
+            let _ = socket.write_all(framing.headers());
+            for i in 0..after {
+                let _ = socket.write_all(event(framing, i).as_bytes());
+            }
+            // The comment lines OpenRouter writes while it waits on the
+            // upstream, as captured. A decoder must read past them.
+            let _ = socket.write_all(
+                framing
+                    .frame(": OPENROUTER PROCESSING\n\n: OPENROUTER PROCESSING\n\n")
+                    .as_bytes(),
+            );
+            let _ = socket.write_all(framing.frame(&format!("data: {error}\n\n")).as_bytes());
             let _ = socket.flush();
             close_body(framing, socket);
         }

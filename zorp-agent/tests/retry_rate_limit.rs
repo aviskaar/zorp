@@ -9,6 +9,12 @@
 //! replay the beginning of the answer against the middle of the last one. A
 //! transport is not allowed to invent that.
 //!
+//! The line between the two is the first payload handed up, not the HTTP
+//! status. A provider can refuse inside a 200 stream, as one event carrying
+//! an error object and nothing else, and that refusal is on the clean side of
+//! the line: it is named and sent again. The same event after a delta is on
+//! the other side, and stays an error.
+//!
 //! Its own test binary, like `streaming_timeout.rs` and for a related reason:
 //! the bound on retrying is read from the environment, and a test that sets
 //! it must not race the rest of the suite.
@@ -32,6 +38,17 @@ const BUDGET_SECS: u64 = 30;
 
 /// The body OpenRouter's free tier actually sends, trimmed.
 const RATE_LIMITED: &str = r#"{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"stealth/ox-alpha is temporarily rate-limited upstream. Please retry shortly."}}}"#;
+
+/// The event OpenRouter sent, verbatim, for nine of nine benchmark trials
+/// against `nvidia/nemotron-3-ultra-550b-a55b:free` (ZOR-26): HTTP 200, a
+/// streaming body, some comment lines, this as the only event, and a close.
+/// Every trial died within 1 to 11 model calls reading it as a cut off
+/// stream, and the sentence the provider wrote never reached anyone.
+const OVERLOADED: &str = r#"{"id":"gen-1788503823-rSnjToVnWKeIBMh0SRHz","object":"chat.completion.chunk","created":1788503823,"model":"nvidia/nemotron-3-ultra-550b-a55b:free","provider":"Nvidia","choices":[],"error":{"code":502,"message":"Upstream error from Nvidia: Service temporarily overloaded","metadata":{"error_type":"provider_unavailable"}}}"#;
+
+/// The same envelope carrying a code that will never get better.
+const UNSUPPORTED: &str =
+    r#"{"choices":[],"error":{"code":400,"message":"tool_choice is not supported"}}"#;
 
 static ENV: Once = Once::new();
 
@@ -192,6 +209,189 @@ fn a_provider_that_is_always_rate_limited_gives_up_and_says_why() {
             "{framing:?}: gave up after {:?}, which is not a bound anyone \
              waiting on a browser would call one",
             run.elapsed
+        );
+    }
+}
+
+/* ---- the refusal that arrives inside a 200 ---- */
+
+/// The ZOR-26 case. The status line said 200, the body said 502, and nothing
+/// had been handed up, so this is the clean retry in a different envelope.
+#[test]
+fn an_error_event_before_any_delta_is_sent_again_and_the_caller_gets_the_answer() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::ErrorEvent {
+            after: 0,
+            event: OVERLOADED,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a stream that was overloaded once");
+
+        assert!(
+            run.error.is_none(),
+            "{framing:?}: a 502 delivered inside a 200 stream killed the \
+             attempt: {:?}",
+            run.error
+        );
+        assert!(
+            run.streamed,
+            "{framing:?}: the second send was not streamed"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: the request was not sent again"
+        );
+        // Three deltas, the finish_reason event and [DONE], and not the error
+        // event: it is not a delta and an accumulator would drop it anyway.
+        assert_eq!(
+            run.payloads, 5,
+            "{framing:?}: the retried stream did not deliver exactly one answer"
+        );
+    }
+}
+
+/// The same event one delta later is on the other side of the line. The
+/// delta is on somebody's screen, so no second send, and the error says what
+/// the provider said rather than "cut off".
+#[test]
+fn an_error_event_after_a_delta_is_not_sent_again_and_names_the_code() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::ErrorEvent {
+            after: 1,
+            event: OVERLOADED,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a stream that failed after a delta");
+
+        let error = run
+            .error
+            .unwrap_or_else(|| panic!("{framing:?}: an error event came back as an answer"));
+        assert!(
+            error.contains("502") && error.contains("Service temporarily overloaded"),
+            "{framing:?}: the error does not say what the provider said: {error}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "{framing:?}: a stream that had delivered a delta was sent again"
+        );
+        assert_eq!(
+            run.payloads, 1,
+            "{framing:?}: the caller saw something other than the one delta"
+        );
+    }
+}
+
+/// A code that is never retried is not retried inside a 200 either, and it
+/// is named rather than reported as a cut off stream.
+#[test]
+fn an_error_event_the_provider_will_not_take_back_is_named_and_not_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[Reply::ErrorEvent {
+        after: 0,
+        event: UNSUPPORTED,
+    }];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a stream carrying a 400");
+
+        let error = run
+            .error
+            .unwrap_or_else(|| panic!("{framing:?}: a 400 inside a stream came back as an answer"));
+        assert!(
+            error.contains("400") && error.contains("tool_choice is not supported"),
+            "{framing:?}: the error does not name the code and the message: {error}"
+        );
+        assert!(
+            !error.contains("finish"),
+            "{framing:?}: a named refusal was reported as a cut off stream: {error}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "{framing:?}: a 400 was sent again, which will never work"
+        );
+        assert_eq!(
+            run.payloads, 0,
+            "{framing:?}: the error event was handed up"
+        );
+    }
+}
+
+/// The bound is the same bound. An upstream that stays overloaded is given
+/// up on after the same number of sends, and the error names the last code.
+#[test]
+fn a_provider_that_is_always_overloaded_gives_up_and_names_the_code() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[Reply::ErrorEvent {
+        after: 0,
+        event: OVERLOADED,
+    }];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a provider that is always overloaded");
+
+        let error = run
+            .error
+            .unwrap_or_else(|| panic!("{framing:?}: an endless 502 came back as an answer"));
+        assert!(
+            error.contains("502") && error.contains("overloaded"),
+            "{framing:?}: the error does not name the code: {error}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            ATTEMPTS as usize,
+            "{framing:?}: the number of sends is not the bound"
+        );
+        assert!(
+            run.elapsed < Duration::from_secs(10),
+            "{framing:?}: gave up after {:?}",
+            run.elapsed
+        );
+    }
+}
+
+/// The endpoint that ignores `stream` and answers with a document takes a
+/// different branch, and a document that is an error object is the same
+/// refusal: nothing handed up, so sent again.
+#[test]
+fn an_error_document_from_an_endpoint_that_ignored_stream_is_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::Status {
+            code: 200,
+            retry_after: None,
+            body: r#"{"error":{"code":503,"message":"upstream is warming up"}}"#,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a 200 document that was an error");
+
+        assert!(
+            run.error.is_none(),
+            "{framing:?}: a 503 inside a 200 document killed the attempt: {:?}",
+            run.error
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: the request was not sent again"
         );
     }
 }

@@ -284,6 +284,57 @@ fn a_request_the_provider_refused_is_not_sent_again() {
     }
 }
 
+/// A provider can refuse inside a 200 too: OpenRouter answers an overloaded
+/// upstream with a 200 whose body is an error object carrying a 502. On the
+/// buffered path nothing has reached the caller until the whole body is
+/// parsed, so that is the same clean retry keyed on the body's code rather
+/// than the status line's.
+#[test]
+fn an_error_object_inside_a_200_body_is_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::status(
+            200,
+            r#"{"choices":[],"error":{"code":502,"message":"Upstream error from Nvidia: Service temporarily overloaded"}}"#,
+        ),
+        Reply::status(200, ANSWER),
+    ];
+    let (url, connections) = scripted(SCRIPT);
+
+    let run = send_with_patience(url, "a 200 whose body said 502");
+
+    assert!(
+        run.error.is_none(),
+        "a 502 inside a 200 body reached the caller: {:?}",
+        run.error
+    );
+    assert_eq!(run.content.as_deref(), Some("hi"));
+    assert_eq!(connections.load(Ordering::SeqCst), 2);
+}
+
+/// And one carrying a code that will never get better is named, code and
+/// message, rather than becoming "no choices in response" one layer up.
+#[test]
+fn an_error_object_inside_a_200_body_is_named_and_not_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[Reply::status(
+        200,
+        r#"{"error":{"code":400,"message":"tool_choice is not supported"}}"#,
+    )];
+    let (url, connections) = scripted(SCRIPT);
+
+    let run = send_with_patience(url, "a 200 whose body said 400");
+
+    let error = run
+        .error
+        .unwrap_or_else(|| panic!("a 400 inside a 200 body came back as an answer"));
+    assert!(
+        error.contains("400") && error.contains("tool_choice is not supported"),
+        "the error does not name the code and the message: {error}"
+    );
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
 /// The bound, which is the difference between retrying and hanging.
 ///
 /// A provider having a bad afternoon can 429 every request for hours. What
