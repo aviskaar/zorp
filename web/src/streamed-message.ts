@@ -34,6 +34,11 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     case "assistant_delta":
     case "assistant":
       return false;
+    // Less of the message: the fragments come down and the fresh answer
+    // streams into the same row under a line saying why. Closing the row
+    // here would leave the dead fragments on the page as a finished answer.
+    case "assistant_withdrawn":
+      return false;
     // Status, not content. The context meter lives in the topbar and puts
     // nothing in the transcript, so an answer arriving while it updates must
     // not be cut in two.
@@ -180,6 +185,38 @@ export class StreamedMessage {
         this.paint(this.text);
       });
     }
+  }
+
+  /**
+   * Take back what streamed and say why, keeping the message open.
+   *
+   * The provider dropped the answer and the agent is asking again, so the
+   * fragments on the page are the start of an answer nobody will finish.
+   * They are discarded, `status` goes in their place as one text node, and
+   * the next fragment streams in under it. Returns false when nothing was
+   * open, so the caller can put the status somewhere else.
+   *
+   * `status` lands through `textContent`. It is composed by the page from
+   * numbers today, but this is the renderer's boundary and nothing crosses
+   * it as markup.
+   */
+  withdraw(status: string): boolean {
+    if (this.pending && this.frame !== null) {
+      this.cancel(this.frame);
+    }
+    this.pending = false;
+    this.frame = null;
+    if (!this.row || !this.body) return false;
+
+    this.text = "";
+    this.body.replaceChildren();
+    const line = this.row.ownerDocument.createElement("div");
+    line.className = "msg-withdrawn";
+    line.textContent = status;
+    // Before the body, so the fresh answer streams in under the line that
+    // explains where the last one went.
+    this.row.insertBefore(line, this.body);
+    return true;
   }
 
   /**

@@ -116,6 +116,19 @@ pub enum EventKind {
     AssistantDelta {
         text: String,
     },
+    /// The fragments streamed so far are withdrawn.
+    ///
+    /// The provider dropped the answer after `events` payloads had been
+    /// delivered, and the agent loop is asking again, re-ask `reask` of
+    /// `bound`. The browser has those fragments on the page as an in-progress
+    /// message and must take them down before the fresh answer streams, or
+    /// the start of the new answer lands on the end of the dead one. Numbers
+    /// only: the sentence the page shows is the page's own.
+    AssistantWithdrawn {
+        events: usize,
+        reask: usize,
+        bound: usize,
+    },
     Assistant {
         text: String,
     },

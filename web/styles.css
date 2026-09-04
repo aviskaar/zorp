@@ -801,6 +801,16 @@ button {
   padding-left: 1px;
 }
 
+/* Where a withdrawn answer was. Styled like a notice, because that is what
+   it is: the harness saying the provider dropped the reply and it is asking
+   again. The fresh answer streams in underneath. */
+.msg-withdrawn {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: 0.85em;
+  margin-bottom: 0.4em;
+}
+
 /* Under the answer rather than over it. `.msg` is a column, so this sits
    below the text without the message needing a header row, and it is dim
    until the message is hovered so a long conversation is not a column of

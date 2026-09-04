@@ -190,6 +190,21 @@ const DENIAL_STREAK_LIMIT: usize = 3;
 /// trip the repeat guard and end a run early.
 const REPEAT_STREAK_LIMIT: usize = 3;
 
+/// How many times one step is asked again after the provider dropped the
+/// answer part way through the stream.
+///
+/// The transport never re-sends once a delta has reached the caller, and
+/// that rule stands: a second send would replay the start of one answer over
+/// the middle of another. The loop is different. It records nothing for a
+/// step whose reply never finished, so discarding the step and asking with a
+/// fresh request is clean, and a free provider that drops one stream in ten
+/// after real work is the case this is for: 3 of 9 benchmark trials died
+/// this way after 5 to 35 tool calls. Each re-ask counts as a step against
+/// `max_steps`, because that bound is on model calls made. Two, not an env
+/// var: add one when a run shows the number is wrong. See docs/DECISIONS.md
+/// (2026-09-04).
+const REASKS_PER_STEP: usize = 2;
+
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
@@ -793,6 +808,10 @@ impl Agent {
         let mut failed_verify_changes: Option<usize> = None;
         let mut failed_verify_attempts = 0;
         let mut denial_streak = 0usize;
+        // Re-asks spent on the step in progress. Outside the loop because a
+        // re-ask goes back round it, so the count has to survive the trip;
+        // reset once a step's reply lands.
+        let mut reasks = 0usize;
         let outcome = 'run: loop {
             self.sync();
             self.enforce_history_budget();
@@ -858,6 +877,36 @@ impl Agent {
                     message: e.to_string(),
                     identity,
                 });
+                // The provider dropped the answer after deltas had reached
+                // the caller. The transport was right not to send again,
+                // and nothing was pushed for the step, so the loop discards
+                // it and asks once more with a fresh request. Round the
+                // outer loop rather than this one, so the re-ask is a step
+                // like any other: it is counted, checked against
+                // `max_steps`, and cancellable. Bounded, because a provider
+                // that drops every stream is not going to stop.
+                if let Some(crate::streaming::InStreamError::Dropped { events, .. }) =
+                    e.downcast_ref::<crate::streaming::InStreamError>()
+                {
+                    if reasks < REASKS_PER_STEP {
+                        reasks += 1;
+                        eprintln!(
+                            "zorp-agent: the provider dropped the answer after {events} events; \
+                             asking again (re-ask {reasks} of {REASKS_PER_STEP})"
+                        );
+                        self.renderer
+                            .assistant_withdrawn(*events, reasks, REASKS_PER_STEP);
+                        step += 1;
+                        continue 'run;
+                    }
+                    break 'run Outcome::Error(
+                        format!(
+                            "{e}; this step was asked again {REASKS_PER_STEP} times \
+                             (REASKS_PER_STEP) and the provider dropped every one"
+                        )
+                        .into(),
+                    );
+                }
                 let Some(stated) = stated_window(&e.to_string()) else {
                     break 'run Outcome::Error(e);
                 };
@@ -872,6 +921,8 @@ impl Agent {
             };
             let msg = completion.message;
             let telemetry = completion.telemetry;
+            // The reply landed, so the next step starts with its own budget.
+            reasks = 0;
 
             let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
             self.trace(|seq, identity| TraceEvent::Turn {
