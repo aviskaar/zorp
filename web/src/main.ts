@@ -47,6 +47,7 @@ import {
 } from "./onboarding";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
+import { callLine, toolLine } from "./activity-line";
 import {
   needsText,
   producedSince,
@@ -1529,18 +1530,24 @@ function answerControls(text: string): HTMLElement {
   );
 }
 
-/** The CLI's shape: a bullet, the tool name, then the summary. */
+/**
+ * The CLI's shape: a bullet, the tool name, then the result. The line and
+ * the brief of the command on it are built in `src/activity-line.ts`, and
+ * the full command sits under the line for a click. The approval card is
+ * deliberately not this: what a person approves is shown whole.
+ */
 function activityLine(name: string, summary: string): HTMLElement {
-  const line = el("div", "activity-line");
-  line.append(bullet(), mono("activity-name", name), mono("activity-summary", summary));
-  return line;
+  return toolLine(document, name, summary);
 }
 
 function verifyLine(command: string, passed: boolean): HTMLElement {
-  const line = el("div", "activity-line");
-  const verdict = mono(passed ? "activity-pass" : "activity-fail", passed ? "passed" : "failed");
-  line.append(bullet(), mono("activity-name", "verify"), mono("activity-summary", command), verdict);
-  return line;
+  return callLine(
+    document,
+    "verify",
+    command,
+    passed ? "passed" : "failed",
+    passed ? "activity-pass" : "activity-fail",
+  );
 }
 
 function noticeLine(text: string): HTMLElement {
@@ -2814,10 +2821,6 @@ function textNode(tag: string, className: string, text: string): HTMLElement {
 
 function mono(className: string, text: string): HTMLElement {
   return textNode("span", className, text);
-}
-
-function bullet(): HTMLElement {
-  return mono("activity-bullet", "●");
 }
 
 /** Two inline icons, drawn rather than pulled from an icon font. */
