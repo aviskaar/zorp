@@ -214,6 +214,8 @@ export interface ToolEvent {
   type: "tool";
   name: string;
   summary: string;
+  /** The model's own description of the call, when it gave one; model-authored, display only. */
+  phrase?: string;
 }
 
 /** A verification command ran and either passed or failed. */

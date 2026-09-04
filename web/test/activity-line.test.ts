@@ -3,8 +3,9 @@
  *
  * The injection cases come first, for the reason `markdown.test.ts` gives:
  * the command on the line is model output, and a line that turned any of it
- * into markup would be a cross-site scripting hole. The phrase is derived
- * from the same text and gets the same treatment.
+ * into markup would be a cross-site scripting hole. The phrase is either
+ * the model's own words or derived from the same text, and gets the same
+ * treatment.
  *
  * The layout cases are structural. jsdom does not lay anything out, so the
  * wrapping fix is pinned by the shape of the DOM and by reading the rule
@@ -17,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
-import { BRIEF_MAX, callLine, describeCommand, splitCall, toolLine } from "../src/activity-line.ts";
+import { BRIEF_MAX, callLine, clampPhrase, describeCommand, splitCall, toolLine } from "../src/activity-line.ts";
 
 const dom = new JSDOM("<!doctype html><body></body>");
 const doc = dom.window.document;
@@ -209,4 +210,85 @@ test("the phrase is capped", () => {
 test("an empty command is an empty phrase", () => {
   assert.equal(describeCommand(""), "");
   assert.equal(describeCommand("   "), "");
+});
+
+/* the model's own phrase */
+
+const MODEL_TITLE = "The model's own description of this call. Click to see the command that ran.";
+
+function described(name: string, phrase: string | null | undefined, status = "exited 0"): HTMLElement {
+  const node = toolLine(doc as unknown as Document, name, status, phrase);
+  doc.body.append(node);
+  return node;
+}
+
+test("a phrase the model gave is drawn as model text, with the command still whole under the line", () => {
+  const command = "cd web && ls -la src | head -3; printf '%s' \"<b>\"";
+  const node = described(`run_command(${command})`, "Looking at the web sources");
+  const brief = node.querySelector(".activity-brief") as HTMLElement;
+  assert.equal(brief.textContent, "Looking at the web sources");
+  assert.ok(brief.classList.contains("activity-brief-model"));
+  assert.equal(brief.title, MODEL_TITLE);
+  assert.equal(node.querySelectorAll(".activity-name").length, 0);
+  assert.equal(node.querySelector(".activity-status")?.textContent, "exited 0");
+  assert.equal(node.querySelector(".activity-full code")?.textContent, command);
+  assert.match(rule(".activity-brief-model"), /font-style:\s*italic/);
+});
+
+test("markup in the phrase is text, not elements", () => {
+  const phrase = "<b>x</b><script>alert(1)</script>";
+  const node = described("run_command(ls)", phrase);
+  assert.equal(node.querySelectorAll("b, script").length, 0);
+  assert.equal(node.querySelector(".activity-brief")?.textContent, phrase);
+});
+
+test("a missing, empty or blank phrase falls back to the phrase from the command", () => {
+  for (const phrase of [undefined, null, "", "   ", "\n\n", '""', "**", "\u200B"]) {
+    const node = described("run_command(ls web/src)", phrase);
+    const brief = node.querySelector(".activity-brief") as HTMLElement;
+    assert.equal(brief.textContent, "Listing files in web/src", JSON.stringify(phrase));
+    assert.ok(!brief.classList.contains("activity-brief-model"));
+    assert.equal(brief.title, "");
+  }
+});
+
+test("a phrase keeps only its first line", () => {
+  assert.equal(clampPhrase("Listing files\nrm -rf /"), "Listing files");
+  assert.equal(clampPhrase("Listing files\r\nsecond"), "Listing files");
+  assert.equal(clampPhrase("Listing files\u2028second"), "Listing files");
+  assert.equal(clampPhrase("Listing files\u0085second"), "Listing files");
+  const node = described("run_command(ls)", "Listing files\nrm -rf /");
+  assert.equal(node.querySelector(".activity-brief")?.textContent, "Listing files");
+});
+
+test("control, invisible and bidirectional characters are gone from the phrase", () => {
+  assert.equal(clampPhrase("\u202EListing\u0000 files\u200B\u2066 here\u001B\uFEFF"), "Listing files here");
+  const node = described("run_command(ls)", "\u202Eexited 0 sl\u202C");
+  assert.equal(node.querySelector(".activity-brief")?.textContent, "exited 0 sl");
+});
+
+test("whitespace collapses and wrapping quotes and marks are trimmed", () => {
+  assert.equal(clampPhrase('  "Listing   files"  '), "Listing files");
+  assert.equal(clampPhrase("**Listing files**"), "Listing files");
+  assert.equal(clampPhrase("`Listing files`"), "Listing files");
+  assert.equal(clampPhrase("# Listing files"), "Listing files");
+  assert.equal(clampPhrase("Listing 'web/src' files"), "Listing 'web/src' files");
+});
+
+test("a phrase over the cap ends in an ellipsis", () => {
+  const phrase = clampPhrase("x".repeat(300));
+  assert.equal(phrase?.length, BRIEF_MAX);
+  assert.ok(phrase?.endsWith("…"));
+  const node = described("run_command(ls)", "y".repeat(300));
+  const drawn = node.querySelector(".activity-brief")?.textContent ?? "";
+  assert.equal(drawn.length, BRIEF_MAX);
+  assert.ok(drawn.endsWith("…"));
+});
+
+test("a call without a command ignores the phrase and renders as before", () => {
+  const node = described("write_file", "Writing the report", "created a.html (12 lines)");
+  assert.equal(node.tagName, "DIV");
+  assert.equal(node.querySelectorAll(".activity-brief, details, pre").length, 0);
+  assert.equal(node.querySelector(".activity-name")?.textContent, "write_file");
+  assert.equal(node.textContent, "●write_file created a.html (12 lines)");
 });

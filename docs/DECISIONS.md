@@ -12,35 +12,41 @@ was believed at the time and not only what survived.
 
 ---
 
-## 2026-09-04: the tool line reads as a plain phrase, computed in code
+## 2026-09-04: the tool line reads as the model's own phrase for its call, clamped in code
 
 **Finding:** the transcript's tool line showed a shell brief, the program
-and its first few arguments, as in `run_command ls web/src …`. A person
-reading a turn does not want the command back at them in shorter form.
-They want to know what the agent was doing: listing files, running the
-tests, converting a document. The brief was already computed in code and
-the full command already sat one click under the line, so the only open
-question was where the words come from.
+and its first few arguments, as in `run_command ls web/src …`, and that
+was noise to a person reading a turn. They want to know what the agent
+was doing: listing files, running the tests, converting a document. The
+first fix was a table of verbs keyed by program and subcommand, computed
+in code, and a table cannot cover what a model can type: every script,
+every program the table does not know and every pipeline read as
+`Running x`. A second model call per tool call, asked afterwards to
+describe what just ran, was considered and rejected. It costs a call per
+tool use, and on a local model it contends with the turn itself for the
+same hardware.
 
-**Decision:** `web/src/activity-line.ts` draws a phrase such as "Listing
-files in web/src", "Running tests" or "Converting in.html". It is a
-lookup on the program's basename and its first subcommand, plus the first
-positional argument when the verb takes one. That table is the whole
-mechanism. A program it does not know reads as `Running <program>` with
-its first argument, and a pipeline or list after the first command leaves
-a trailing ellipsis so the line never reads as the whole thing. The tool
-name is dropped from a line that has a phrase, because `run_command`
-beside a sentence is noise; a call with no command, and the `verify`
-line, keep it. The verbatim command stays under the line in a closed
-`details`, and everything goes through `textContent`.
+**Decision:** `run_command` and `start_background_process` take an
+optional `description` argument next to `command`, and the model writes
+it in the same call it is already making. The agent hands it to the
+renderer through `Renderer::tool_described`, which defaults to `tool`;
+the terminal renderer keeps that default, so the CLI's output is byte
+for byte what it was. zorp-web puts it on the `tool` event as `phrase`,
+absent when there is none, and the browser draws it clamped in code,
+one line with control and bidirectional characters stripped and capped
+at `BRIEF_MAX`, in italics and labelled as the model's own description
+of the call. A call with no description gets the code-derived phrase
+from the table in `web/src/activity-line.ts`, which stays as the
+fallback. `RepeatGuard` fingerprints a call without its `description`,
+so a fresh sentence over the same command cannot hide a repeated call.
 
-**Why:** no model is asked to describe the call. A description a model
-wrote would be one more model authored line in a transcript that is a
-record of what ran, and it would cost a call per tool use. The table
-will be wrong for exotic invocations, and the fix for a wrong phrase is a
-row in the table, never a model call. The full command stays on the page
-because a person must always be able to see exactly what ran, not a
-summary of it.
+**Why:** no extra call. The phrase travels with the call it describes
+and sits in the transcript as part of that call's arguments, which are
+already the model's own words, so the record gains no new model
+authored line. Beyond that it is display only: nothing reads it, the
+tool ignores it when it runs, and no other tool sees it. And it can be
+wrong, which is why the verbatim command stays one click under the line
+and the approval card still shows the arguments whole.
 
 ---
 

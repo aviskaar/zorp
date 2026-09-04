@@ -1238,7 +1238,7 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool":
-      appendActivity(activityLine(event.name, event.summary));
+      appendActivity(activityLine(event.name, event.summary, event.phrase));
       // A tool ran, so the workspace may have changed. The name and summary
       // are not read for a path: what got written is a question for the
       // directory, not for the tool that claims to have written it.
@@ -1543,12 +1543,14 @@ function answerControls(text: string): HTMLElement {
 
 /**
  * The CLI's shape: a bullet, the tool name, then the result. The line and
- * the brief of the command on it are built in `src/activity-line.ts`, and
- * the full command sits under the line for a click. The approval card is
- * deliberately not this: what a person approves is shown whole.
+ * the phrase on it are built in `src/activity-line.ts`: the model's own
+ * description of the call when it gave one, else a phrase computed from
+ * the command, and the full command sits under the line for a click. The
+ * approval card is deliberately not this: what a person approves is shown
+ * whole.
  */
-function activityLine(name: string, summary: string): HTMLElement {
-  return toolLine(document, name, summary);
+function activityLine(name: string, summary: string, phrase?: string): HTMLElement {
+  return toolLine(document, name, summary, phrase);
 }
 
 function verifyLine(command: string, passed: boolean): HTMLElement {

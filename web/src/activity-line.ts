@@ -2,29 +2,33 @@
  * One tool call in the transcript.
  *
  * The server names a call as `run_command(<command>)` and follows it with a
- * short result such as `exited 0`. This draws that as a bullet, a plain
- * phrase saying what the command does, and the result, with the full
- * command one click away under the line. A call that carries no command,
- * `write_file` or `read_file`, keeps its tool name on the line, and so does
- * a `verify` line, since there the name is the point.
+ * short result such as `exited 0`. This draws that as a bullet, a phrase
+ * saying what the command does, and the result, with the full command one
+ * click away under the line. A call that carries no command, `write_file`
+ * or `read_file`, keeps its tool name on the line, and so does a `verify`
+ * line, since there the name is the point.
  *
- * The phrase is computed here, in code, from the command text: a lookup on
- * the program name and its first subcommand, plus the first positional
- * argument. No model is asked to describe the call, because the description
- * would then be one more model authored line in a transcript that is meant
- * to be a record of what ran. The full command stays on the page for the
- * same reason: a person must always be able to see exactly what ran, not a
- * summary of it. A program the table does not know reads as `Running
- * <program>`; the fix for a wrong phrase is a row in the table.
+ * The phrase on the line is the model's own description of its call, given
+ * in the call's `description` argument next to the command, drawn through
+ * `textContent` and labelled as model text. When the model gave none, the
+ * phrase is computed here, in code, from the command: a lookup on the
+ * program name and its first subcommand, plus the first positional
+ * argument, in the table below. Either way the verbatim command stays one
+ * click under the line, because a person must always be able to see
+ * exactly what ran, and a description can be wrong.
  *
  * Everything here goes through `textContent`. The command came from a model
- * that has been reading tool results and web pages, and a phrase derived
- * from it is the same untrusted text in a shorter form. Neither is markup
- * and neither can become markup.
+ * that has been reading tool results and web pages, the description is that
+ * model's words, and a phrase derived from the command is the same untrusted
+ * text in a shorter form. None of it is markup and none of it can become
+ * markup.
  */
 
 /** Longest phrase drawn on the line, in characters. */
 export const BRIEF_MAX = 80;
+
+/** What hovering the model's phrase says it is. */
+const MODEL_PHRASE_TITLE = "The model's own description of this call. Click to see the command that ran.";
 
 /** The command the model asked for, when the server put it in the name. */
 export interface ToolCall {
@@ -170,6 +174,25 @@ export function describeCommand(command: string): string {
 }
 
 /**
+ * The model's description of its call, made fit for one line: its first
+ * line only, with control, invisible and bidirectional characters gone,
+ * whitespace collapsed, wrapping quotes and markdown marks trimmed, and
+ * capped at `BRIEF_MAX`. `null` when nothing is left, so the caller falls
+ * back to the phrase computed from the command.
+ */
+export function clampPhrase(raw: string | null | undefined): string | null {
+  if (!raw) {
+    return null;
+  }
+  const phrase = raw
+    .split(/[\n\r\u0085\u2028\u2029]/, 1)[0]
+    .replace(/[\p{Cc}\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/gu, "")
+    .replace(/\s+/g, " ")
+    .replace(/^["'`*#\s]+|["'`*#\s]+$/g, "");
+  return phrase ? cap(phrase) : null;
+}
+
+/**
  * Put the object into the phrase. Without one, the slot goes, and so does
  * the joining word in front of it: "Listing files in {}" is "Listing files".
  */
@@ -256,11 +279,12 @@ function text(doc: Document, tag: string, className: string, value: string): HTM
 
 /**
  * The line for a tool event: `name` as the server sent it, `status` as the
- * result text that follows it.
+ * result text that follows it, `phrase` as the model's own description of
+ * the call when the event carried one.
  */
-export function toolLine(doc: Document, name: string, status: string): HTMLElement {
+export function toolLine(doc: Document, name: string, status: string, phrase?: string | null): HTMLElement {
   const { tool, command } = splitCall(name);
-  return callLine(doc, tool, command, status);
+  return callLine(doc, tool, command, status, "", phrase);
 }
 
 /**
@@ -268,6 +292,11 @@ export function toolLine(doc: Document, name: string, status: string): HTMLEleme
  * as one piece that never breaks in the middle. The tool name is drawn
  * when there is no command to describe, and on a `verify` line, where it
  * says what the line is; beside a sentence, `run_command` is noise.
+ *
+ * The phrase is the model's own, clamped, when it gave one, and then the
+ * span says so in its class and its title; otherwise it is computed from
+ * the command. A call with no command has nothing to describe, and a
+ * phrase given for one is ignored.
  *
  * With a command the line is the summary of a closed `details` element
  * whose body is the full command, verbatim. Without one there is nothing
@@ -280,13 +309,21 @@ export function callLine(
   command: string | null,
   status: string,
   statusClass = "",
+  phrase?: string | null,
 ): HTMLElement {
   const spans: HTMLElement[] = [];
   if (command === null || !SHELL_TOOLS.has(tool)) {
     spans.push(text(doc, "span", "activity-name", tool));
   }
   if (command !== null) {
-    spans.push(text(doc, "span", "activity-brief", describeCommand(command)));
+    const own = clampPhrase(phrase);
+    if (own === null) {
+      spans.push(text(doc, "span", "activity-brief", describeCommand(command)));
+    } else {
+      const brief = text(doc, "span", "activity-brief activity-brief-model", own);
+      brief.title = MODEL_PHRASE_TITLE;
+      spans.push(brief);
+    }
   }
   if (status) {
     const className = statusClass ? `activity-status ${statusClass}` : "activity-status";
