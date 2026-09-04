@@ -286,7 +286,11 @@ resulting artifact, deliver it in the right form.
   code table computes from the command. The verbatim command stays one
   click under the line, because a description can be wrong.
   `RepeatGuard` fingerprints a call without its `description`, so wording
-  cannot hide a repeat. Run `cargo test --workspace` and the three `web/`
+  cannot hide a repeat. The phrase survives reopen because it is in the
+  stored call's arguments, and `get_session` replays stored tool calls as
+  `tool` entries with a status derived from the stored result in code.
+  Recall and memory never read `tool_calls`, which is what keeps it out
+  of the evidence. Run `cargo test --workspace` and the three `web/`
   commands whenever it changes. See `docs/DECISIONS.md` (2026-09-04).
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic

@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
 import { BRIEF_MAX, callLine, clampPhrase, describeCommand, splitCall, toolLine } from "../src/activity-line.ts";
+import type { Message } from "../src/api.ts";
 
 const dom = new JSDOM("<!doctype html><body></body>");
 const doc = dom.window.document;
@@ -291,4 +292,43 @@ test("a call without a command ignores the phrase and renders as before", () => 
   assert.equal(node.querySelectorAll(".activity-brief, details, pre").length, 0);
   assert.equal(node.querySelector(".activity-name")?.textContent, "write_file");
   assert.equal(node.textContent, "●write_file created a.html (12 lines)");
+});
+
+/* a reopened session */
+
+/**
+ * `GET /api/sessions/:id` replays a stored tool call as a `tool` entry, and
+ * `openSession` hands it to `toolLine` exactly as it hands the live event:
+ * the name, the status, and the phrase when the model gave one. The entry is
+ * the `tool` member of the `Message` union in `src/api.ts`, so a change to
+ * that shape fails to type check here.
+ */
+function stored(entry: Extract<Message, { role: "tool" }>): HTMLElement {
+  const node = toolLine(doc as unknown as Document, entry.name, entry.summary, entry.phrase);
+  doc.body.append(node);
+  return node;
+}
+
+test("a stored call with a phrase draws the model's words, with the command under the line", () => {
+  const node = stored({
+    role: "tool",
+    name: "run_command(ls web/src)",
+    summary: "exited 0",
+    phrase: "Listing files in web/src",
+  });
+  const brief = node.querySelector(".activity-brief") as HTMLElement;
+  assert.equal(brief.textContent, "Listing files in web/src");
+  assert.ok(brief.classList.contains("activity-brief-model"));
+  assert.equal(brief.title, MODEL_TITLE);
+  assert.equal(node.querySelector(".activity-status")?.textContent, "exited 0");
+  assert.equal(node.querySelector(".activity-full code")?.textContent, "ls web/src");
+});
+
+test("a stored call without a phrase gets the phrase computed from its command, and no status when none was derived", () => {
+  const node = stored({ role: "tool", name: "run_command(ls web/src)", summary: "" });
+  const brief = node.querySelector(".activity-brief") as HTMLElement;
+  assert.equal(brief.textContent, "Listing files in web/src");
+  assert.ok(!brief.classList.contains("activity-brief-model"));
+  assert.equal(node.querySelectorAll(".activity-status").length, 0);
+  assert.equal(node.querySelector(".activity-full code")?.textContent, "ls web/src");
 });

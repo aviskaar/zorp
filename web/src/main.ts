@@ -2071,8 +2071,15 @@ async function openSession(session: SessionSummary): Promise<void> {
     if (!transcript.messages.length) {
       showEmptyState();
     } else {
+      // A stored call is drawn as the live tool event is. Consecutive lines
+      // share one group, and `appendMessage` starts a new one, so a call, an
+      // answer and another call land in two groups, the same as live.
       transcript.messages.forEach((message: Message) => {
-        appendMessage(message.role === "user" ? "user" : "assistant", message.content);
+        if (message.role === "tool") {
+          appendActivity(activityLine(message.name, message.summary, message.phrase));
+        } else {
+          appendMessage(message.role, message.content);
+        }
       });
     }
   } catch (error) {

@@ -1136,26 +1136,11 @@ impl Agent {
                     });
                     self.trace_emitted_changes += 1;
                 }
-                let display_name = match call.arguments.get("command").and_then(|v| v.as_str()) {
-                    Some(cmd)
-                        if matches!(
-                            call.name.as_str(),
-                            "run_command" | "start_background_process"
-                        ) =>
-                    {
-                        format!("{}({cmd})", call.name)
-                    }
-                    _ => call.name.clone(),
-                };
-                let description = match call.name.as_str() {
-                    "run_command" | "start_background_process" => call
-                        .arguments
-                        .get("description")
-                        .and_then(serde_json::Value::as_str),
-                    _ => None,
-                };
-                self.renderer
-                    .tool_described(&display_name, &out.summary, description);
+                self.renderer.tool_described(
+                    &call.display_name(),
+                    &out.summary,
+                    call.description(),
+                );
 
                 #[cfg(feature = "otel")]
                 {

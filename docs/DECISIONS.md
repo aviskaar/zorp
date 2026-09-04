@@ -40,6 +40,15 @@ from the table in `web/src/activity-line.ts`, which stays as the
 fallback. `RepeatGuard` fingerprints a call without its `description`,
 so a fresh sentence over the same command cannot hide a repeated call.
 
+A reopened session draws the same lines from the store. The call and its
+`description` are already in `messages.tool_calls`, and the result's
+status is derived back from the stored content in code by
+`summary_from_content`, so `get_session` replays each stored call as a
+`tool` entry in its stored order and the browser hands it to the same
+`toolLine`. No new column and nothing new written. The recall index and
+the memory block read message text and never `tool_calls`, which is what
+keeps the phrase out of the evidence.
+
 **Why:** no extra call. The phrase travels with the call it describes
 and sits in the transcript as part of that call's arguments, which are
 already the model's own words, so the record gains no new model

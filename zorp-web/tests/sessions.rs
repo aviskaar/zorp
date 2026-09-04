@@ -1,10 +1,11 @@
 //! What `GET /api/sessions/:id` hands the browser to rebuild a transcript.
 //!
-//! The endpoint's contract is a role and the text of each turn. A turn where
-//! the model only called a tool has no text, and the browser has nothing to
-//! draw for it: tool activity reaches the page as its own event kind, not as
-//! a message. So a content-free row is not a message the transcript is
-//! missing detail for, it is not a message at all.
+//! The endpoint's contract is a role and the text of each turn, plus one
+//! `tool` entry per stored tool call in the order it was made, which the
+//! browser draws as the activity line the live turn showed. A turn where the
+//! model only called a tool has no text, and a content-free row is not a
+//! message the transcript is missing detail for, it is not a message at all.
+//! What that turn carries is its call, and the call is what gets replayed.
 
 mod common;
 use common::{mock_script, EventStream};
@@ -134,7 +135,9 @@ async fn a_tool_only_turn_is_left_out_of_the_replay() {
 
 /// The other half of the same rule: dropping the content-free rows must not
 /// turn into dropping the conversation. A filter that returns nothing passes
-/// the test above and fails this one.
+/// the test above and fails this one. The tool-only turn's call sits between
+/// the ask and the answer as a `tool` entry: its bare name, since it is not a
+/// shell call, no status, since none is derived for it, and no `phrase` key.
 #[tokio::test]
 async fn the_replay_still_carries_both_sides_of_the_conversation() {
     let _env = ENV.lock().await;
@@ -147,11 +150,19 @@ async fn the_replay_still_carries_both_sides_of_the_conversation() {
     let body = get_json(format!("http://{addr}/api/sessions/{id}")).await;
     let messages = body["messages"].as_array().unwrap();
 
-    assert_eq!(messages.len(), 2, "expected the ask and the answer: {body}");
+    assert_eq!(
+        messages.len(),
+        3,
+        "expected the ask, the call and the answer: {body}"
+    );
     assert_eq!(messages[0]["role"], "user");
     assert_eq!(messages[0]["content"], "write hello.txt");
-    assert_eq!(messages[1]["role"], "assistant");
-    assert_eq!(messages[1]["content"], "Done.");
+    assert_eq!(messages[1]["role"], "tool");
+    assert_eq!(messages[1]["name"], "write_file");
+    assert_eq!(messages[1]["summary"], "");
+    assert!(messages[1].get("phrase").is_none(), "{body}");
+    assert_eq!(messages[2]["role"], "assistant");
+    assert_eq!(messages[2]["content"], "Done.");
 }
 
 /// What the sidebar shows, and what it shows when nothing named a session.

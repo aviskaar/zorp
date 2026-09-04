@@ -9,6 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
@@ -224,25 +225,57 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match store.load_messages(&id) {
-        Ok(messages) => {
-            let out: Vec<serde_json::Value> = messages
-                .iter()
-                .filter(|m| m.role == "user" || m.role == "assistant")
-                // Message content is structured to carry images; the browser
-                // transcript wants the text of each turn.
-                .map(|m| (&m.role, m.text()))
-                // A turn where the model only called a tool has no text. The
-                // browser draws tool activity from its own event kind, so
-                // there is nothing here for it to render, and sending the row
-                // anyway put a labelled bubble with an empty body into the
-                // transcript every time the session was reopened.
-                .filter(|(_, text)| !text.trim().is_empty())
-                .map(|(role, text)| json!({"role": role, "content": text}))
-                .collect();
-            Json(json!({"messages": out})).into_response()
-        }
+        Ok(messages) => Json(json!({"messages": transcript(&messages)})).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
+}
+
+/// What the browser rebuilds a reopened transcript from, in stored order.
+///
+/// Each side's text is an entry, as it always was. A turn where the model
+/// only called a tool has no text, and sending the row anyway put a
+/// labelled bubble with an empty body into the transcript every time the
+/// session was reopened, so empty text is still dropped. What such a turn
+/// does carry is its calls, and each one becomes a `tool` entry after the
+/// turn's text: the name the live line showed, the model's own
+/// `description` as `phrase` when it gave one and no key when it did not,
+/// and the status derived back from the stored result in code. All of it
+/// is the call's own arguments and its result, already in the store, so a
+/// reopened session draws the activity lines the live turn did and nothing
+/// new is written for it. A `tool` message is never an entry of its own; it
+/// only supplies a status, and a call whose result never got stored has an
+/// empty one.
+fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
+    let results: HashMap<&str, &zorp_agent::Message> = messages
+        .iter()
+        .filter(|m| m.role == "tool")
+        .filter_map(|m| Some((m.tool_call_id.as_deref()?, m)))
+        .collect();
+    let mut out = Vec::new();
+    for m in messages {
+        if m.role != "user" && m.role != "assistant" {
+            continue;
+        }
+        // Message content is structured to carry images; the browser
+        // transcript wants the text of each turn.
+        let text = m.text();
+        if !text.trim().is_empty() {
+            out.push(json!({"role": &m.role, "content": text}));
+        }
+        for call in &m.tool_calls {
+            let summary = results
+                .get(call.id.as_str())
+                .and_then(|result| zorp_agent::summary_from_content(&call.name, &result.text()))
+                .unwrap_or_default();
+            let mut entry =
+                json!({"role": "tool", "name": call.display_name(), "summary": summary});
+            if let Some(phrase) = call.description() {
+                entry["phrase"] = json!(phrase);
+            }
+            out.push(entry);
+        }
+    }
+    out
 }
 
 /// Delete a conversation: its messages, its recorded file changes, and the
@@ -1258,4 +1291,131 @@ fn recall_failure(e: crate::recall::RecallError) -> (StatusCode, String) {
         RecallError::Index(_) | RecallError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (status, e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transcript;
+    use serde_json::json;
+    use zorp_agent::{Message, ToolCall};
+
+    fn call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    /// What `run_command` stores for a command that exited 0 with one line
+    /// of output: `CommandOutput::render`.
+    const LS: &str =
+        "exit_status: 0\ntimed_out: false\ncancelled: false\nstdout:\nmain.ts\n\nstderr:\n";
+
+    /// The ask, what the model said before calling, the call, and the
+    /// answer come back in that order, and the tool entry carries the live
+    /// line's name, the model's phrase and the status derived from the
+    /// stored result.
+    #[test]
+    fn a_described_shell_call_replays_as_a_tool_entry_in_stored_order() {
+        let messages = vec![
+            Message::system("you are zorp"),
+            Message::user("what is in web/src"),
+            Message::assistant_with_calls(
+                "Let me look.",
+                vec![call(
+                    "c1",
+                    "run_command",
+                    json!({"command": "ls web/src", "description": "Listing files in web/src"}),
+                )],
+            ),
+            Message::tool_result("c1", LS),
+            Message::assistant("One file: main.ts."),
+        ];
+        assert_eq!(
+            transcript(&messages),
+            vec![
+                json!({"role": "user", "content": "what is in web/src"}),
+                json!({"role": "assistant", "content": "Let me look."}),
+                json!({
+                    "role": "tool",
+                    "name": "run_command(ls web/src)",
+                    "summary": "exited 0",
+                    "phrase": "Listing files in web/src"
+                }),
+                json!({"role": "assistant", "content": "One file: main.ts."}),
+            ]
+        );
+    }
+
+    /// A call the model did not describe has no `phrase` key at all, not a
+    /// null; a `read_file` call is its bare name with no status, because
+    /// none is derived for it, and its `description` is not read.
+    #[test]
+    fn an_undescribed_call_has_no_phrase_key_and_a_read_file_is_its_bare_name() {
+        let messages = vec![
+            Message::user("look"),
+            Message::assistant_with_calls(
+                "",
+                vec![
+                    call("c1", "run_command", json!({"command": "ls"})),
+                    call(
+                        "c2",
+                        "read_file",
+                        json!({"path": "a.txt", "description": "Reading a.txt"}),
+                    ),
+                ],
+            ),
+            Message::tool_result("c1", LS),
+            Message::tool_result("c2", "hello"),
+        ];
+        let out = transcript(&messages);
+        assert_eq!(
+            out,
+            vec![
+                json!({"role": "user", "content": "look"}),
+                json!({"role": "tool", "name": "run_command(ls)", "summary": "exited 0"}),
+                json!({"role": "tool", "name": "read_file", "summary": ""}),
+            ]
+        );
+        assert!(!serde_json::to_string(&out).unwrap().contains("phrase"));
+    }
+
+    /// A call whose result never reached the store still replays, with an
+    /// empty status, and the `tool` row is never an entry of its own.
+    #[test]
+    fn a_call_with_no_stored_result_gets_an_empty_summary() {
+        let messages = vec![
+            Message::user("go"),
+            Message::assistant_with_calls(
+                "",
+                vec![call("c1", "run_command", json!({"command": "ls"}))],
+            ),
+            Message::tool_result("stray", LS),
+        ];
+        assert_eq!(
+            transcript(&messages),
+            vec![
+                json!({"role": "user", "content": "go"}),
+                json!({"role": "tool", "name": "run_command(ls)", "summary": ""}),
+            ]
+        );
+    }
+
+    /// A session with no tool calls serializes byte for byte as it did
+    /// before tool entries existed, so a browser that predates them reads
+    /// the same body.
+    #[test]
+    fn a_session_without_tool_calls_is_byte_for_byte_what_it_was() {
+        let messages = vec![
+            Message::system("you are zorp"),
+            Message::user("hi"),
+            Message::assistant("hello"),
+        ];
+        let body = serde_json::to_string(&json!({"messages": transcript(&messages)})).unwrap();
+        assert_eq!(
+            body,
+            r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]}"#
+        );
+    }
 }
