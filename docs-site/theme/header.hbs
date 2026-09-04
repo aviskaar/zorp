@@ -6,7 +6,9 @@
   It exists because docs.zorp.dev is a different origin with a different
   generator, and a reader who followed the Docs link off zorp.dev had no link
   back. The site's own header stops at the origin boundary; this is the half
-  that carries across it. Absolute URLs for the same reason.
+  that carries across it. Absolute URLs for the same reason. It sticks, so it is
+  still there 800 lines into the CLI reference; see zorp.css for what that costs
+  in overrides of mdBook's own sticky rules.
 --}}
 <div class="zorp-sitebar">
   {{!-- The wordmark is the way home, which is where it is on zorp.dev too.
