@@ -12,6 +12,38 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-09-04: the tool line reads as a plain phrase, computed in code
+
+**Finding:** the transcript's tool line showed a shell brief, the program
+and its first few arguments, as in `run_command ls web/src …`. A person
+reading a turn does not want the command back at them in shorter form.
+They want to know what the agent was doing: listing files, running the
+tests, converting a document. The brief was already computed in code and
+the full command already sat one click under the line, so the only open
+question was where the words come from.
+
+**Decision:** `web/src/activity-line.ts` draws a phrase such as "Listing
+files in web/src", "Running tests" or "Converting in.html". It is a
+lookup on the program's basename and its first subcommand, plus the first
+positional argument when the verb takes one. That table is the whole
+mechanism. A program it does not know reads as `Running <program>` with
+its first argument, and a pipeline or list after the first command leaves
+a trailing ellipsis so the line never reads as the whole thing. The tool
+name is dropped from a line that has a phrase, because `run_command`
+beside a sentence is noise; a call with no command, and the `verify`
+line, keep it. The verbatim command stays under the line in a closed
+`details`, and everything goes through `textContent`.
+
+**Why:** no model is asked to describe the call. A description a model
+wrote would be one more model authored line in a transcript that is a
+record of what ran, and it would cost a call per tool use. The table
+will be wrong for exotic invocations, and the fix for a wrong phrase is a
+row in the table, never a model call. The full command stays on the page
+because a person must always be able to see exactly what ran, not a
+summary of it.
+
+---
+
 ## 2026-09-04: a stream dropped after delivery is asked again by the loop and never re-sent by the transport
 
 **Finding:** on OpenRouter's free providers a stream sometimes dies after
