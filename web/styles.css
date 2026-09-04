@@ -1001,15 +1001,67 @@ button {
   flex: none;
 }
 
+/* The text beside the bullet is one flex item in inline flow, so a long
+   command wraps under itself inside the column and the status moves to the
+   next line as one piece. The name used to be its own item that never
+   shrank, which pushed the status off the right edge into a zero width slot
+   where it wrapped one character per line: a tall blank block under the
+   call, or `exit` over `ed 0` when the command was shorter. */
+.activity-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .activity-name {
   color: #cbd2dd;
   font-weight: 500;
-  flex: none;
 }
 
+.activity-brief {
+  color: var(--text-dim);
+}
+
+.activity-status {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+/* A notice has only this, so it fills the line. */
 .activity-summary {
   color: var(--text-faint);
   min-width: 0;
+}
+
+/* The line is the summary of a closed details; the body is the full
+   command, verbatim, so what ran is always one click away. */
+.activity-call > .activity-line {
+  list-style: none;
+  cursor: pointer;
+}
+
+.activity-call > .activity-line::-webkit-details-marker {
+  display: none;
+}
+
+.activity-call > .activity-line:hover .activity-brief {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.activity-full {
+  margin: 2px 0 8px 14px;
+  padding: 8px 10px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d5dae3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow-y: auto;
 }
 
 .activity-pass {
