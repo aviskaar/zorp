@@ -12,7 +12,7 @@ default.
 | `ZORP_API_KEY` | none | API key. Never written to disk by the web UI |
 | `ZORP_MODEL` | none | Model name |
 | `ZORP_HTTP_TIMEOUT_SECS` | 900 | Seconds of silence to wait for. On a streamed reply this bounds the gap between chunks, not the length of the answer |
-| `ZORP_RETRY_ATTEMPTS` | 4 | Total sends for a request answered 429 or 503. Nothing else is retried |
+| `ZORP_RETRY_ATTEMPTS` | 4 | Total sends for a request answered 429, 502 or 503, on the status line or as an error object inside a 200 before anything reached the caller. Nothing else is retried |
 | `ZORP_RETRY_BUDGET_SECS` | 30 | Seconds of added waiting the retries may spend in total |
 | `ZORP_CONTEXT_TOKENS` | unset | Context window size. Unknown unless you say, on purpose |
 

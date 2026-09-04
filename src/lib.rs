@@ -148,28 +148,107 @@ pub fn http_agent() -> ureq::Agent {
 /// Statuses a request is ever sent a second time for, and what to call each
 /// one in a sentence a person will read.
 ///
-/// Both mean the same thing in different words: the provider did not take the
-/// request. Nothing was generated, nothing was charged, and what it is asking
-/// for is to be asked again shortly. 429 is the measured case. A 250 crate
-/// calibration run against OpenRouter's free tier threw away 25 of its first
-/// 48 attempts to one, every body saying "Please retry shortly", and an
-/// attempt is an agent loop of up to 40 model calls, so one 429 anywhere in
-/// it destroys the whole attempt and everything it had gathered.
+/// All three mean the same thing in different words: the provider did not
+/// take the request. Nothing was generated, nothing was charged, and what it
+/// is asking for is to be asked again shortly. 429 is the measured case. A
+/// 250 crate calibration run against OpenRouter's free tier threw away 25 of
+/// its first 48 attempts to one, every body saying "Please retry shortly",
+/// and an attempt is an agent loop of up to 40 model calls, so one 429
+/// anywhere in it destroys the whole attempt and everything it had gathered.
 ///
-/// 502 and 504 are the interesting omission and they are left out on purpose.
-/// Both mean the request was forwarded and something went wrong after that,
-/// so a second send can duplicate work an upstream may already have done and
-/// charged for, and it has no more reason to succeed than the first did. 400,
-/// 401 and 404 are left out for the plainer reason: they will not get better.
+/// 502 was left out at first, on the argument that a bad gateway means the
+/// request was forwarded and something went wrong after that, so a second
+/// send could duplicate work an upstream had already done. Then nine of nine
+/// benchmark trials died to one, delivered inside a 200 stream, whose own
+/// text was "Upstream error from Nvidia: Service temporarily overloaded" with
+/// an `error_type` of `provider_unavailable`. That is a 503 wearing a 502's
+/// number: the upstream refused the request rather than failing part way
+/// through it, and OpenRouter uses the code for exactly that. 504 stays out,
+/// because a gateway timeout means the upstream was working on it. 400, 401
+/// and 404 are left out for the plainer reason: they will not get better.
 /// Retrying them turns a misconfiguration into a slow misconfiguration, which
 /// reads like a network problem and costs somebody an afternoon.
 pub fn retry_reason(status: u16) -> Option<&'static str> {
     match status {
         429 => Some("rate limited"),
+        502 => Some("overloaded upstream"),
         503 => Some("unavailable"),
         _ => None,
     }
 }
+
+/// An error a provider put inside a body it sent with a 200.
+///
+/// OpenRouter answers an overloaded upstream with HTTP 200, a streaming body,
+/// and exactly one event: `"choices":[]` and an `error` object carrying a
+/// code and a message. Read as a chunk that is nothing, no delta and no
+/// finish_reason, so a stream made of it looked cut off and the sentence the
+/// provider wrote was thrown away. This is that object, read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderError {
+    /// The code, when the object carried a number. A provider that writes
+    /// `"code": 502` inside a 200 is saying what it would have said as a
+    /// status, and [`retry_reason`] reads it the same way.
+    pub code: Option<u16>,
+    /// What the provider said, verbatim.
+    pub message: String,
+}
+
+impl ProviderError {
+    /// The error object at the top of `body`, if there is one.
+    ///
+    /// `{"error": {...}}` and `{"error": "..."}` both count. Anything else,
+    /// `"error": null` included, is not an error.
+    pub fn in_body(body: &Value) -> Option<Self> {
+        let error = body.get("error")?;
+        let (code, message) = match error {
+            Value::String(text) => (None, text.clone()),
+            Value::Object(fields) => {
+                let code = fields
+                    .get("code")
+                    .and_then(|code| match code {
+                        Value::Number(n) => n.as_u64(),
+                        Value::String(s) => s.parse().ok(),
+                        _ => None,
+                    })
+                    .and_then(|n| u16::try_from(n).ok());
+                let message = fields
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| error.to_string());
+                (code, message)
+            }
+            _ => return None,
+        };
+        Some(Self { code, message })
+    }
+
+    /// The error object inside one SSE payload, if there is one.
+    ///
+    /// The substring check before the parse is not a micro-optimization worth
+    /// hiding: a long answer is thousands of content deltas and every one of
+    /// them is already parsed once by whoever accumulates it.
+    pub fn in_payload(payload: &str) -> Option<Self> {
+        if !payload.contains("\"error\"") {
+            return None;
+        }
+        Self::in_body(&serde_json::from_str(payload).ok()?)
+    }
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.code {
+            Some(code) => write!(f, "{code} {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
+}
+
+/// How an error the provider delivered inside a 200 stream is introduced.
+/// Public so the streaming path in `zorp-agent` says it in the same words.
+pub const IN_STREAM_ERROR: &str = "the provider reported an error inside the stream";
 
 /// How many times one request may be sent, counting the first, and the
 /// variable that overrides it. 1 turns retrying off.
@@ -320,9 +399,92 @@ fn jitter(span: Duration) -> Duration {
 /// the core has two dependencies and a date parser would be the largest thing
 /// in the crate, a missing header already has a sensible answer in the
 /// backoff, and the providers this talks to send the seconds form.
-fn retry_after(resp: &ureq::Response) -> Option<Duration> {
+///
+/// Public so a caller that reads a 200 body before finding out the provider
+/// refused can honour a header on that 200 the same way.
+pub fn retry_after(resp: &ureq::Response) -> Option<Duration> {
     let secs: u64 = resp.header("Retry-After")?.trim().parse().ok()?;
     Some(Duration::from_secs(secs))
+}
+
+/// One request's retrying: how many times it has been sent and what its
+/// waits have cost so far, against the policy in force.
+///
+/// Public because the streaming path has to carry it across a response. A
+/// provider refuses a request with a status, which [`send_json`] sees, or
+/// with an error object inside a 200 body, which only whoever reads the body
+/// sees, and both refusals count against one bound. With two counters a
+/// stream could be sent `attempts` times for each of `attempts` statuses.
+#[derive(Debug)]
+pub struct Retrying {
+    policy: RetryPolicy,
+    sent: u32,
+    waited: Duration,
+}
+
+impl Retrying {
+    /// Nothing sent yet, under the policy the environment names.
+    pub fn from_env() -> Self {
+        Self {
+            policy: RetryPolicy::from_env(),
+            sent: 0,
+            waited: Duration::ZERO,
+        }
+    }
+
+    /// The provider refused with `code` and, when it named one, asked for
+    /// `asked`. Wait and return true if the request should go again; false
+    /// if the code is not one that is retried or the bound is spent. `said`
+    /// is what the provider said, for the line on stderr.
+    ///
+    /// Loud, because a retry nobody can see is a run that got slower for no
+    /// stated reason. One line per retry on stderr, which is where everything
+    /// else in the workspace says this kind of thing and where a browser
+    /// session's server log already goes.
+    pub fn again(
+        &mut self,
+        url: &str,
+        code: u16,
+        asked: Option<Duration>,
+        said: &dyn std::fmt::Display,
+    ) -> bool {
+        let Some(why) = retry_reason(code) else {
+            return false;
+        };
+        let Some(wait) = self.policy.delay(self.sent, self.waited, asked) else {
+            return false;
+        };
+        eprintln!(
+            "zorp: {url}: {why} ({said}), waiting {:.1}s and sending again \
+             (try {} of {})",
+            wait.as_secs_f64(),
+            self.sent + 1,
+            self.policy.attempts
+        );
+        std::thread::sleep(wait);
+        self.waited += wait;
+        true
+    }
+
+    /// The tail of a give-up error for `code`: how many tries it took, how
+    /// long they waited and the two variables that bound it. Empty for a code
+    /// that is never retried, because then there was nothing to give up on.
+    ///
+    /// A run losing half its attempts to rate limiting should be able to say
+    /// that from one error line, rather than from somebody noticing a tally
+    /// later.
+    pub fn exhausted(&self, code: u16) -> String {
+        let Some(reason) = retry_reason(code) else {
+            return String::new();
+        };
+        format!(
+            " (still {reason} after {} {}, {:.1}s of waiting; \
+             {RETRY_ATTEMPTS_VAR} and {RETRY_BUDGET_VAR} bound this)",
+            self.sent,
+            if self.sent == 1 { "try" } else { "tries" },
+            self.waited.as_secs_f64(),
+        )
+    }
 }
 
 /// How much of a non-2xx response body gets included in the error message.
@@ -341,45 +503,39 @@ const ERROR_BODY_CAP: u64 = 8 * 1024;
 /// function, and a copy that has to be kept in step by hand is how the
 /// streaming path ended up without a timeout for as long as it did.
 ///
-/// Retrying stops here, before the response body exists, and that is the only
-/// place it can safely happen. Once bytes have been handed to a caller a
-/// second send would replay the start of one answer over the middle of
-/// another, so nothing above this line ever retries.
+/// Retrying on a status stops here, before the response body exists. A
+/// provider can also refuse inside a 200 body, and a caller that finds one
+/// there before handing anything up sends again through
+/// [`send_json_retrying`] with the same [`Retrying`], so the bound is one
+/// bound. Once bytes have been handed to a caller a second send would replay
+/// the start of one answer over the middle of another, so nothing retries
+/// past that point.
 pub fn send_json(req: ureq::Request, body: Value) -> Result<ureq::Response, BoxErr> {
-    let policy = RetryPolicy::from_env();
-    let mut sent = 0u32;
-    let mut waited = Duration::ZERO;
+    send_json_retrying(&req, &body, &mut Retrying::from_env())
+}
+
+/// [`send_json`] with the retry state held by the caller, for a caller that
+/// has to read the body before it knows whether the provider took the request.
+pub fn send_json_retrying(
+    req: &ureq::Request,
+    body: &Value,
+    retrying: &mut Retrying,
+) -> Result<ureq::Response, BoxErr> {
     loop {
-        sent += 1;
+        retrying.sent += 1;
         // The request is cloned rather than consumed because it may be sent
         // again: it is a URL, a method and a few headers, so the copy is
         // nothing. The body is passed by reference and never copied at all,
         // which matters because a body here is a whole conversation.
-        match req.clone().send_json(&body) {
+        match req.clone().send_json(body) {
             Ok(resp) => return Ok(resp),
             Err(ureq::Error::Status(code, resp)) => {
                 // Nothing to retry, or nothing left to retry with. Either way
                 // the caller gets the status and the body behind it.
-                let plan = retry_reason(code)
-                    .and_then(|why| Some((why, policy.delay(sent, waited, retry_after(&resp))?)));
-                let Some((why, wait)) = plan else {
-                    return Err(status_error(code, resp, sent, waited));
-                };
-                // Loud, because a retry nobody can see is a run that got
-                // slower for no stated reason. One line per retry on stderr,
-                // which is where everything else in the workspace says this
-                // kind of thing and where a browser session's server log
-                // already goes.
-                eprintln!(
-                    "zorp: {}: {why} (status code {code}), waiting {:.1}s and \
-                     sending again (try {} of {})",
-                    resp.get_url(),
-                    wait.as_secs_f64(),
-                    sent + 1,
-                    policy.attempts
-                );
-                std::thread::sleep(wait);
-                waited += wait;
+                let said = format!("status code {code}");
+                if !retrying.again(resp.get_url(), code, retry_after(&resp), &said) {
+                    return Err(status_error(code, resp, retrying));
+                }
             }
             Err(e) => return Err(transport_error(e)),
         }
@@ -422,11 +578,9 @@ fn error_chain_timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
 /// The error a status the provider will not take back becomes.
 ///
 /// The shape of the first half is unchanged, because other things match on
-/// it. What is new is the tail: a request that was sent more than once says
-/// so, in words that name what happened and the two variables that bound it.
-/// A run losing half its attempts to rate limiting should be able to say that
-/// from one error line, rather than from somebody noticing a tally later.
-fn status_error(code: u16, resp: ureq::Response, sent: u32, waited: Duration) -> BoxErr {
+/// it. The tail is [`Retrying::exhausted`]: a request that was sent more than
+/// once says so.
+fn status_error(code: u16, resp: ureq::Response, retrying: &Retrying) -> BoxErr {
     let url = resp.get_url().to_string();
     let mut bytes = Vec::new();
     use std::io::Read;
@@ -441,28 +595,44 @@ fn status_error(code: u16, resp: ureq::Response, sent: u32, waited: Duration) ->
     } else {
         format!("{url}: status code {code}: {text}")
     };
-    if let Some(reason) = retry_reason(code) {
-        message.push_str(&format!(
-            " (still {reason} after {sent} {}, {:.1}s of waiting; \
-             {RETRY_ATTEMPTS_VAR} and {RETRY_BUDGET_VAR} bound this)",
-            if sent == 1 { "try" } else { "tries" },
-            waited.as_secs_f64(),
-        ));
-    }
+    message.push_str(&retrying.exhausted(code));
     message.into()
 }
 
 /// Buffered primitive: POST an arbitrary JSON body to an arbitrary URL with
 /// arbitrary headers; return the full parsed response. No path/auth/shape opinions.
-/// A non-2xx status becomes an error that includes the response body.
+/// A non-2xx status becomes an error that includes the response body, and so
+/// does a 200 whose body is an error object: the provider said what happened
+/// and the caller gets those words, not "no choices in response".
 pub fn zorp_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
     let mut req = http_agent().post(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
-    let resp = send_json(req, body)?;
-    let value: Value = resp.into_json()?;
-    Ok(value)
+    let mut retrying = Retrying::from_env();
+    loop {
+        let resp = send_json_retrying(&req, &body, &mut retrying)?;
+        let asked = retry_after(&resp);
+        let value: Value = resp.into_json()?;
+        let Some(error) = ProviderError::in_body(&value) else {
+            return Ok(value);
+        };
+        // Nothing has reached the caller: the body was parsed whole and is
+        // about to be dropped, so sending again is as clean as it is for a
+        // status, and it is the same bound.
+        let said = format!("{error} inside a 200 body");
+        if error
+            .code
+            .is_some_and(|code| retrying.again(url, code, asked, &said))
+        {
+            continue;
+        }
+        let tail = error.code.map_or(String::new(), |c| retrying.exhausted(c));
+        return Err(format!(
+            "{url}: the provider reported an error inside a 200 response: {error}{tail}"
+        )
+        .into());
+    }
 }
 
 /// Read the four env knobs, applying defaults for base_url and model.
@@ -557,7 +727,7 @@ pub fn zorp_stream(
 
     if let Some(payload) = first.strip_prefix("data:") {
         // SSE path: process the first frame, then the rest.
-        handle_frame(payload.trim(), &mut acc, &mut on_delta);
+        handle_frame(payload.trim(), &mut acc, &mut on_delta)?;
         loop {
             line.clear();
             if reader.read_line(&mut line)? == 0 {
@@ -572,7 +742,7 @@ pub fn zorp_stream(
                 if payload == "[DONE]" {
                     break;
                 }
-                handle_frame(payload, &mut acc, &mut on_delta);
+                handle_frame(payload, &mut acc, &mut on_delta)?;
             }
         }
     } else {
@@ -596,13 +766,25 @@ pub fn zorp_stream(
     Ok(acc)
 }
 
-fn handle_frame(payload: &str, acc: &mut String, on_delta: &mut impl FnMut(&Value)) {
+/// One frame: a delta goes to the caller, an error object the provider put in
+/// the stream is named instead of dropped. Not retried here: this primitive
+/// is the one-shot CLI's, and `zorp-agent`'s `stream_sse` is the path that
+/// sends again.
+fn handle_frame(
+    payload: &str,
+    acc: &mut String,
+    on_delta: &mut impl FnMut(&Value),
+) -> Result<(), BoxErr> {
+    if let Some(error) = ProviderError::in_payload(payload) {
+        return Err(format!("{IN_STREAM_ERROR}: {error}").into());
+    }
     if let Some(delta) = parse_sse_delta(payload) {
         if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
             acc.push_str(t);
         }
         on_delta(&delta);
     }
+    Ok(())
 }
 
 /// Interactive env bootstrap: prompt (on `prompts`) for each knob, read answers
@@ -711,6 +893,76 @@ mod tests {
         assert!(parse_sse_delta(r#"{"choices":[{}]}"#).is_none());
     }
 
+    /// The event OpenRouter sent, verbatim, as the only event of a 200
+    /// stream, for nine of nine benchmark trials (ZOR-26). As a delta it is
+    /// nothing, which is how the provider's own sentence got thrown away.
+    const OVERLOADED: &str = r#"{"id":"gen-1788503823-rSnjToVnWKeIBMh0SRHz","object":"chat.completion.chunk","created":1788503823,"model":"nvidia/nemotron-3-ultra-550b-a55b:free","provider":"Nvidia","choices":[],"error":{"code":502,"message":"Upstream error from Nvidia: Service temporarily overloaded","metadata":{"error_type":"provider_unavailable"}}}"#;
+
+    #[test]
+    fn an_error_event_names_its_code_and_message() {
+        assert!(parse_sse_delta(OVERLOADED).is_none());
+        let error = ProviderError::in_payload(OVERLOADED).unwrap();
+        assert_eq!(error.code, Some(502));
+        assert_eq!(
+            error.to_string(),
+            "502 Upstream error from Nvidia: Service temporarily overloaded"
+        );
+        assert!(
+            retry_reason(502).is_some(),
+            "an overloaded upstream is a refusal, not a failure"
+        );
+    }
+
+    /// A code that is never retried is still named. The retry decision is
+    /// the caller's, made through `retry_reason`, not this parser's.
+    #[test]
+    fn an_error_event_with_a_code_that_is_never_retried_is_still_named() {
+        let error = ProviderError::in_payload(
+            r#"{"choices":[],"error":{"code":400,"message":"tool_choice is not supported"}}"#,
+        )
+        .unwrap();
+        assert_eq!(error.code, Some(400));
+        assert_eq!(error.to_string(), "400 tool_choice is not supported");
+        assert!(retry_reason(400).is_none());
+    }
+
+    /// The other shapes an error object arrives in, and the shapes that are
+    /// not one.
+    #[test]
+    fn error_object_shapes() {
+        // A string code that is a number is a number; one that is a word is
+        // not a status and the message carries the sense.
+        let coded =
+            ProviderError::in_body(&json!({"error": {"code": "429", "message": "slow down"}}));
+        assert_eq!(coded.unwrap().code, Some(429));
+        let worded = ProviderError::in_body(
+            &json!({"error": {"code": "invalid_api_key", "message": "bad key"}}),
+        )
+        .unwrap();
+        assert_eq!(worded.code, None);
+        assert_eq!(worded.to_string(), "bad key");
+        // A bare string is a message with no code.
+        let bare = ProviderError::in_body(&json!({"error": "model not found"})).unwrap();
+        assert_eq!(
+            (bare.code, bare.message.as_str()),
+            (None, "model not found")
+        );
+        // An object with no message is shown whole rather than as nothing.
+        let mute = ProviderError::in_body(&json!({"error": {"type": "overloaded"}})).unwrap();
+        assert!(mute.message.contains("overloaded"));
+        // Not errors: a delta, a null, the sentinel, junk, and content that
+        // happens to be the word.
+        assert!(
+            ProviderError::in_body(&json!({"choices": [{"delta": {"content": "hi"}}]})).is_none()
+        );
+        assert!(ProviderError::in_body(&json!({"error": null, "choices": []})).is_none());
+        assert!(ProviderError::in_payload("[DONE]").is_none());
+        assert!(ProviderError::in_payload("not json").is_none());
+        assert!(
+            ProviderError::in_payload(r#"{"choices":[{"delta":{"content":"error"}}]}"#).is_none()
+        );
+    }
+
     #[test]
     fn init_exports_skips_blanks() {
         use std::io::Cursor;
@@ -753,8 +1005,9 @@ mod retry_tests {
     #[test]
     fn only_a_provider_asking_to_be_asked_again_is_retried() {
         assert_eq!(retry_reason(429), Some("rate limited"));
+        assert_eq!(retry_reason(502), Some("overloaded upstream"));
         assert_eq!(retry_reason(503), Some("unavailable"));
-        for refused in [400, 401, 403, 404, 422, 500, 502, 504] {
+        for refused in [400, 401, 403, 404, 422, 500, 504] {
             assert_eq!(retry_reason(refused), None, "for {refused}");
         }
     }

@@ -183,15 +183,21 @@ pub enum StreamOutcome {
 /// contain the word timeout once. See `docs/DECISIONS.md` (2026-08-23).
 ///
 /// **A provider that will not take the request is asked again, and one that
-/// has started answering never is.** The retrying lives in `zorp::send_json`
-/// and stops the moment a response exists, which is the only place it can
-/// safely happen on this path. A 429 arrives before a single byte of body, so
-/// sending again is clean: nothing reached `on_payload` and nothing was
-/// generated upstream. A failure part way through a stream is the opposite.
+/// has started answering never is.** The retrying lives in the core's
+/// `Retrying`, shared with `zorp::send_json`, and the line it will not cross
+/// is the first payload handed to `on_payload`. A 429 arrives before a single
+/// byte of body, so sending again is clean: nothing reached the caller and
+/// nothing was generated upstream. An error object the provider delivers
+/// inside a 200 stream, `"choices":[]` and an `error` carrying a code, is the
+/// same refusal in a different envelope. OpenRouter sends exactly that for an
+/// overloaded upstream, and nine of nine benchmark trials died to it reading
+/// as a cut off stream. It is named, and while nothing has been handed up it
+/// is retried under the same bound. A failure after a delta is the opposite.
 /// Payloads have already gone to the caller, and in the browser that means
 /// text already on somebody's screen, so a second send would replay the
 /// beginning of a fresh answer over the middle of the abandoned one. The
-/// truncation error above is therefore an error and stays one.
+/// truncation error above is therefore an error and stays one, and so is an
+/// error event that arrives after a delta.
 pub fn stream_sse(
     url: &str,
     headers: &[(&str, &str)],
@@ -212,10 +218,101 @@ pub fn stream_sse(
     // of the core's error handling with a comment saying it mirrored it, and
     // the copy is now the thing itself, so a failing stream reads the same as
     // a failing buffered call and a rate limited one is retried the same way.
-    let resp = zorp::send_json(req, body)?;
+    let mut retrying = zorp::Retrying::from_env();
+    loop {
+        let resp = zorp::send_json_retrying(&req, &body, &mut retrying)?;
+        // A 200 does not usually carry a Retry-After. If one does, it is the
+        // provider's own number and it is honoured the way a 429's is.
+        let asked = zorp::retry_after(&resp);
+        match read_body(url, resp, cancel, on_payload)? {
+            Body::Outcome(outcome) => return Ok(outcome),
+            Body::Refused(error) => {
+                let said = format!("{error} inside a 200 stream");
+                if error
+                    .code
+                    .is_some_and(|code| retrying.again(url, code, asked, &said))
+                {
+                    continue;
+                }
+                let tail = error.code.map_or(String::new(), |c| retrying.exhausted(c));
+                return Err(format!("{}: {error}{tail}", zorp::IN_STREAM_ERROR).into());
+            }
+        }
+    }
+}
 
+/// What reading one response body came to.
+enum Body {
+    Outcome(StreamOutcome),
+    /// The provider put an error object where the answer should be, and
+    /// nothing had been handed to the caller yet. Whether to send again is
+    /// the loop's decision, because the bound lives there.
+    Refused(zorp::ProviderError),
+}
+
+/// The payloads handed to the caller so far, and the one rule about handing
+/// up another.
+#[derive(Default)]
+struct Delivery {
+    events: usize,
+    finished: bool,
+}
+
+impl Delivery {
+    /// Hand `payload` up, or return the error object it turned out to be.
+    ///
+    /// An error object is never handed up. It is not a delta, and an
+    /// accumulator would drop it on the floor, which is exactly how the
+    /// provider's sentence went missing.
+    fn take(
+        &mut self,
+        payload: &str,
+        on_payload: &mut dyn FnMut(&str),
+    ) -> Option<zorp::ProviderError> {
+        if let Some(error) = zorp::ProviderError::in_payload(payload) {
+            return Some(error);
+        }
+        self.events += 1;
+        self.finished |= signals_completion(payload);
+        on_payload(payload);
+        None
+    }
+
+    /// An error object arrived. Before any delta it is a refusal the loop
+    /// may retry. After one it is an error, full stop, because the deltas
+    /// that arrived are already on somebody's screen.
+    fn refused(&self, error: zorp::ProviderError) -> Result<Body, BoxErr> {
+        if self.events == 0 {
+            return Ok(Body::Refused(error));
+        }
+        Err(format!(
+            "{}: {error}; {} events had already reached the caller, so the \
+             request was not sent again",
+            zorp::IN_STREAM_ERROR,
+            self.events
+        )
+        .into())
+    }
+
+    /// The stream ended. Whether that was the provider finishing or stopping.
+    fn ended(&self) -> Result<Body, BoxErr> {
+        if self.finished {
+            Ok(Body::Outcome(StreamOutcome::Streamed))
+        } else {
+            Err(truncated(self.events))
+        }
+    }
+}
+
+fn read_body(
+    url: &str,
+    resp: ureq::Response,
+    cancel: Option<&CancelToken>,
+    on_payload: &mut dyn FnMut(&str),
+) -> Result<Body, BoxErr> {
     let streaming = resp.content_type().contains("event-stream");
     let mut reader = resp.into_reader();
+    let mut delivery = Delivery::default();
 
     if !streaming {
         // Asked to stream, answered with a document. Hand it back whole.
@@ -242,41 +339,33 @@ pub fn stream_sse(
             raw.extend_from_slice(&chunk[..read]);
         }
         if let Ok(value) = serde_json::from_slice::<Value>(&raw) {
-            return Ok(StreamOutcome::Buffered(value));
+            // A document that is an error object is the provider refusing,
+            // and nothing has been handed up, so it may be sent again.
+            return Ok(match zorp::ProviderError::in_body(&value) {
+                Some(error) => Body::Refused(error),
+                None => Body::Outcome(StreamOutcome::Buffered(value)),
+            });
         }
         // Streamed anyway, under some other content type. Decode it rather
         // than failing on a technicality about a header.
         let mut decoder = SseDecoder::new();
-        let mut events = 0usize;
-        let mut finished = false;
-        for payload in decoder.push(&raw) {
-            events += 1;
-            finished |= signals_completion(&payload);
-            on_payload(&payload);
+        for payload in decoder.push(&raw).into_iter().chain(decoder.finish()) {
+            if let Some(error) = delivery.take(&payload, on_payload) {
+                return delivery.refused(error);
+            }
         }
-        if let Some(payload) = decoder.finish() {
-            events += 1;
-            finished |= signals_completion(&payload);
-            on_payload(&payload);
-        }
-        if events == 0 {
+        if delivery.events == 0 {
             return Err(format!(
                 "{url}: answer was neither JSON nor an event stream ({} bytes)",
                 raw.len()
             )
             .into());
         }
-        return if finished {
-            Ok(StreamOutcome::Streamed)
-        } else {
-            Err(truncated(events))
-        };
+        return delivery.ended();
     }
 
     let mut decoder = SseDecoder::new();
     let mut buf = [0u8; 4096];
-    let mut events = 0usize;
-    let mut finished = false;
     loop {
         // Between reads, which is the only place a synchronous reader offers.
         // One chunk of latency, against a response that otherwise has to
@@ -295,26 +384,22 @@ pub fn stream_sse(
             break;
         }
         for payload in decoder.push(&buf[..read]) {
-            events += 1;
-            finished |= signals_completion(&payload);
-            on_payload(&payload);
+            if let Some(error) = delivery.take(&payload, on_payload) {
+                return delivery.refused(error);
+            }
         }
     }
     if let Some(payload) = decoder.finish() {
-        events += 1;
-        finished |= signals_completion(&payload);
-        on_payload(&payload);
+        if let Some(error) = delivery.take(&payload, on_payload) {
+            return delivery.refused(error);
+        }
     }
     // The events that did arrive were delivered on the way past, and that is
     // deliberate even when the answer turns out to be cut off: a caller that
     // renders deltas has already shown them, and pretending the response
     // never started would only make the transcript disagree with the screen.
     // What must not happen is this returning `Ok`.
-    if finished {
-        Ok(StreamOutcome::Streamed)
-    } else {
-        Err(truncated(events))
-    }
+    delivery.ended()
 }
 
 /// Frames an SSE body.
