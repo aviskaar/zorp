@@ -1,0 +1,159 @@
+/* zorp docs: the site bar, and the palette the rest of zorp.dev uses.
+
+   Colours are copied from zorp-landing/src/styles/tokens.css, which in turn
+   copies them from web/styles.css. Three places, because the three are built by
+   three different generators and none of them can import from the others. If
+   one of them changes, all three do. */
+
+/* ---------------------------------------------------------------- site bar */
+
+:root {
+    /* The bar's height, and therefore the offset every sticky thing below it
+       has to move down by. One value, three rules.
+
+       In px, and so is everything else in this component. mdBook sets
+       html { font-size: 62.5% }, which makes 1rem 10px rather than 16: the
+       first draft of this bar was written in rem and shipped 8.33px links.
+       mdBook's own --menu-bar-height is px for what is presumably the same
+       reason. */
+    --zorp-sitebar-height: 34px;
+}
+
+/* Fixed colours rather than mdBook's theme variables: this strip belongs to
+   zorp.dev, not to the book, and it should look the same whichever theme the
+   reader picks out of the paintbrush menu. */
+.zorp-sitebar {
+    position: sticky;
+    top: 0;
+    /* mdBook's menu bar and its hover placeholder are both z-index 101 and both
+       pin to this same edge. This has to paint above them, and win the clicks. */
+    z-index: 102;
+
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    /* One line, always. The sticky offset below is a fixed number, so a bar that
+       wrapped to two rows would have its second row covered by the menu bar.
+       overflow is the backstop: at a width narrow enough to run out of room, a
+       link is clipped rather than the page gaining a horizontal scrollbar. */
+    flex-wrap: nowrap;
+    overflow: hidden;
+    gap: 20px;
+
+    box-sizing: border-box;
+    height: var(--zorp-sitebar-height);
+    /* .page carries margin-block-start: calc(0px - var(--menu-bar-height)) to
+       compensate for the sticky hover placeholder that follows this element.
+       Being the first child, this bar wore that offset and rendered 50px above
+       the viewport. Adding it back is what puts it on screen; the placeholder
+       still gets the compensation it was written for.
+       The inline margins bleed to the edges of the page column, the same way
+       the menu bar below does. */
+    margin: var(--menu-bar-height) calc(0px - var(--page-padding)) 0;
+    padding: 0 var(--page-padding);
+    background: #0d0e11;
+    border-block-end: 1px solid #23262d;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.4;
+}
+
+/* mdBook pins its menu bar to `top: 0 !important` from four selectors, so all
+   four have to move down by the height of the bar sitting above it. Copied
+   verbatim from chrome.css. If a future mdBook renames one of these ids the
+   selector stops matching and the two bars overlap: the bar covers the top half
+   of the menu bar's icons, which is ugly and is not a broken page. */
+#mdbook-menu-bar.sticky,
+#mdbook-menu-bar-hover-placeholder:hover + #mdbook-menu-bar,
+#mdbook-menu-bar:hover,
+html.sidebar-visible #mdbook-menu-bar {
+    top: var(--zorp-sitebar-height) !important;
+}
+
+/* The invisible strip that re-reveals a menu bar which has scrolled away. It
+   belongs directly under the bar, where the menu bar it reveals now sits. */
+#mdbook-menu-bar-hover-placeholder {
+    top: var(--zorp-sitebar-height);
+}
+
+.zorp-sitebar-brand {
+    color: #e7e9ee;
+    font-size: 15px;
+    font-weight: 300;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-decoration: none;
+}
+
+.zorp-sitebar-nav {
+    display: flex;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+    gap: 18px;
+}
+
+.zorp-sitebar-nav a {
+    color: #99a1af;
+    font-size: 13px;
+    text-decoration: none;
+    transition: color 0.2s ease-out;
+}
+
+.zorp-sitebar-brand:hover,
+.zorp-sitebar-nav a:hover {
+    color: #5eead4;
+}
+
+.zorp-sitebar :focus-visible {
+    outline: 2px solid #5eead4;
+    outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------ dark palette */
+
+/* mdBook's theme list is baked into index.hbs, so a book cannot add a sixth
+   theme without forking the template. Repainting one of the five is the whole
+   of the alternative: navy is the one that was already the dark default, and
+   it is now zorp's dark. The picker still calls it Navy. */
+.navy {
+    --bg: #0d0e11;
+    --fg: #e7e9ee;
+
+    --sidebar-bg: #14161a;
+    --sidebar-fg: #c3c8d1;
+    --sidebar-non-existant: #5b616e;
+    --sidebar-active: #5eead4;
+    --sidebar-spacer: #23262d;
+
+    --icons: #6a7180;
+    --icons-hover: #e7e9ee;
+
+    --links: #5eead4;
+
+    --inline-code-color: #f5b544;
+
+    --theme-popup-bg: #14161a;
+    --theme-popup-border: #23262d;
+    --theme-hover: #1a1d23;
+
+    --quote-bg: #14161a;
+    --quote-border: #23262d;
+
+    --warning-border: #f5b544;
+
+    --table-border-color: #23262d;
+    --table-header-bg: #1a1d23;
+    --table-alternate-bg: #101216;
+
+    --searchbar-border-color: #23262d;
+    --searchbar-bg: #14161a;
+    --searchbar-fg: #e7e9ee;
+    --searchbar-shadow-color: #23262d;
+    --searchresults-header-fg: #6a7180;
+    --searchresults-border-color: #23262d;
+    --searchresults-li-bg: #14161a;
+    --search-mark-bg: #2dd4bf;
+
+    --footnote-highlight: #5eead4;
+    --overlay-bg: rgba(13, 14, 17, 0.6);
+    --sidebar-header-border-color: #23262d;
+}
