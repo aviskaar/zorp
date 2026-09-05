@@ -107,6 +107,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
+        .route("/api/sessions/:id/branch", post(branch_session))
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/panel", post(start_panel))
@@ -309,6 +310,56 @@ async fn delete_session(
                 (StatusCode::NOT_FOUND, "no such session").into_response()
             }
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct BranchBody {
+    /// Which answer to branch at: the 1-based ordinal of an assistant
+    /// message with text, counted the way `transcript` emits them.
+    answer: usize,
+}
+
+/// Copy this conversation up to one of its answers into a new session,
+/// and answer with the new id. The source is not touched.
+///
+/// The answer is named by ordinal rather than seq because the browser can
+/// count answers as it draws them, on a reopened transcript and on a live
+/// turn alike, while a seq is something only the store knows. The store
+/// resolves the ordinal by the same rule `transcript` uses, so the Nth
+/// answer on the page is the Nth answer copied.
+///
+/// A running turn is refused with the same 409 as `delete_session`: the
+/// turn's thread is still writing to the source, so the answers the page
+/// counted are not the answers the store has by the time a copy is taken.
+async fn branch_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<BranchBody>,
+) -> impl IntoResponse {
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.session_status(&id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "no such session").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    let new_id = zorp_agent::new_session_id();
+    match store.branch_session(&id, body.answer, &new_id) {
+        Ok(true) => Json(json!({"id": new_id})).into_response(),
+        Ok(false) => (
+            StatusCode::BAD_REQUEST,
+            format!("this session has no answer {}", body.answer),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

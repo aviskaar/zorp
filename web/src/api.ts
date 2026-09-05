@@ -683,6 +683,20 @@ export async function deleteSession(id: string): Promise<void> {
 }
 
 /**
+ * Copy a conversation up to its `answer`th answer into a new one, and
+ * return the new id. The source is left as it was. `answer` counts the
+ * assistant messages with text, from one, which is what the page draws.
+ * A 409 means a turn is running on the source; a 400 means there is no
+ * such answer.
+ */
+export async function branchSession(id: string, answer: number): Promise<string> {
+  const created = await request<{ id: string }>("POST", `/api/sessions/${segment(id)}/branch`, {
+    answer,
+  });
+  return created.id;
+}
+
+/**
  * Send a user message. The server answers 202 and the result arrives on the
  * event stream. A 409 means a turn is already running.
  *

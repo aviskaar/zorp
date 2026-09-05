@@ -10,6 +10,7 @@
 import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
+import { AnswerCount, branchButton } from "./branch";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
 import { queueView, renderQueue, type QueueView } from "./message-queue";
@@ -63,6 +64,7 @@ import {
   getAutoApprove,
   setAutoApprove,
   getCapabilities,
+  branchSession,
   deleteSession,
   getSession,
   getSettings,
@@ -1223,7 +1225,13 @@ function applyEvent(event: ZorpEvent): void {
   // See endsStreamedMessage for which events close the message being
   // streamed and, more importantly, which ones must not.
   if (endsStreamedMessage(event.type)) {
-    finishStream(null);
+    // The loop records nothing for a reply that never finished, so a row an
+    // error, a stop or the end of the turn cuts off is on the page and not
+    // in the store. Anything else that ends a row is the loop moving on
+    // after a whole reply, which is recorded. The branch count needs to
+    // know which, or it drifts from the server's by one per cut-off row.
+    const kept = event.type !== "error" && event.type !== "stopped" && event.type !== "done";
+    finishStream(null, kept);
   }
 
   switch (event.type) {
@@ -1414,6 +1422,11 @@ function setTurnRunning(running: boolean): void {
   // toggle stays live so the form can be read while something runs; only
   // the control that would start a second one goes down.
   dom.zorpRun.disabled = running;
+  // A branch copies the store, and the store is being written to while a
+  // turn runs; the server answers 409 to the same request.
+  for (const button of Array.from(dom.transcript.querySelectorAll<HTMLButtonElement>(".branch-btn"))) {
+    button.disabled = running;
+  }
   dom.composer.classList.toggle("is-busy", running);
   if (running) {
     turnStopped = false;
@@ -1483,12 +1496,26 @@ function stopSpinner(): void {
  * Fragments are a preview. The server states the finished answer exactly
  * once, in an `assistant` event, and that is what ends up on the page.
  */
+/**
+ * The answers on the page, counted the way the server counts them so a
+ * Branch button can name one. Both draw paths meet in `answerControls`,
+ * which is where each answer takes its number.
+ */
+const answers = new AnswerCount();
+
+/**
+ * Whether the row `streamed.finish` is closing made it into the store. Set
+ * for the length of that call, because the callback below cannot be told
+ * per call and the answer differs per event: see `applyEvent`.
+ */
+let finishKept = true;
+
 const streamed = new StreamedMessage(
   dom.transcript,
   renderMarkdown,
   undefined,
   undefined,
-  (row, text) => row.append(answerControls(text)),
+  (row, text) => row.append(answerControls(text, answers.next(text, finishKept))),
 );
 
 function appendStreamDelta(chunk: string): void {
@@ -1496,8 +1523,10 @@ function appendStreamDelta(chunk: string): void {
   streamed.append(chunk);
 }
 
-function finishStream(authoritative: string | null): void {
+function finishStream(authoritative: string | null, kept = true): void {
+  finishKept = kept;
   const handled = streamed.finish(authoritative);
+  finishKept = true;
   if (!handled && authoritative !== null) {
     appendMessage("assistant", authoritative);
   }
@@ -1519,26 +1548,57 @@ function appendMessage(role: "user" | "assistant", text: string): void {
   }
   row.append(label, body);
   if (role === "assistant") {
-    row.append(answerControls(text));
+    row.append(answerControls(text, answers.next(text)));
   }
   dom.transcript.append(row);
 }
 
 /**
- * The controls under one answer: copy it, or copy it framed for another
- * assistant.
+ * The controls under one answer: copy it, copy it framed for another
+ * assistant, or branch the chat at it.
  *
  * `navigator.clipboard` is absent outside a secure context, and a browser can
  * refuse the write even inside one. Both arrive at the button as a rejected
  * promise, which is what makes it say "Copy failed" rather than appear to
  * work. Loopback counts as secure, so the ordinary case is fine.
+ *
+ * `ordinal` is the answer's number on the server, or null for a row the
+ * store does not have, which gets no Branch: there is nothing to branch at.
  */
-function answerControls(text: string): HTMLElement {
-  return answerActions(document, () => text, (value) =>
+function answerControls(text: string, ordinal: number | null): HTMLElement {
+  const row = answerActions(document, () => text, (value) =>
     navigator.clipboard
       ? navigator.clipboard.writeText(value)
       : Promise.reject(new Error("this browser offers no clipboard here")),
   );
+  if (ordinal !== null) {
+    const branch = branchButton(document, () => branchChat(ordinal));
+    // A row drawn mid-turn, which is what a reply that went on to call a
+    // tool is, starts the way `setTurnRunning` would leave it.
+    branch.disabled = turnRunning;
+    row.append(branch);
+  }
+  return row;
+}
+
+/**
+ * Copy this chat up to the answer the button sits under into a new one, and
+ * open it. The original is left as it was, which is the point: the person
+ * goes on from that answer down another path without losing this one.
+ */
+async function branchChat(answer: number): Promise<void> {
+  if (!sessionId) {
+    return;
+  }
+  let id: string;
+  try {
+    id = await branchSession(sessionId, answer);
+  } catch (error) {
+    appendError(`Could not branch this chat: ${describeError(error)}`);
+    return;
+  }
+  await refreshSessions();
+  await openSession(sessions.find((session) => session.id === id) ?? { id, title: UNTITLED, updated_at: "" });
 }
 
 /**
@@ -2120,6 +2180,7 @@ function resetTranscript(): void {
   expirePendingApprovals();
   pendingApprovals.clear();
   dom.transcript.replaceChildren();
+  answers.reset();
   activityGroup = null;
   setTurnRunning(false);
   workingDepth = 0;

@@ -67,6 +67,26 @@ async fn get_status(url: String) -> u16 {
     .unwrap()
 }
 
+/// Status and body, for a call whose answer is the point.
+async fn post_json(url: String, body: &'static str) -> (u16, serde_json::Value) {
+    tokio::task::spawn_blocking(move || {
+        match ureq::post(&url)
+            .set("content-type", "application/json")
+            .send_string(body)
+        {
+            Ok(response) => {
+                let status = response.status();
+                let text = response.into_string().unwrap();
+                (status, serde_json::from_str(&text).unwrap())
+            }
+            Err(ureq::Error::Status(code, _)) => (code, serde_json::Value::Null),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
 async fn delete_status(url: String) -> u16 {
     tokio::task::spawn_blocking(move || match ureq::delete(&url).call() {
         Ok(response) => response.status(),
@@ -322,6 +342,83 @@ async fn deleting_an_unknown_session_is_not_found() {
     );
 }
 
+/// Branching copies the conversation up to the chosen answer into a new
+/// session and leaves the source as it was.
+///
+/// The answer is named by ordinal, counted the way the replay counts them:
+/// the tool-only turn between the ask and the first answer is not an
+/// answer, so answer 1 is "Done." and the branch replays as exactly the
+/// source's first three entries. The branch keeps the source's verbatim
+/// first message as its name, because `task` is copied and nothing is
+/// generated for it.
+#[tokio::test]
+async fn branching_at_an_answer_copies_the_transcript_up_to_it() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    let id = seed(&db);
+    let mut store = Store::open_at(&db).unwrap();
+    store
+        .record_message(&id, 5, &Message::user("and again"))
+        .unwrap();
+    store
+        .record_message(&id, 6, &Message::assistant("Done again."))
+        .unwrap();
+    drop(store);
+
+    let addr = spawn().await;
+    let source = get_json(format!("http://{addr}/api/sessions/{id}")).await;
+    assert_eq!(source["messages"].as_array().unwrap().len(), 5, "{source}");
+
+    let (status, body) = post_json(
+        format!("http://{addr}/api/sessions/{id}/branch"),
+        r#"{"answer":1}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let new_id = body["id"].as_str().unwrap().to_string();
+    assert_ne!(new_id, id);
+
+    let branch = get_json(format!("http://{addr}/api/sessions/{new_id}")).await;
+    assert_eq!(
+        branch["messages"],
+        serde_json::Value::Array(source["messages"].as_array().unwrap()[..3].to_vec()),
+        "the branch is the source up to answer 1: {branch}"
+    );
+    assert_eq!(
+        get_json(format!("http://{addr}/api/sessions/{id}")).await,
+        source,
+        "the source must not move"
+    );
+    let listed = get_json(format!("http://{addr}/api/sessions")).await;
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == new_id.as_str())
+        .unwrap_or_else(|| panic!("the branch is not listed: {listed}"));
+    assert_eq!(row["title"], "write hello.txt");
+
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/branch"),
+            r#"{"answer":3}"#,
+        )
+        .await,
+        400,
+        "there is no third answer"
+    );
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/not-a-session/branch"),
+            r#"{"answer":1}"#,
+        )
+        .await,
+        404
+    );
+}
+
 /// A session with a turn in flight is refused rather than deleted out from
 /// under the thread still writing to it.
 ///
@@ -364,6 +461,16 @@ async fn deleting_a_running_session_is_refused() {
 
     assert_eq!(
         delete_status(format!("http://{addr}/api/sessions/{id}")).await,
+        409
+    );
+    // A branch is refused for the same reason: a copy taken while the turn
+    // is still writing would not be the conversation the page shows.
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/branch"),
+            r#"{"answer":1}"#,
+        )
+        .await,
         409
     );
     assert_eq!(
