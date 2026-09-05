@@ -277,6 +277,14 @@ resulting artifact, deliver it in the right form.
   existing event stream via a `session_title` frame, and the browser puts
   it on the page through `textContent`. See `docs/DECISIONS.md`
   (2026-08-22) before changing any of it.
+- Branching (`POST /api/sessions/:id/branch`, `Store::branch_session`)
+  copies a chat's stored messages up to and including its Nth answer into
+  a new session, named by ordinal because the browser counts answers as
+  it draws them on both the replay and the live path; the Branch button
+  sits next to Copy under every answer. The session row is copied
+  verbatim and `task` stays the verbatim first message for the reason the
+  `title` bullet gives; file changes are not copied, and a running turn
+  gets the same 409 as delete. See `docs/DECISIONS.md` (2026-09-05).
 - The tool line's phrase in the browser is the model's own `description`
   argument on its shell call, written in the same call and never asked
   for on its own. The agent hands it to the renderer through

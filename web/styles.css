@@ -863,6 +863,16 @@ button {
   background: none;
 }
 
+/* Branch goes down while a turn runs, because the store it would copy is
+   still being written to, and while its own request is in flight. */
+.copy-btn:disabled,
+.msg:hover .copy-btn:disabled {
+  color: var(--text-faint);
+  border-color: transparent;
+  background: none;
+  cursor: default;
+}
+
 /* The destinations sit behind one control rather than beside the copy
    button, because every answer in the transcript carries this row and four
    controls under each one is the column of buttons the styling above exists

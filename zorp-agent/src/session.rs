@@ -453,6 +453,82 @@ impl Store {
         Ok(deleted > 0)
     }
 
+    /// Copy a conversation up to and including its `answer`th answer into a
+    /// new session `to`, so a person can carry on from that point on another
+    /// path while the original stays as it was.
+    ///
+    /// An answer is an assistant message with non-empty text, counted from
+    /// one in seq order. That is what `zorp-web` replays as an `assistant`
+    /// entry and draws as a message, so the browser can count answers on the
+    /// page and name one without the server handing out seqs. A turn that
+    /// only called a tool has no text and is not an answer.
+    ///
+    /// The session row is copied as it is. `task` stays the verbatim first
+    /// message, because it is read by things that must never see a generated
+    /// sentence (see `SessionRow::task`) and the branch's first message is
+    /// the same one. Status is what `create_session` gives a new session.
+    /// The messages and their images are copied at the SQL level, seq for
+    /// seq, so nothing is re-encoded on the way. Recorded file changes are
+    /// not copied: the branch has changed no files yet.
+    ///
+    /// Returns false, and writes nothing, when `from` has no such answer,
+    /// which is also what a session that does not exist looks like.
+    pub fn branch_session(&mut self, from: &str, answer: usize, to: &str) -> Result<bool, BoxErr> {
+        let tx = self.conn.transaction()?;
+        let seq = {
+            let mut stmt = tx.prepare(
+                "SELECT seq, content FROM messages \
+                 WHERE session_id = ?1 AND role = 'assistant' ORDER BY seq ASC",
+            )?;
+            let rows = stmt.query_map([from], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut found = None;
+            let mut answers = 0usize;
+            for row in rows {
+                let (seq, content) = row?;
+                // The same test `transcript` applies, so the count matches
+                // what the page drew. SQLite's TRIM knows only spaces.
+                if content.trim().is_empty() {
+                    continue;
+                }
+                answers += 1;
+                if answers == answer {
+                    found = Some(seq);
+                    break;
+                }
+            }
+            found
+        };
+        let Some(seq) = seq else {
+            return Ok(false);
+        };
+        let inserted = tx.execute(
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, created, updated) \
+             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, ?3, ?3 \
+             FROM sessions WHERE id = ?1",
+            (from, to, now()),
+        )?;
+        if inserted == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens) \
+             SELECT ?2, seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens \
+             FROM messages WHERE session_id = ?1 AND seq <= ?3 ORDER BY seq ASC",
+            (from, to, seq),
+        )?;
+        tx.execute(
+            "INSERT INTO message_images (session_id, message_seq, part_index, mime_type, data) \
+             SELECT ?2, message_seq, part_index, mime_type, data \
+             FROM message_images WHERE session_id = ?1 AND message_seq <= ?3 \
+             ORDER BY message_seq ASC, part_index ASC",
+            (from, to, seq),
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn record_change(&self, id: &str, seq: i64, c: &FileChange) -> Result<(), BoxErr> {
         self.conn.execute(
             "INSERT INTO file_changes (session_id, seq, path, before, after) \
@@ -804,6 +880,108 @@ CREATE TABLE file_changes (
             )
             .unwrap();
         assert_eq!(images, 0);
+    }
+
+    /// A branch is the conversation up to the chosen answer and nothing past
+    /// it: the messages seq for seq with their images and tool calls, the
+    /// session row verbatim, and never the file changes. The tool-only turn
+    /// is not an answer, so answer 1 is the first message with text.
+    #[test]
+    fn branch_session_copies_the_prefix_and_leaves_the_changes_behind() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode(
+                "s1",
+                "look at a.rs",
+                "/repo",
+                "m",
+                Some(crate::reasoning::ReasoningMode::High),
+            )
+            .unwrap();
+        store.set_display_title("s1", "A look at a.rs").unwrap();
+        store
+            .record_message("s1", 0, &Message::system("sys"))
+            .unwrap();
+        store
+            .record_message(
+                "s1",
+                1,
+                &Message::user_multimodal(vec![
+                    ContentPart::Text("look".into()),
+                    ContentPart::Image {
+                        data: vec![0xFF, 0xD8, 0xFF, 0xE0],
+                        mime_type: "image/jpeg".into(),
+                    },
+                ]),
+            )
+            .unwrap();
+        store.record_message("s1", 2, &assistant_call()).unwrap();
+        store
+            .record_message("s1", 3, &Message::tool_result("c1", "file body"))
+            .unwrap();
+        store
+            .record_message("s1", 4, &Message::assistant("First answer."))
+            .unwrap();
+        store
+            .record_message("s1", 5, &Message::user("more"))
+            .unwrap();
+        store
+            .record_message("s1", 6, &Message::assistant("Second answer."))
+            .unwrap();
+        store
+            .record_change(
+                "s1",
+                4,
+                &FileChange {
+                    path: "a.rs".into(),
+                    before: None,
+                    after: "fn main() {}".into(),
+                },
+            )
+            .unwrap();
+
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+
+        let copied = store.load_message_records("s2").unwrap();
+        let roles: Vec<&str> = copied.iter().map(|r| r.message.role.as_str()).collect();
+        assert_eq!(roles, ["system", "user", "assistant", "tool", "assistant"]);
+        assert!(copied[1].message.has_images());
+        assert_eq!(copied[2].message.tool_calls[0].name, "read_file");
+        assert_eq!(copied[4].message.text(), "First answer.");
+        let seqs: Vec<i64> = store
+            .conn
+            .prepare("SELECT seq FROM messages WHERE session_id = 's2' ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(seqs, [0, 1, 2, 3, 4]);
+        assert_eq!(store.change_count("s2").unwrap(), 0);
+        let row = store
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == "s2")
+            .unwrap();
+        assert_eq!(row.task, "look at a.rs");
+        assert_eq!(row.display_title.as_deref(), Some("A look at a.rs"));
+        assert_eq!(row.status, "running");
+        assert_eq!(
+            store.session_reasoning_mode("s2").unwrap(),
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+
+        // The source is as it was.
+        assert_eq!(store.message_count("s1").unwrap(), 7);
+        assert_eq!(store.change_count("s1").unwrap(), 1);
+
+        // The last answer takes everything; one past it takes nothing.
+        assert!(store.branch_session("s1", 2, "s3").unwrap());
+        assert_eq!(store.message_count("s3").unwrap(), 7);
+        assert!(!store.branch_session("s1", 3, "s4").unwrap());
+        assert_eq!(store.session_status("s4").unwrap(), None);
+        assert!(!store.branch_session("never", 1, "s5").unwrap());
     }
 
     /// A caller tells "deleted" from "never existed" by the return value, so
