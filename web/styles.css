@@ -3001,6 +3001,74 @@ button {
   word-break: break-word;
 }
 
+/* Workspace picker. Lives in the first-run flow as its first step and in an
+   overlay of its own, so it styles its own contents and borrows the panel,
+   the field, the result line and the buttons from the blocks above. The top
+   bar pill borrows .model-btn wholesale and adds nothing. */
+
+.ws-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ws-reason {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.ws-lead {
+  margin: 0;
+}
+
+.ws-here {
+  margin: 0;
+  padding: 8px 11px;
+  border-radius: 9px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.ws-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+}
+
+.ws-row {
+  display: block;
+  width: 100%;
+  padding: 7px 11px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.ws-row:hover {
+  background: var(--bg-inset);
+  color: var(--text);
+}
+
+.ws-up {
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--line-soft);
+}
+
 @media (max-width: 560px) {
   .model-btn span {
     display: none;

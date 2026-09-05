@@ -177,6 +177,27 @@
             <span id="model-btn-label">Model</span>
           </button>
           <!--
+            Which directory the agent works in. The same pill as the model
+            button, so it truncates a long path the same way and needs no
+            styling of its own, and it turns warn-coloured through the same
+            data-state the model button uses when nothing is configured. An
+            agent with nowhere to work cannot do anything at all, so that
+            state has to be loud.
+          -->
+          <button
+            class="model-btn workspace-btn"
+            id="workspace-btn"
+            type="button"
+            data-state="unknown"
+            aria-haspopup="dialog"
+            aria-controls="workspace-overlay"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+            </svg>
+            <span id="workspace-btn-label">Workspace</span>
+          </button>
+          <!--
             The file listing used to sit at the top of the artifact pane and
             eat a third of it, which is the half of that pane a document
             wanted. It is a picker, and a picker belongs on the control that
@@ -717,6 +738,22 @@
         </div>
 
         <div class="onboard-body">
+          <!--
+            First, before the model. A model with nowhere to work is useless,
+            and the alternative is an agent writing into whatever directory
+            the server happened to start in. Skipped when a workspace is
+            already set, the same way the model steps are skipped when the
+            settings are already good.
+          -->
+          <section class="onboard-step" id="onboard-step-workspace" hidden>
+            <div id="onboard-workspace"></div>
+            <p class="onboard-keylink">
+              <button class="settings-link-btn" id="onboard-workspace-skip" type="button">
+                Set this up later
+              </button>
+            </p>
+          </section>
+
           <section class="onboard-step" id="onboard-step-start">
             <p class="onboard-lead">
               zorp runs on your machine and talks to a model somewhere. It does not ship with one, so
@@ -801,6 +838,32 @@
               <button class="btn btn-allow" id="onboard-finish" type="button">Start using zorp</button>
             </div>
           </section>
+        </div>
+      </div>
+    </div>
+
+    <!--
+      Choosing the directory the agent works in, on its own. The first-run
+      flow has the same picker as its first step; this is the way back to it
+      from the top bar, and the way a turn refused for want of a workspace
+      gets one. Reuses the settings overlay and panel, the way first run
+      does.
+    -->
+    <div class="settings-overlay" id="workspace-overlay" hidden>
+      <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="workspace-title">
+        <div class="settings-head">
+          <h2 id="workspace-title">Where should the agent work?</h2>
+          <button
+            class="icon-btn"
+            id="workspace-close"
+            type="button"
+            aria-label="Close the workspace picker"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div class="onboard-body">
+          <div id="workspace-picker"></div>
         </div>
       </div>
     </div>
