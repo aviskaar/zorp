@@ -440,6 +440,11 @@ resulting artifact, deliver it in the right form.
   nothing more. It holds no settings of its own, it cannot start a turn, a
   panel or an investigate run, and it calls a model free only when the
   listing stated a price of zero. See `docs/DECISIONS.md` (2026-09-01).
+  `web/src/activity-group.ts` is the run of consecutive tool lines folded
+  to one native `details`, and `web/src/approval-card.ts` is the approval
+  card, open while it waits and folded to its head once settled; both put
+  every string on the page through `textContent` and are tested without
+  a page. See `docs/DECISIONS.md` (2026-09-05).
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` and
