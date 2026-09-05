@@ -11,6 +11,15 @@
 //! transcript. Connections are counted rather than error strings matched,
 //! for the reason `sse_stub` gives: a re-ask and a transport retry look the
 //! same from the client side, and only the listener can tell them apart.
+//!
+//! The second half of the file is the same drop seen from our side of the
+//! socket: the peer closes the connection instead of writing an error event
+//! first, which rustls reports as "peer closed connection without sending
+//! TLS close_notify" and a plain socket as a reset. After a delta it is the
+//! same re-ask. Before a reply it is the transport's retry under the one
+//! bound, and that is proved here rather than in `retry_rate_limit.rs`
+//! because the retry line lands on the binary's stderr, where a test can
+//! read it. See `docs/DECISIONS.md` (2026-09-05).
 
 mod sse_stub;
 
@@ -34,7 +43,10 @@ const DROPPED: Reply = Reply::ErrorEvent {
     event: IDLE_TIMEOUT,
 };
 
-fn run_agent(address: SocketAddr, dir: &Path) -> Output {
+/// `attempts` is the transport's bound, `ZORP_RETRY_ATTEMPTS`, set on the
+/// child explicitly so the developer's own environment cannot change what a
+/// connection count means.
+fn run_agent(address: SocketAddr, dir: &Path, attempts: u32) -> Output {
     Command::new(env!("CARGO_BIN_EXE_zorp-agent"))
         .current_dir(dir)
         .args([
@@ -47,6 +59,7 @@ fn run_agent(address: SocketAddr, dir: &Path) -> Output {
             "say something",
         ])
         .env("ZORP_STATE_DB", dir.join("s.db"))
+        .env(zorp::RETRY_ATTEMPTS_VAR, attempts.to_string())
         .env_remove("ZORP_API_KEY")
         .env_remove("ZORP_SYSTEM")
         .output()
@@ -76,7 +89,7 @@ fn a_stream_dropped_after_delivery_is_asked_again_and_the_run_ends_with_the_answ
         let dir = tempfile::tempdir().unwrap();
         let (address, connections) = scripted_server(framing, SCRIPT);
 
-        let out = run_agent(address, dir.path());
+        let out = run_agent(address, dir.path(), zorp::DEFAULT_RETRY_ATTEMPTS);
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -115,7 +128,7 @@ fn a_provider_that_drops_every_stream_is_given_up_on_after_the_bound() {
         let dir = tempfile::tempdir().unwrap();
         let (address, connections) = scripted_server(framing, SCRIPT);
 
-        let out = run_agent(address, dir.path());
+        let out = run_agent(address, dir.path(), zorp::DEFAULT_RETRY_ATTEMPTS);
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -139,6 +152,122 @@ fn a_provider_that_drops_every_stream_is_given_up_on_after_the_bound() {
             assistant_messages(dir.path()),
             0,
             "{framing:?}: a dead step left something in the transcript"
+        );
+    }
+}
+
+/* ---- the same drop, seen from our side of the socket ---- */
+
+/// The 6 of 35 case: two deltas and then the peer closes the connection with
+/// no handshake, after which a provider answers. Same treatment as the error
+/// event above: the run ends with the answer, one fresh request and not a
+/// replay, one finished reply in the transcript, and the re-ask said so.
+#[test]
+fn a_connection_the_peer_closed_after_delivery_is_asked_again_and_the_run_ends_with_the_answer() {
+    static SCRIPT: &[Reply] = &[Reply::Reset { after: 2 }, Reply::Finished { events: 3 }];
+    for framing in Framing::BOTH {
+        let dir = tempfile::tempdir().unwrap();
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let out = run_agent(address, dir.path(), zorp::DEFAULT_RETRY_ATTEMPTS);
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{framing:?}: one closed connection killed the run: {stderr}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "012\n",
+            "{framing:?}: the run did not end with the second answer"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: expected the dead request and one fresh one"
+        );
+        assert_eq!(
+            assistant_messages(dir.path()),
+            1,
+            "{framing:?}: the dead step left something in the transcript"
+        );
+        assert!(
+            stderr.contains("asking again (re-ask 1 of 2)"),
+            "{framing:?}: the re-ask was silent: {stderr}"
+        );
+    }
+}
+
+/// Before a reply nothing has reached anyone, so the same death is the
+/// transport's to retry, under the bound it already has, and loudly. The
+/// loop is not involved: no re-ask line, and the transport's own line
+/// instead.
+#[test]
+fn a_connection_the_peer_closed_before_a_reply_is_sent_again() {
+    static SCRIPT: &[Reply] = &[Reply::ResetBeforeHeaders, Reply::Finished { events: 3 }];
+    for framing in Framing::BOTH {
+        let dir = tempfile::tempdir().unwrap();
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let out = run_agent(address, dir.path(), zorp::DEFAULT_RETRY_ATTEMPTS);
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{framing:?}: one connection reset before a reply killed the run: {stderr}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "012\n",
+            "{framing:?}: the run did not end with the answer"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: the request was not sent again"
+        );
+        assert!(
+            stderr.contains(zorp::CONNECTION_DROPPED) && stderr.contains("sending again"),
+            "{framing:?}: the retry was silent: {stderr}"
+        );
+        assert!(
+            !stderr.contains("asking again"),
+            "{framing:?}: a retry before any reply was reported as a re-ask: {stderr}"
+        );
+    }
+}
+
+/// The bound is the transport's bound. A peer that resets every connection
+/// gets `ZORP_RETRY_ATTEMPTS` sends and then the run ends with an error that
+/// names it. Nothing in the transcript, because nothing ever arrived.
+#[test]
+fn a_peer_that_resets_every_connection_is_given_up_on_after_the_bound() {
+    const ATTEMPTS: u32 = 3;
+    static SCRIPT: &[Reply] = &[Reply::ResetBeforeHeaders];
+    for framing in Framing::BOTH {
+        let dir = tempfile::tempdir().unwrap();
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let out = run_agent(address, dir.path(), ATTEMPTS);
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "{framing:?}: a peer that never answered came back as a success"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            ATTEMPTS as usize,
+            "{framing:?}: the number of sends is not the bound"
+        );
+        assert!(
+            stderr.contains(zorp::RETRY_ATTEMPTS_VAR) && stderr.contains(zorp::CONNECTION_DROPPED),
+            "{framing:?}: the error does not name the bound and the reason: {stderr}"
+        );
+        assert_eq!(
+            assistant_messages(dir.path()),
+            0,
+            "{framing:?}: a request that never got a reply left something in the transcript"
         );
     }
 }

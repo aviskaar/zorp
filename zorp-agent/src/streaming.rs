@@ -75,9 +75,7 @@ const TIMEOUT_SLACK: Duration = Duration::from_millis(250);
 /// than dropped.
 fn read_error(e: std::io::Error, quiet_for: Duration) -> BoxErr {
     let limit = zorp::read_timeout_secs();
-    let timed_out = e.kind() == std::io::ErrorKind::TimedOut
-        || quiet_for + TIMEOUT_SLACK >= Duration::from_secs(limit);
-    if timed_out {
+    if timed_out(&e, quiet_for) {
         format!(
             "the provider sent nothing for {limit} seconds and the stream was \
              abandoned; set {} to wait longer (the transport said: {e})",
@@ -87,6 +85,14 @@ fn read_error(e: std::io::Error, quiet_for: Duration) -> BoxErr {
     } else {
         e.into()
     }
+}
+
+/// The clock rule of [`read_error`], on its own so the dropped-connection
+/// check below can ask it first. A read that failed after the socket had
+/// been silent for the whole limit was the limit, whatever kind it wears.
+fn timed_out(e: &std::io::Error, quiet_for: Duration) -> bool {
+    e.kind() == std::io::ErrorKind::TimedOut
+        || quiet_for + TIMEOUT_SLACK >= Duration::from_secs(zorp::read_timeout_secs())
 }
 
 /// Did this payload say the provider had finished?
@@ -160,10 +166,22 @@ pub enum InStreamError {
     },
     /// `events` payloads had already reached the caller, so the request was
     /// not sent again.
-    Dropped {
-        error: zorp::ProviderError,
-        events: usize,
-    },
+    Dropped { error: DroppedBy, events: usize },
+}
+
+/// What ended a stream after deltas had reached the caller. Two shapes of
+/// the same event: the provider's gateway giving up on the upstream and
+/// saying so in an error event, or giving up and closing the connection
+/// instead, which is the same 504 seen from our side of the socket. rustls
+/// reports the second as "peer closed connection without sending TLS
+/// close_notify", and 6 of 35 benchmark trials died on that line after 25
+/// to 58 tool calls each. See `docs/DECISIONS.md` (2026-09-05).
+#[derive(Debug)]
+pub enum DroppedBy {
+    /// The provider wrote an error object where the next delta should be.
+    Provider(zorp::ProviderError),
+    /// The peer closed the connection, in the transport's own words.
+    Transport(std::io::Error),
 }
 
 impl std::fmt::Display for InStreamError {
@@ -172,12 +190,19 @@ impl std::fmt::Display for InStreamError {
             InStreamError::Refused { error, tail } => {
                 write!(f, "{}: {error}{tail}", zorp::IN_STREAM_ERROR)
             }
-            InStreamError::Dropped { error, events } => write!(
-                f,
-                "{}: {error}; {events} events had already reached the caller, so the \
-                 request was not sent again",
-                zorp::IN_STREAM_ERROR
-            ),
+            InStreamError::Dropped { error, events } => {
+                match error {
+                    DroppedBy::Provider(error) => write!(f, "{}: {error}", zorp::IN_STREAM_ERROR)?,
+                    DroppedBy::Transport(error) => {
+                        write!(f, "the connection dropped inside the stream: {error}")?
+                    }
+                }
+                write!(
+                    f,
+                    "; {events} events had already reached the caller, so the request \
+                     was not sent again"
+                )
+            }
         }
     }
 }
@@ -289,6 +314,16 @@ pub fn stream_sse(
                     .map_or(String::new(), |c| retrying.exhausted(c, provider));
                 return Err(InStreamError::Refused { error, tail }.into());
             }
+            // The peer closed the connection before a single payload was
+            // handed up. Nothing reached the caller, so sending again is as
+            // clean as it is for a 429, and it is the same bound.
+            Body::Dropped(error) => {
+                if retrying.again_for(url, zorp::CONNECTION_DROPPED, None, &error) {
+                    continue;
+                }
+                let tail = retrying.exhausted_for(zorp::CONNECTION_DROPPED);
+                return Err(format!("{url}: {error}{tail}").into());
+            }
         }
     }
 }
@@ -300,6 +335,9 @@ enum Body {
     /// nothing had been handed to the caller yet. Whether to send again is
     /// the loop's decision, because the bound lives there.
     Refused(zorp::ProviderError),
+    /// The peer closed the connection before anything had been handed to
+    /// the caller. Same decision, same place.
+    Dropped(std::io::Error),
 }
 
 /// The payloads handed to the caller so far, and the one rule about handing
@@ -339,7 +377,27 @@ impl Delivery {
             return Ok(Body::Refused(error));
         }
         Err(InStreamError::Dropped {
-            error,
+            error: DroppedBy::Provider(error),
+            events: self.events,
+        }
+        .into())
+    }
+
+    /// A read failed. The clock decides first: a socket silent for the
+    /// whole limit timed out, whatever kind the error wears, and a timeout
+    /// is loud, fatal and never sent again. A connection the peer closed is
+    /// then the same two cases as an error event: before any delta a
+    /// refusal the loop may retry, after one a dropped stream the agent loop
+    /// may ask again. Anything else is what it always was.
+    fn failed(&self, e: std::io::Error, quiet_for: Duration) -> Result<Body, BoxErr> {
+        if timed_out(&e, quiet_for) || !zorp::connection_dropped(&e) {
+            return Err(read_error(e, quiet_for));
+        }
+        if self.events == 0 {
+            return Ok(Body::Dropped(e));
+        }
+        Err(InStreamError::Dropped {
+            error: DroppedBy::Transport(e),
             events: self.events,
         }
         .into())
@@ -381,9 +439,10 @@ fn read_body(
                 return Err(CANCELLED.into());
             }
             let since_last_byte = Instant::now();
-            let read = reader
-                .read(&mut chunk)
-                .map_err(|e| read_error(e, since_last_byte.elapsed()))?;
+            let read = match reader.read(&mut chunk) {
+                Ok(read) => read,
+                Err(e) => return delivery.failed(e, since_last_byte.elapsed()),
+            };
             if read == 0 {
                 break;
             }
@@ -428,9 +487,10 @@ fn read_body(
         // of the answer. `read_error` needs the second of those and would be
         // wrong about every long healthy response if handed the first.
         let since_last_byte = Instant::now();
-        let read = reader
-            .read(&mut buf)
-            .map_err(|e| read_error(e, since_last_byte.elapsed()))?;
+        let read = match reader.read(&mut buf) {
+            Ok(read) => read,
+            Err(e) => return delivery.failed(e, since_last_byte.elapsed()),
+        };
         if read == 0 {
             break;
         }

@@ -429,8 +429,18 @@ resulting artifact, deliver it in the right form.
   `stream_sse` reports that case as `InStreamError::Dropped`, the browser
   gets an `assistant_withdrawn` frame and takes the fragments down, and
   the transport still never re-sends after a delta;
-  `reask_dropped_stream.rs` counts connections to prove it. See
-  `docs/DECISIONS.md` (2026-08-23, 2026-09-04) before changing any of it.
+  `reask_dropped_stream.rs` counts connections to prove it. A connection
+  the peer closed, which rustls reports as an unexpected EOF with no TLS
+  close_notify and a plain socket as a reset, is that same drop seen from
+  our side of the socket and gets the same treatment: after a delta it is
+  `InStreamError::Dropped` carrying the transport's words and the loop
+  re-asks it, and before any delta, or at send time before a status line,
+  it is sent again under the one `Retrying` bound with the reason
+  "connection dropped before a reply" on stderr. A timeout is still not
+  retried anywhere, and `streaming_timeout.rs` counts connections to
+  prove that too. See
+  `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
+  any of it.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides oldest tool-result bodies, then
