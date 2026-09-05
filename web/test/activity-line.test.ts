@@ -18,7 +18,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 
-import { BRIEF_MAX, callLine, clampPhrase, describeCommand, splitCall, toolLine } from "../src/activity-line.ts";
+import {
+  BRIEF_MAX,
+  LINE_STATES,
+  callLine,
+  clampPhrase,
+  describeCommand,
+  settleLine,
+  splitCall,
+  startedLine,
+  stateForStatus,
+  toolLine,
+} from "../src/activity-line.ts";
 import type { Message } from "../src/api.ts";
 
 const dom = new JSDOM("<!doctype html><body></body>");
@@ -36,6 +47,16 @@ function line(name: string, status = "exited 0"): HTMLElement {
   const node = toolLine(doc as unknown as Document, name, status);
   doc.body.append(node);
   return node;
+}
+
+/** The `.activity-line` of what `toolLine` returned: the node, or the summary of its details. */
+function lineOf(node: HTMLElement): HTMLElement {
+  return node.classList.contains("activity-line") ? node : (node.querySelector(".activity-line") as HTMLElement);
+}
+
+/** The state classes on the line, which the contract says is exactly one. */
+function states(node: HTMLElement): string[] {
+  return LINE_STATES.filter((state) => lineOf(node).classList.contains(state));
 }
 
 /* injection */
@@ -71,23 +92,37 @@ test("the full command is byte identical to the input", () => {
   assert.equal(node.querySelector(".activity-full code")?.textContent, command);
 });
 
-test("a status with markup in it is text", () => {
+test("a status with markup in it is text, in the title and under the command", () => {
   const node = line("run_command(ls)", "<b>exited 0</b>");
   assert.equal(node.querySelectorAll("b").length, 0);
-  assert.equal(node.querySelector(".activity-status")?.textContent, "<b>exited 0</b>");
+  assert.equal(lineOf(node).title, "<b>exited 0</b>. Click to see the command that ran.");
+  assert.equal(node.querySelector(".activity-result")?.textContent, "<b>exited 0</b>");
+  const bare = line("write_file", "<img src=x onerror=alert(1)>");
+  assert.equal(bare.querySelectorAll("img").length, 0);
+  assert.equal(bare.title, "<img src=x onerror=alert(1)>");
 });
 
 /* structure */
 
-test("the phrase and the status are separate spans in one text column, with no tool name", () => {
+test("the phrase is the only text on the line: no tool name and no status word", () => {
   const node = line("run_command(pandoc in.html -o out.pdf)");
   const column = node.querySelector(".activity-line > .activity-text");
   assert.ok(column, "the text sits in one column beside the bullet");
   assert.equal(column?.querySelectorAll(".activity-name").length, 0);
   assert.equal(column?.querySelector(".activity-brief")?.textContent, "Converting in.html");
-  assert.equal(column?.querySelectorAll(".activity-status").length, 1);
-  assert.equal(column?.querySelector(".activity-status")?.textContent, "exited 0");
-  assert.equal(node.textContent, "●Converting in.html exited 0pandoc in.html -o out.pdf");
+  assert.equal(column?.querySelectorAll(".activity-status").length, 0);
+  assert.equal(lineOf(node).textContent, "●Converting in.html");
+  assert.equal(node.textContent, "●Converting in.htmlpandoc in.html -o out.pdfexited 0");
+});
+
+test("the status is absent from the line's text and present in its title", () => {
+  const shell = line("run_command(cargo test)", "exited 101");
+  assert.ok(!lineOf(shell).textContent?.includes("exited 101"));
+  assert.equal(lineOf(shell).title, "exited 101. Click to see the command that ran.");
+  assert.equal(shell.querySelector(".activity-result")?.textContent, "exited 101");
+  const bare = line("read_file", "a.txt (12 lines)");
+  assert.equal(bare.textContent, "●read_file");
+  assert.equal(bare.title, "a.txt (12 lines)");
 });
 
 test("a background process reads as its phrase too", () => {
@@ -107,7 +142,7 @@ test("a call with a command is a closed details whose body is the full command",
   assert.equal(node.tagName, "DETAILS");
   assert.equal((node as HTMLDetailsElement).open, false);
   assert.equal(node.firstElementChild?.tagName, "SUMMARY");
-  assert.equal((node.firstElementChild as HTMLElement).title, "Show the full command");
+  assert.equal((node.firstElementChild as HTMLElement).title, "exited 0. Click to see the command that ran.");
   assert.equal(node.querySelector("pre.activity-full code")?.textContent, "pandoc in.html -o out.pdf");
 });
 
@@ -116,24 +151,142 @@ test("a call without a command is a plain line that keeps its tool name", () => 
   assert.equal(node.tagName, "DIV");
   assert.equal(node.querySelectorAll("details, pre").length, 0);
   assert.equal(node.querySelector(".activity-name")?.textContent, "write_file");
-  assert.equal(node.querySelector(".activity-status")?.textContent, "created a.html (12 lines)");
+  assert.equal(node.querySelectorAll(".activity-status").length, 0);
+  assert.equal(node.title, "created a.html (12 lines)");
+  assert.deepEqual(states(node), ["activity-ok"]);
 });
 
-test("an empty status puts no empty span on the page", () => {
+test("an empty status leaves the line with no title, no result, and the ok colour", () => {
   const node = line("read_file", "");
-  assert.equal(node.querySelectorAll(".activity-status").length, 0);
+  assert.equal(node.querySelectorAll(".activity-status, .activity-result").length, 0);
   assert.equal(node.querySelectorAll("pre").length, 0);
   assert.equal(node.textContent, "●read_file");
+  assert.equal(node.title, "");
+  assert.deepEqual(states(node), ["activity-ok"]);
 });
 
-test("a verify line keeps its name and carries its verdict class on the status", () => {
-  const node = callLine(doc as unknown as Document, "verify", "cargo test", "failed", "activity-fail");
+test("a verify line keeps its name and its word, and carries the verdict as the line's colour", () => {
+  const node = callLine(doc as unknown as Document, "verify", "cargo test", null, "failed");
+  settleLine(node, "failed");
   assert.equal(node.querySelector(".activity-name")?.textContent, "verify");
   assert.equal(node.querySelector(".activity-brief")?.textContent, "Running tests");
-  const status = node.querySelector(".activity-status");
-  assert.ok(status?.classList.contains("activity-fail"));
-  assert.equal(status?.textContent, "failed");
+  assert.equal(node.querySelector(".activity-status")?.textContent, "failed");
+  assert.deepEqual(states(node), ["activity-fail"]);
   assert.equal(node.querySelector(".activity-full code")?.textContent, "cargo test");
+  const passed = callLine(doc as unknown as Document, "verify", "cargo test", null, "passed");
+  settleLine(passed, "passed");
+  assert.deepEqual(states(passed), ["activity-ok"]);
+});
+
+/* the colour */
+
+test("the status word maps to ok or fail, and the other tools' summaries are not failures", () => {
+  const ok = [
+    "exited 0",
+    "passed",
+    "",
+    "finished",
+    "a.txt (12 lines)",
+    "created a.html (12 lines)",
+    "web/src (9 entries)",
+    "'briefCommand' (4 matches)",
+    "'zorp' (3 results)",
+    "started PID 512",
+    "killed PID 512",
+    "listed processes",
+    "loaded skill pdf",
+    "2 changed files",
+    "diff (40 lines)",
+    "3/3 blocks applied",
+    "subagent finished",
+    "mcp tool result",
+    "ok",
+  ];
+  for (const status of ok) {
+    assert.equal(stateForStatus(status), "activity-ok", JSON.stringify(status));
+  }
+  const fail = [
+    "exited 1",
+    "exited 101",
+    "exited -1",
+    "timed out",
+    "cancelled",
+    "failed",
+    "error",
+    "denied",
+    "unknown tool",
+    "withheld: turn tool output budget",
+    "error: no such tool",
+    "denied: approval required",
+    "blocked",
+    "step limit",
+    "repeated action",
+    "verification failed",
+    "0/3 blocks applied",
+  ];
+  for (const status of fail) {
+    assert.equal(stateForStatus(status), "activity-fail", JSON.stringify(status));
+  }
+});
+
+test("a finished line carries exactly one state class, read off its status", () => {
+  assert.deepEqual(states(line("run_command(ls)", "exited 0")), ["activity-ok"]);
+  assert.deepEqual(states(line("run_command(ls)", "exited 2")), ["activity-fail"]);
+  assert.deepEqual(states(line("run_command(sleep 99)", "timed out")), ["activity-fail"]);
+  assert.deepEqual(states(line("write_file", "denied")), ["activity-fail"]);
+});
+
+test("the bullet takes its colour from the state, and the pulse stops for reduced motion", () => {
+  assert.match(css, /\.activity-ok > \.activity-bullet[^{]*\{[^}]*var\(--ok\)/);
+  assert.match(css, /\.activity-fail > \.activity-bullet[^{]*\{[^}]*var\(--danger\)/);
+  assert.match(css, /\n\.activity-running > \.activity-bullet\s*\{[^}]*animation:\s*pulse/);
+  assert.match(css, /prefers-reduced-motion: reduce\)\s*\{\s*\.activity-running > \.activity-bullet\s*\{\s*animation:\s*none/);
+  assert.equal(rule(".activity-pass"), "", "the old word class is gone");
+  assert.equal(rule(".activity-fail"), "", "the state class colours the bullet, not the whole line");
+});
+
+/* a call in progress */
+
+test("a started line is in progress until the matching result settles it in place", () => {
+  const node = startedLine(doc as unknown as Document, "run_command(cargo test)", "Running the tests");
+  doc.body.append(node);
+  const summary = lineOf(node);
+  assert.deepEqual(states(node), ["activity-running"]);
+  assert.equal(summary.title, "Running. Click to see the command.");
+  assert.equal(summary.querySelector(".activity-brief")?.textContent, "Running the tests");
+  assert.equal(node.querySelectorAll(".activity-status, .activity-result").length, 0);
+  assert.equal(node.querySelector(".activity-full code")?.textContent, "cargo test");
+
+  settleLine(node, "exited 101");
+  assert.equal(lineOf(node), summary, "the same line, not a second one");
+  assert.deepEqual(states(node), ["activity-fail"]);
+  assert.equal(summary.title, "exited 101. Click to see the command that ran.");
+  assert.equal(node.querySelector(".activity-result")?.textContent, "exited 101");
+  assert.equal(node.querySelectorAll(".activity-result").length, 1);
+
+  settleLine(node, "exited 0");
+  assert.deepEqual(states(node), ["activity-ok"]);
+  assert.equal(node.querySelectorAll(".activity-result").length, 1, "the result is updated, not appended");
+  assert.equal(node.querySelector(".activity-result")?.textContent, "exited 0");
+});
+
+test("a started line without a command is in progress too, and settles to its status", () => {
+  const node = startedLine(doc as unknown as Document, "write_file");
+  assert.equal(node.tagName, "DIV");
+  assert.deepEqual(states(node), ["activity-running"]);
+  assert.equal(node.title, "Running");
+  settleLine(node, "created a.html (12 lines)");
+  assert.deepEqual(states(node), ["activity-ok"]);
+  assert.equal(node.title, "created a.html (12 lines)");
+  assert.equal(node.textContent, "●write_file");
+});
+
+test("a line the turn abandoned is failed, with the reason in its title", () => {
+  const node = startedLine(doc as unknown as Document, "run_command(sleep 99)");
+  settleLine(node, "The turn ended before this call reported", "activity-fail");
+  assert.deepEqual(states(node), ["activity-fail"]);
+  assert.equal(lineOf(node).title, "The turn ended before this call reported. Click to see the command that ran.");
+  assert.equal(node.querySelector(".activity-result")?.textContent, "The turn ended before this call reported");
 });
 
 /* splitting the name */
@@ -231,7 +384,7 @@ test("a phrase the model gave is drawn as model text, with the command still who
   assert.ok(brief.classList.contains("activity-brief-model"));
   assert.equal(brief.title, MODEL_TITLE);
   assert.equal(node.querySelectorAll(".activity-name").length, 0);
-  assert.equal(node.querySelector(".activity-status")?.textContent, "exited 0");
+  assert.equal(lineOf(node).title, "exited 0. Click to see the command that ran.");
   assert.equal(node.querySelector(".activity-full code")?.textContent, command);
   assert.match(rule(".activity-brief-model"), /font-style:\s*italic/);
 });
@@ -291,7 +444,8 @@ test("a call without a command ignores the phrase and renders as before", () => 
   assert.equal(node.tagName, "DIV");
   assert.equal(node.querySelectorAll(".activity-brief, details, pre").length, 0);
   assert.equal(node.querySelector(".activity-name")?.textContent, "write_file");
-  assert.equal(node.textContent, "●write_file created a.html (12 lines)");
+  assert.equal(node.textContent, "●write_file");
+  assert.equal(node.title, "created a.html (12 lines)");
 });
 
 /* a reopened session */
@@ -320,7 +474,8 @@ test("a stored call with a phrase draws the model's words, with the command unde
   assert.equal(brief.textContent, "Listing files in web/src");
   assert.ok(brief.classList.contains("activity-brief-model"));
   assert.equal(brief.title, MODEL_TITLE);
-  assert.equal(node.querySelector(".activity-status")?.textContent, "exited 0");
+  assert.equal(lineOf(node).title, "exited 0. Click to see the command that ran.");
+  assert.deepEqual(states(node), ["activity-ok"], "a replayed line is never in progress");
   assert.equal(node.querySelector(".activity-full code")?.textContent, "ls web/src");
 });
 
@@ -329,6 +484,8 @@ test("a stored call without a phrase gets the phrase computed from its command, 
   const brief = node.querySelector(".activity-brief") as HTMLElement;
   assert.equal(brief.textContent, "Listing files in web/src");
   assert.ok(!brief.classList.contains("activity-brief-model"));
-  assert.equal(node.querySelectorAll(".activity-status").length, 0);
+  assert.equal(node.querySelectorAll(".activity-status, .activity-result").length, 0);
+  assert.equal(lineOf(node).title, "Show the full command");
+  assert.deepEqual(states(node), ["activity-ok"]);
   assert.equal(node.querySelector(".activity-full code")?.textContent, "ls web/src");
 });

@@ -1021,6 +1021,32 @@ button {
   flex: none;
 }
 
+/* A tool line carries its result as the bullet's colour, from exactly one
+   of three classes on the line; the word is in the line's title and, for a
+   shell call, under the command in the details. A verify line keeps its
+   word, and the word takes the same colour. */
+.activity-ok > .activity-bullet,
+.activity-ok .activity-status {
+  color: var(--ok);
+}
+
+.activity-fail > .activity-bullet,
+.activity-fail .activity-status {
+  color: var(--danger);
+}
+
+.activity-running > .activity-bullet {
+  color: var(--warn);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* Someone who does not want motion gets the colour and no pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .activity-running > .activity-bullet {
+    animation: none;
+  }
+}
+
 /* The text beside the bullet is one flex item in inline flow, so a long
    command wraps under itself inside the column and the status moves to the
    next line as one piece. The name used to be its own item that never
@@ -1088,17 +1114,70 @@ button {
   overflow-y: auto;
 }
 
-.activity-pass {
-  color: var(--ok);
-}
-
-.activity-fail {
-  color: var(--danger);
+/* The result word, under the command, once the details are open. */
+.activity-result {
+  margin: -2px 0 8px 24px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
 }
 
 .activity-notice .activity-summary {
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* The group is a closed details: one line saying what is happening, or what
+   ran once it is over, with the lines themselves one click under it. Only
+   the reader toggles it; appending a line never does. */
+.activity-summary-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12.6px;
+  line-height: 1.9;
+  color: var(--text-dim);
+}
+
+.activity-summary-line::-webkit-details-marker {
+  display: none;
+}
+
+.activity-summary-marker {
+  flex: none;
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.activity[open] > .activity-summary-line .activity-summary-marker {
+  transform: rotate(90deg);
+}
+
+/* The marker takes the group's state: running, failed, or done. */
+.activity.activity-ok > .activity-summary-line .activity-summary-marker {
+  color: var(--ok);
+}
+
+.activity.activity-fail > .activity-summary-line .activity-summary-marker {
+  color: var(--danger);
+}
+
+.activity.activity-running > .activity-summary-line .activity-summary-marker {
+  color: var(--accent);
+}
+
+.activity-summary-phrase {
+  color: var(--text-faint);
+  min-width: 0;
+}
+
+.activity-summary-phrase:not(:empty)::before {
+  content: " \00b7  ";
 }
 
 /* ---------------------------------------------------------------- cards */
@@ -1268,6 +1347,48 @@ button {
   background: var(--bg-inset);
   border: 1px solid var(--warn-line);
   color: #f6dfae;
+}
+
+/* Once decided the card is a closed details: the head line stays, with the
+   outcome and the tool, and the arguments and the note are one click under
+   it. While it waits the head refuses the click in code, so it does not
+   look like one. */
+.card-approval > .card-head {
+  list-style: none;
+}
+
+.card-approval > .card-head::-webkit-details-marker {
+  display: none;
+}
+
+.card-approval:not([open]) > .card-head {
+  margin-bottom: 0;
+}
+
+.card-approval > .card-head .tool-name {
+  font-size: 12px;
+  padding: 1px 7px;
+}
+
+.card-approval.is-settled > .card-head {
+  cursor: pointer;
+}
+
+.card-approval.is-settled > .card-head::after {
+  content: "\25b8";
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.card-approval.is-settled[open] > .card-head::after {
+  transform: rotate(90deg);
+}
+
+.card-approval.is-settled .tool-name {
+  border-color: var(--line);
+  color: var(--text-dim);
 }
 
 .btn {

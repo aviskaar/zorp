@@ -48,7 +48,9 @@ import {
 } from "./onboarding";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
-import { callLine, toolLine } from "./activity-line";
+import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
+import { activityGroup as newActivityGroup, type ActivityGroup } from "./activity-group";
+import { approvalCard, type ApprovalOutcome } from "./approval-card";
 import {
   needsText,
   producedSince,
@@ -241,8 +243,6 @@ interface Elements {
   artifactImage: HTMLImageElement;
 }
 
-type ApprovalOutcome = "allowed" | "denied" | "expired" | "stopped";
-
 interface PendingApproval {
   settle(outcome: ApprovalOutcome): void;
 }
@@ -296,7 +296,14 @@ let turnStopped = false;
 let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
-let activityGroup: HTMLElement | null = null;
+let activityGroup: ActivityGroup | null = null;
+/**
+ * The line for the call that has started and not yet reported. The agent
+ * runs tools one at a time, so there is at most one. `name` is the server's
+ * name for the call, and the `tool` event for it carries the same one,
+ * which is how the result finds its line.
+ */
+let pendingTool: { name: string; node: HTMLElement } | null = null;
 let spinnerTimer: number | null = null;
 let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
@@ -1245,8 +1252,22 @@ function applyEvent(event: ZorpEvent): void {
       updateWorking();
       break;
 
+    case "tool_started":
+      // Two starts with no result between them cannot happen while tools run
+      // one at a time; if it ever does, the first must not spin forever.
+      abandonPendingTool("This call never reported a result");
+      pendingTool = { name: event.name, node: startedLine(document, event.name, event.phrase) };
+      appendActivity(pendingTool.node);
+      break;
+
     case "tool":
-      appendActivity(activityLine(event.name, event.summary, event.phrase));
+      if (pendingTool && pendingTool.name === event.name) {
+        settleLine(pendingTool.node, event.summary);
+        pendingTool = null;
+      } else {
+        abandonPendingTool("This call never reported a result");
+        appendActivity(activityLine(event.name, event.summary, event.phrase));
+      }
       // A tool ran, so the workspace may have changed. The name and summary
       // are not read for a path: what got written is a question for the
       // directory, not for the tool that claims to have written it.
@@ -1296,7 +1317,7 @@ function applyEvent(event: ZorpEvent): void {
       // Above the answer, because it is the reason for the answer. An
       // activity line would put it in with the tool calls, where it reads
       // as something the agent did rather than as something it was told.
-      activityGroup = null;
+      closeActivityGroup();
       appendMemoryNote(event);
       break;
 
@@ -1328,27 +1349,27 @@ function applyEvent(event: ZorpEvent): void {
       // Activity grouping is for consecutive tool lines and a panel block
       // is not one, so the group is broken here or the next tool line
       // would try to join a group the panel already interrupted.
-      activityGroup = null;
+      closeActivityGroup();
       panelView.start(event.lens);
       break;
 
     case "reviewer_finished":
-      activityGroup = null;
+      closeActivityGroup();
       panelView.finish(event.lens, event.findings);
       break;
 
     case "reviewer_failed":
-      activityGroup = null;
+      closeActivityGroup();
       panelView.fail(event.lens, event.why);
       break;
 
     case "panel_done":
-      activityGroup = null;
+      closeActivityGroup();
       panelView.done(event);
       break;
 
     case "investigate_done":
-      activityGroup = null;
+      closeActivityGroup();
       zorpView.done(event);
       // Nothing committed a metric for this question and the model would
       // not propose one. The person is asked, which is the whole point of
@@ -1369,6 +1390,7 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "done":
+      closeActivityGroup();
       // A panel that ended without a `panel_done`, which is what a stop
       // or an error looks like, leaves its block on the page with its
       // reviewers in whatever state they reached. Forgetting it here is
@@ -1391,6 +1413,10 @@ function applyEvent(event: ZorpEvent): void {
 
 function finishTurn(): void {
   setTurnRunning(false);
+  // A call that started and never reported must not go on spinning once the
+  // turn is over. `done` follows `error` and `stopped` alike, so this one
+  // place covers every ending.
+  abandonPendingTool("The turn ended before this call reported");
   workingDepth = 0;
   updateWorking();
   // Settled with the reason, so a card left open by a stop does not claim it
@@ -1519,7 +1545,7 @@ const streamed = new StreamedMessage(
 );
 
 function appendStreamDelta(chunk: string): void {
-  if (!streamed.open) activityGroup = null;
+  if (!streamed.open) closeActivityGroup();
   streamed.append(chunk);
 }
 
@@ -1533,7 +1559,7 @@ function finishStream(authoritative: string | null, kept = true): void {
 }
 
 function appendMessage(role: "user" | "assistant", text: string): void {
-  activityGroup = null;
+  closeActivityGroup();
   const row = el("article", `msg msg-${role}`);
   const label = el("div", "msg-role");
   label.textContent = role === "user" ? "You" : "zorp";
@@ -1602,25 +1628,31 @@ async function branchChat(answer: number): Promise<void> {
 }
 
 /**
- * The CLI's shape: a bullet, the tool name, then the result. The line and
- * the phrase on it are built in `src/activity-line.ts`: the model's own
- * description of the call when it gave one, else a phrase computed from
- * the command, and the full command sits under the line for a click. The
- * approval card is deliberately not this: what a person approves is shown
- * whole.
+ * The CLI's shape, less the result word: a bullet and the phrase, with the
+ * result as the bullet's colour. The line is built in `src/activity-line.ts`:
+ * the model's own description of the call when it gave one, else a phrase
+ * computed from the command, the full command under the line for a click,
+ * and the status word in the title and under the command. The approval
+ * card is deliberately not this: what a person approves is shown
+ * whole until they have decided.
  */
 function activityLine(name: string, summary: string, phrase?: string): HTMLElement {
   return toolLine(document, name, summary, phrase);
 }
 
+/** Settle the pending line, if there is one, as failed, with `why` as its status. */
+function abandonPendingTool(why: string): void {
+  if (!pendingTool) return;
+  settleLine(pendingTool.node, why, "activity-fail");
+  pendingTool = null;
+}
+
+/** Not a tool line, so it keeps its word; the colour classes are the same. */
 function verifyLine(command: string, passed: boolean): HTMLElement {
-  return callLine(
-    document,
-    "verify",
-    command,
-    passed ? "passed" : "failed",
-    passed ? "activity-pass" : "activity-fail",
-  );
+  const word = passed ? "passed" : "failed";
+  const node = callLine(document, "verify", command, null, word);
+  settleLine(node, word);
+  return node;
 }
 
 function noticeLine(text: string): HTMLElement {
@@ -1629,13 +1661,27 @@ function noticeLine(text: string): HTMLElement {
   return line;
 }
 
-/** Consecutive activity lines share one group so they get a single left rule. */
+/**
+ * Consecutive activity lines share one group, collapsed to a single line
+ * that says what the latest one is doing. Nothing here scrolls: `applyEvent`
+ * decides that once, after the event, from where the reader was before it.
+ */
 function appendActivity(line: HTMLElement): void {
   if (!activityGroup) {
-    activityGroup = el("div", "activity");
-    dom.transcript.append(activityGroup);
+    activityGroup = newActivityGroup(document);
+    dom.transcript.append(activityGroup.root);
   }
   activityGroup.append(line);
+}
+
+/**
+ * The one place a group is finished. Whatever interrupts the run of lines,
+ * an answer, a card, a panel, the end of the turn, comes through here, so
+ * the summary turns into its count exactly once.
+ */
+function closeActivityGroup(): void {
+  activityGroup?.close();
+  activityGroup = null;
 }
 
 /**
@@ -1660,7 +1706,7 @@ function appendMemoryNote(event: MemoryEvent): void {
 }
 
 function appendError(message: string): void {
-  activityGroup = null;
+  closeActivityGroup();
   const card = el("div", "card card-error");
   const head = el("div", "card-head");
   head.append(glyph("alert"), textNode("span", "card-title", "Something went wrong"));
@@ -1683,7 +1729,7 @@ function appendError(message: string): void {
  * streamed by then is above this and stays.
  */
 function appendStopped(): void {
-  activityGroup = null;
+  closeActivityGroup();
   const card = el("div", "card card-stopped");
   const head = el("div", "card-head");
   head.append(glyph("stop"), textNode("span", "card-title", "Stopped"));
@@ -1696,95 +1742,18 @@ function appendStopped(): void {
 
 /**
  * The security boundary of the product. The agent is parked until one of these
- * buttons is pressed, and nothing here presses one automatically.
+ * buttons is pressed, and nothing here presses one automatically. The card
+ * itself is built in `src/approval-card.ts`; this wires its buttons to the
+ * server and keeps it in the pending set until it settles.
  */
-/**
- * How a settled approval card describes itself.
- *
- * Records rather than nested conditionals, so a new outcome is a compile
- * error here instead of quietly falling into whichever branch was last. The
- * distinction they carry is who decided: "expired" means nobody did and the
- * server denied it after five minutes, "stopped" means the reader ended the
- * turn while it was on screen. Both deny the tool. Calling the second one
- * expired would be a small lie told at exactly the moment the reader is
- * checking what their button press did.
- */
-const APPROVAL_TITLES: Record<ApprovalOutcome, string> = {
-  allowed: "Tool allowed",
-  denied: "Tool denied",
-  expired: "Approval expired",
-  stopped: "Turn stopped",
-};
-
-const APPROVAL_NOTES: Record<ApprovalOutcome, string> = {
-  allowed: "You allowed this, so the agent carried on.",
-  denied: "You denied this. The tool did not run.",
-  expired: "The turn ended before this was answered, so the server denied it.",
-  stopped: "You stopped the turn while this was waiting, so the tool did not run.",
-};
-
 function appendApproval(id: string, tool: string, args: string): void {
-  activityGroup = null;
+  closeActivityGroup();
 
-  const card = el("div", "card card-approval");
-  const head = el("div", "card-head");
-  const title = textNode("span", "card-title", "Approval required");
-  const tag = textNode("span", "card-tag", "waiting");
-  head.append(glyph("shield"), title, tag);
-
-  const lead = el("p", "card-body");
-  lead.textContent =
-    "The agent wants to use a tool that can change this machine. It is stopped until you decide.";
-
-  const toolField = el("div", "field");
-  toolField.append(textNode("span", "field-label", "tool"), textNode("code", "tool-name", tool));
-
-  const argsField = el("div", "field field-block");
-  argsField.append(textNode("span", "field-label", "arguments"));
-  const argsBlock = el("pre", "card-args");
-  const argsCode = el("code");
-  argsCode.textContent = prettyArguments(args);
-  argsBlock.append(argsCode);
-  argsField.append(argsBlock);
-
-  const actions = el("div", "card-actions");
-  const allowButton = el("button", "btn btn-allow") as HTMLButtonElement;
-  allowButton.type = "button";
-  allowButton.textContent = "Allow";
-  const denyButton = el("button", "btn btn-deny") as HTMLButtonElement;
-  denyButton.type = "button";
-  denyButton.textContent = "Deny";
-  // The third choice, offered here because this is the moment a long run
-  // becomes a click per step. It is spelled out rather than abbreviated, it
-  // is not the primary button, and taking it turns the toolbar pill red
-  // until the mode is turned off. Every call it then lets through is still
-  // reviewed before it runs; see `zorp-web/src/tool_safety.rs`.
-  const allowAllButton = el("button", "btn btn-allow-all") as HTMLButtonElement;
-  allowAllButton.type = "button";
-  allowAllButton.textContent = "Allow all for this chat";
-  allowAllButton.title =
-    "Stop asking for the rest of this chat. The hard denylist still applies.";
-  actions.append(allowButton, denyButton, allowAllButton);
-
-  const note = el("p", "card-note");
-  card.append(head, lead, toolField, argsField, actions, note);
-  dom.transcript.append(card);
-
-  const buttons = [allowButton, denyButton, allowAllButton];
-  const enable = (on: boolean): void => {
-    for (const button of buttons) {
-      button.disabled = !on;
-    }
-  };
+  const card = approvalCard(document, tool, args, glyph("shield"));
+  dom.transcript.append(card.root);
 
   const settle = (outcome: ApprovalOutcome): void => {
-    enable(false);
-    actions.remove();
-    lead.remove();
-    card.classList.add(`is-${outcome}`);
-    tag.textContent = outcome;
-    title.textContent = APPROVAL_TITLES[outcome];
-    note.textContent = APPROVAL_NOTES[outcome];
+    card.settle(outcome);
     pendingApprovals.delete(id);
   };
 
@@ -1792,14 +1761,14 @@ function appendApproval(id: string, tool: string, args: string): void {
     if (!sessionId) {
       return;
     }
-    enable(false);
-    note.textContent = "Sending your decision…";
+    card.enable(false);
+    card.note("Sending your decision…");
     try {
       await approve(sessionId, id, allow);
       settle(allow ? "allowed" : "denied");
     } catch (error) {
-      enable(true);
-      note.textContent = `Could not send the decision: ${describeError(error)}`;
+      card.enable(true);
+      card.note(`Could not send the decision: ${describeError(error)}`);
     }
   };
 
@@ -1811,19 +1780,19 @@ function appendApproval(id: string, tool: string, args: string): void {
    * buttons rather than approving something under a promise that was not kept.
    */
   const decideAll = async (): Promise<void> => {
-    enable(false);
-    note.textContent = "Standing approvals down for this chat…";
+    card.enable(false);
+    card.note("Standing approvals down for this chat…");
     if (!(await changeApprovalMode(true))) {
-      enable(true);
-      note.textContent = "The approval mode did not change, so this is still your decision.";
+      card.enable(true);
+      card.note("The approval mode did not change, so this is still your decision.");
       return;
     }
     await decide(true);
   };
 
-  allowButton.addEventListener("click", () => void decide(true));
-  denyButton.addEventListener("click", () => void decide(false));
-  allowAllButton.addEventListener("click", () => void decideAll());
+  card.allow.addEventListener("click", () => void decide(true));
+  card.deny.addEventListener("click", () => void decide(false));
+  card.allowAll.addEventListener("click", () => void decideAll());
 
   pendingApprovals.set(id, { settle });
 }
@@ -1834,19 +1803,6 @@ function expirePendingApprovals(outcome: "expired" | "stopped" = "expired"): voi
     pending.settle(outcome);
   }
   pendingApprovals.clear();
-}
-
-/** Format tool arguments as indented JSON when they parse, verbatim otherwise. */
-function prettyArguments(args: string): string {
-  const trimmed = (args ?? "").trim();
-  if (!trimmed) {
-    return "(no arguments)";
-  }
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
-  } catch {
-    return trimmed;
-  }
 }
 
 /**
@@ -2141,6 +2097,8 @@ async function openSession(session: SessionSummary): Promise<void> {
           appendMessage(message.role, message.content);
         }
       });
+      // A replayed group is over by construction, so it shows its count.
+      closeActivityGroup();
     }
   } catch (error) {
     appendError(`Could not load this session: ${describeError(error)}`);
@@ -2181,7 +2139,8 @@ function resetTranscript(): void {
   pendingApprovals.clear();
   dom.transcript.replaceChildren();
   answers.reset();
-  activityGroup = null;
+  closeActivityGroup();
+  pendingTool = null;
   setTurnRunning(false);
   workingDepth = 0;
   updateWorking();

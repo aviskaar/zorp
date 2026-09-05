@@ -109,6 +109,17 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         phrase: Option<String>,
     },
+    /// A tool call is about to run: approval, where the policy asked for
+    /// it, has let it through, and the tool has not started.
+    ///
+    /// `name` and `phrase` are the values the `Tool` frame for the same
+    /// call carries once it has a result. The browser draws the line in an
+    /// in-progress state on this frame and settles it on that one.
+    ToolStarted {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phrase: Option<String>,
+    },
     Verify {
         command: String,
         passed: bool,

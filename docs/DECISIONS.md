@@ -12,6 +12,85 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-09-05: the tool line carries its result as colour, and the browser hears a call start
+
+**Decision:** the browser's tool line no longer writes its status word
+(`exited 0`, `timed out`, `created a.md (3 lines)`) beside the phrase. The
+result is the bullet's colour, from exactly one of three classes on the
+`.activity-line`: `activity-ok`, `activity-fail`, `activity-running`. The
+word is the line's `title`, and for a shell call it is also under the
+verbatim command in the details, so anyone who wants it has it one hover or
+one click away. `stateForStatus` in `web/src/activity-line.ts` is the one
+mapping. `exited 0` and `passed` are ok. A non-zero exit, `timed out`,
+`cancelled`, `failed`, `error`, `denied`, `unknown tool`, a withheld
+result, a patch of which nothing applied, and the subagent tool's stopped
+states are failures. Everything else is ok, because the other tools
+summarise a success in their own words (`a.txt (12 lines)`, `'q' (4
+matches)`, `started PID 512`) and a rule that read an unknown word as a
+failure would paint a working session red. That is the split the agent
+loop already uses for its own `succeeded`. The `verify` line keeps its
+word, since it is not a tool line, and takes the same classes.
+
+The in-progress state is real rather than implied.
+`Renderer::tool_starting(name, description)` is a new trait method with an
+empty default, so the CLI and every test renderer are untouched.
+`WebRenderer` turns it into a
+`tool_started` frame carrying the same `name` and `phrase` the `tool` frame
+for that call will carry, and the browser appends a running line on the
+first and settles it in place on the second, matching on the name; tools
+run one at a time, so one pending reference is enough. A reopened session
+has every result, so a replayed line is never in progress. A turn that
+ends with a line still pending fails it, with the title saying the turn
+ended before the call reported.
+
+**Why it is sent after approval:** `tool_starting` fires from
+`Agent::run_tool`, which only the `Allow` branch and the approved `Ask`
+branch reach, immediately before `Registry::dispatch`. Sent before
+approval, the line would pulse under the approval card while the person
+was still deciding, which reads as a call that ran without permission, and
+a denied call would get a running line that nothing ever settles. A denied
+call never started, so it gets only its result, as before. `agent.rs` has
+a test for the order and a test for the denial.
+
+**Ruled out:** keeping the word on the line in a smaller face (the line
+was already three things wide and wrapped); marking any unknown status as
+a failure (above); a second class scheme for the activity group's summary
+(the group reads the three line classes and nothing else).
+
+## 2026-09-05: the activity group and the settled approval card fold to one line
+
+**Finding:** a long run's transcript is the answers, not the plumbing. A
+turn that ran twenty tool calls put twenty lines above its answer, and
+every approval it asked for stayed on the page with its whole arguments
+block after it had been decided. Reading a session back meant scrolling
+through the machinery to find what it produced.
+
+**Decision:** both fold to one line, and both are native `details`
+elements with no toggle code of their own. The run of consecutive activity
+lines is one closed `details` (`web/src/activity-group.ts`) whose summary
+reads "Working on it" and the phrase of the latest line while the turn is
+still adding to it, and the count, "3 steps" or "3 steps, 1 failed", once
+it is closed. The phrase is read off the line and written back through
+`textContent` after the same clamp the line used. A group is closed in one
+place, `closeActivityGroup` in `main.ts`, by whatever interrupts the run:
+an answer, a card, a panel block, the end of the turn, a replay. The
+approval card (`web/src/approval-card.ts`) is an open `details` while it
+waits and refuses a click on its head, because a person must see what
+they are deciding on; once settled it folds to its head, the outcome and
+the tool name, with the arguments and the note one click under it. The
+group's marker takes its colour from the lines' state classes, and a line
+carrying none counts as ok. Appending a line never toggles a group, so a
+reader who opened one keeps it open.
+
+**What it ruled out:** a custom expand and collapse in code, when the
+browser has one. Hiding the individual lines, which stay exactly as
+`activity-line.ts` builds them and are one click away. Folding a card
+before it is decided.
+
+**Not changed:** what is stored or sent. This is the page's reading of
+events it already had, and nothing about the event stream, the store, or
+the tool line's phrase moved.
+
 ## 2026-09-05: a chat branches at an answer by copying the stored messages up to it into a new session
 
 **Finding:** the only way to try a different path from the middle of a

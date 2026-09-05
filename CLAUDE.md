@@ -298,8 +298,17 @@ resulting artifact, deliver it in the right form.
   stored call's arguments, and `get_session` replays stored tool calls as
   `tool` entries with a status derived from the stored result in code.
   Recall and memory never read `tool_calls`, which is what keeps it out
-  of the evidence. Run `cargo test --workspace` and the three `web/`
-  commands whenever it changes. See `docs/DECISIONS.md` (2026-09-04).
+  of the evidence. The line carries its result as colour and never as a
+  word: exactly one of `activity-ok`, `activity-fail` or
+  `activity-running` sits on the `.activity-line`, the status text is in
+  the line's `title` and under the command in the details, and
+  `stateForStatus` in `activity-line.ts` is the one mapping.
+  `Renderer::tool_starting` fires from `Agent::run_tool`, after approval
+  and before `dispatch`, so a denied call never draws as running; the
+  browser appends a running line on the `tool_started` frame and settles
+  it in place on the `tool` frame with the same name. Run `cargo test
+  --workspace` and the three `web/` commands whenever any of it changes.
+  See `docs/DECISIONS.md` (2026-09-04, 2026-09-05).
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's
@@ -439,6 +448,11 @@ resulting artifact, deliver it in the right form.
   nothing more. It holds no settings of its own, it cannot start a turn, a
   panel or an investigate run, and it calls a model free only when the
   listing stated a price of zero. See `docs/DECISIONS.md` (2026-09-01).
+  `web/src/activity-group.ts` is the run of consecutive tool lines folded
+  to one native `details`, and `web/src/approval-card.ts` is the approval
+  card, open while it waits and folded to its head once settled; both put
+  every string on the page through `textContent` and are tested without
+  a page. See `docs/DECISIONS.md` (2026-09-05).
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` and
