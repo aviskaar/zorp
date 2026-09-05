@@ -73,7 +73,6 @@ still the truncation error, word for word.
 
 ---
 
-
 ## 2026-09-05: zorp-web works in a workspace somebody chose, and in none until they have
 
 **Finding:** `zorp-web` ran the agent in the directory the server was
