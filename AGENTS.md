@@ -479,6 +479,11 @@ resulting artifact, deliver it in the right form.
   card, open while it waits and folded to its head once settled; both put
   every string on the page through `textContent` and are tested without
   a page. See `docs/DECISIONS.md` (2026-09-05).
+  `web/src/file-links.ts` turns a code span or a relative markdown link in
+  an answer into a button that opens that file in the artifact pane, and
+  the workspace listing is the only thing that decides what is a file, so
+  a name it does not know stays plain text and no reference in an answer
+  leads out of the workspace; see `docs/DECISIONS.md` (2026-09-05).
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` and

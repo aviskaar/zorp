@@ -968,6 +968,27 @@ button {
   color: #cfe9e3;
 }
 
+/* A file the answer named. It keeps the code span's look, since that is what
+   it was a moment ago, and adds the underline and the pointer that say it is
+   a control rather than a word. */
+.file-link {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line-soft);
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.file-link:hover,
+.file-link:focus-visible {
+  border-color: var(--accent);
+}
+
 .code-block {
   margin: 0.7em 0;
   padding: 12px 14px;

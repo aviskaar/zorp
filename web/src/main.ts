@@ -57,6 +57,7 @@ import { coerceCitations, renderMemoryNote } from "./memory-note";
 import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
 import { activityGroup as newActivityGroup, type ActivityGroup } from "./activity-group";
 import { approvalCard, type ApprovalOutcome } from "./approval-card";
+import { linkFiles } from "./file-links";
 import {
   needsText,
   producedSince,
@@ -1617,7 +1618,12 @@ const streamed = new StreamedMessage(
   renderMarkdown,
   undefined,
   undefined,
-  (row, text) => row.append(answerControls(text, answers.next(text, finishKept))),
+  (row, text) => {
+    // Before the controls go on, so the pass walks the answer and nothing
+    // else. A file the answer named opens in the pane from here.
+    linkFiles(row, knownArtifacts, openArtifactFromAnswer);
+    row.append(answerControls(text, answers.next(text, finishKept)));
+  },
 );
 
 function appendStreamDelta(chunk: string): void {
@@ -1647,6 +1653,11 @@ function appendMessage(role: "user" | "assistant", text: string): void {
     renderRichText(body, text);
   } else {
     renderMarkdown(body, text);
+    // A file the answer names is worth a click rather than a hunt through the
+    // Files pane. The listing decides what is a file, so an answer drawn
+    // before the listing arrives gets its links when it does: see
+    // `noteArtifacts`.
+    linkFiles(body, knownArtifacts, openArtifactFromAnswer);
   }
   row.append(label, body);
   if (role === "assistant") {
@@ -2189,6 +2200,10 @@ async function openSession(session: SessionSummary): Promise<void> {
       });
       // A replayed group is over by construction, so it shows its count.
       closeActivityGroup();
+      // A reopened chat's answers name files too, and nothing else here asks
+      // the workspace what it holds. Nothing is fresh against a snapshot this
+      // session does not have, so this lists and links and opens no pane.
+      void checkForProducedArtifacts(true);
     }
   } catch (error) {
     appendError(`Could not load this session: ${describeError(error)}`);
@@ -3148,6 +3163,35 @@ let openArtifact: string | null = null;
 let artifactsAtTurnStart: ArtifactStamp[] | null = null;
 /** Paths this turn has produced, so the list can mark them. */
 const producedThisTurn = new Set<string>();
+/**
+ * Every file the last listing reported.
+ *
+ * The one input to `linkFiles`, and deliberately the only one: a name an
+ * answer wrote opens a file because the workspace says that file is there,
+ * never because the model said so. See `file-links.ts`.
+ */
+let knownArtifacts: string[] = [];
+
+/**
+ * Remember what the workspace holds, and make the answers that name a file
+ * openable.
+ *
+ * Called wherever a listing arrives, because an answer can name a file before
+ * the listing has caught up with it. The pass runs over the whole transcript
+ * each time, and a reference it already upgraded is no longer a code span for
+ * it to find, so running it again costs nothing and wraps nothing twice.
+ */
+function noteArtifacts(files: readonly ArtifactStamp[]): void {
+  knownArtifacts = files.map((file) => file.path);
+  linkFiles(dom.transcript, knownArtifacts, openArtifactFromAnswer);
+}
+
+/** Open a file an answer named, the way an investigate run opens its draft. */
+function openArtifactFromAnswer(path: string): void {
+  showArtifactsPane();
+  void showArtifact(path);
+}
+
 /** When the listing was last fetched, to keep tool activity from hammering it. */
 let lastArtifactPoll = 0;
 /** How often tool activity may trigger a listing refresh. */
@@ -3253,6 +3297,7 @@ async function snapshotArtifacts(): Promise<void> {
   forgetProducedArtifacts();
   try {
     artifactsAtTurnStart = (await listArtifacts()).files;
+    noteArtifacts(artifactsAtTurnStart);
   } catch {
     // No snapshot means nothing gets claimed as produced this turn. Quietly
     // doing nothing beats badging the button over a failed request.
@@ -3290,6 +3335,10 @@ async function checkForProducedArtifacts(force = false): Promise<void> {
     return;
   }
 
+  // Before the early return below. Nothing being fresh says nothing about
+  // what the workspace holds, and the answers on the page want to know.
+  noteArtifacts(files);
+
   const fresh = producedSince(artifactsAtTurnStart, files);
   if (!fresh.length) {
     return;
@@ -3308,6 +3357,7 @@ async function refreshArtifacts(): Promise<void> {
   try {
     const listing = await listArtifacts();
     lastArtifactPoll = Date.now();
+    noteArtifacts(listing.files);
     renderArtifactList(listing.files, listing.truncated);
     // Reopening what was already open means a refresh after a run shows the
     // new contents rather than dropping the reader back to an empty pane.
