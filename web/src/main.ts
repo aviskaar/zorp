@@ -2518,6 +2518,10 @@ async function saveSettings(): Promise<void> {
     // The key just saved may be the one a protected endpoint was waiting
     // for, so try the listing again with it.
     void refreshModelOptions();
+    // A save that worked leaves nothing to read, so the dialog goes away.
+    // A save that failed keeps it open, because the message on it is the
+    // only place the reason is said.
+    closeSettings();
   } catch (error) {
     setSettingsResult(`Could not save: ${describeError(error)}`, "fail");
   } finally {
