@@ -277,13 +277,16 @@ pub fn stream_sse(
             Body::Outcome(outcome) => return Ok(outcome),
             Body::Refused(error) => {
                 let said = format!("{error} inside a 200 stream");
+                let provider = error.provider.as_deref();
                 if error
                     .code
-                    .is_some_and(|code| retrying.again(url, code, asked, &said))
+                    .is_some_and(|code| retrying.again(url, code, provider, asked, &said))
                 {
                     continue;
                 }
-                let tail = error.code.map_or(String::new(), |c| retrying.exhausted(c));
+                let tail = error
+                    .code
+                    .map_or(String::new(), |c| retrying.exhausted(c, provider));
                 return Err(InStreamError::Refused { error, tail }.into());
             }
         }
