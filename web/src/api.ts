@@ -224,6 +224,19 @@ export interface ToolEvent {
   phrase?: string;
 }
 
+/**
+ * A tool call is about to run. Sent after approval, where the policy asked
+ * for one, and before the tool executes. The `tool` event for the same call
+ * follows with its result and carries the same `name` and `phrase`.
+ */
+export interface ToolStartedEvent {
+  seq: number;
+  type: "tool_started";
+  name: string;
+  /** The model's own description of the call, when it gave one; model-authored, display only. */
+  phrase?: string;
+}
+
 /** A verification command ran and either passed or failed. */
 export interface VerifyEvent {
   seq: number;
@@ -524,6 +537,7 @@ export interface InvestigateDoneEvent {
 export type ZorpEvent =
   | WorkingEvent
   | WorkingDoneEvent
+  | ToolStartedEvent
   | ToolEvent
   | VerifyEvent
   | NoticeEvent
@@ -1234,6 +1248,7 @@ export function streamEvents(
 const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   working: true,
   working_done: true,
+  tool_started: true,
   tool: true,
   verify: true,
   notice: true,

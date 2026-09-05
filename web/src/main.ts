@@ -47,7 +47,7 @@ import {
 } from "./onboarding";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
-import { callLine, toolLine } from "./activity-line";
+import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
 import {
   needsText,
   producedSince,
@@ -295,6 +295,13 @@ let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
 let activityGroup: HTMLElement | null = null;
+/**
+ * The line for the call that has started and not yet reported. The agent
+ * runs tools one at a time, so there is at most one. `name` is the server's
+ * name for the call, and the `tool` event for it carries the same one,
+ * which is how the result finds its line.
+ */
+let pendingTool: { name: string; node: HTMLElement } | null = null;
 let spinnerTimer: number | null = null;
 let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
@@ -1237,8 +1244,22 @@ function applyEvent(event: ZorpEvent): void {
       updateWorking();
       break;
 
+    case "tool_started":
+      // Two starts with no result between them cannot happen while tools run
+      // one at a time; if it ever does, the first must not spin forever.
+      abandonPendingTool("This call never reported a result");
+      pendingTool = { name: event.name, node: startedLine(document, event.name, event.phrase) };
+      appendActivity(pendingTool.node);
+      break;
+
     case "tool":
-      appendActivity(activityLine(event.name, event.summary, event.phrase));
+      if (pendingTool && pendingTool.name === event.name) {
+        settleLine(pendingTool.node, event.summary);
+        pendingTool = null;
+      } else {
+        abandonPendingTool("This call never reported a result");
+        appendActivity(activityLine(event.name, event.summary, event.phrase));
+      }
       // A tool ran, so the workspace may have changed. The name and summary
       // are not read for a path: what got written is a question for the
       // directory, not for the tool that claims to have written it.
@@ -1383,6 +1404,10 @@ function applyEvent(event: ZorpEvent): void {
 
 function finishTurn(): void {
   setTurnRunning(false);
+  // A call that started and never reported must not go on spinning once the
+  // turn is over. `done` follows `error` and `stopped` alike, so this one
+  // place covers every ending.
+  abandonPendingTool("The turn ended before this call reported");
   workingDepth = 0;
   updateWorking();
   // Settled with the reason, so a card left open by a stop does not claim it
@@ -1542,25 +1567,30 @@ function answerControls(text: string): HTMLElement {
 }
 
 /**
- * The CLI's shape: a bullet, the tool name, then the result. The line and
- * the phrase on it are built in `src/activity-line.ts`: the model's own
- * description of the call when it gave one, else a phrase computed from
- * the command, and the full command sits under the line for a click. The
- * approval card is deliberately not this: what a person approves is shown
- * whole.
+ * The CLI's shape, less the result word: a bullet and the phrase, with the
+ * result as the bullet's colour. The line is built in `src/activity-line.ts`:
+ * the model's own description of the call when it gave one, else a phrase
+ * computed from the command, the full command under the line for a click,
+ * and the status word in the title and under the command. The approval
+ * card is deliberately not this: what a person approves is shown whole.
  */
 function activityLine(name: string, summary: string, phrase?: string): HTMLElement {
   return toolLine(document, name, summary, phrase);
 }
 
+/** Settle the pending line, if there is one, as failed, with `why` as its status. */
+function abandonPendingTool(why: string): void {
+  if (!pendingTool) return;
+  settleLine(pendingTool.node, why, "activity-fail");
+  pendingTool = null;
+}
+
+/** Not a tool line, so it keeps its word; the colour classes are the same. */
 function verifyLine(command: string, passed: boolean): HTMLElement {
-  return callLine(
-    document,
-    "verify",
-    command,
-    passed ? "passed" : "failed",
-    passed ? "activity-pass" : "activity-fail",
-  );
+  const word = passed ? "passed" : "failed";
+  const node = callLine(document, "verify", command, null, word);
+  settleLine(node, word);
+  return node;
 }
 
 function noticeLine(text: string): HTMLElement {
@@ -2121,6 +2151,7 @@ function resetTranscript(): void {
   pendingApprovals.clear();
   dom.transcript.replaceChildren();
   activityGroup = null;
+  pendingTool = null;
   setTurnRunning(false);
   workingDepth = 0;
   updateWorking();
