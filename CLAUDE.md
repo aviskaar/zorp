@@ -290,8 +290,17 @@ resulting artifact, deliver it in the right form.
   stored call's arguments, and `get_session` replays stored tool calls as
   `tool` entries with a status derived from the stored result in code.
   Recall and memory never read `tool_calls`, which is what keeps it out
-  of the evidence. Run `cargo test --workspace` and the three `web/`
-  commands whenever it changes. See `docs/DECISIONS.md` (2026-09-04).
+  of the evidence. The line carries its result as colour and never as a
+  word: exactly one of `activity-ok`, `activity-fail` or
+  `activity-running` sits on the `.activity-line`, the status text is in
+  the line's `title` and under the command in the details, and
+  `stateForStatus` in `activity-line.ts` is the one mapping.
+  `Renderer::tool_starting` fires from `Agent::run_tool`, after approval
+  and before `dispatch`, so a denied call never draws as running; the
+  browser appends a running line on the `tool_started` frame and settles
+  it in place on the `tool` frame with the same name. Run `cargo test
+  --workspace` and the three `web/` commands whenever any of it changes.
+  See `docs/DECISIONS.md` (2026-09-04, 2026-09-05).
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's

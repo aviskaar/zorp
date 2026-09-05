@@ -65,6 +65,13 @@ impl Renderer for WebRenderer {
         self.tool_described(name, summary, None);
     }
 
+    fn tool_starting(&mut self, name: &str, description: Option<&str>) {
+        self.emit(EventKind::ToolStarted {
+            name: name.to_string(),
+            phrase: description.map(str::to_string),
+        });
+    }
+
     fn tool_described(&mut self, name: &str, summary: &str, description: Option<&str>) {
         self.emit(EventKind::Tool {
             name: name.to_string(),
@@ -228,6 +235,40 @@ mod tests {
             &events[2].kind,
             EventKind::Tool { phrase: None, .. }
         ));
+    }
+
+    /// A call starting is its own frame, ahead of the result, with the
+    /// same name and phrase the result will carry, so the browser can find
+    /// the pending line to settle. No key at all for a missing phrase, the
+    /// shape `tool` already uses.
+    #[test]
+    fn a_call_starting_is_a_tool_started_frame_ahead_of_its_result() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut r = WebRenderer::new(tx);
+        r.tool_starting("run_command(ls web/src)", Some("Listing files in web/src"));
+        r.tool_described(
+            "run_command(ls web/src)",
+            "exited 0",
+            Some("Listing files in web/src"),
+        );
+        r.tool_starting("read_file", None);
+        drop(r);
+
+        let json: Vec<String> = rx
+            .iter()
+            .map(|e| serde_json::to_string(&e).unwrap())
+            .collect();
+        assert_eq!(json.len(), 3);
+        assert_eq!(
+            json[0],
+            "{\"seq\":0,\"type\":\"tool_started\",\"name\":\"run_command(ls web/src)\",\
+             \"phrase\":\"Listing files in web/src\"}"
+        );
+        assert!(json[1].contains("\"type\":\"tool\""), "{}", json[1]);
+        assert_eq!(
+            json[2],
+            "{\"seq\":2,\"type\":\"tool_started\",\"name\":\"read_file\"}"
+        );
     }
 
     /// A browser that closed its stream must not take the agent down with it.

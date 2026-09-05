@@ -517,6 +517,17 @@ impl Agent {
         self.message_metadata.get(index)
     }
 
+    /// Run a call the policy, and approval where it asked for one, has let
+    /// through. The renderer hears the call start first, with the name and
+    /// description its result will carry, so a browser can draw it as
+    /// running and settle that line when the result comes. Both denial
+    /// branches bypass this on purpose: a denied call never started.
+    fn run_tool(&mut self, call: &crate::model::ToolCall) -> ToolOutput {
+        self.renderer
+            .tool_starting(&call.display_name(), call.description());
+        self.registry.dispatch(call, &mut self.cx)
+    }
+
     fn push_message(&mut self, message: Message, metadata: MessageMetadata) {
         self.message_metadata
             .resize(self.messages.len(), MessageMetadata::default());
@@ -1076,10 +1087,8 @@ impl Agent {
                     )
                 } else {
                     match self.policy.decide(call) {
-                        Decision::Allow => self.registry.dispatch(call, &mut self.cx),
-                        Decision::Ask if self.approval.allows(call) => {
-                            self.registry.dispatch(call, &mut self.cx)
-                        }
+                        Decision::Allow => self.run_tool(call),
+                        Decision::Ask if self.approval.allows(call) => self.run_tool(call),
                         Decision::Ask => ToolOutput::new("denied: approval required", "denied"),
                         Decision::Deny(reason) => {
                             ToolOutput::new(format!("denied: {reason}"), "denied")
@@ -1668,7 +1677,17 @@ mod tests {
         fn tool(&mut self, name: &str, summary: &str) {
             self.tools.lock().unwrap().push(format!("{name}:{summary}"));
         }
+        fn tool_starting(&mut self, name: &str, description: Option<&str>) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("starting {name}:{}", description.unwrap_or("")));
+        }
         fn tool_described(&mut self, name: &str, summary: &str, description: Option<&str>) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("tool {name}:{}", description.unwrap_or("")));
             self.described
                 .lock()
                 .unwrap()
@@ -2143,6 +2162,69 @@ mod tests {
         assert_eq!(
             tools.lock().unwrap().clone(),
             vec!["read_file:ok".to_string()]
+        );
+    }
+
+    /// The browser draws a call as running from `tool_starting` and settles
+    /// it on `tool_described`, so the two must arrive in that order, for the
+    /// same call, with the same name and description.
+    #[test]
+    fn renderer_hears_a_call_starting_before_it_hears_the_result() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![
+            wants_tool_with(
+                "run_command",
+                json!({"command": "ls web/src", "description": "Listing files in web/src"}),
+            ),
+            text("done"),
+        ]);
+        let mut a = configured_agent(model, ApprovalMode::AutoApprove)
+            .register(Box::new(RecordingNamed {
+                name: "run_command",
+                ran: Arc::new(AtomicBool::new(false)),
+            }))
+            .with_renderer(Box::new(CaptureRenderer {
+                events: Arc::clone(&events),
+                ..Default::default()
+            }));
+        assert!(matches!(a.run("go"), Outcome::Complete(_)));
+        let events = events.lock().unwrap().clone();
+        let position = |wanted: &str| {
+            events
+                .iter()
+                .position(|e| e == wanted)
+                .unwrap_or_else(|| panic!("{wanted:?} was never sent: {events:?}"))
+        };
+        let starting = position("starting run_command(ls web/src):Listing files in web/src");
+        let result = position("tool run_command(ls web/src):Listing files in web/src");
+        assert!(starting < result, "{events:?}");
+    }
+
+    /// A call the approval gate refused never ran, so it never started: the
+    /// renderer hears only the result. A line drawn as running for a denied
+    /// call would read as a call that ran without permission.
+    #[test]
+    fn renderer_does_not_hear_a_denied_call_starting() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![wants_tool("write_file"), text("done")]);
+        let mut a = configured_agent(model, ApprovalMode::NonInteractive)
+            .register(Box::new(RecordingNamed {
+                name: "write_file",
+                ran: Arc::new(AtomicBool::new(false)),
+            }))
+            .with_renderer(Box::new(CaptureRenderer {
+                events: Arc::clone(&events),
+                ..Default::default()
+            }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let events = events.lock().unwrap().clone();
+        assert!(
+            !events.iter().any(|e| e.starts_with("starting ")),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(&"tool write_file:".to_string()),
+            "{events:?}"
         );
     }
 
