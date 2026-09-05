@@ -376,8 +376,14 @@ resulting artifact, deliver it in the right form.
   code and message, never handed up as a payload, and retried while no
   delta has reached the caller; the same event after a delta is named and
   not retried, and `retry_rate_limit.rs` counts connections to prove
-  both. 400, 401 and 404 are never retried, inside a stream or outside
-  one, because a slow misconfiguration reads like a network problem. And
+  both. 400 and 401 are never retried, inside a stream or outside one,
+  because a slow misconfiguration reads like a network problem. A 404 is
+  the same unless its error body names an upstream provider, in
+  `metadata.provider_name` or at the top of the chunk, in which case it
+  is a gateway relaying an
+  upstream that failed rather than our wrong URL or model id, and it is
+  retried on the status line or inside a 200 stream alike, while no delta
+  has reached the caller. And
   every retry says so on stderr, for the same reason the bound above is
   loud. It came from a 250 crate calibration run losing 25 of its first
   48 attempts to one 429 whose own body said "Please retry shortly", and

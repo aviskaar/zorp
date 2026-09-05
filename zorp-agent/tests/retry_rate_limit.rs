@@ -15,6 +15,12 @@
 //! the line: it is named and sent again. The same event after a delta is on
 //! the other side, and stays an error.
 //!
+//! A 404 is on whichever side its body puts it. One naming an upstream
+//! provider in `metadata.provider_name` is a gateway relaying an upstream
+//! that failed, and it is sent again on the status line or inside a 200
+//! stream alike, while nothing has been handed up. One naming no provider
+//! is a wrong URL or model id and is never sent again.
+//!
 //! Its own test binary, like `streaming_timeout.rs` and for a related reason:
 //! the bound on retrying is read from the environment, and a test that sets
 //! it must not race the rest of the suite.
@@ -49,6 +55,25 @@ const OVERLOADED: &str = r#"{"id":"gen-1788503823-rSnjToVnWKeIBMh0SRHz","object"
 /// The same envelope carrying a code that will never get better.
 const UNSUPPORTED: &str =
     r#"{"choices":[],"error":{"code":400,"message":"tool_choice is not supported"}}"#;
+
+/// The error behind "404 Provider returned error", which killed two attempts
+/// today after 26 good model calls each, and a third on its first request.
+/// It is OpenRouter relaying an upstream that failed, and the body says whose
+/// in `metadata.provider_name`. That name is what makes it the upstream's
+/// error rather than ours. The status-line body is as logged, trimmed of the
+/// user id. The stream event was not captured whole, so it is the same error
+/// object in OVERLOADED's envelope.
+const UPSTREAM_NOT_FOUND: &str = r#"{"error":{"message":"Provider returned error","code":404,"metadata":{"raw":"","provider_name":"Nvidia","is_byok":false}}}"#;
+const UPSTREAM_NOT_FOUND_EVENT: &str = r#"{"id":"gen-1788600000-x","object":"chat.completion.chunk","created":1788600000,"model":"nvidia/nemotron-3-ultra-550b-a55b:free","provider":"Nvidia","choices":[],"error":{"code":404,"message":"Provider returned error","metadata":{"raw":"","provider_name":"Nvidia","is_byok":false}}}"#;
+
+/// A 404 that is ours: no such model, so no upstream was asked and the body
+/// names none. As a document it is a status body; as one event it is the
+/// same refusal inside a 200 stream.
+/// The same failure as an event inside a stream, in the shape of the captured
+/// 502 event: the provider is named only at the top of the chunk.
+const UPSTREAM_NOT_FOUND_EVENT_TOP_LEVEL: &str = r#"{"id":"gen-1788600000-y","object":"chat.completion.chunk","created":1788600000,"model":"nvidia/nemotron-3-ultra-550b-a55b:free","provider":"Nvidia","choices":[],"error":{"code":404,"message":"Provider returned error","metadata":{"error_type":"provider_unavailable"}}}"#;
+const NO_SUCH_MODEL: &str =
+    r#"{"error":{"message":"No endpoints found for nvidia/nemotron-9-ultra:free.","code":404}}"#;
 
 static ENV: Once = Once::new();
 
@@ -392,6 +417,192 @@ fn an_error_document_from_an_endpoint_that_ignored_stream_is_sent_again() {
             connections.load(Ordering::SeqCst),
             2,
             "{framing:?}: the request was not sent again"
+        );
+    }
+}
+
+/* ---- the 404 that is the upstream's, and the 404 that is ours ---- */
+
+/// Two attempts died to this after 26 good calls each. The status line said
+/// 200, the event said 404, and the body named Nvidia: the request was
+/// routed and the upstream failed, which is the 502 case with a different
+/// number, and the same clean retry.
+#[test]
+fn a_404_naming_an_upstream_inside_a_stream_is_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::ErrorEvent {
+            after: 0,
+            event: UPSTREAM_NOT_FOUND_EVENT,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a stream whose upstream failed once");
+
+        assert!(
+            run.error.is_none(),
+            "{framing:?}: a 404 naming an upstream, inside a 200 stream, killed \
+             the attempt: {:?}",
+            run.error
+        );
+        assert!(
+            run.streamed,
+            "{framing:?}: the second send was not streamed"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: the request was not sent again"
+        );
+        assert_eq!(
+            run.payloads, 5,
+            "{framing:?}: the retried stream did not deliver exactly one answer"
+        );
+    }
+}
+
+/// The chunk may name the upstream only at its top, as the captured 502
+/// event does. That is still a name, and still the upstream's failure.
+#[test]
+fn a_404_naming_an_upstream_only_at_the_top_of_the_chunk_is_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::ErrorEvent {
+            after: 0,
+            event: UPSTREAM_NOT_FOUND_EVENT_TOP_LEVEL,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a stream whose upstream failed once");
+
+        assert!(
+            run.error.is_none(),
+            "{framing:?}: a 404 naming an upstream at the top of the chunk killed \
+             the attempt: {:?}",
+            run.error
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: the request was not sent again"
+        );
+    }
+}
+
+/// The third attempt got the same error on the status line, on its first
+/// request. The envelope is not what tells the two 404s apart. The body is,
+/// and it is read before the decision.
+#[test]
+fn a_404_naming_an_upstream_on_the_status_line_is_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::Status {
+            code: 404,
+            retry_after: None,
+            body: UPSTREAM_NOT_FOUND,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a status line relaying a failed upstream");
+
+        assert!(
+            run.error.is_none(),
+            "{framing:?}: a 404 naming an upstream, on the status line, killed \
+             the attempt: {:?}",
+            run.error
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            2,
+            "{framing:?}: the request was not sent again"
+        );
+        assert_eq!(
+            run.payloads, 5,
+            "{framing:?}: the retried stream did not deliver exactly one answer"
+        );
+    }
+}
+
+/// A 404 whose body names no provider is a model that is not there. Nobody
+/// upstream was asked, it will not get better, and it is not sent again in
+/// either envelope.
+#[test]
+fn a_404_naming_no_provider_is_ours_and_is_not_sent_again() {
+    bound_the_retrying();
+    static AS_STATUS: &[Reply] = &[Reply::Status {
+        code: 404,
+        retry_after: None,
+        body: NO_SUCH_MODEL,
+    }];
+    static IN_STREAM: &[Reply] = &[Reply::ErrorEvent {
+        after: 0,
+        event: NO_SUCH_MODEL,
+    }];
+    for (script, envelope) in [(AS_STATUS, "status line"), (IN_STREAM, "200 stream")] {
+        for framing in Framing::BOTH {
+            let (address, connections) = scripted_server(framing, script);
+
+            let run = stream_with_patience(address, "a model that is not there");
+
+            let error = run.error.unwrap_or_else(|| {
+                panic!("{framing:?}: a 404 on the {envelope} came back as an answer")
+            });
+            assert!(
+                error.contains("404") && error.contains("No endpoints found"),
+                "{framing:?}: the error does not say what the provider said: {error}"
+            );
+            assert_eq!(
+                connections.load(Ordering::SeqCst),
+                1,
+                "{framing:?}: a 404 on the {envelope} naming no provider was sent \
+                 again, which will never work and hides the cause"
+            );
+        }
+    }
+}
+
+/// The same event after a delta is on the other side of the line, whoever
+/// it names. The transport does not send again; the loop above may ask
+/// again, and `reask_dropped_stream.rs` proves that by type, not by code.
+#[test]
+fn a_404_after_a_delta_is_not_sent_again() {
+    bound_the_retrying();
+    static SCRIPT: &[Reply] = &[
+        Reply::ErrorEvent {
+            after: 1,
+            event: UPSTREAM_NOT_FOUND_EVENT,
+        },
+        Reply::Finished { events: 3 },
+    ];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a stream whose upstream failed after a delta");
+
+        let error = run
+            .error
+            .unwrap_or_else(|| panic!("{framing:?}: an error event came back as an answer"));
+        assert!(
+            error.contains("404") && error.contains("from Nvidia"),
+            "{framing:?}: the error does not say whose error it was: {error}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "{framing:?}: a stream that had delivered a delta was sent again"
+        );
+        assert_eq!(
+            run.payloads, 1,
+            "{framing:?}: the caller saw something other than the one delta"
         );
     }
 }

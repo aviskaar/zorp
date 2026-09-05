@@ -164,15 +164,26 @@ pub fn http_agent() -> ureq::Agent {
 /// an `error_type` of `provider_unavailable`. That is a 503 wearing a 502's
 /// number: the upstream refused the request rather than failing part way
 /// through it, and OpenRouter uses the code for exactly that. 504 stays out,
-/// because a gateway timeout means the upstream was working on it. 400, 401
-/// and 404 are left out for the plainer reason: they will not get better.
+/// because a gateway timeout means the upstream was working on it. 400 and
+/// 401 are left out for the plainer reason: they will not get better.
 /// Retrying them turns a misconfiguration into a slow misconfiguration, which
 /// reads like a network problem and costs somebody an afternoon.
-pub fn retry_reason(status: u16) -> Option<&'static str> {
+///
+/// A 404 is two different things and the body tells them apart. One whose
+/// error body names no provider is ours, a wrong URL or model id, and gets
+/// the 400 treatment. One whose body names an upstream provider is that
+/// provider's failure relayed by a gateway: OpenRouter sends "404 Provider
+/// returned error" with `metadata.provider_name` set when the upstream it
+/// routed to failed, on the status line or inside a 200 stream. The request
+/// was accepted and routed, and a second send may land elsewhere. `provider`
+/// is that name when the body carried one. See `docs/DECISIONS.md`
+/// (2026-09-04, the 404 entry).
+pub fn retry_reason(status: u16, provider: Option<&str>) -> Option<&'static str> {
     match status {
         429 => Some("rate limited"),
         502 => Some("overloaded upstream"),
         503 => Some("unavailable"),
+        404 if provider.is_some() => Some("upstream provider error"),
         _ => None,
     }
 }
@@ -192,6 +203,10 @@ pub struct ProviderError {
     pub code: Option<u16>,
     /// What the provider said, verbatim.
     pub message: String,
+    /// The upstream the error came from, when the body named one in
+    /// `metadata.provider_name`. A gateway relaying an upstream's failure
+    /// says whose; a refusal of our own request names nobody.
+    pub provider: Option<String>,
 }
 
 impl ProviderError {
@@ -201,8 +216,8 @@ impl ProviderError {
     /// `"error": null` included, is not an error.
     pub fn in_body(body: &Value) -> Option<Self> {
         let error = body.get("error")?;
-        let (code, message) = match error {
-            Value::String(text) => (None, text.clone()),
+        let (code, message, provider) = match error {
+            Value::String(text) => (None, text.clone(), None),
             Value::Object(fields) => {
                 let code = fields
                     .get("code")
@@ -217,11 +232,32 @@ impl ProviderError {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| error.to_string());
-                (code, message)
+                let provider = fields
+                    .get("metadata")
+                    .and_then(|metadata| metadata.get("provider_name"))
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    // A status-line error carries the name in
+                    // `metadata.provider_name`. An event inside a stream may
+                    // carry it only at the top of the chunk: the captured 502
+                    // event has `error.metadata.error_type` and a top-level
+                    // `provider`, and nothing else names the upstream.
+                    .or_else(|| {
+                        body.get("provider")
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_string)
+                    });
+                (code, message, provider)
             }
             _ => return None,
         };
-        Some(Self { code, message })
+        Some(Self {
+            code,
+            message,
+            provider,
+        })
     }
 
     /// The error object inside one SSE payload, if there is one.
@@ -239,10 +275,18 @@ impl ProviderError {
 
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.code {
-            Some(code) => write!(f, "{code} {}", self.message),
-            None => f.write_str(&self.message),
+        if let Some(code) = self.code {
+            write!(f, "{code} ")?;
         }
+        f.write_str(&self.message)?;
+        // The 502 message already reads "Upstream error from Nvidia", so
+        // the name goes on only when the message did not say it.
+        if let Some(provider) = &self.provider {
+            if !self.message.contains(provider.as_str()) {
+                write!(f, " from {provider}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -435,7 +479,8 @@ impl Retrying {
     /// The provider refused with `code` and, when it named one, asked for
     /// `asked`. Wait and return true if the request should go again; false
     /// if the code is not one that is retried or the bound is spent. `said`
-    /// is what the provider said, for the line on stderr.
+    /// is what the provider said, for the line on stderr, and `provider` is
+    /// the upstream its body named, if any, which is what decides a 404.
     ///
     /// Loud, because a retry nobody can see is a run that got slower for no
     /// stated reason. One line per retry on stderr, which is where everything
@@ -445,10 +490,11 @@ impl Retrying {
         &mut self,
         url: &str,
         code: u16,
+        provider: Option<&str>,
         asked: Option<Duration>,
         said: &dyn std::fmt::Display,
     ) -> bool {
-        let Some(why) = retry_reason(code) else {
+        let Some(why) = retry_reason(code, provider) else {
             return false;
         };
         let Some(wait) = self.policy.delay(self.sent, self.waited, asked) else {
@@ -473,8 +519,8 @@ impl Retrying {
     /// A run losing half its attempts to rate limiting should be able to say
     /// that from one error line, rather than from somebody noticing a tally
     /// later.
-    pub fn exhausted(&self, code: u16) -> String {
-        let Some(reason) = retry_reason(code) else {
+    pub fn exhausted(&self, code: u16, provider: Option<&str>) -> String {
+        let Some(reason) = retry_reason(code, provider) else {
             return String::new();
         };
         format!(
@@ -503,7 +549,8 @@ const ERROR_BODY_CAP: u64 = 8 * 1024;
 /// function, and a copy that has to be kept in step by hand is how the
 /// streaming path ended up without a timeout for as long as it did.
 ///
-/// Retrying on a status stops here, before the response body exists. A
+/// Retrying on a status stops here, before anything reaches the caller; the
+/// status body is read, capped, only to decide and to quote. A
 /// provider can also refuse inside a 200 body, and a caller that finds one
 /// there before handing anything up sends again through
 /// [`send_json_retrying`] with the same [`Retrying`], so the bound is one
@@ -530,11 +577,28 @@ pub fn send_json_retrying(
         match req.clone().send_json(body) {
             Ok(resp) => return Ok(resp),
             Err(ureq::Error::Status(code, resp)) => {
+                let url = resp.get_url().to_string();
+                let asked = retry_after(&resp);
+                // The body is read before the decision and not after it,
+                // because for a 404 the decision is in the body: one naming
+                // an upstream provider is that upstream's failure relayed,
+                // one naming none is ours.
+                let text = error_body(resp);
+                let provider = ProviderError::in_payload(&text).and_then(|e| e.provider);
+                let said = match &provider {
+                    Some(name) => format!("status code {code} from {name}"),
+                    None => format!("status code {code}"),
+                };
                 // Nothing to retry, or nothing left to retry with. Either way
                 // the caller gets the status and the body behind it.
-                let said = format!("status code {code}");
-                if !retrying.again(resp.get_url(), code, retry_after(&resp), &said) {
-                    return Err(status_error(code, resp, retrying));
+                if !retrying.again(&url, code, provider.as_deref(), asked, &said) {
+                    return Err(status_error(
+                        &url,
+                        code,
+                        &text,
+                        retrying,
+                        provider.as_deref(),
+                    ));
                 }
             }
             Err(e) => return Err(transport_error(e)),
@@ -575,27 +639,35 @@ fn error_chain_timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
-/// The error a status the provider will not take back becomes.
-///
-/// The shape of the first half is unchanged, because other things match on
-/// it. The tail is [`Retrying::exhausted`]: a request that was sent more than
-/// once says so.
-fn status_error(code: u16, resp: ureq::Response, retrying: &Retrying) -> BoxErr {
-    let url = resp.get_url().to_string();
+/// The body behind a status, capped and trimmed.
+fn error_body(resp: ureq::Response) -> String {
     let mut bytes = Vec::new();
     use std::io::Read;
     let _ = resp
         .into_reader()
         .take(ERROR_BODY_CAP)
         .read_to_end(&mut bytes);
-    let text = String::from_utf8_lossy(&bytes);
-    let text = text.trim();
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+/// The error a status the provider will not take back becomes.
+///
+/// The shape of the first half is unchanged, because other things match on
+/// it. The tail is [`Retrying::exhausted`]: a request that was sent more than
+/// once says so.
+fn status_error(
+    url: &str,
+    code: u16,
+    text: &str,
+    retrying: &Retrying,
+    provider: Option<&str>,
+) -> BoxErr {
     let mut message = if text.is_empty() {
         format!("{url}: status code {code}")
     } else {
         format!("{url}: status code {code}: {text}")
     };
-    message.push_str(&retrying.exhausted(code));
+    message.push_str(&retrying.exhausted(code, provider));
     message.into()
 }
 
@@ -623,11 +695,13 @@ pub fn zorp_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Valu
         let said = format!("{error} inside a 200 body");
         if error
             .code
-            .is_some_and(|code| retrying.again(url, code, asked, &said))
+            .is_some_and(|code| retrying.again(url, code, error.provider.as_deref(), asked, &said))
         {
             continue;
         }
-        let tail = error.code.map_or(String::new(), |c| retrying.exhausted(c));
+        let tail = error.code.map_or(String::new(), |c| {
+            retrying.exhausted(c, error.provider.as_deref())
+        });
         return Err(format!(
             "{url}: the provider reported an error inside a 200 response: {error}{tail}"
         )
@@ -908,7 +982,7 @@ mod tests {
             "502 Upstream error from Nvidia: Service temporarily overloaded"
         );
         assert!(
-            retry_reason(502).is_some(),
+            retry_reason(502, None).is_some(),
             "an overloaded upstream is a refusal, not a failure"
         );
     }
@@ -923,7 +997,36 @@ mod tests {
         .unwrap();
         assert_eq!(error.code, Some(400));
         assert_eq!(error.to_string(), "400 tool_choice is not supported");
-        assert!(retry_reason(400).is_none());
+        assert!(retry_reason(400, None).is_none());
+    }
+
+    /// A gateway relaying an upstream's failure says whose it was, and the
+    /// name is carried and shown. A body naming nobody, or naming an empty
+    /// string, has no provider and reads as it always did.
+    #[test]
+    fn an_error_object_names_its_upstream_when_the_body_does() {
+        let relayed = ProviderError::in_body(&json!({"error": {
+            "message": "Provider returned error",
+            "code": 404,
+            "metadata": {"raw": "", "provider_name": "Nvidia", "is_byok": false}
+        }}))
+        .unwrap();
+        assert_eq!(relayed.provider.as_deref(), Some("Nvidia"));
+        assert_eq!(
+            relayed.to_string(),
+            "404 Provider returned error from Nvidia"
+        );
+        let ours = ProviderError::in_body(
+            &json!({"error": {"message": "No endpoints found for x.", "code": 404}}),
+        )
+        .unwrap();
+        assert_eq!(ours.provider, None);
+        assert_eq!(ours.to_string(), "404 No endpoints found for x.");
+        let blank = ProviderError::in_body(
+            &json!({"error": {"message": "m", "code": 404, "metadata": {"provider_name": ""}}}),
+        )
+        .unwrap();
+        assert_eq!(blank.provider, None);
     }
 
     /// The other shapes an error object arrives in, and the shapes that are
@@ -1003,12 +1106,46 @@ mod retry_tests {
     }
 
     #[test]
+    fn a_provider_named_only_at_the_top_of_the_chunk_is_read_and_not_said_twice() {
+        let chunk = serde_json::json!({
+            "provider": "Nvidia",
+            "choices": [],
+            "error": {"code": 502, "message": "Upstream error from Nvidia: overloaded",
+                      "metadata": {"error_type": "provider_unavailable"}}
+        });
+        let error = ProviderError::in_body(&chunk).expect("an error object");
+        assert_eq!(error.provider.as_deref(), Some("Nvidia"));
+        assert_eq!(
+            error.to_string(),
+            "502 Upstream error from Nvidia: overloaded"
+        );
+        let named = serde_json::json!({"error": {"code": 404, "message": "Provider returned error",
+            "metadata": {"provider_name": "Nvidia"}}});
+        assert_eq!(
+            ProviderError::in_body(&named)
+                .expect("an error object")
+                .to_string(),
+            "404 Provider returned error from Nvidia"
+        );
+    }
+
+    #[test]
     fn only_a_provider_asking_to_be_asked_again_is_retried() {
-        assert_eq!(retry_reason(429), Some("rate limited"));
-        assert_eq!(retry_reason(502), Some("overloaded upstream"));
-        assert_eq!(retry_reason(503), Some("unavailable"));
+        assert_eq!(retry_reason(429, None), Some("rate limited"));
+        assert_eq!(retry_reason(502, None), Some("overloaded upstream"));
+        assert_eq!(retry_reason(503, None), Some("unavailable"));
         for refused in [400, 401, 403, 404, 422, 500, 504] {
-            assert_eq!(retry_reason(refused), None, "for {refused}");
+            assert_eq!(retry_reason(refused, None), None, "for {refused}");
+        }
+        // A 404 is the upstream's when the body names one and ours when it
+        // does not. The name changes nothing else: a 400 or a 401 is ours
+        // whoever relayed it.
+        assert_eq!(
+            retry_reason(404, Some("Nvidia")),
+            Some("upstream provider error")
+        );
+        for refused in [400, 401, 403, 422, 500, 504] {
+            assert_eq!(retry_reason(refused, Some("Nvidia")), None, "for {refused}");
         }
     }
 
