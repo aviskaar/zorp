@@ -1091,6 +1091,59 @@ button {
   font-style: italic;
 }
 
+/* The group is a closed details: one line saying what is happening, or what
+   ran once it is over, with the lines themselves one click under it. Only
+   the reader toggles it; appending a line never does. */
+.activity-summary-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 12.6px;
+  line-height: 1.9;
+  color: var(--text-dim);
+}
+
+.activity-summary-line::-webkit-details-marker {
+  display: none;
+}
+
+.activity-summary-marker {
+  flex: none;
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.activity[open] > .activity-summary-line .activity-summary-marker {
+  transform: rotate(90deg);
+}
+
+/* The marker takes the group's state: running, failed, or done. */
+.activity.activity-ok > .activity-summary-line .activity-summary-marker {
+  color: var(--ok);
+}
+
+.activity.activity-fail > .activity-summary-line .activity-summary-marker {
+  color: var(--danger);
+}
+
+.activity.activity-running > .activity-summary-line .activity-summary-marker {
+  color: var(--accent);
+}
+
+.activity-summary-phrase {
+  color: var(--text-faint);
+  min-width: 0;
+}
+
+.activity-summary-phrase:not(:empty)::before {
+  content: " \00b7  ";
+}
+
 /* ---------------------------------------------------------------- cards */
 
 .card {
@@ -1258,6 +1311,48 @@ button {
   background: var(--bg-inset);
   border: 1px solid var(--warn-line);
   color: #f6dfae;
+}
+
+/* Once decided the card is a closed details: the head line stays, with the
+   outcome and the tool, and the arguments and the note are one click under
+   it. While it waits the head refuses the click in code, so it does not
+   look like one. */
+.card-approval > .card-head {
+  list-style: none;
+}
+
+.card-approval > .card-head::-webkit-details-marker {
+  display: none;
+}
+
+.card-approval:not([open]) > .card-head {
+  margin-bottom: 0;
+}
+
+.card-approval > .card-head .tool-name {
+  font-size: 12px;
+  padding: 1px 7px;
+}
+
+.card-approval.is-settled > .card-head {
+  cursor: pointer;
+}
+
+.card-approval.is-settled > .card-head::after {
+  content: "\25b8";
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 120ms ease;
+}
+
+.card-approval.is-settled[open] > .card-head::after {
+  transform: rotate(90deg);
+}
+
+.card-approval.is-settled .tool-name {
+  border-color: var(--line);
+  color: var(--text-dim);
 }
 
 .btn {
