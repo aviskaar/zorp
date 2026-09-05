@@ -44,10 +44,16 @@ export interface SessionSummary {
 }
 
 /** One persisted turn in a session transcript. */
-export interface Message {
-  role: "user" | "assistant";
-  content: string;
-}
+export type Message =
+  | { role: "user" | "assistant"; content: string }
+  /**
+   * A stored tool call, drawn as an activity line exactly as the live `tool`
+   * event is. `name` is the form the live event carries, `run_command(ls)`,
+   * `summary` is the status derived from the stored result and may be empty,
+   * and `phrase` is the model's own description of the call, model-authored
+   * and display only.
+   */
+  | { role: "tool"; name: string; summary: string; phrase?: string };
 
 export interface SessionTranscript {
   messages: Message[];
@@ -214,6 +220,8 @@ export interface ToolEvent {
   type: "tool";
   name: string;
   summary: string;
+  /** The model's own description of the call, when it gave one; model-authored, display only. */
+  phrase?: string;
 }
 
 /** A verification command ran and either passed or failed. */

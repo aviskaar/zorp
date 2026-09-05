@@ -311,6 +311,17 @@ pub trait Renderer: Send {
     /// fresh answer onto the end of the dead one.
     fn assistant_withdrawn(&mut self, _events: usize, _reask: usize, _bound: usize) {}
     fn tool(&mut self, name: &str, summary: &str);
+    /// `tool`, plus the model's own description of the call when it gave
+    /// one, for a renderer that can show it beside the name.
+    ///
+    /// Defaults to `tool` and drops the description. The terminal renderer
+    /// keeps that default on purpose, so the CLI's output is byte for byte
+    /// what it was; the browser overrides it and draws the phrase on the
+    /// tool line, labelled as the model's words.
+    fn tool_described(&mut self, name: &str, summary: &str, description: Option<&str>) {
+        let _ = description;
+        self.tool(name, summary);
+    }
     fn verify(&mut self, command: &str, passed: bool);
     fn notice(&mut self, text: &str);
     fn assistant(&mut self, text: &str);

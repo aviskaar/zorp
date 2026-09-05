@@ -39,6 +39,51 @@ impl ToolOutput {
     }
 }
 
+/// The status the live tool line showed for a stored shell result, derived
+/// back from the result's content.
+///
+/// `ToolOutput::summary` is not persisted; the content is, as the `tool`
+/// message. For `run_command` the content is `CommandOutput::render`, whose
+/// header lines are what `Context::run_command` read to write the summary,
+/// so the summary is recomputed from them with the same precedence:
+/// cancelled, then timed out, then the exit code, and `signal` is
+/// `finished`. For `start_background_process` it is the PID in the
+/// content's one line. Any other tool, and any content that is not a shell
+/// result, a denial, an error, a withheld body, is `None`, and a replayed
+/// line then shows no status. This exists so a reopened session can draw
+/// the same line without a new column, and the test against a real run
+/// keeps it in step with the live summary.
+pub fn summary_from_content(tool: &str, content: &str) -> Option<String> {
+    match tool {
+        "run_command" => {
+            let mut lines = content.lines();
+            let status = lines.next()?.strip_prefix("exit_status: ")?;
+            let timed_out = lines.next()?.strip_prefix("timed_out: ")? == "true";
+            let cancelled = lines.next()?.strip_prefix("cancelled: ")? == "true";
+            if cancelled {
+                return Some("cancelled".to_string());
+            }
+            if timed_out {
+                return Some("timed out".to_string());
+            }
+            if status == "signal" {
+                return Some("finished".to_string());
+            }
+            status
+                .parse::<i32>()
+                .ok()
+                .map(|code| format!("exited {code}"))
+        }
+        "start_background_process" => content
+            .strip_prefix("Started background process with PID ")?
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .map(|pid| format!("started PID {pid}")),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 pub struct ToolError {
     pub message: String,
@@ -483,5 +528,58 @@ mod tests {
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"search_text"));
         assert!(!names.contains(&"run_command"));
+    }
+
+    /// The status a reopened session shows is the status the live line
+    /// showed: derived from the stored content and compared against the
+    /// real summary of the same run, so the two cannot drift. An exit of 0,
+    /// a non-zero exit, a shell killed by a signal, and a background start.
+    #[test]
+    fn summary_from_content_matches_the_live_summary_of_a_real_run() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        for command in ["printf hello", "exit 3", "kill -9 $$"] {
+            let out = cx.run_command(command).unwrap();
+            assert_eq!(
+                summary_from_content("run_command", &out.content).as_deref(),
+                Some(out.summary.as_str()),
+                "{command}: {}",
+                out.content
+            );
+        }
+        let out = shell::StartBackgroundProcess
+            .run(&serde_json::json!({"command": "sleep 30"}), &mut cx)
+            .unwrap();
+        assert_eq!(
+            summary_from_content("start_background_process", &out.content).as_deref(),
+            Some(out.summary.as_str())
+        );
+        for pid in cx.background_processes.keys().copied().collect::<Vec<_>>() {
+            cx.kill_background_process(pid).unwrap();
+        }
+    }
+
+    /// Nothing is derived for another tool, or for a shell call whose stored
+    /// content is not a result: a denial, an error, a withheld body.
+    #[test]
+    fn summary_from_content_is_none_for_other_tools_and_other_content() {
+        let result = "exit_status: 0\ntimed_out: false\ncancelled: false\nstdout:\n\nstderr:\n";
+        assert_eq!(summary_from_content("read_file", result), None);
+        assert_eq!(
+            summary_from_content("run_command", "denied: approval required"),
+            None
+        );
+        assert_eq!(
+            summary_from_content("run_command", "error: no such tool"),
+            None
+        );
+        assert_eq!(
+            summary_from_content("run_command", "tool output withheld because"),
+            None
+        );
+        assert_eq!(
+            summary_from_content("start_background_process", "spawn: failed"),
+            None
+        );
     }
 }

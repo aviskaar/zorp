@@ -1031,6 +1031,10 @@ button {
   color: var(--text-dim);
 }
 
+.activity-brief-model {
+  font-style: italic;
+}
+
 .activity-status {
   color: var(--text-faint);
   white-space: nowrap;

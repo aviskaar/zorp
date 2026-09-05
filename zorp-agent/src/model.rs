@@ -220,6 +220,99 @@ impl ToolCall {
         let error = obj.get(MALFORMED_ARGS_ERROR_KEY)?.as_str()?;
         Some((error, raw))
     }
+
+    /// Whether this is one of the two shell tools, the only calls whose
+    /// command goes on the transcript line and whose `description` is read.
+    fn is_shell(&self) -> bool {
+        matches!(
+            self.name.as_str(),
+            "run_command" | "start_background_process"
+        )
+    }
+
+    /// The name the transcript shows for this call.
+    ///
+    /// A shell call with a string `command` reads as the tool with the
+    /// command in parentheses, `run_command(ls web/src)`, which is the form
+    /// the browser splits back into a tool and a command. Every other call
+    /// is its bare tool name. The live tool line and a reopened session's
+    /// replay both come through here, so the two cannot drift.
+    pub fn display_name(&self) -> String {
+        match self.arguments.get("command").and_then(Value::as_str) {
+            Some(command) if self.is_shell() => format!("{}({command})", self.name),
+            _ => self.name.clone(),
+        }
+    }
+
+    /// The model's own `description` of this call, when it is a shell call
+    /// and gave one.
+    ///
+    /// Model-authored and display only. It is read for the two shell tools
+    /// and no other, so a `description` in a `read_file` call's arguments
+    /// is `None` here.
+    pub fn description(&self) -> Option<&str> {
+        if !self.is_shell() {
+            return None;
+        }
+        self.arguments.get("description").and_then(Value::as_str)
+    }
+}
+
+#[cfg(test)]
+mod tool_call_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call(name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: "c1".into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    /// A shell call names itself with its command in parentheses, the form
+    /// the browser splits back apart, and carries its description.
+    #[test]
+    fn a_shell_call_with_a_command_names_itself_with_the_command() {
+        let run = call(
+            "run_command",
+            json!({"command": "ls web/src", "description": "Listing files in web/src"}),
+        );
+        assert_eq!(run.display_name(), "run_command(ls web/src)");
+        assert_eq!(run.description(), Some("Listing files in web/src"));
+        let background = call(
+            "start_background_process",
+            json!({"command": "npm run dev"}),
+        );
+        assert_eq!(
+            background.display_name(),
+            "start_background_process(npm run dev)"
+        );
+    }
+
+    /// Any other tool is its bare name and has no description, even when
+    /// the model put one in its arguments.
+    #[test]
+    fn another_tool_is_its_bare_name_with_no_description() {
+        let read = call(
+            "read_file",
+            json!({"path": "a.txt", "description": "Reading a.txt"}),
+        );
+        assert_eq!(read.display_name(), "read_file");
+        assert_eq!(read.description(), None);
+    }
+
+    /// A shell call the model did not describe has none, and one with no
+    /// command is its bare name.
+    #[test]
+    fn a_shell_call_without_a_description_has_none() {
+        assert_eq!(
+            call("run_command", json!({"command": "ls"})).description(),
+            None
+        );
+        assert_eq!(call("run_command", json!({})).display_name(), "run_command");
+    }
 }
 
 /// The assistant's turn: free text plus any tool calls it requested.

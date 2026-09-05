@@ -62,9 +62,14 @@ impl Renderer for WebRenderer {
     }
 
     fn tool(&mut self, name: &str, summary: &str) {
+        self.tool_described(name, summary, None);
+    }
+
+    fn tool_described(&mut self, name: &str, summary: &str, description: Option<&str>) {
         self.emit(EventKind::Tool {
             name: name.to_string(),
             summary: summary.to_string(),
+            phrase: description.map(str::to_string),
         });
     }
 
@@ -194,6 +199,37 @@ mod tests {
         assert!(json[1].contains("\"bound\":2"), "{}", json[1]);
     }
 
+    /// The description the model gave its call reaches the browser as the
+    /// tool event's `phrase`, and a call without one sends none.
+    #[test]
+    fn a_described_call_carries_its_phrase_and_a_plain_one_does_not() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut r = WebRenderer::new(tx);
+        r.tool_described(
+            "run_command(ls web/src)",
+            "exited 0",
+            Some("Listing files in web/src"),
+        );
+        r.tool_described("run_command(ls)", "exited 0", None);
+        r.tool("read_file", "a.txt (1 lines)");
+        drop(r);
+
+        let events: Vec<Event> = rx.iter().collect();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            &events[0].kind,
+            EventKind::Tool { phrase: Some(p), .. } if p == "Listing files in web/src"
+        ));
+        assert!(matches!(
+            &events[1].kind,
+            EventKind::Tool { phrase: None, .. }
+        ));
+        assert!(matches!(
+            &events[2].kind,
+            EventKind::Tool { phrase: None, .. }
+        ));
+    }
+
     /// A browser that closed its stream must not take the agent down with it.
     #[test]
     fn a_dropped_receiver_does_not_panic_the_renderer() {
@@ -244,6 +280,7 @@ mod tests {
             kind: EventKind::Tool {
                 name: "run_command".into(),
                 summary: "exited 0".into(),
+                phrase: None,
             },
         };
         let json = serde_json::to_string(&e).unwrap();

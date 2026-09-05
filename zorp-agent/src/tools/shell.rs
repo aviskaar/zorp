@@ -1,6 +1,18 @@
 use super::{Context, Tool, ToolError, ToolOutput, ToolResult};
 use serde_json::{json, Value};
 
+/// What the optional `description` argument on a shell call is for, said to
+/// the model.
+///
+/// Display only. Neither `run` below reads it: the agent hands it to the
+/// renderer, the browser draws it on the tool line as the model's own words,
+/// and the CLI ignores it.
+const DESCRIPTION_HINT: &str = "A short phrase saying what this command does, for the person watching, in the present participle: \"Listing files in web/src\", \"Running the test suite\", \"Converting the report to PDF\". At most 60 characters. Not the command itself.";
+
+fn shell_schema() -> Value {
+    json!({"type":"object","properties":{"command":{"type":"string","description":"Command passed to /bin/sh -c"},"description":{"type":"string","description":DESCRIPTION_HINT}},"required":["command"],"additionalProperties":false})
+}
+
 pub struct RunCommand;
 
 impl Tool for RunCommand {
@@ -13,7 +25,7 @@ impl Tool for RunCommand {
     }
 
     fn schema(&self) -> Value {
-        json!({"type":"object","properties":{"command":{"type":"string","description":"Command passed to /bin/sh -c"}},"required":["command"],"additionalProperties":false})
+        shell_schema()
     }
 
     fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
@@ -38,7 +50,7 @@ impl Tool for StartBackgroundProcess {
     }
 
     fn schema(&self) -> Value {
-        json!({"type":"object","properties":{"command":{"type":"string","description":"Command passed to /bin/sh -c"}},"required":["command"],"additionalProperties":false})
+        shell_schema()
     }
 
     fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
@@ -115,6 +127,37 @@ mod tests {
         let schema = RunCommand.schema();
         assert_eq!(schema["required"], json!(["command"]));
         assert!(schema["properties"].get("cwd").is_none());
+    }
+
+    /// Both shell tools take the description, and neither requires it: a
+    /// model that never writes one is not refused.
+    #[test]
+    fn both_shell_tools_take_an_optional_description() {
+        for schema in [RunCommand.schema(), StartBackgroundProcess.schema()] {
+            assert_eq!(schema["properties"]["description"]["type"], json!("string"));
+            assert_eq!(schema["required"], json!(["command"]));
+            assert_eq!(schema["additionalProperties"], json!(false));
+        }
+    }
+
+    /// The description is for the person watching and changes nothing about
+    /// what runs or what comes back.
+    #[test]
+    fn a_description_changes_nothing_about_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let plain = RunCommand
+            .run(&json!({"command":"printf hello"}), &mut cx)
+            .unwrap();
+        let described = RunCommand
+            .run(
+                &json!({"command":"printf hello","description":"Printing a greeting"}),
+                &mut cx,
+            )
+            .unwrap();
+        assert_eq!(described.content, plain.content);
+        assert_eq!(described.summary, plain.summary);
+        assert!(!described.content.contains("greeting"));
     }
 
     #[test]

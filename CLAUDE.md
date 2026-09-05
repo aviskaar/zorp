@@ -277,6 +277,21 @@ resulting artifact, deliver it in the right form.
   existing event stream via a `session_title` frame, and the browser puts
   it on the page through `textContent`. See `docs/DECISIONS.md`
   (2026-08-22) before changing any of it.
+- The tool line's phrase in the browser is the model's own `description`
+  argument on its shell call, written in the same call and never asked
+  for on its own. The agent hands it to the renderer through
+  `Renderer::tool_described`, which the CLI ignores on purpose, and
+  `web/src/activity-line.ts` draws it through `textContent` after a clamp
+  in code, labelled as model text; a call with none gets the phrase the
+  code table computes from the command. The verbatim command stays one
+  click under the line, because a description can be wrong.
+  `RepeatGuard` fingerprints a call without its `description`, so wording
+  cannot hide a repeat. The phrase survives reopen because it is in the
+  stored call's arguments, and `get_session` replays stored tool calls as
+  `tool` entries with a status derived from the stored result in code.
+  Recall and memory never read `tool_calls`, which is what keeps it out
+  of the evidence. Run `cargo test --workspace` and the three `web/`
+  commands whenever it changes. See `docs/DECISIONS.md` (2026-09-04).
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's

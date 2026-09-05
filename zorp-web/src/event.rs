@@ -99,6 +99,15 @@ pub enum EventKind {
     Tool {
         name: String,
         summary: String,
+        /// The model's own description of its call, from the call's
+        /// `description` argument, when it gave one.
+        ///
+        /// Model-authored and display only. The browser draws it on the
+        /// tool line in place of the code-derived phrase, labelled as the
+        /// model's words, with the verbatim command still under the line.
+        /// Nothing but the browser reads it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phrase: Option<String>,
     },
     Verify {
         command: String,
@@ -288,4 +297,35 @@ pub enum EventKind {
     /// is still a turn that ended.
     Stopped,
     Done,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(phrase: Option<&str>) -> String {
+        serde_json::to_string(&Event {
+            seq: 1,
+            kind: EventKind::Tool {
+                name: "run_command(ls)".into(),
+                summary: "exited 0".into(),
+                phrase: phrase.map(str::to_string),
+            },
+        })
+        .unwrap()
+    }
+
+    /// A phrase travels as `phrase`, and a call without one keeps the wire
+    /// shape the browser already parses: no key at all, not `null`.
+    #[test]
+    fn a_phrase_is_a_key_only_when_the_model_gave_one() {
+        let with = tool(Some("Listing files"));
+        assert!(with.contains("\"phrase\":\"Listing files\""), "{with}");
+        let without = tool(None);
+        assert!(!without.contains("phrase"), "{without}");
+        assert_eq!(
+            without,
+            "{\"seq\":1,\"type\":\"tool\",\"name\":\"run_command(ls)\",\"summary\":\"exited 0\"}"
+        );
+    }
 }

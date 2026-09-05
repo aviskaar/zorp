@@ -87,8 +87,8 @@ pub use tools::patch::ApplyPatch;
 pub use tools::search::SearchText;
 pub use tools::shell::RunCommand;
 pub use tools::{
-    builtin_tools, builtin_tools_filtered, cap_output, Context, FileChange, Registry, Tool,
-    ToolError, ToolOutput, ToolResult,
+    builtin_tools, builtin_tools_filtered, cap_output, summary_from_content, Context, FileChange,
+    Registry, Tool, ToolError, ToolOutput, ToolResult,
 };
 pub use trust::TrustStore;
 #[cfg(feature = "research")]

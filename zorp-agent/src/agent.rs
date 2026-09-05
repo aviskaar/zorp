@@ -226,10 +226,23 @@ struct RepeatGuard {
 
 impl RepeatGuard {
     fn observe(&mut self, call: &crate::model::ToolCall, result: &str, changes: usize) -> bool {
+        // A shell call's `description` is display only, so the same command
+        // under a fresh sentence is the same call. Left in, a model could
+        // repeat itself forever by rewording what it says it is doing.
+        let stripped;
+        let arguments = match &call.arguments {
+            serde_json::Value::Object(map) if map.contains_key("description") => {
+                let mut map = map.clone();
+                map.remove("description");
+                stripped = serde_json::Value::Object(map);
+                &stripped
+            }
+            other => other,
+        };
         let fingerprint = format!(
             "{}\n{}\n{}",
             call.name,
-            canonical_to_string(&call.arguments),
+            canonical_to_string(arguments),
             result
         );
         if self.fingerprint.as_deref() == Some(&fingerprint) && self.changes == changes {
@@ -1123,18 +1136,11 @@ impl Agent {
                     });
                     self.trace_emitted_changes += 1;
                 }
-                let display_name = match call.arguments.get("command").and_then(|v| v.as_str()) {
-                    Some(cmd)
-                        if matches!(
-                            call.name.as_str(),
-                            "run_command" | "start_background_process"
-                        ) =>
-                    {
-                        format!("{}({cmd})", call.name)
-                    }
-                    _ => call.name.clone(),
-                };
-                self.renderer.tool(&display_name, &out.summary);
+                self.renderer.tool_described(
+                    &call.display_name(),
+                    &out.summary,
+                    call.description(),
+                );
 
                 #[cfg(feature = "otel")]
                 {
@@ -1643,9 +1649,14 @@ mod tests {
         }
     }
 
+    /// Each call's name and the description the model gave it, if any.
+    type Described = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+    #[derive(Default)]
     struct CaptureRenderer {
         tools: Arc<Mutex<Vec<String>>>,
         events: Arc<Mutex<Vec<String>>>,
+        described: Described,
     }
     impl crate::render::Renderer for CaptureRenderer {
         fn working(&mut self) {
@@ -1656,6 +1667,13 @@ mod tests {
         }
         fn tool(&mut self, name: &str, summary: &str) {
             self.tools.lock().unwrap().push(format!("{name}:{summary}"));
+        }
+        fn tool_described(&mut self, name: &str, summary: &str, description: Option<&str>) {
+            self.described
+                .lock()
+                .unwrap()
+                .push((name.to_string(), description.map(str::to_string)));
+            self.tool(name, summary);
         }
         fn verify(&mut self, _command: &str, _passed: bool) {}
         fn notice(&mut self, _text: &str) {}
@@ -2119,11 +2137,55 @@ mod tests {
             .with_renderer(Box::new(CaptureRenderer {
                 tools: tools.clone(),
                 events,
+                ..Default::default()
             }));
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         assert_eq!(
             tools.lock().unwrap().clone(),
             vec!["read_file:ok".to_string()]
+        );
+    }
+
+    /// The description rides the shell call it belongs to and no other: a
+    /// `read_file` reaches the renderer with `None` even when the model put a
+    /// `description` in its arguments.
+    #[test]
+    fn renderer_receives_the_description_of_a_shell_call_and_none_for_others() {
+        let described = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![
+            wants_tool_with(
+                "run_command",
+                json!({"command": "ls web/src", "description": "Listing files in web/src"}),
+            ),
+            wants_tool_with(
+                "read_file",
+                json!({"path": "a.txt", "description": "Reading a.txt"}),
+            ),
+            text("done"),
+        ]);
+        let mut a = configured_agent(model, ApprovalMode::AutoApprove)
+            .register(Box::new(RecordingNamed {
+                name: "run_command",
+                ran: Arc::new(AtomicBool::new(false)),
+            }))
+            .register(Box::new(RecordingNamed {
+                name: "read_file",
+                ran: Arc::new(AtomicBool::new(false)),
+            }))
+            .with_renderer(Box::new(CaptureRenderer {
+                described: Arc::clone(&described),
+                ..Default::default()
+            }));
+        assert!(matches!(a.run("go"), Outcome::Complete(_)));
+        assert_eq!(
+            described.lock().unwrap().clone(),
+            vec![
+                (
+                    "run_command(ls web/src)".to_string(),
+                    Some("Listing files in web/src".to_string())
+                ),
+                ("read_file".to_string(), None),
+            ]
         );
     }
 
@@ -2157,6 +2219,7 @@ mod tests {
             .with_renderer(Box::new(CaptureRenderer {
                 tools: Arc::clone(&tools),
                 events: Arc::new(Mutex::new(Vec::new())),
+                ..Default::default()
             }));
 
         assert!(matches!(a.run("go"), Outcome::Complete(_)));
@@ -2185,6 +2248,7 @@ mod tests {
         .with_renderer(Box::new(CaptureRenderer {
             tools: Arc::new(Mutex::new(Vec::new())),
             events: events.clone(),
+            ..Default::default()
         }));
 
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
@@ -2228,6 +2292,7 @@ mod tests {
         .with_renderer(Box::new(CaptureRenderer {
             tools: Arc::new(Mutex::new(Vec::new())),
             events: events.clone(),
+            ..Default::default()
         }));
 
         assert!(matches!(a.run("hi"), Outcome::Error(_)));
@@ -2585,6 +2650,38 @@ mod tests {
                 content: "same",
             }));
         assert!(matches!(a.run("hi"), Outcome::RepeatedAction));
+    }
+
+    /// The description is display only, so three of the same command under
+    /// three different sentences trip the guard exactly as three bare ones do.
+    #[test]
+    fn a_reworded_description_does_not_reset_the_repeat_streak() {
+        let call = |description: Option<&str>| {
+            let mut arguments = json!({"command": "ls web/src"});
+            if let Some(description) = description {
+                arguments["description"] = json!(description);
+            }
+            ToolCall {
+                id: "1".into(),
+                name: "run_command".into(),
+                arguments,
+            }
+        };
+        let mut bare = RepeatGuard::default();
+        let bare_trips: Vec<bool> = (0..3)
+            .map(|_| bare.observe(&call(None), "same", 0))
+            .collect();
+        let mut worded = RepeatGuard::default();
+        let worded_trips: Vec<bool> = [
+            "Listing files in web/src",
+            "Looking at the web sources",
+            "Checking what is in web/src",
+        ]
+        .into_iter()
+        .map(|sentence| worded.observe(&call(Some(sentence)), "same", 0))
+        .collect();
+        assert_eq!(worded_trips, bare_trips);
+        assert_eq!(worded_trips, vec![false, false, true]);
     }
 
     #[test]
