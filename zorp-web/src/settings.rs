@@ -65,6 +65,14 @@ pub struct PersistedSettings {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// The directory the agent works in, as `PUT /api/workspace` last
+    /// stored it. Written to disk, unlike `api_key`, because it is a path
+    /// and not a secret: somebody reading this file learns where their own
+    /// work lives, which they already knew. Not persisting it would mean
+    /// choosing a directory again after every restart, and a workspace
+    /// nobody chose is exactly what this feature exists to stop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// Body of `PUT /api/settings`. Every field is optional: a PUT only changes
@@ -96,6 +104,13 @@ pub struct SettingsState {
     /// `Ui` rather than `Env` even though the field itself does not change
     /// shape between the two cases.
     pub api_key_from_ui: bool,
+    /// The saved workspace path, the lowest-precedence source of the
+    /// directory the agent works in. `--workspace` and `ZORP_WORKSPACE`
+    /// beat it; see `crate::workspace`. It lives here because this is the
+    /// state that gets written to the settings file, and it is deliberately
+    /// not a field on `PutSettings`: a workspace is validated before it is
+    /// stored, and `PUT /api/workspace` is the one door that does it.
+    pub workspace: Option<String>,
 }
 
 /// The non-secret fields plus their provenance, computed once and shared by
@@ -143,6 +158,9 @@ impl SettingsState {
         if self.max_tokens.is_none() {
             self.max_tokens = persisted.max_tokens;
         }
+        if self.workspace.is_none() {
+            self.workspace = persisted.workspace;
+        }
     }
 
     /// The shape written to disk. Deliberately cannot carry `api_key`: that
@@ -153,6 +171,7 @@ impl SettingsState {
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             max_tokens: self.max_tokens,
+            workspace: self.workspace.clone(),
         }
     }
 
@@ -844,6 +863,61 @@ mod tests {
         let (models, details) = parse_models(&serde_json::json!({"error": "nope"}));
         assert!(models.is_empty());
         assert!(details.is_empty());
+    }
+
+    /// The workspace is a path and not a secret, so unlike the API key it
+    /// survives a restart. A person who chose a directory in the browser
+    /// should not have to choose it again tomorrow.
+    #[test]
+    fn the_workspace_round_trips_through_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("web.toml");
+        std::env::set_var(CONFIG_PATH_VAR, &config);
+
+        let state = SettingsState {
+            workspace: Some("/home/someone/research".to_string()),
+            ..SettingsState::default()
+        };
+        save(&state.to_persisted()).unwrap();
+
+        let mut fresh = SettingsState::default();
+        fresh.load_persisted(load().unwrap());
+        assert_eq!(fresh.workspace.as_deref(), Some("/home/someone/research"));
+
+        std::env::remove_var(CONFIG_PATH_VAR);
+    }
+
+    /// Precedence, in one test because the environment variable it sets is
+    /// process wide. The flag beats the variable, the variable beats what
+    /// was saved, and nothing at all beats none of them: there is no
+    /// fallback to the current directory, which is the whole point.
+    #[test]
+    fn the_flag_beats_the_variable_and_the_variable_beats_the_saved_path() {
+        use crate::workspace::{resolve, Source, Unusable};
+        let dir = tempfile::tempdir().unwrap();
+        let flag = dir.path().join("from-flag");
+        let env = dir.path().join("from-env");
+        let saved = dir.path().join("from-saved");
+        for path in [&flag, &env, &saved] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let saved = saved.to_string_lossy().into_owned();
+
+        std::env::remove_var(crate::workspace::ENV_VAR);
+        let chosen = resolve(None, Some(&saved)).unwrap();
+        assert_eq!(chosen.source, Source::Saved);
+
+        std::env::set_var(crate::workspace::ENV_VAR, &env);
+        let chosen = resolve(None, Some(&saved)).unwrap();
+        assert_eq!(chosen.source, Source::Env);
+        assert_eq!(chosen.path, env.canonicalize().unwrap());
+
+        let chosen = resolve(Some(&flag), Some(&saved)).unwrap();
+        assert_eq!(chosen.source, Source::Flag);
+        assert_eq!(chosen.path, flag.canonicalize().unwrap());
+
+        std::env::remove_var(crate::workspace::ENV_VAR);
+        assert!(matches!(resolve(None, None), Err(Unusable::Unset)));
     }
 
     /// The good case, so the check above cannot be satisfied by rejecting

@@ -109,6 +109,7 @@ fn configure(dir: &std::path::Path, responses: Vec<&str>) {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.join("investigate.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir);
     std::env::remove_var("ZORP_API_KEY");
     // Off unless a test says otherwise, which is also the product
     // default. A forecast costs an extra model call, so a test that
@@ -155,6 +156,7 @@ async fn several_attempts_all_land_in_the_ledger() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let answer = attempt_response(42.0);
     // Two attempts, then one more for `co_write`, which is allowed to
     // fail: the attempts are the evidence and the write-up stage must
@@ -215,6 +217,7 @@ async fn an_attempt_runs_and_lands_in_the_ledger() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let answer = attempt_response(42.0);
     configure(dir.path(), vec![&answer]);
 
@@ -293,6 +296,7 @@ async fn an_attempt_is_refused_while_a_turn_is_running() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::set_var("ZORP_BASE_URL", mock_hang());
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path().join("busy.db"));
@@ -331,6 +335,7 @@ async fn a_request_that_cannot_run_is_refused_without_recording_anything() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let answer = attempt_response(1.0);
     configure(dir.path(), vec![&answer]);
 
@@ -373,6 +378,7 @@ async fn an_unknown_session_cannot_be_investigated() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let answer = attempt_response(1.0);
     configure(dir.path(), vec![&answer]);
 
@@ -394,6 +400,7 @@ async fn the_status_endpoint_reports_forecasting_and_never_sets_it() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_FORECAST");
 
     let addr = spawn().await;
@@ -420,6 +427,7 @@ async fn reading_a_ledger_creates_nothing() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
 
     let addr = spawn().await;
     let question = urlencoding("a question nobody has run");

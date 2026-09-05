@@ -24,9 +24,14 @@ use zorp_agent::{
 /// record means reopening a session from the sidebar after a restart
 /// continues it, which is the same code path as continuing it a second after
 /// the last turn.
-fn seed_transcript(store: &Store, session_id: &str, budget: &ContextBudget) -> SeedPlan {
+fn seed_transcript(
+    store: &Store,
+    session_id: &str,
+    system: &str,
+    budget: &ContextBudget,
+) -> SeedPlan {
     let stored = store.load_message_records(session_id).unwrap_or_default();
-    plan_seed(stored, system_prompt(), budget)
+    plan_seed(stored, system, budget)
 }
 
 /// The policy every agent on this server runs under.
@@ -57,6 +62,24 @@ pub fn policy(own_port: Option<u16>) -> zorp_agent::Policy {
 /// the workspace that says what zorp is.
 pub fn system_prompt() -> &'static str {
     DEFAULT_SYSTEM_PROMPT
+}
+
+/// The prompt for one turn: what zorp is, plus the one thing only the server
+/// knows, which is where this turn is working and where the files it makes
+/// belong.
+///
+/// The sentence is here rather than in `zorp_agent`'s constant because the
+/// CLI has no such rule: it works in the directory it was started in, which
+/// is a directory the person chose by standing in it. The browser's agent
+/// works in a workspace somebody picked once, and everything it renders
+/// would otherwise land in the top of it.
+pub fn turn_prompt(workspace: &std::path::Path) -> String {
+    format!(
+        "{}\n\nYou are working in {}. Generated files, such as PDFs you render \
+         and scratch scripts you write, go in scratch/ under that directory.",
+        system_prompt(),
+        workspace.display()
+    )
 }
 
 /// Append one event to a session's replay backlog.
@@ -134,11 +157,18 @@ pub type RecallFeed = ();
 /// Events are drained from the renderer's channel into the session backlog as
 /// they arrive, which is what lets the SSE endpoint stream a run that is still
 /// in progress.
+// One more argument than clippy likes, and the eighth is the workspace.
+// Grouping them into a struct would only move the same list somewhere else.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_turn(
     session: Arc<Mutex<SessionState>>,
     session_id: String,
     message: String,
     use_memory: UseMemory,
+    // The directory this turn works in, resolved by the handler before the
+    // session was occupied. A turn never resolves it for itself and never
+    // falls back to the current directory.
+    workspace: std::path::PathBuf,
     settings: SettingsHandle,
     own_port: Option<u16>,
     recall_indexer: RecallFeed,
@@ -194,6 +224,7 @@ pub fn spawn_turn(
                 message: &message,
                 recalled,
             },
+            workspace,
             Box::new(renderer),
             approver,
             Arc::clone(&cancel),
@@ -327,6 +358,7 @@ struct Ask<'a> {
 
 fn run_agent(
     ask: Ask<'_>,
+    workspace: std::path::PathBuf,
     mut renderer: Box<dyn zorp_agent::Renderer>,
     approver: Arc<WebApprover>,
     cancel: zorp_agent::CancelToken,
@@ -355,7 +387,13 @@ fn run_agent(
     // model itself is built from resolved settings instead of `from_env`.
     .try_with_env_reasoning_mode(None)
     .map_err(|e| e.to_string())?;
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    // Generated files belong in scratch/, and the prompt below says so.
+    // Made when the turn starts rather than at startup, because a workspace
+    // can be chosen while the server is running, and never fatal: a turn
+    // whose scratch directory could not be created is still worth running.
+    crate::workspace::ensure_scratch(&workspace);
+    let system = turn_prompt(&workspace);
+    let cwd = workspace;
     let steps = std::env::var("ZORP_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -376,7 +414,7 @@ fn run_agent(
         if seq == 0 {
             let _ = store.create_session(session_id, message, &cwd_display, "");
         }
-        seed = Some(seed_transcript(&store, session_id, &budget));
+        seed = Some(seed_transcript(&store, session_id, &system, &budget));
         recorder = Some(Box::new(SqliteRecorder::new(
             store,
             session_id.to_string(),
@@ -429,7 +467,7 @@ fn run_agent(
     // what makes stop mean stopped rather than looked away.
     let mut agent = Agent::new(
         Box::new(model),
-        system_prompt(),
+        system,
         steps,
         cwd,
         cancel,
@@ -510,7 +548,7 @@ mod tests {
             ],
         );
 
-        let plan = seed_transcript(&store, "s1", &ContextBudget::default());
+        let plan = seed_transcript(&store, "s1", system_prompt(), &ContextBudget::default());
 
         let seen = texts(&plan);
         assert!(
@@ -543,7 +581,7 @@ mod tests {
             ],
         );
 
-        let plan = seed_transcript(&store, "s1", &ContextBudget::default());
+        let plan = seed_transcript(&store, "s1", system_prompt(), &ContextBudget::default());
 
         let roles: Vec<&str> = plan
             .records
@@ -580,7 +618,7 @@ mod tests {
             ],
         );
 
-        let plan = seed_transcript(&store, "s1", &ContextBudget::default());
+        let plan = seed_transcript(&store, "s1", system_prompt(), &ContextBudget::default());
 
         let messages: Vec<Message> = plan.records.iter().map(|r| r.message.clone()).collect();
         let announced: Vec<&str> = messages
@@ -604,7 +642,12 @@ mod tests {
     fn a_brand_new_session_seeds_only_the_system_prompt() {
         let (store, dir) = temp_store("fresh");
 
-        let plan = seed_transcript(&store, "unknown", &ContextBudget::default());
+        let plan = seed_transcript(
+            &store,
+            "unknown",
+            system_prompt(),
+            &ContextBudget::default(),
+        );
 
         assert_eq!(plan.records.len(), 1);
         assert_eq!(plan.records[0].message.role, "system");
@@ -639,6 +682,7 @@ mod tests {
         let plan = seed_transcript(
             &store,
             "s1",
+            system_prompt(),
             &ContextBudget::default().with_limit(Some(500)),
         );
 
@@ -678,6 +722,17 @@ mod tests {
                  model introduce zorp as a coding buddy"
             );
         }
+    }
+
+    /// The turn's prompt says where the turn is and where its output goes.
+    /// Without it the model writes its PDFs into the top of whatever
+    /// directory it was pointed at, which is how this started.
+    #[test]
+    fn the_turn_prompt_says_where_generated_files_go() {
+        let prompt = turn_prompt(std::path::Path::new("/home/someone/research"));
+        assert!(prompt.starts_with(system_prompt()), "{prompt}");
+        assert!(prompt.contains("/home/someone/research"), "{prompt}");
+        assert!(prompt.contains("scratch/"), "{prompt}");
     }
 
     fn delta(text: &str) -> Event {

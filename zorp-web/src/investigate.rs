@@ -322,6 +322,10 @@ pub fn spawn_investigate(
     session: Arc<Mutex<SessionState>>,
     request: InvestigateRequest,
     settings: SettingsHandle,
+    // The directory the track lives in, resolved by the handler. An
+    // attempt never falls back to the current directory: the evidence
+    // record it writes to belongs to a workspace somebody chose.
+    workspace: std::path::PathBuf,
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     let cancel = cancel_token();
@@ -343,7 +347,8 @@ pub fn spawn_investigate(
         let mut renderer = WebRenderer::new(tx.clone());
         renderer.set_seq(Arc::clone(&seq));
         let track_id = zorp_track::id::track_id(&request.question);
-        let kinds = match run_attempt(&request, &settings, &cancel, Box::new(renderer)) {
+        let kinds = match run_attempt(&request, &settings, &workspace, &cancel, Box::new(renderer))
+        {
             Ok(done) => vec![done, EventKind::Done],
             Err(failure) => vec![
                 EventKind::InvestigateDone {
@@ -371,6 +376,7 @@ pub fn spawn_investigate(
 fn run_attempt(
     request: &InvestigateRequest,
     settings: &SettingsHandle,
+    workspace: &Path,
     cancel: &zorp_agent::CancelToken,
     renderer: Box<dyn zorp_agent::Renderer>,
 ) -> Result<EventKind, AttemptFailure> {
@@ -392,7 +398,7 @@ fn run_attempt(
     }
     .try_with_env_reasoning_mode(None)
     .map_err(|e| e.to_string())?;
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = workspace.to_path_buf();
     let steps = std::env::var("ZORP_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -565,6 +571,7 @@ fn run_attempt(
     let artifact = write_up(
         &mut agent,
         &project,
+        workspace,
         &track_id,
         &request.question,
         &checkpoint_mode,
@@ -623,6 +630,7 @@ fn is_killed(project: &Project, track_id: &str) -> bool {
 fn write_up(
     agent: &mut Agent,
     project: &Project,
+    workspace: &Path,
     track_id: &str,
     question: &str,
     checkpoint_mode: &CheckpointMode,
@@ -659,16 +667,15 @@ fn write_up(
         )),
     }
 
-    // Relative to the working directory, which is what the artifact pane
-    // serves paths against. An absolute path would not open.
+    // Relative to the workspace, which is what the artifact pane serves
+    // paths against. An absolute path would not open.
     let draft = project.track_dir(track_id).join("draft.md");
     if !draft.is_file() {
         return None;
     }
-    let cwd = std::env::current_dir().ok()?;
     Some(
         draft
-            .strip_prefix(&cwd)
+            .strip_prefix(workspace)
             .unwrap_or(&draft)
             .to_string_lossy()
             .into_owned(),
@@ -1063,9 +1070,13 @@ mod tests {
     /// workspace root. An absolute path would simply fail to load.
     #[test]
     fn a_draft_path_is_reported_relative_to_the_workspace() {
-        let cwd = std::env::current_dir().unwrap();
-        let draft = cwd.join(".zorp").join("tracks").join("t1").join("draft.md");
-        let relative = draft.strip_prefix(&cwd).unwrap();
+        let workspace = std::path::Path::new("/home/someone/research");
+        let draft = workspace
+            .join(".zorp")
+            .join("tracks")
+            .join("t1")
+            .join("draft.md");
+        let relative = draft.strip_prefix(workspace).unwrap();
         assert_eq!(
             relative.to_string_lossy(),
             ".zorp/tracks/t1/draft.md",

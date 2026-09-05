@@ -141,6 +141,7 @@ async fn a_tool_only_turn_is_left_out_of_the_replay() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let id = seed(&db);
 
     let addr = spawn().await;
@@ -164,6 +165,7 @@ async fn the_replay_still_carries_both_sides_of_the_conversation() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let id = seed(&db);
 
     let addr = spawn().await;
@@ -199,6 +201,7 @@ async fn the_sidebar_shows_a_generated_title_and_falls_back_to_the_first_message
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let named = seed(&db);
     let store = Store::open_at(&db).unwrap();
     store
@@ -246,6 +249,7 @@ async fn a_stored_session_can_be_continued_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let id = seed(&db);
 
     // A server that has never seen this session, which is what a restart is.
@@ -276,6 +280,7 @@ async fn an_unknown_session_is_still_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     seed(&db);
 
     let addr = spawn().await;
@@ -302,6 +307,7 @@ async fn deleting_a_session_removes_it_from_the_list_and_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let id = seed(&db);
 
     let addr = spawn().await;
@@ -332,6 +338,7 @@ async fn deleting_an_unknown_session_is_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     seed(&db);
 
     let addr = spawn().await;
@@ -357,6 +364,7 @@ async fn branching_at_an_answer_copies_the_transcript_up_to_it() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let id = seed(&db);
     let mut store = Store::open_at(&db).unwrap();
     store
@@ -430,6 +438,7 @@ async fn deleting_a_running_session_is_refused() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
     ]);
@@ -437,6 +446,7 @@ async fn deleting_a_running_session_is_refused() {
     std::env::set_var("ZORP_MODEL", "m");
     let db = dir.path().join("sessions.db");
     std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_API_KEY");
     let id = seed(&db);
 

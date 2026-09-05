@@ -132,6 +132,8 @@ fn api_router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/models", get(list_models).post(list_models))
         .route("/api/settings/test", post(test_connection))
+        .route("/api/workspace", get(get_workspace).put(put_workspace))
+        .route("/api/workspace/browse", get(browse_workspace))
         .route("/api/artifacts", get(list_artifacts))
         .route("/api/artifacts/raw", get(read_artifact))
         // Conversation search. The three routes exist in every build, so a
@@ -485,6 +487,9 @@ async fn start_panel(
         )
             .into_response();
     }
+    let Some(workspace) = state.workspace_root() else {
+        return (StatusCode::CONFLICT, crate::workspace::NO_WORKSPACE).into_response();
+    };
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
@@ -496,6 +501,7 @@ async fn start_panel(
             lenses: body.lenses,
         },
         state.settings,
+        workspace,
     );
     StatusCode::ACCEPTED.into_response()
 }
@@ -539,10 +545,13 @@ async fn start_investigate(
     if let Err(e) = crate::investigate::check_request(&request) {
         return (StatusCode::BAD_REQUEST, e.message()).into_response();
     }
+    let Some(workspace) = state.workspace_root() else {
+        return (StatusCode::CONFLICT, crate::workspace::NO_WORKSPACE).into_response();
+    };
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
-    crate::investigate::spawn_investigate(session, request, state.settings.clone());
+    crate::investigate::spawn_investigate(session, request, state.settings.clone(), workspace);
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -593,13 +602,17 @@ async fn investigate_status() -> Json<serde_json::Value> {
 /// model-authored text. Detection is code and interpreting is somebody
 /// else's job, which is the split the whole subsystem rests on.
 #[cfg(feature = "research")]
-async fn investigate_ledger(Query(params): Query<LedgerQuery>) -> impl IntoResponse {
+async fn investigate_ledger(
+    State(state): State<AppState>,
+    Query(params): Query<LedgerQuery>,
+) -> impl IntoResponse {
     if params.question.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "no question given").into_response();
     }
-    let root = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    // The track being read belongs to a workspace, so there is nothing to
+    // read until one is chosen. Same status and sentence as a turn.
+    let Some(root) = state.workspace_root() else {
+        return (StatusCode::CONFLICT, crate::workspace::NO_WORKSPACE).into_response();
     };
     match crate::investigate::read_ledger(&root, &params.question) {
         Ok(ledger) => Json(ledger).into_response(),
@@ -620,6 +633,12 @@ async fn start_turn(
     let Some(session) = session_or_adopt(&state, &id) else {
         return (StatusCode::NOT_FOUND, "no such session").into_response();
     };
+    // Nothing runs until somebody has chosen a directory to run it in.
+    // 409 and this exact sentence: the browser matches on both and opens
+    // its directory picker rather than showing an error.
+    let Some(workspace) = state.workspace_root() else {
+        return (StatusCode::CONFLICT, crate::workspace::NO_WORKSPACE).into_response();
+    };
     // Two turns on one agent would interleave into a corrupt transcript.
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
@@ -633,6 +652,7 @@ async fn start_turn(
         id,
         body.message,
         body.memory,
+        workspace,
         state.settings.clone(),
         state.own_port,
         recall_indexer,
@@ -811,6 +831,106 @@ async fn stream_events(
         .into_response()
 }
 
+/* ------------------------------------------------------------------ */
+/* the workspace                                                       */
+/* ------------------------------------------------------------------ */
+
+/// What directory the agent works in, where its generated files go, and
+/// what named it. `configured` is the one field the page has to read: false
+/// means every turn will be refused until somebody picks a directory.
+async fn get_workspace(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(workspace_json(&state))
+}
+
+fn workspace_json(state: &AppState) -> serde_json::Value {
+    match state.workspace() {
+        Ok(chosen) => json!({
+            "path": chosen.path.display().to_string(),
+            "scratch": chosen.scratch().display().to_string(),
+            "source": chosen.source,
+            "configured": true,
+        }),
+        // A path that was named and cannot be used still says what named it,
+        // so the page can point at the flag or the variable rather than at
+        // the picker. It is not configured either way: nothing will run.
+        Err(unusable) => json!({
+            "path": null,
+            "scratch": null,
+            "source": unusable.source(),
+            "configured": false,
+        }),
+    }
+}
+
+#[derive(Deserialize)]
+struct WorkspaceBody {
+    path: String,
+}
+
+/// Choose the workspace, and remember the choice.
+///
+/// The path goes through the one validating function every other source
+/// goes through, so a path refused here is refused at startup too, and the
+/// refusal is a sentence a person can act on rather than a status code.
+///
+/// A run in flight refuses the change. The agent is working in the old
+/// directory, and swapping it underneath would leave half a turn's output
+/// in one place and half in another.
+async fn put_workspace(
+    State(state): State<AppState>,
+    Json(body): Json<WorkspaceBody>,
+) -> impl IntoResponse {
+    if state.any_running() {
+        return (
+            StatusCode::CONFLICT,
+            "a run is in flight in the current workspace, so wait for it to finish or stop it",
+        )
+            .into_response();
+    }
+    let path = match crate::workspace::validate(std::path::Path::new(body.path.trim())) {
+        Ok(path) => path,
+        Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
+    };
+    {
+        let mut guard = state.settings.lock().unwrap();
+        guard.workspace = Some(path.display().to_string());
+        // Persisted like the rest of the non-secret settings, and a failure
+        // to write is logged rather than returned for the same reason: the
+        // in-memory state is already right, so this request succeeded.
+        if let Err(e) = settings::save(&guard.to_persisted()) {
+            eprintln!(
+                "zorp-web: could not persist the workspace to {}: {e}",
+                settings::config_path().display()
+            );
+        }
+    }
+    Json(workspace_json(&state)).into_response()
+}
+
+#[derive(Deserialize)]
+struct BrowseQuery {
+    path: Option<String>,
+    hidden: Option<String>,
+}
+
+/// List the subdirectories of one directory, so somebody can pick a
+/// workspace without typing a path.
+///
+/// See `crate::workspace::browse`: directory names only, never a file name
+/// and never a file's contents. It is exactly as exposed as the shell the
+/// agent already runs on this machine, which is why this server refuses a
+/// non-loopback bind without a token.
+async fn browse_workspace(Query(query): Query<BrowseQuery>) -> impl IntoResponse {
+    use crate::workspace::BrowseError;
+    let hidden = matches!(query.hidden.as_deref(), Some("1") | Some("true"));
+    match crate::workspace::browse(query.path.as_deref(), hidden) {
+        Ok(listing) => Json(serde_json::to_value(listing).unwrap_or_default()).into_response(),
+        Err(BrowseError::NotAbsolute(why)) => (StatusCode::BAD_REQUEST, why).into_response(),
+        Err(BrowseError::Missing(why)) => (StatusCode::NOT_FOUND, why).into_response(),
+        Err(BrowseError::Denied(why)) => (StatusCode::FORBIDDEN, why).into_response(),
+    }
+}
+
 /// The effective model configuration plus, for each field, where it came
 /// from. `has_api_key` is the only thing said about the key itself: the
 /// `Resolved` type this serializes has no field that could carry it.
@@ -973,7 +1093,7 @@ struct ArtifactQuery {
 /// would make the pane look broken on a server that simply has the feature
 /// switched off.
 async fn list_artifacts(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let Some(root) = state.workspace.clone() else {
+    let Some(root) = state.workspace_root() else {
         return Json(json!({"files": [], "truncated": false}));
     };
     let listing = tokio::task::spawn_blocking(move || crate::artifacts::list(&root))
@@ -999,10 +1119,10 @@ async fn read_artifact(
 ) -> axum::response::Response {
     use crate::artifacts::{self, Refusal};
 
-    let Some(root) = state.workspace.clone() else {
+    let Some(root) = state.workspace_root() else {
         return refuse(
             StatusCode::NOT_FOUND,
-            "this server was not started with a workspace",
+            "no workspace is chosen, so there is nothing to serve",
         );
     };
     let requested = query.path.unwrap_or_default();

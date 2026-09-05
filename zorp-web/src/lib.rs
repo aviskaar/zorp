@@ -28,3 +28,4 @@ pub mod title;
 pub mod tool_safety;
 pub mod turn;
 pub mod voice;
+pub mod workspace;

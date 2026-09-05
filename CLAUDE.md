@@ -309,6 +309,22 @@ resulting artifact, deliver it in the right form.
   it in place on the `tool` frame with the same name. Run `cargo test
   --workspace` and the three `web/` commands whenever any of it changes.
   See `docs/DECISIONS.md` (2026-09-04, 2026-09-05).
+- `zorp-web` works in a workspace a person chooses, and in no directory
+  at all until they have: `--workspace`, then `ZORP_WORKSPACE`, then the
+  path saved in the settings file, and never a fallback to the directory
+  the server was started in, which is how zorp's own checkout filled up
+  with the agent's rendered PDFs. With none of the three set the server
+  starts, serves the UI, says so on stderr, and answers a turn, a panel or
+  an investigate run with 409 and the exact body `no workspace chosen`.
+  `zorp-web/src/workspace.rs` checks every path the same way wherever it
+  came from, the path is persisted in the settings file while the API key
+  still is not (a path is not a secret), and `<workspace>/scratch` is
+  where generated files go, which the turn's system prompt says in one
+  sentence. `GET /api/workspace/browse` lists directory names so somebody
+  can pick one without typing a path: no file names, no contents, and no
+  more exposed than the shell the agent already runs, which is why a
+  non-loopback bind still needs a token. See `docs/DECISIONS.md`
+  (2026-09-05).
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's
