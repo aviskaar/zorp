@@ -1649,12 +1649,14 @@ mod tests {
         }
     }
 
+    /// Each call's name and the description the model gave it, if any.
+    type Described = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
     #[derive(Default)]
     struct CaptureRenderer {
         tools: Arc<Mutex<Vec<String>>>,
         events: Arc<Mutex<Vec<String>>>,
-        /// Each call's name and the description the model gave it, if any.
-        described: Arc<Mutex<Vec<(String, Option<String>)>>>,
+        described: Described,
     }
     impl crate::render::Renderer for CaptureRenderer {
         fn working(&mut self) {
