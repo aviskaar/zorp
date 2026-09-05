@@ -98,6 +98,7 @@ async fn stopping_a_turn_parked_on_an_approval_ends_it() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"stopped.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
     ]);

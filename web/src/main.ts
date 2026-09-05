@@ -46,6 +46,12 @@ import {
   renderModelGroups,
   type ChoiceGroup,
 } from "./onboarding";
+import {
+  WORKSPACE_REASON,
+  WorkspacePicker,
+  needsWorkspace,
+  workspaceBar,
+} from "./workspace";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
 import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
@@ -70,6 +76,7 @@ import {
   deleteSession,
   getSession,
   getSettings,
+  getWorkspace,
   listModels,
   listSessions,
   newSession,
@@ -101,6 +108,7 @@ import {
   type SettingsUpdate,
   type SessionSummary,
   type StreamStatus,
+  type Workspace,
   type ZorpEvent,
   serverIsReachable,
 } from "./api";
@@ -150,6 +158,11 @@ interface Elements {
   title: HTMLElement;
   modelBtn: HTMLButtonElement;
   modelBtnLabel: HTMLElement;
+  workspaceBtn: HTMLButtonElement;
+  workspaceBtnLabel: HTMLElement;
+  workspaceOverlay: HTMLElement;
+  workspaceClose: HTMLButtonElement;
+  workspacePicker: HTMLElement;
   status: HTMLElement;
   statusText: HTMLElement;
   contextMeter: HTMLElement;
@@ -201,6 +214,9 @@ interface Elements {
   settingsResult: HTMLElement;
   onboardOverlay: HTMLElement;
   onboardClose: HTMLButtonElement;
+  onboardStepWorkspace: HTMLElement;
+  onboardWorkspace: HTMLElement;
+  onboardWorkspaceSkip: HTMLButtonElement;
   onboardStepStart: HTMLElement;
   onboardSkip: HTMLButtonElement;
   onboardBegin: HTMLButtonElement;
@@ -262,6 +278,26 @@ const panelView = new PanelView(document, dom.transcript);
  * does, so only one can be running.
  */
 const zorpView = new ZorpModeView(document, dom.transcript);
+/**
+ * The two places a workspace gets picked: the first-run flow's first step,
+ * and the overlay behind the top bar pill.
+ *
+ * Two instances of one class rather than one instance moved between hosts,
+ * because each holds where it has browsed to and moving a node between
+ * dialogs to save an object would be the fiddlier of the two.
+ */
+const onboardWorkspacePicker = new WorkspacePicker(
+  document,
+  dom.onboardWorkspace,
+  (saved) => {
+    applyWorkspace(saved);
+    showOnboardStep("start");
+  },
+);
+const workspacePicker = new WorkspacePicker(document, dom.workspacePicker, (saved) => {
+  applyWorkspace(saved);
+  closeWorkspacePicker();
+});
 const voiceInput = createVoiceInput(
   {
     input: dom.input,
@@ -326,6 +362,12 @@ let autoApprove = false;
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
 /**
+ * The directory the server says it is working in. Null until the first
+ * successful `GET /api/workspace`, and null again if the server ever says
+ * there is none.
+ */
+let currentWorkspace: Workspace | null = null;
+/**
  * Where the pane widths and the collapsed flag are kept, or null if nowhere,
  * and the two handles once they exist.
  *
@@ -350,6 +392,7 @@ function start(): void {
   wireRecall();
   wireScroller();
   wireSettings();
+  wireWorkspace();
   wireOnboarding();
   wireArtifacts();
   wireApprovalMode();
@@ -372,7 +415,11 @@ async function connectOrExplain(): Promise<void> {
   if (await serverIsReachable()) {
     setStatus("idle", "idle");
     void refreshSessions().then(restoreSessionFromUrl);
-    void refreshSettingsBadge();
+    // Before the settings read, because that read is what decides whether to
+    // open the first-run flow and the flow's first step is the workspace.
+    // `refreshWorkspace` swallows its own failures, so this always gets
+    // there.
+    void refreshWorkspace().then(refreshSettingsBadge);
     void refreshCapabilities();
     void refreshRecallStatus();
     dom.input.focus();
@@ -477,6 +524,11 @@ function collectElements(): Elements {
     title: byId("session-title"),
     modelBtn: byId<HTMLButtonElement>("model-btn"),
     modelBtnLabel: byId("model-btn-label"),
+    workspaceBtn: byId<HTMLButtonElement>("workspace-btn"),
+    workspaceBtnLabel: byId("workspace-btn-label"),
+    workspaceOverlay: byId("workspace-overlay"),
+    workspaceClose: byId<HTMLButtonElement>("workspace-close"),
+    workspacePicker: byId("workspace-picker"),
     status: byId("status"),
     statusText: byId("status-text"),
     contextMeter: byId("context-meter"),
@@ -527,6 +579,9 @@ function collectElements(): Elements {
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     onboardOverlay: byId("onboard-overlay"),
     onboardClose: byId<HTMLButtonElement>("onboard-close"),
+    onboardStepWorkspace: byId("onboard-step-workspace"),
+    onboardWorkspace: byId("onboard-workspace"),
+    onboardWorkspaceSkip: byId<HTMLButtonElement>("onboard-workspace-skip"),
     onboardStepStart: byId("onboard-step-start"),
     onboardSkip: byId<HTMLButtonElement>("onboard-skip"),
     onboardBegin: byId<HTMLButtonElement>("onboard-begin"),
@@ -660,12 +715,33 @@ function wireSettings(): void {
 }
 
 /**
+ * The workspace pill and the overlay behind it.
+ *
+ * Buttons only, like the settings wiring above. Nothing here starts a turn.
+ */
+function wireWorkspace(): void {
+  dom.workspaceBtn.addEventListener("click", () => void openWorkspacePicker());
+  dom.workspaceClose.addEventListener("click", closeWorkspacePicker);
+  dom.workspaceOverlay.addEventListener("click", (event) => {
+    if (event.target === dom.workspaceOverlay) {
+      closeWorkspacePicker();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.workspaceOverlay.hidden) {
+      closeWorkspacePicker();
+    }
+  });
+}
+
+/**
  * The first-run flow.
  *
  * Buttons only. Nothing here can start a turn, a panel or an investigate
  * run: it reads and writes settings and that is all it does.
  */
 function wireOnboarding(): void {
+  dom.onboardWorkspaceSkip.addEventListener("click", () => showOnboardStep("start"));
   dom.onboardBegin.addEventListener("click", () => showOnboardStep("provider"));
   dom.onboardSkip.addEventListener("click", closeOnboarding);
   dom.onboardClose.addEventListener("click", closeOnboarding);
@@ -1705,7 +1781,21 @@ function appendMemoryNote(event: MemoryEvent): void {
   dom.transcript.append(card);
 }
 
+/**
+ * Say what went wrong, or fix the one thing that can be fixed from here.
+ *
+ * The hook is here and not at the three start sites because a workspace can
+ * go missing on the event stream too, and `error` events land through this
+ * same function. A person who never saw the first-run flow, because their
+ * model was already configured, meets the missing workspace exactly once:
+ * when they press send. An error card saying "no workspace chosen" would
+ * leave them reading about a setting with no way to reach it.
+ */
 function appendError(message: string): void {
+  if (needsWorkspace(message)) {
+    void openWorkspacePicker(WORKSPACE_REASON);
+    return;
+  }
   closeActivityGroup();
   const card = el("div", "card card-error");
   const head = el("div", "card-head");
@@ -2182,6 +2272,48 @@ function closeSettings(): void {
   dom.settingsOverlay.hidden = true;
 }
 
+/* ------------------------------------------------------------------ */
+/* workspace                                                           */
+/*                                                                      */
+/* Which directory the agent works in. Read on connect, shown in the    */
+/* top bar, changed through the picker in src/workspace.ts.             */
+/* ------------------------------------------------------------------ */
+
+/** Read what the server is working in and paint the pill. */
+async function refreshWorkspace(): Promise<void> {
+  try {
+    applyWorkspace(await getWorkspace());
+  } catch {
+    // The status pill already reports connectivity problems. A pill reading
+    // "No workspace" because the server did not answer would be a claim
+    // about the server rather than a report of one.
+  }
+}
+
+function applyWorkspace(workspace: Workspace | null): void {
+  currentWorkspace = workspace;
+  const bar = workspaceBar(workspace);
+  dom.workspaceBtnLabel.textContent = bar.label;
+  dom.workspaceBtn.title = bar.title;
+  dom.workspaceBtn.dataset.state = bar.set ? "configured" : "unconfigured";
+  // The empty state names the directory, and it is drawn before this answer
+  // arrives. Redraw it while it is the thing on screen, so a new chat does
+  // not sit there naming the wrong place.
+  if (dom.transcript.querySelector(".empty")) {
+    showEmptyState();
+  }
+}
+
+async function openWorkspacePicker(reason = ""): Promise<void> {
+  dom.workspaceOverlay.hidden = false;
+  await workspacePicker.open(reason);
+}
+
+function closeWorkspacePicker(): void {
+  dom.workspaceOverlay.hidden = true;
+  void refreshWorkspace();
+}
+
 /**
  * Ask the server what this build can do, and draw it.
  *
@@ -2436,7 +2568,7 @@ function updateComposerWarning(settings: Settings): void {
 /* src/onboarding.ts for the rules, and docs/DECISIONS.md (2026-09-01). */
 /* ------------------------------------------------------------------ */
 
-type OnboardStep = "start" | "provider" | "key" | "model" | "done";
+type OnboardStep = "workspace" | "start" | "provider" | "key" | "model" | "done";
 
 /** Remembered so a dismissal survives a reload. A person who said no to
  * this once should not be asked again every time they open the page. */
@@ -2484,9 +2616,23 @@ function rememberOnboardingDismissed(): void {
   }
 }
 
+/**
+ * Open at the workspace step unless there already is one.
+ *
+ * First, and not out of tidiness: a model with nowhere to work is useless,
+ * and the alternative to asking is an agent writing into whatever directory
+ * the server happened to start in. A server that already has one skips
+ * straight to the model, exactly as a server with good settings skips this
+ * flow altogether.
+ */
 function openOnboarding(): void {
   renderOnboardProviders();
-  showOnboardStep("start");
+  if (currentWorkspace?.configured) {
+    showOnboardStep("start");
+  } else {
+    showOnboardStep("workspace");
+    void onboardWorkspacePicker.open();
+  }
   dom.onboardOverlay.hidden = false;
 }
 
@@ -2499,6 +2645,7 @@ function closeOnboarding(): void {
 }
 
 function showOnboardStep(step: OnboardStep): void {
+  dom.onboardStepWorkspace.hidden = step !== "workspace";
   dom.onboardStepStart.hidden = step !== "start";
   dom.onboardStepProvider.hidden = step !== "provider";
   dom.onboardStepKey.hidden = step !== "key";
@@ -2716,7 +2863,9 @@ function showEmptyState(): void {
     autoApprove
       ? "Auto-approve is on for this chat, so nothing will stop and ask you."
       : "Anything that changes your machine stops for your approval first.",
-    "The agent works on the directory the server was started in.",
+    currentWorkspace?.path
+      ? `The agent works in ${currentWorkspace.path} and nowhere else.`
+      : "No workspace is set yet, so there is nowhere for the agent to work.",
   ]) {
     list.append(textNode("li", "", line));
   }

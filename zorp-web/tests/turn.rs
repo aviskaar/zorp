@@ -96,6 +96,7 @@ async fn a_turn_streams_assistant_text_then_done() {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path().join("s.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_API_KEY");
 
     let addr = spawn().await;
@@ -149,6 +150,7 @@ async fn a_finished_turn_leaves_the_stream_open() {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path().join("open.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_API_KEY");
 
     let addr = spawn().await;
@@ -186,6 +188,7 @@ async fn later_turns_stream_on_the_same_connection() {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path().join("multi.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_API_KEY");
 
     let addr = spawn().await;
@@ -233,6 +236,7 @@ async fn seq_keeps_climbing_across_turns() {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path().join("s2.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_API_KEY");
 
     let addr = spawn().await;
@@ -272,6 +276,7 @@ async fn a_resumed_stream_replays_only_what_was_missed() {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path().join("resume.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     std::env::remove_var("ZORP_API_KEY");
 
     let addr = spawn().await;
@@ -349,6 +354,7 @@ async fn a_turn_with_nothing_configured_fails_with_a_clear_error_not_a_provider_
     }
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("ZORP_STATE_DB", dir.path().join("unconfigured.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
 
     let addr = spawn().await;
     let id = new_session(addr).await;

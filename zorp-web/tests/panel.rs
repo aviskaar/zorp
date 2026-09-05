@@ -97,6 +97,7 @@ fn configure(dir: &std::path::Path, responses: Vec<&str>) {
     std::env::set_var("ZORP_BASE_URL", &base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.path_db());
+    std::env::set_var("ZORP_WORKSPACE", dir);
     std::env::remove_var("ZORP_API_KEY");
 }
 
@@ -143,6 +144,7 @@ async fn a_panel_reports_every_reviewer_and_its_own_completeness() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let a = verdict_response("section 3");
     let b = verdict_response("section 3");
     configure(dir.path(), vec![&a, &b]);
@@ -191,6 +193,7 @@ async fn a_reviewer_that_fails_is_visible_and_makes_the_panel_incomplete() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let good = verdict_response("section 3");
     let prose =
         r#"{"choices":[{"message":{"content":"Looks fine to me."},"finish_reason":"stop"}]}"#;
@@ -233,6 +236,7 @@ async fn an_empty_target_is_refused_before_any_reviewer_runs() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     configure(dir.path(), vec![]);
 
     let addr = spawn().await;
@@ -249,6 +253,7 @@ async fn a_panel_is_refused_while_a_turn_is_running() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     // A response that never arrives, so the turn stays running.
     std::env::set_var("ZORP_BASE_URL", mock_hang());
     std::env::set_var("ZORP_MODEL", "m");

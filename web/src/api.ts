@@ -10,14 +10,14 @@
 // The one thing this module imports, and only because the fallback it names
 // is a rule about the artifact pane rather than about HTTP. `artifact-view`
 // imports nothing, so this cannot become a cycle.
-import { textUrl } from "./artifact-view";
+import { textUrl } from "./artifact-view.ts";
 import {
   readVoiceWaitStream,
   voiceWaitRequest,
   type VoiceWaitEvent,
-} from "./voice-readiness";
+} from "./voice-readiness.ts";
 
-export type { VoiceWaitEvent } from "./voice-readiness";
+export type { VoiceWaitEvent } from "./voice-readiness.ts";
 
 declare global {
   interface Window {
@@ -582,6 +582,31 @@ export class TurnBusyError extends ApiError {
   }
 }
 
+/**
+ * What the server says when it has nowhere to work.
+ *
+ * Exact text, and the server sends exactly this. Starting a turn, a panel
+ * or an investigate run all answer 409 with it, which is the same status a
+ * busy session answers with, so the body is the only thing that tells the
+ * two apart. The page needs them apart: one is "wait a moment" and the
+ * other is "pick a directory".
+ */
+export const NO_WORKSPACE = "no workspace chosen";
+
+/**
+ * Name the 409 a start got.
+ *
+ * One function for all three starts, because a rule about which 409 means
+ * what is a rule the panel and the investigate run share with turns, and
+ * three copies of it is three chances for one to drift.
+ */
+function startFailure(error: unknown): unknown {
+  if (error instanceof ApiError && error.status === 409 && error.message !== NO_WORKSPACE) {
+    return new TurnBusyError("a turn is already running on this session");
+  }
+  return error;
+}
+
 /** Base URL with any trailing slashes removed, so path joins stay clean. */
 export function apiBase(): string {
   const raw = typeof window === "undefined" ? "" : window.ZORP_API_BASE;
@@ -724,10 +749,7 @@ export async function sendTurn(id: string, message: string, memory = false): Pro
   try {
     await request<void>("POST", `/api/sessions/${segment(id)}/turn`, { message, memory });
   } catch (error) {
-    if (error instanceof ApiError && error.status === 409) {
-      throw new TurnBusyError("a turn is already running on this session");
-    }
-    throw error;
+    throw startFailure(error);
   }
 }
 
@@ -807,10 +829,7 @@ export async function startPanel(
       lenses,
     });
   } catch (error) {
-    if (error instanceof ApiError && error.status === 409) {
-      throw new TurnBusyError("a turn is already running on this session");
-    }
-    throw error;
+    throw startFailure(error);
   }
 }
 
@@ -988,10 +1007,7 @@ export async function startInvestigate(
       threshold_direction: prereg?.threshold_direction ?? null,
     });
   } catch (error) {
-    if (error instanceof ApiError && error.status === 409) {
-      throw new TurnBusyError("a turn is already running on this session");
-    }
-    throw error;
+    throw startFailure(error);
   }
 }
 
@@ -1054,6 +1070,63 @@ export interface Ledger {
  */
 export async function getLedger(question: string): Promise<Ledger> {
   return request<Ledger>("GET", `/api/investigate/ledger?question=${segment(question)}`);
+}
+
+/**
+ * The directory the agent works in.
+ *
+ * `scratch` is the server's answer and never something this page works out
+ * from `path`. Where generated files land is the server's rule, and a page
+ * that joined `"scratch"` onto a path would be a second copy of that rule,
+ * silently wrong the day the server changed it.
+ */
+export interface Workspace {
+  path: string | null;
+  scratch: string | null;
+  source: "flag" | "env" | "saved" | "none";
+  configured: boolean;
+}
+
+/** One subdirectory the browse endpoint listed. */
+export interface WorkspaceEntry {
+  name: string;
+  path: string;
+}
+
+/** One directory, its parent, and the subdirectories inside it. */
+export interface WorkspaceListing {
+  path: string;
+  parent: string | null;
+  entries: WorkspaceEntry[];
+}
+
+/** Read which directory the agent is working in, and where it came from. */
+export async function getWorkspace(): Promise<Workspace> {
+  return request<Workspace>("GET", "/api/workspace");
+}
+
+/**
+ * Change it. A 400 means the server refused the path and its body is the
+ * sentence to show; a 409 means a turn is running and it will not move
+ * underneath one.
+ */
+export async function setWorkspace(path: string): Promise<Workspace> {
+  return request<Workspace>("PUT", "/api/workspace", { path });
+}
+
+/**
+ * List the subdirectories of one directory, or of the user's home when
+ * asked for nothing. Subdirectories only: this picks a place to work, not a
+ * file.
+ */
+export async function browseWorkspace(path?: string): Promise<WorkspaceListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  const listing = await request<WorkspaceListing>("GET", `/api/workspace/browse${query}`);
+  return {
+    path: listing?.path ?? "",
+    parent: listing?.parent ?? null,
+    entries: Array.isArray(listing?.entries) ? listing.entries : [],
+  };
 }
 
 /** Read the effective model settings and where each field came from. */

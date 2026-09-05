@@ -103,13 +103,14 @@ pub struct AppState {
     /// that tests built on `AppState::new`/`with_token` never depend on
     /// whatever the developer machine happens to have saved.
     pub settings: SettingsHandle,
-    /// The directory artifacts are served from, and the boundary nothing
-    /// served may escape. The agent already works in this directory, so this
-    /// adds no reach; what it adds is a second way to read from it, which is
-    /// why `artifacts.rs` resolves every request against this and refuses
-    /// anything that lands outside. `None` turns the artifact endpoints off
-    /// entirely rather than defaulting to somewhere surprising.
-    pub workspace: Option<std::path::PathBuf>,
+    /// The workspace named on the command line, and nothing else.
+    ///
+    /// It is only the highest-precedence candidate: `ZORP_WORKSPACE` and the
+    /// saved path are read live by `workspace()`, so a directory chosen in
+    /// the browser takes effect without a restart. There is deliberately no
+    /// fallback to the directory the server was started in; see
+    /// `crate::workspace`.
+    pub workspace_flag: Option<std::path::PathBuf>,
     /// The port this server listens on, when it is known. The turn hands it
     /// to `Policy`, which denies commands that call back into this server:
     /// one approved `run_command` is otherwise enough to stand the approval
@@ -172,12 +173,40 @@ impl AppState {
         self
     }
 
-    /// Point the artifact endpoints at a directory. `main.rs` passes the
-    /// directory the server was started in, which is the one the agent
-    /// works in.
+    /// Name the workspace on the command line. `main.rs` passes
+    /// `--workspace`, which beats both the environment variable and the
+    /// saved path.
     pub fn with_workspace(mut self, root: std::path::PathBuf) -> Self {
-        self.workspace = Some(root);
+        self.workspace_flag = Some(root);
         self
+    }
+
+    /// The directory the agent works in, or why there is not one.
+    ///
+    /// Resolved per call rather than frozen at startup, because the saved
+    /// path changes under `PUT /api/workspace` and the environment can be
+    /// exported after the process started, the same reasoning
+    /// `SettingsState::core_fields` follows for the model settings.
+    pub fn workspace(&self) -> Result<crate::workspace::Chosen, crate::workspace::Unusable> {
+        let saved = self.settings.lock().unwrap().workspace.clone();
+        crate::workspace::resolve(self.workspace_flag.as_deref(), saved.as_deref())
+    }
+
+    /// Just the path, for the callers that have nothing to say about why
+    /// there is not one.
+    pub fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.workspace().ok().map(|chosen| chosen.path)
+    }
+
+    /// Whether any session on this server has work in flight.
+    ///
+    /// `PUT /api/workspace` asks, because a running agent is working in the
+    /// directory that is about to be replaced.
+    pub fn any_running(&self) -> bool {
+        let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+        sessions
+            .iter()
+            .any(|session| session.lock().unwrap().running)
     }
 
     #[cfg(feature = "recall")]

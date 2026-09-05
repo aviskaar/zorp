@@ -72,6 +72,117 @@ A stream that ends cleanly with no `[DONE]` and no `finish_reason` is
 still the truncation error, word for word.
 
 ---
+## 2026-09-05: zorp-web works in a workspace somebody chose, and in none until they have
+
+**Finding:** `zorp-web` ran the agent in the directory the server was
+started in. In practice that is the zorp checkout, so every file the agent
+wrote, every PDF it rendered and every throwaway script it left behind
+landed in zorp's own source tree, and `git status` in this repo grew
+`k8s-load-balancing.pdf` and friends.
+
+**Decision:** the working directory is a workspace a person picks.
+`--workspace`, then `ZORP_WORKSPACE`, then the path saved in
+`~/.config/zorp/web.toml`, and then nothing. There is deliberately no
+fallback to the current directory, because falling back is the bug: a
+server that guesses writes somewhere nobody chose, and the guess is
+invisible until the files turn up. With none of the three set the server
+still binds, still serves the UI and still answers the settings endpoints,
+says on stderr that nothing is chosen, and refuses to run work.
+`POST /api/sessions/:id/turn`, `/panel` and `/investigate` answer 409 with
+the body `no workspace chosen`, exactly, because the browser matches on the
+status and the sentence to open its picker rather than show an error. The
+ledger read answers the same way. `zorp-web/src/turn.rs`,
+`panel.rs`, `investigate.rs` and the ledger handler in `api.rs` no longer
+call `std::env::current_dir` at all. The CLI in `zorp-agent` is untouched:
+it works where it was started, and standing in a directory is how a person
+chooses one there.
+
+Every path is checked by one function, `workspace::validate`, whichever of
+the four sources it came from: absolute, present, a directory, canonical,
+not the filesystem root, and readable. It answers with a sentence somebody
+can act on rather than a code, because that sentence is what the browser
+shows. A named path that fails validation does not fall through to the
+next candidate; somebody said to work there, and quietly working somewhere
+else is the same failure as guessing.
+
+**The path is persisted and the API key is not,** which is not an
+inconsistency. A key is a credential and the settings file is not a
+keychain, so `PersistedSettings` has no field that could carry one. A
+workspace path is a directory name: somebody reading the file learns where
+their own work lives, which they already knew. Not saving it would mean
+choosing a directory again after every restart, and the state that pushes
+people towards is the one this decision exists to remove.
+
+**`<workspace>/scratch` is where generated files go.** The turn's system
+prompt says so in one plain sentence, added to the shared identity prompt
+by `turn::turn_prompt` rather than to `DEFAULT_SYSTEM_PROMPT`, because the
+CLI has no such rule. The directory is created when a turn starts, not at
+startup, since a workspace can be chosen while the server is running, and
+a failure to create it is said out loud and never fails the turn. No new
+tool was invented for it: the agent already writes files.
+
+**`GET /api/workspace/browse` lists directory names, and that is all.**
+Subdirectories of one directory, sorted case insensitively, dotted ones
+left out unless `hidden=1` is passed, symlinked directories included. It
+never returns a file name, never a file's contents, and never walks
+anywhere but the directory it was asked for. A relative path is 400, a
+missing one 404, an unreadable one 403. It is exactly as exposed as the
+shell the agent already runs on this machine, which is why this server
+refuses a non-loopback bind without a token; on a loopback install it
+tells the person running it what is on their own disk.
+
+**Ruled out:** falling back to the current directory when nothing is set
+(the bug); a default workspace under the user's home (a directory nobody
+chose is the same problem with a nicer address); making the workspace a
+field on `PUT /api/settings` (it would bypass the validation the dedicated
+endpoint does); changing the workspace while a run is in flight (409: the
+agent is working in the old directory).
+
+## 2026-09-05: the browser asks for a workspace, first and again when one is missing
+
+**Finding:** `zorp-web` ran the agent in the directory the server was
+started in, which for anyone running from source is zorp's own tree, so
+every file the agent wrote landed in this repo. The server is being
+changed to work in a directory the person picks. That leaves the page
+with a question it never had to ask, and two moments to ask it in: the
+first run, and the first send on a server that has no answer yet.
+
+**Decision:** a picker, `web/src/workspace.ts`, and three places it
+surfaces. It is the first step of the first-run flow, before the model,
+because a model with nowhere to work is useless; the step is skipped when
+a workspace is already set, exactly as the model steps are skipped when
+the settings are already good. It is behind a top bar pill next to the
+model and Files buttons, showing the last path segment with the full path
+in the `title` and reading "No workspace" in warn colours when there is
+none. And it opens by itself, with one sentence saying why, when a start
+comes back 409 with `no workspace chosen`. The hook for that is
+`appendError` in `main.ts` and not the three start sites, because an
+`error` frame on the event stream lands there too. `api.ts` stops turning
+every 409 from a start into `TurnBusyError`: both a busy session and a
+missing workspace answer 409 and only the body tells them apart, so
+`startFailure` reads the body and one function does it for turns, panels
+and investigate runs alike.
+
+The picker shows one path, and the header, the text field and the Save
+button all read it, so the button can never send something other than
+what the person is looking at. Directory names come off a filesystem, so
+they are untrusted text and land through `textContent` like a model id in
+`onboarding.ts`; the test file lists a directory called
+`<img src=x onerror=...>` and checks it is a text node. A refusal shows
+the server's own sentence with nothing added, and leaves the listing up
+so the next try starts where the last one stopped. The scratch directory
+is named from the API's `scratch` field and never joined together in the
+page, because where generated files land is the server's rule and a
+second copy of it would go quietly wrong the day the server changed.
+
+**What it ruled out:** cutting a long path in code, when
+`.model-btn`'s existing `max-width` and ellipsis already truncate a long
+model id and the pill reuses that class whole. A picker that lists files;
+this chooses a place to work. Any new styling for the top bar button.
+
+**Not changed:** nothing here starts a turn, a panel or an investigate
+run, and nothing here decides what a valid workspace is. The server
+refuses a path and sends the sentence; the page shows it.
 
 ## 2026-09-05: the tool line carries its result as colour, and the browser hears a call start
 

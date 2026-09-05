@@ -67,6 +67,11 @@ RUN mkdir -p /home/zorp/state /home/zorp/voice \
 # good practice here: as root the microphone would not work at all.
 USER zorp
 WORKDIR /work
+# The directory the agent works in, and the one the project volume is
+# mounted at. Named here because the server no longer guesses: with no
+# workspace chosen it starts, serves the UI, and refuses to run turns. See
+# docs/DECISIONS.md (2026-09-05).
+ENV ZORP_WORKSPACE=/work
 EXPOSE 7777
 # 0.0.0.0 is required to be reachable from outside the container, so a token
 # is mandatory. The server refuses to start without one on a non-loopback
