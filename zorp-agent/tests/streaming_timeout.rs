@@ -19,8 +19,8 @@ use std::sync::Once;
 use std::time::Duration;
 
 use sse_stub::{
-    close_body, ending, event, pooled_header_stall_server, sse_server, stream_with_patience,
-    Framing, PATIENCE,
+    close_body, ending, event, pooled_header_stall_server, scripted_server, sse_server,
+    stream_with_patience, Framing, Reply, PATIENCE,
 };
 
 /// Short enough to keep the suite quick, long enough that a healthy stream
@@ -78,6 +78,42 @@ fn a_provider_that_goes_quiet_ends_the_stream_instead_of_being_waited_on() {
         assert!(
             run.elapsed + Duration::from_millis(250) >= Duration::from_secs(IDLE_TIMEOUT_SECS),
             "{framing:?}: gave up after {:?}, too soon to have been the idle timeout",
+            run.elapsed
+        );
+    }
+}
+
+/// A timeout is fatal and is not sent again, now that a connection the peer
+/// closed is. The two arrive on the same read, and a re-send here would wait
+/// the whole limit again for every try the bound allows. Counted, because
+/// the test above serves one connection and a second send would only make
+/// it slower. The header timeout has the same guarantee from
+/// [`a_second_request_cannot_lose_the_header_read_timeout_in_the_pool`],
+/// whose request count and elapsed bound both fail if it is re-sent.
+#[test]
+fn a_read_timeout_is_not_sent_again() {
+    bound_the_wait();
+    static SCRIPT: &[Reply] = &[Reply::Quiet { after: 0 }];
+    for framing in Framing::BOTH {
+        let (address, connections) = scripted_server(framing, SCRIPT);
+
+        let run = stream_with_patience(address, "a provider that went quiet");
+
+        let error = run
+            .error
+            .unwrap_or_else(|| panic!("{framing:?}: a silent socket came back as an answer"));
+        assert!(
+            error.contains(zorp::READ_TIMEOUT_VAR),
+            "{framing:?}: the error does not name the timeout: {error}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "{framing:?}: a timeout was sent again"
+        );
+        assert!(
+            run.elapsed < Duration::from_secs(IDLE_TIMEOUT_SECS * 2),
+            "{framing:?}: gave up after {:?}, long enough to have waited the limit twice",
             run.elapsed
         );
     }

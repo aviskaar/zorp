@@ -14,6 +14,9 @@
 //! Every listener binds port 0 and reads back the port the OS assigned, so
 //! nothing here can collide with whatever is already running on the machine.
 #![allow(dead_code)]
+// One `setsockopt`, in `reset`: a socket that is to die abruptly needs
+// SO_LINGER at zero, and the standard library has not stabilised it.
+#![allow(unsafe_code)]
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -165,6 +168,21 @@ pub enum Reply {
     /// zero this is what OpenRouter sends for an overloaded upstream, comment
     /// lines and all.
     ErrorEvent { after: usize, event: &'static str },
+    /// A 200 event stream: `after` content deltas, then the connection is
+    /// reset with no close handshake. What a peer that died mid-stream looks
+    /// like from this side; over TLS rustls reports it as "peer closed
+    /// connection without sending TLS close_notify". A plain drop sends a
+    /// FIN, and a FIN is the ordinary end of a close-delimited body, so it
+    /// cannot model this.
+    Reset { after: usize },
+    /// The request is read and then the connection is reset before a byte
+    /// of response. The same death, landing while the client waits for a
+    /// status line.
+    ResetBeforeHeaders,
+    /// A 200 event stream: `after` content deltas, then the socket is held
+    /// open and silent for longer than any test will wait. The listener
+    /// keeps accepting, so a request sent again is counted.
+    Quiet { after: usize },
 }
 
 /// Answer each connection from `script`, repeating its last entry for
@@ -289,7 +307,56 @@ fn serve(framing: Framing, reply: Reply, mut socket: TcpStream) {
             let _ = socket.flush();
             close_body(framing, socket);
         }
+        Reply::Reset { after } => {
+            let _ = socket.write_all(framing.headers());
+            for i in 0..after {
+                let _ = socket.write_all(event(framing, i).as_bytes());
+            }
+            let _ = socket.flush();
+            reset(socket);
+        }
+        Reply::ResetBeforeHeaders => reset(socket),
+        Reply::Quiet { after } => {
+            let _ = socket.write_all(framing.headers());
+            for i in 0..after {
+                let _ = socket.write_all(event(framing, i).as_bytes());
+            }
+            let _ = socket.flush();
+            // Off the listener's thread, or the next connection is never
+            // accepted and a request sent again goes uncounted.
+            std::thread::spawn(move || {
+                std::thread::sleep(PATIENCE * 4);
+                drop(socket);
+            });
+        }
     }
+}
+
+/// Close `socket` with a reset and no close handshake.
+///
+/// SO_LINGER at zero turns the close into an RST. The pause first lets the
+/// client read what was already sent, so the reset lands on the read after
+/// the last delta and not on the delta itself.
+fn reset(socket: TcpStream) {
+    use std::os::fd::AsRawFd;
+    std::thread::sleep(Duration::from_millis(50));
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    // SAFETY: the descriptor is a live socket owned by `socket`, and the
+    // option value is a `linger` that outlives the call, of the length given.
+    let rc = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&linger as *const libc::linger).cast(),
+            std::mem::size_of::<libc::linger>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(rc, 0, "SO_LINGER: {}", std::io::Error::last_os_error());
+    drop(socket);
 }
 
 /// One SSE event carrying a content delta, framed for this provider.

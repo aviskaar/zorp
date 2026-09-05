@@ -294,6 +294,11 @@ impl std::fmt::Display for ProviderError {
 /// Public so the streaming path in `zorp-agent` says it in the same words.
 pub const IN_STREAM_ERROR: &str = "the provider reported an error inside the stream";
 
+/// What a connection the peer closed is called on the retry line and in the
+/// give-up tail. It has no status code to put in [`retry_reason`], so the
+/// reason is named here and handed to [`Retrying::again_for`] directly.
+pub const CONNECTION_DROPPED: &str = "connection dropped before a reply";
+
 /// How many times one request may be sent, counting the first, and the
 /// variable that overrides it. 1 turns retrying off.
 pub const DEFAULT_RETRY_ATTEMPTS: u32 = 4;
@@ -497,6 +502,20 @@ impl Retrying {
         let Some(why) = retry_reason(code, provider) else {
             return false;
         };
+        self.again_for(url, why, asked, said)
+    }
+
+    /// [`Retrying::again`] for a failure that has no status code: `why` is
+    /// the reason already decided, such as [`CONNECTION_DROPPED`]. The same
+    /// bound, the same backoff and the same line, so a connection the peer
+    /// closed is not a second count of sends.
+    pub fn again_for(
+        &mut self,
+        url: &str,
+        why: &str,
+        asked: Option<Duration>,
+        said: &dyn std::fmt::Display,
+    ) -> bool {
         let Some(wait) = self.policy.delay(self.sent, self.waited, asked) else {
             return false;
         };
@@ -520,9 +539,11 @@ impl Retrying {
     /// that from one error line, rather than from somebody noticing a tally
     /// later.
     pub fn exhausted(&self, code: u16, provider: Option<&str>) -> String {
-        let Some(reason) = retry_reason(code, provider) else {
-            return String::new();
-        };
+        retry_reason(code, provider).map_or_else(String::new, |reason| self.exhausted_for(reason))
+    }
+
+    /// [`Retrying::exhausted`] for a reason already decided.
+    pub fn exhausted_for(&self, reason: &str) -> String {
         format!(
             " (still {reason} after {} {}, {:.1}s of waiting; \
              {RETRY_ATTEMPTS_VAR} and {RETRY_BUDGET_VAR} bound this)",
@@ -601,7 +622,18 @@ pub fn send_json_retrying(
                     ));
                 }
             }
-            Err(e) => return Err(transport_error(e)),
+            // A connection the peer closed before a status line is a
+            // dropped stream with nothing in it: nothing reached the caller
+            // and nothing was generated, so it goes again under the same
+            // bound as a 429. A timeout is not that, and is never re-sent.
+            Err(e) => {
+                if connection_dropped(&e)
+                    && retrying.again_for(req.url(), CONNECTION_DROPPED, None, &e)
+                {
+                    continue;
+                }
+                return Err(transport_error(e, retrying));
+            }
         }
     }
 }
@@ -611,7 +643,7 @@ pub fn send_json_retrying(
 /// ureq preserves the timed-out `io::Error` while it reads headers, so this
 /// path can use the error chain instead of the clock that `stream_sse` needs
 /// after ureq's chunk decoder has discarded the original error kind.
-fn transport_error(error: ureq::Error) -> BoxErr {
+fn transport_error(error: ureq::Error, retrying: &Retrying) -> BoxErr {
     if error.kind() == ureq::ErrorKind::Io && error_chain_timed_out(&error) {
         let limit = read_timeout_secs();
         format!(
@@ -620,17 +652,52 @@ fn transport_error(error: ureq::Error) -> BoxErr {
              (the transport said: {error})"
         )
         .into()
+    } else if connection_dropped(&error) {
+        format!("{error}{}", retrying.exhausted_for(CONNECTION_DROPPED)).into()
     } else {
         error.into()
     }
 }
 
 fn error_chain_timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
+    io_error_in_chain(error, |kind| kind == std::io::ErrorKind::TimedOut)
+}
+
+/// Did the peer close the connection under this error?
+///
+/// The kinds a dead peer produces and nothing else. rustls reports a TCP
+/// close with no TLS close handshake as `UnexpectedEof`, "peer closed
+/// connection without sending TLS close_notify", which is the line 6 of 35
+/// benchmark trials died on. A plain socket reports a reset, ureq reports a
+/// close before the status line as `ConnectionAborted`, and a write to a
+/// closed peer is a broken pipe. A timeout is none of these and is never
+/// retried; the chain is checked for one first, so a timeout wearing another
+/// kind's clothes cannot get in this way either. An error that is neither is
+/// not retried, because a retry on a transport error nobody can classify is
+/// the wrong default.
+///
+/// Public so `stream_sse`, which reads the body itself, asks the same
+/// question of the same kinds.
+pub fn connection_dropped(error: &(dyn std::error::Error + 'static)) -> bool {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+    !error_chain_timed_out(error)
+        && io_error_in_chain(error, |kind| {
+            matches!(
+                kind,
+                UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe
+            )
+        })
+}
+
+fn io_error_in_chain(
+    error: &(dyn std::error::Error + 'static),
+    is: impl Fn(std::io::ErrorKind) -> bool,
+) -> bool {
     let mut current = Some(error);
     while let Some(error) = current {
         if error
             .downcast_ref::<std::io::Error>()
-            .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+            .is_some_and(|error| is(error.kind()))
         {
             return true;
         }
@@ -1103,6 +1170,42 @@ mod retry_tests {
             attempts,
             budget: ONE_MINUTE,
         }
+    }
+
+    /// The kinds a dead peer produces are a dropped connection, wherever in
+    /// the chain ureq put them. A timeout and a refused connect are not,
+    /// and a timeout is not even when it sits under a dropped kind.
+    #[test]
+    fn a_dropped_connection_is_told_from_a_timeout_and_from_a_refusal() {
+        use std::io::{Error, ErrorKind};
+        let rustls_eof = Error::new(
+            ErrorKind::UnexpectedEof,
+            "peer closed connection without sending TLS close_notify",
+        );
+        assert!(connection_dropped(&rustls_eof));
+        assert!(connection_dropped(&ureq::Error::from(Error::from(
+            ErrorKind::ConnectionReset
+        ))));
+        // ureq wraps a status-line read failure in an io::Error carrying
+        // its own error, which carries the original underneath.
+        let wrapped = Error::new(
+            ErrorKind::ConnectionAborted,
+            ureq::Error::from(Error::from(ErrorKind::ConnectionAborted)),
+        );
+        assert!(connection_dropped(&ureq::Error::from(wrapped)));
+
+        assert!(!connection_dropped(&Error::from(ErrorKind::TimedOut)));
+        assert!(!connection_dropped(&Error::from(
+            ErrorKind::ConnectionRefused
+        )));
+        // `io::Error::source` skips its own inner error and returns that
+        // error's source, so the timeout has to sit one wrapper down to be
+        // in the chain at all, which is where ureq puts it.
+        let timeout_underneath = Error::new(
+            ErrorKind::UnexpectedEof,
+            ureq::Error::from(Error::from(ErrorKind::TimedOut)),
+        );
+        assert!(!connection_dropped(&timeout_underneath));
     }
 
     #[test]
