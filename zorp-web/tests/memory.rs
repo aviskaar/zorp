@@ -324,6 +324,7 @@ mod on {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
         std::env::set_var("ZORP_STATE_DB", &db);
+        std::env::set_var("ZORP_WORKSPACE", dir.path());
         std::env::set_var("ZORP_RECALL_DB", dir.path().join("recall.db"));
         std::env::set_var("ZORP_BASE_URL", model_base);
         std::env::set_var("ZORP_MODEL", "m");

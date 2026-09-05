@@ -31,6 +31,7 @@ fn post(url: &str, body: &str) -> (u16, String) {
 async fn a_denied_write_never_touches_the_disk() {
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let base = mock_script(vec![
         r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"denied.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
         r#"{"choices":[{"message":{"content":"could not write"},"finish_reason":"stop"}]}"#,

@@ -272,8 +272,15 @@ toolbar the whole time it is on and still cannot get a denylisted command
 past the policy. See [`web/README.md`](web/README.md).
 
 ```bash
-cargo run -p zorp-web            # http://127.0.0.1:7777
+cargo run -p zorp-web -- --workspace ~/research   # http://127.0.0.1:7777
 ```
+
+The agent works in that directory, and its generated files go in
+`scratch/` under it. There is no default: with no `--workspace`, no
+`ZORP_WORKSPACE` and nothing saved from the browser, the server starts and
+serves the UI but refuses to run a turn, rather than writing into whatever
+directory it happened to be started in. You can also pick a directory in
+the browser, which saves it for next time.
 
 Or the whole thing in containers: the UI, the server, and an Ollama
 sidecar that serves both the chat model and the embeddings the

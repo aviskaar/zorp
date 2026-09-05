@@ -119,6 +119,7 @@ fn configure_model(dir: &std::path::Path, base: &str) {
     std::env::set_var("ZORP_BASE_URL", base);
     std::env::set_var("ZORP_MODEL", "m");
     std::env::set_var("ZORP_STATE_DB", dir.join("s.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir);
     std::env::remove_var("ZORP_API_KEY");
 }
 
@@ -226,6 +227,7 @@ async fn a_multi_tool_run_under_auto_approve_never_asks() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let base = mock_script(vec![
         &calls(
             "write_file",
@@ -270,6 +272,7 @@ async fn the_denylist_still_refuses_under_auto_approve() {
     let _env = ENV.lock().await;
     let dir = tempfile::tempdir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
     let base = mock_script(vec![
         &calls(
             "run_command",

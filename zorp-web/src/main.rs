@@ -20,6 +20,13 @@ struct Cli {
     /// install.sh uses to choose where to put them.
     #[arg(long)]
     ui_dir: Option<PathBuf>,
+    /// Directory the agent works in, and the one the artifact pane serves
+    /// from. Beats ZORP_WORKSPACE and whatever was last chosen in the
+    /// browser. Nothing is assumed when none of the three is set: the
+    /// server starts, serves the UI, and refuses to run work until a
+    /// directory is chosen.
+    #[arg(long)]
+    workspace: Option<PathBuf>,
     /// Origin a browser may call the API from, repeatable. Needed only when
     /// the UI is served from somewhere other than this server, which is the
     /// container split. Pass `null` for an index.html opened off disk.
@@ -104,30 +111,41 @@ async fn main() {
              Install it, or pass --ui-dir."
         ),
     }
-    // The artifact pane reads from the directory the server was started in,
-    // which is the directory the agent already works in. If that cannot be
-    // determined the pane is simply switched off, which is a better answer
-    // than picking somewhere and serving from it.
-    let workspace = std::env::current_dir().ok();
-    match &workspace {
-        Some(dir) => println!("zorp-web: serving artifacts from {}", dir.display()),
-        None => eprintln!(
-            "zorp-web: could not determine the working directory, \
-             so the artifact pane is switched off"
-        ),
-    }
     let mut state = zorp_web::state::AppState::with_token(cli.token.clone())
         .with_allowed_origins(cli.allow_origin.clone())
         .with_own_port(cli.port);
-    if let Some(dir) = workspace {
+    if let Some(dir) = cli.workspace.clone() {
         state = state.with_workspace(dir);
     }
     // Restore whatever model settings were last saved through the UI. Only
     // done here, not inside `AppState::new`/`with_token` themselves, so the
     // test suite stays hermetic against whatever a developer's own machine
     // happens to have in ~/.config/zorp/web.toml.
+    //
+    // Before the workspace is reported, because the saved workspace path
+    // comes out of this same file.
     if let Some(persisted) = zorp_web::settings::load() {
         state.settings.lock().unwrap().load_persisted(persisted);
+    }
+    // Said out loud either way. The agent writes files, and a person has to
+    // know where. Nothing is guessed when nobody chose: the server runs and
+    // refuses work until one is picked, because falling back to whatever
+    // directory this process happens to be in is how zorp's own source tree
+    // filled up with rendered PDFs.
+    match state.workspace() {
+        Ok(chosen) => println!(
+            "zorp-web: working in {} (from {})",
+            chosen.path.display(),
+            chosen.source.describe()
+        ),
+        Err(zorp_web::workspace::Unusable::Unset) => eprintln!(
+            "zorp-web: no workspace chosen, so turns are refused until there is one. \
+             Pass --workspace, set ZORP_WORKSPACE, or pick a directory in the browser."
+        ),
+        Err(zorp_web::workspace::Unusable::Refused { source, reason }) => eprintln!(
+            "zorp-web: the workspace from {} cannot be used: {reason}",
+            source.describe()
+        ),
     }
     // Starting the worker only creates a thread and returns. Its first sweep
     // runs there, never in front of binding the server or accepting a turn.

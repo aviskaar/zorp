@@ -125,6 +125,9 @@ pub fn spawn_panel(
     session: Arc<Mutex<SessionState>>,
     request: PanelRequest,
     settings: SettingsHandle,
+    // The directory the reviewers read in, resolved by the handler. A
+    // panel never falls back to the current directory.
+    workspace: std::path::PathBuf,
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     let cancel = cancel_token();
@@ -147,7 +150,7 @@ pub fn spawn_panel(
             tx: tx.clone(),
             seq: Arc::clone(&seq),
         };
-        let kinds = match run_panel(&request, &settings, &cancel, &observer) {
+        let kinds = match run_panel(&request, &settings, &workspace, &cancel, &observer) {
             Ok(report) => vec![panel_done(&report), EventKind::Done],
             Err(message) => vec![EventKind::Error { message }, EventKind::Done],
         };
@@ -164,6 +167,7 @@ pub fn spawn_panel(
 fn run_panel(
     request: &PanelRequest,
     settings: &SettingsHandle,
+    workspace: &std::path::Path,
     cancel: &zorp_agent::CancelToken,
     observer: &dyn PanelObserver,
 ) -> Result<PanelReport, String> {
@@ -181,8 +185,6 @@ fn run_panel(
     }
     .try_with_env_reasoning_mode(None)
     .map_err(|e| e.to_string())?;
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-
     let config = PanelConfig {
         lenses: resolve_lenses(&request.lenses),
         ..PanelConfig::default()
@@ -201,7 +203,7 @@ fn run_panel(
         &model,
         &target,
         &config,
-        cwd,
+        workspace.to_path_buf(),
         cancel.clone(),
         ApprovalMode::AutoApprove,
         observer,
