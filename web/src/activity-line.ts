@@ -2,11 +2,19 @@
  * One tool call in the transcript.
  *
  * The server names a call as `run_command(<command>)` and follows it with a
- * short result such as `exited 0`. This draws that as a bullet, a phrase
- * saying what the command does, and the result, with the full command one
- * click away under the line. A call that carries no command, `write_file`
- * or `read_file`, keeps its tool name on the line, and so does a `verify`
- * line, since there the name is the point.
+ * short result such as `exited 0`. This draws that as a bullet and a phrase
+ * saying what the command does, with the full command one click away under
+ * the line. A call that carries no command, `write_file` or `read_file`,
+ * keeps its tool name on the line, and so does a `verify` line, since there
+ * the name is the point.
+ *
+ * The result is not written on the line. It is the bullet's colour, from
+ * exactly one of the `LINE_STATES` classes on the line: green for a call
+ * that succeeded, red for one that failed, and a pulsing in-progress colour
+ * for a call that has started and not yet reported. The result text stays
+ * reachable: it is the line's `title`, and for a shell call it sits under
+ * the verbatim command in the details. `stateForStatus` is the one mapping
+ * from the server's status word to a colour.
  *
  * The phrase on the line is the model's own description of its call, given
  * in the call's `description` argument next to the command, drawn through
@@ -29,6 +37,65 @@ export const BRIEF_MAX = 80;
 
 /** What hovering the model's phrase says it is. */
 const MODEL_PHRASE_TITLE = "The model's own description of this call. Click to see the command that ran.";
+
+/** What hovering a shell line says, after its status, when it has one. */
+const COMMAND_HINT = "Click to see the command that ran.";
+
+/** The title a shell line has while it is running. */
+const RUNNING_SHELL_TITLE = "Running. Click to see the command.";
+
+/**
+ * The state a line is in, carried as exactly one of these classes on the
+ * `.activity-line` element. The bullet takes its colour from them, and the
+ * activity group reads them off its lines, so they are a contract.
+ */
+export const LINE_STATES = ["activity-ok", "activity-fail", "activity-running"] as const;
+export type LineState = (typeof LINE_STATES)[number];
+
+/**
+ * The status words that mean a call failed. This is the vocabulary the
+ * agent's tools produce as `ToolOutput::summary`, and what the agent loop
+ * itself counts as not succeeded (`denied`, `error`, `unknown tool`), plus
+ * the shell's own outcomes and the subagent tool's stopped states. `verify`
+ * says `failed`.
+ */
+const FAILED = new Set([
+  "timed out",
+  "cancelled",
+  "failed",
+  "error",
+  "denied",
+  "unknown tool",
+  "blocked",
+  "step limit",
+  "repeated action",
+  "verification failed",
+]);
+
+/**
+ * The colour for a finished call's status word. `exited 0` is ok and any
+ * other exit code is a failure; the words in `FAILED`, and a status that
+ * starts as an error, a denial or a withheld result, are failures too. A
+ * patch of which nothing applied failed as well.
+ *
+ * Everything else is ok, including an empty status, because the other tools
+ * summarise a success in their own words: `a.txt (12 lines)`,
+ * `created b.md (3 lines)`, `'query' (4 matches)`, `started PID 512`,
+ * `loaded skill x`. A rule that read those as failures would paint a
+ * working session red. The failure vocabulary is the smaller and the more
+ * stable of the two, and it is the one the agent loop uses.
+ */
+export function stateForStatus(status: string): "activity-ok" | "activity-fail" {
+  const word = status.trim();
+  const exited = /^exited (-?\d+)$/.exec(word);
+  if (exited) {
+    return exited[1] === "0" ? "activity-ok" : "activity-fail";
+  }
+  if (FAILED.has(word) || /^(error|denied|withheld)\b/.test(word) || /^0\/\d+ blocks applied$/.test(word)) {
+    return "activity-fail";
+  }
+  return "activity-ok";
+}
 
 /** The command the model asked for, when the server put it in the name. */
 export interface ToolCall {
@@ -280,18 +347,71 @@ function text(doc: Document, tag: string, className: string, value: string): HTM
 /**
  * The line for a tool event: `name` as the server sent it, `status` as the
  * result text that follows it, `phrase` as the model's own description of
- * the call when the event carried one.
+ * the call when the event carried one. Settled on the spot, since the
+ * result is known. A reopened session draws every stored call this way.
  */
 export function toolLine(doc: Document, name: string, status: string, phrase?: string | null): HTMLElement {
   const { tool, command } = splitCall(name);
-  return callLine(doc, tool, command, status, "", phrase);
+  const node = callLine(doc, tool, command, phrase);
+  settleLine(node, status);
+  return node;
 }
 
 /**
- * A bullet, the phrase for the command when there is one, and the status
- * as one piece that never breaks in the middle. The tool name is drawn
- * when there is no command to describe, and on a `verify` line, where it
- * says what the line is; beside a sentence, `run_command` is noise.
+ * The line for a `tool_started` event: the same call, drawn in progress.
+ * The `tool` event that follows for it hands the node to `settleLine`.
+ */
+export function startedLine(doc: Document, name: string, phrase?: string | null): HTMLElement {
+  const { tool, command } = splitCall(name);
+  const node = callLine(doc, tool, command, phrase);
+  const line = lineOf(node);
+  line.classList.add("activity-running");
+  line.title = node === line ? "Running" : RUNNING_SHELL_TITLE;
+  return node;
+}
+
+/**
+ * Bring a line to the state of its result, in place. `state` is read off
+ * `status` unless the caller knows better: a line abandoned by the end of
+ * the turn has no status word of its own and is failed with a sentence.
+ *
+ * The status goes into the line's `title`, and for a shell call under the
+ * command in the details as well, through `textContent`; it is text the
+ * server derived from a tool result and it is never markup. The line ends
+ * up with exactly one of `LINE_STATES` on it whatever it had before.
+ */
+export function settleLine(node: HTMLElement, status: string, state: LineState = stateForStatus(status)): void {
+  const line = lineOf(node);
+  line.classList.remove(...LINE_STATES);
+  line.classList.add(state);
+  if (node === line) {
+    line.title = status;
+    return;
+  }
+  line.title = status ? `${status}. ${COMMAND_HINT}` : "Show the full command";
+  let result = node.querySelector(".activity-result");
+  if (!status) {
+    result?.remove();
+    return;
+  }
+  if (!result) {
+    result = el(node.ownerDocument, "div", "activity-result");
+    node.append(result);
+  }
+  result.textContent = status;
+}
+
+/** The `.activity-line` of a node `callLine` returned: the node itself, or the summary of its details. */
+function lineOf(node: HTMLElement): HTMLElement {
+  return node.classList.contains("activity-line") ? node : (node.querySelector(".activity-line") as HTMLElement);
+}
+
+/**
+ * A bullet and the phrase for the command when there is one. The tool name
+ * is drawn when there is no command to describe, and on a `verify` line,
+ * where it says what the line is; beside a sentence, `run_command` is
+ * noise. `word` is a status word written on the line, which only `verify`
+ * does: a tool line carries its result as colour, through `settleLine`.
  *
  * The phrase is the model's own, clamped, when it gave one, and then the
  * span says so in its class and its title; otherwise it is computed from
@@ -301,15 +421,15 @@ export function toolLine(doc: Document, name: string, status: string, phrase?: s
  * With a command the line is the summary of a closed `details` element
  * whose body is the full command, verbatim. Without one there is nothing
  * more to show, so the line is a plain block and no empty container is
- * left under it.
+ * left under it. The node comes back in no state; `settleLine` and
+ * `startedLine` put one on it.
  */
 export function callLine(
   doc: Document,
   tool: string,
   command: string | null,
-  status: string,
-  statusClass = "",
   phrase?: string | null,
+  word?: string,
 ): HTMLElement {
   const spans: HTMLElement[] = [];
   if (command === null || !SHELL_TOOLS.has(tool)) {
@@ -325,9 +445,8 @@ export function callLine(
       spans.push(brief);
     }
   }
-  if (status) {
-    const className = statusClass ? `activity-status ${statusClass}` : "activity-status";
-    spans.push(text(doc, "span", className, status));
+  if (word) {
+    spans.push(text(doc, "span", "activity-status", word));
   }
   const column = el(doc, "span", "activity-text");
   column.append(...spans.flatMap((span, index) => (index ? [" ", span] : [span])));

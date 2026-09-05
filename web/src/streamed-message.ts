@@ -53,7 +53,9 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     // this one and that is exactly the case this line covers.
     case "session_title":
       return false;
-    // Anything a reader can see.
+    // Anything a reader can see. A call starting puts its line on the page
+    // before the result does, so it is the boundary `tool` used to be.
+    case "tool_started":
     case "tool":
     case "verify":
     case "notice":

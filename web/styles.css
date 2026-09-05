@@ -1011,6 +1011,32 @@ button {
   flex: none;
 }
 
+/* A tool line carries its result as the bullet's colour, from exactly one
+   of three classes on the line; the word is in the line's title and, for a
+   shell call, under the command in the details. A verify line keeps its
+   word, and the word takes the same colour. */
+.activity-ok > .activity-bullet,
+.activity-ok .activity-status {
+  color: var(--ok);
+}
+
+.activity-fail > .activity-bullet,
+.activity-fail .activity-status {
+  color: var(--danger);
+}
+
+.activity-running > .activity-bullet {
+  color: var(--warn);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* Someone who does not want motion gets the colour and no pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .activity-running > .activity-bullet {
+    animation: none;
+  }
+}
+
 /* The text beside the bullet is one flex item in inline flow, so a long
    command wraps under itself inside the column and the status moves to the
    next line as one piece. The name used to be its own item that never
@@ -1078,12 +1104,12 @@ button {
   overflow-y: auto;
 }
 
-.activity-pass {
-  color: var(--ok);
-}
-
-.activity-fail {
-  color: var(--danger);
+/* The result word, under the command, once the details are open. */
+.activity-result {
+  margin: -2px 0 8px 24px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
 }
 
 .activity-notice .activity-summary {

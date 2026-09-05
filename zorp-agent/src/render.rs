@@ -322,6 +322,16 @@ pub trait Renderer: Send {
         let _ = description;
         self.tool(name, summary);
     }
+    /// A call is about to run. `name` and `description` are the values the
+    /// `tool_described` for the same call will carry once it has a result.
+    ///
+    /// Empty by default. The terminal renderer says nothing until a call
+    /// has a result, so the CLI's output is unchanged; the browser draws
+    /// the line in an in-progress state and settles it when the result
+    /// comes. The agent sends it after approval and before execution, so a
+    /// call the policy asked about is not drawn as running while the
+    /// approval card is still open, and a denied call never gets one.
+    fn tool_starting(&mut self, _name: &str, _description: Option<&str>) {}
     fn verify(&mut self, command: &str, passed: bool);
     fn notice(&mut self, text: &str);
     fn assistant(&mut self, text: &str);
