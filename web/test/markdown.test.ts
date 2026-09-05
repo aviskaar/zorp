@@ -173,6 +173,73 @@ test("backticks protect their contents from emphasis", () => {
   assert.equal(host.querySelector("code.inline-code")?.textContent, "**not bold**");
 });
 
+/**
+ * Emphasis reaches across a code span. The split on backticks used to hand
+ * each side to the emphasis pass on its own, so an opening `**` and its
+ * closing `**` never met when a code span sat between them and the page
+ * showed the asterisks.
+ */
+test("bold containing a code span is bold with the code inside it", () => {
+  const host = render("**874 `.md` files** on disk");
+  const strong = host.querySelector("strong");
+  assert.ok(strong, "the span should be bold");
+  assert.equal(strong?.textContent, "874 .md files");
+  assert.equal(strong?.querySelector("code.inline-code")?.textContent, ".md");
+  assert.equal(host.querySelector("p")?.textContent, "874 .md files on disk");
+});
+
+test("bold starting with a code span is bold", () => {
+  const host = render("**`git ls-files '*.md'` = 172** and that's what's tracked.");
+  const strong = host.querySelector("strong");
+  assert.ok(strong, "the span should be bold");
+  assert.equal(strong?.textContent, "git ls-files '*.md' = 172");
+  assert.equal(
+    strong?.querySelector("code.inline-code")?.textContent,
+    "git ls-files '*.md'",
+    "the asterisk inside the code span is code, not a delimiter",
+  );
+  assert.equal(host.querySelectorAll("em").length, 0);
+});
+
+test("italic containing a code span is italic with the code inside it", () => {
+  const host = render("see *the `run` step* first");
+  const em = host.querySelector("em");
+  assert.equal(em?.textContent, "the run step");
+  assert.equal(em?.querySelector("code.inline-code")?.textContent, "run");
+});
+
+test("asterisks inside a code span are literal even next to real emphasis", () => {
+  const host = render("**a** `*b*` **c**");
+  assert.equal(host.querySelectorAll("strong").length, 2);
+  assert.equal(host.querySelectorAll("em").length, 0);
+  assert.equal(host.querySelector("code.inline-code")?.textContent, "*b*");
+});
+
+test("an unmatched ** followed by a code span stays literal", () => {
+  const host = render("**open `code` and no close");
+  assert.equal(host.querySelectorAll("strong").length, 0);
+  assert.equal(host.querySelector("code.inline-code")?.textContent, "code");
+  assert.equal(host.querySelector("p")?.textContent, "**open code and no close");
+});
+
+test("a link inside bold still renders as a link", () => {
+  const host = render("**see [the paper](https://example.com/p) now**");
+  const anchor = host.querySelector("strong a");
+  assert.ok(anchor, "the link should be inside the bold span");
+  assert.equal(anchor?.getAttribute("href"), "https://example.com/p");
+  assert.equal(anchor?.textContent, "the paper");
+  assert.equal(host.querySelector("strong")?.textContent, "see the paper now");
+});
+
+test("an underscore in a link's URL is not an emphasis delimiter", () => {
+  const host = render("read [docs](https://example.com/my_page_name) today");
+  assert.equal(host.querySelectorAll("em").length, 0);
+  assert.equal(
+    host.querySelector("a")?.getAttribute("href"),
+    "https://example.com/my_page_name",
+  );
+});
+
 test("blockquotes nest their content as markdown", () => {
   const host = render("> ## quoted heading\n> and text");
   assert.ok(host.querySelector("blockquote h2"), "a heading inside a quote");

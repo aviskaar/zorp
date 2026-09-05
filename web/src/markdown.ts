@@ -271,13 +271,71 @@ function splitRow(row: string): string[] {
 }
 
 /**
- * Inline markup: code, links, bold, italic. Code is handled first and its
- * contents are never scanned again, so backticks around `**text**` show the
- * asterisks rather than emphasising anything.
+ * Inline markup: code, links, bold, italic.
+ *
+ * Code wins inside itself: backticks around `**text**` show the asterisks
+ * rather than emphasising anything. Emphasis still reaches across a code
+ * span, so `**874 `.md` files**` is bold with a code span inside it. Both
+ * hold because the emphasis pattern runs over `hidden(text)`, a copy of the
+ * text in which every code span and every link is a run of NULs of the same
+ * length, and the match indices slice the original. A link is hidden for the
+ * same reason a code span is: an underscore in its URL is not a delimiter.
  */
 export function renderInline(target: HTMLElement, text: string): void {
-  const parts = (text ?? "").split("`");
-  parts.forEach((part, index) => {
+  let rest = text ?? "";
+  let mask = hidden(rest);
+  for (;;) {
+    const match = mask.match(EMPHASIS);
+    if (!match || match.index === undefined) {
+      break;
+    }
+    renderSpans(target, rest.slice(0, match.index));
+    const strong = Boolean(match[1]);
+    const width = strong ? 2 : 1;
+    const end = match.index + match[0].length;
+    const node = document.createElement(strong ? "strong" : "em");
+    renderInline(node, rest.slice(match.index + width, end - width));
+    target.append(node);
+    // The cut is just after a closing delimiter, outside any span, so the
+    // mask of the remainder is the remainder of the mask.
+    rest = rest.slice(end);
+    mask = mask.slice(end);
+  }
+  renderSpans(target, rest);
+}
+
+const EMPHASIS = /(\*\*|__)(.+?)\1|(\*|_)(.+?)\3/;
+
+/** `text` with each code span and each link replaced by NULs of its length. */
+function hidden(text: string): string {
+  return text
+    .split("`")
+    .map((part, index) => (index % 2 === 1 ? "\0".repeat(part.length) : hideLinks(part)))
+    .join("\0");
+}
+
+function hideLinks(text: string): string {
+  let out = "";
+  let rest = text;
+  for (;;) {
+    const match = rest.match(LINK);
+    if (!match || match.index === undefined) {
+      break;
+    }
+    const [whole, before] = match;
+    out += rest.slice(0, match.index) + before + "\0".repeat(whole.length - before.length);
+    rest = rest.slice(match.index + whole.length);
+  }
+  return out + rest;
+}
+
+/**
+ * Code spans and links, with plain text between them. `renderInline` has
+ * already taken every emphasis pair out of what reaches this, so a stray
+ * delimiter here is literal.
+ */
+function renderSpans(target: HTMLElement, text: string): void {
+  text.split("`").forEach((part, index) => {
     if (index % 2 === 1) {
       const code = document.createElement("code");
       code.className = "inline-code";
@@ -286,7 +344,7 @@ export function renderInline(target: HTMLElement, text: string): void {
       return;
     }
     if (part) {
-      renderLinksAndEmphasis(target, part);
+      renderLinks(target, part);
     }
   });
 }
@@ -302,7 +360,7 @@ export function renderInline(target: HTMLElement, text: string): void {
  */
 const LINK = /(^|[^!])\[([^\]]*)\]\(([^)\s]+)\)/;
 
-function renderLinksAndEmphasis(target: HTMLElement, text: string): void {
+function renderLinks(target: HTMLElement, text: string): void {
   let rest = text;
   for (;;) {
     const match = rest.match(LINK);
@@ -312,7 +370,10 @@ function renderLinksAndEmphasis(target: HTMLElement, text: string): void {
     const [whole, before, label, href] = match;
     // `before` is the character the pattern had to consume to prove this is
     // not an image. It belongs to the text, not to the link.
-    renderEmphasis(target, rest.slice(0, match.index) + before);
+    const lead = rest.slice(0, match.index) + before;
+    if (lead) {
+      target.append(document.createTextNode(lead));
+    }
     if (isSafeHref(href)) {
       const anchor = document.createElement("a");
       anchor.href = href;
@@ -320,17 +381,19 @@ function renderLinksAndEmphasis(target: HTMLElement, text: string): void {
       // Without noopener the opened page gets a handle on this one through
       // window.opener. noreferrer keeps the chat's URL out of its logs.
       anchor.rel = "noopener noreferrer";
-      renderEmphasis(anchor, label || href);
+      renderInline(anchor, label || href);
       target.append(anchor);
     } else {
       // Not silently dropped. A link the renderer will not make clickable
       // still shows its text and its URL, so nothing disappears. `before` is
       // already on the page, so only the link part is repeated here.
-      renderEmphasis(target, whole.slice(before.length));
+      target.append(document.createTextNode(whole.slice(before.length)));
     }
     rest = rest.slice(match.index + whole.length);
   }
-  renderEmphasis(target, rest);
+  if (rest) {
+    target.append(document.createTextNode(rest));
+  }
 }
 
 function isSafeHref(href: string): boolean {
@@ -340,27 +403,4 @@ function isSafeHref(href: string): boolean {
     return true;
   }
   return SAFE_SCHEMES.some((scheme) => lowered.startsWith(scheme));
-}
-
-const EMPHASIS = /(\*\*|__)(.+?)\1|(\*|_)(.+?)\3/;
-
-function renderEmphasis(target: Node, text: string): void {
-  let rest = text;
-  for (;;) {
-    const match = rest.match(EMPHASIS);
-    if (!match || match.index === undefined) {
-      break;
-    }
-    if (match.index > 0) {
-      target.appendChild(document.createTextNode(rest.slice(0, match.index)));
-    }
-    const strong = Boolean(match[1]);
-    const node = document.createElement(strong ? "strong" : "em");
-    node.textContent = strong ? match[2] : match[4];
-    target.appendChild(node);
-    rest = rest.slice(match.index + match[0].length);
-  }
-  if (rest) {
-    target.appendChild(document.createTextNode(rest));
-  }
 }
