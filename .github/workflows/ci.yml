@@ -302,23 +302,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Reclaim disk before anything compiles. An ubuntu runner starts with
-      # about 14 GB free, and this job compiles the bundled DuckDB
-      # amalgamation once per feature set it resolves: each one gives
+      # Reclaim disk before anything compiles. This job builds the bundled
+      # DuckDB amalgamation once per feature set it resolves: each one gives
       # `libduckdb-sys` a different metadata hash, so none of them shares a
-      # build with the others. Three of those fit with almost nothing spare
-      # and a fourth did not, failing in `ar` while linking libduckdb.a with
-      # "No space left on device". That reads like a compiler error and is
-      # not one, which is the worst way for a job to go red.
+      # build with the others, and a debug build of it is enormous. The
+      # runner starts with about 87 GB free and three of those builds is
+      # already most of it. A fourth failed in `ar` while linking
+      # libduckdb.a with "No space left on device", which reads like a
+      # compiler error and is not one, the worst way for a job to go red.
       #
-      # Deleting toolchains this workspace never uses buys about 17 GB and
-      # runs in well under a minute. `rm -rf` of a path a future image stops
-      # shipping is a no-op, so this cannot start failing because somebody
-      # upstream reorganised the image, and it touches nothing on the
-      # network. It is before `Install Rust` on purpose: only CodeQL is
-      # taken out of the hosted tool cache, so the toolchain that lands
-      # after it is safe. `df -h /` is printed on both sides so the next
-      # person can see what the headroom actually was rather than guess.
+      # Deleting toolchains this workspace never uses reclaims about 22 GB
+      # (measured: 87 GB free to 108 GB) in well under two minutes, and that
+      # is the difference between the fourth build fitting and not. `rm -rf`
+      # of a path a future image stops shipping is a no-op, so this cannot
+      # start failing because somebody upstream reorganised the image, and
+      # it touches nothing on the network. It is before `Install Rust` on
+      # purpose: only CodeQL is taken out of the hosted tool cache, so the
+      # toolchain that lands after it is safe. `df -h /` is printed on both
+      # sides so the next person can see the real headroom rather than
+      # guess at it.
       - name: Free disk for the bundled DuckDB and arrow builds
         run: |
           set -eu
@@ -382,9 +384,10 @@ jobs:
       #
       # Nightly and on pushes to main, deliberately not on `research-pr`. It
       # is the fourth DuckDB build in this job plus the whole arrow tree,
-      # which took the pull request path from about twenty minutes to forty
-      # eight before it ran out of disk. Nothing is waiting on this job, so a
-      # day is a fine distance to catch rot in an opt-in feature from.
+      # which took the pull request path from about fourteen minutes to
+      # forty eight before it ran out of disk. Nothing is waiting on this
+      # job, so a day is a fine distance to catch rot in an opt-in feature
+      # from.
       #
       # zorp-track owns the feature and holds the one test behind it.
       # zorp-agent's `library` surface is a single `#[cfg]` in validate
@@ -471,23 +474,25 @@ jobs:
             echo "research=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Reclaim disk before anything compiles. An ubuntu runner starts with
-      # about 14 GB free, and this job compiles the bundled DuckDB
-      # amalgamation once per feature set it resolves: each one gives
+      # Reclaim disk before anything compiles. This job builds the bundled
+      # DuckDB amalgamation once per feature set it resolves: each one gives
       # `libduckdb-sys` a different metadata hash, so none of them shares a
-      # build with the others. Three of those fit with almost nothing spare
-      # and a fourth did not, failing in `ar` while linking libduckdb.a with
-      # "No space left on device". That reads like a compiler error and is
-      # not one, which is the worst way for a job to go red.
+      # build with the others, and a debug build of it is enormous. The
+      # runner starts with about 87 GB free and three of those builds is
+      # already most of it. A fourth failed in `ar` while linking
+      # libduckdb.a with "No space left on device", which reads like a
+      # compiler error and is not one, the worst way for a job to go red.
       #
-      # Deleting toolchains this workspace never uses buys about 17 GB and
-      # runs in well under a minute. `rm -rf` of a path a future image stops
-      # shipping is a no-op, so this cannot start failing because somebody
-      # upstream reorganised the image, and it touches nothing on the
-      # network. It is before `Install Rust` on purpose: only CodeQL is
-      # taken out of the hosted tool cache, so the toolchain that lands
-      # after it is safe. `df -h /` is printed on both sides so the next
-      # person can see what the headroom actually was rather than guess.
+      # Deleting toolchains this workspace never uses reclaims about 22 GB
+      # (measured: 87 GB free to 108 GB) in well under two minutes, and that
+      # is the difference between the fourth build fitting and not. `rm -rf`
+      # of a path a future image stops shipping is a no-op, so this cannot
+      # start failing because somebody upstream reorganised the image, and
+      # it touches nothing on the network. It is before `Install Rust` on
+      # purpose: only CodeQL is taken out of the hosted tool cache, so the
+      # toolchain that lands after it is safe. `df -h /` is printed on both
+      # sides so the next person can see the real headroom rather than
+      # guess at it.
       - name: Free disk for the bundled DuckDB and arrow builds
         if: steps.filter.outputs.research == 'true'
         run: |

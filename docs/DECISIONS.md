@@ -39,8 +39,9 @@ own and get `cargo test`. The job runs in about a minute warm.
 **`library` is gated nightly, and only half of it, and the reason is
 runner disk.** This job compiles the bundled DuckDB amalgamation once per
 feature set it resolves, because each one gives `libduckdb-sys` a
-different metadata hash and none of them shares a build with the others.
-Three of those already fit with almost nothing spare. Adding
+different metadata hash and none of them shares a build with the others,
+and a debug build of it is enormous. The runner starts with about 87 GB
+free and three of those builds is already most of it. Adding
 `cargo test -p zorp-track --features library` makes a fourth plus the
 whole arrow tree, and it failed with
 
@@ -48,11 +49,12 @@ whole arrow tree, and it failed with
     No space left on device
 
 which reads like a compiler error and is not one. Deleting the android,
-CodeQL, dotnet, swift and ghc trees the workspace never touches buys
-about 17 GB and makes that fourth build fit; `df -h /` is printed on both
-sides of the deletion so the headroom is visible rather than guessed at.
-A fifth, `cargo check -p zorp-agent --features library`, did not fit even
-then, and the run that proved it took 47 minutes.
+CodeQL, dotnet, swift and ghc trees the workspace never touches reclaims
+about 22 GB, measured as 87 GB free going to 108 GB, and that is the
+difference between the fourth build fitting and not; `df -h /` is printed
+on both sides of the deletion so the headroom stays visible rather than
+guessed at. A fifth, `cargo check -p zorp-agent --features library`, did
+not fit even then, and the run that proved it took 47 minutes.
 
 So `zorp-track`'s `library` runs nightly and on pushes to main, never on a
 pull request, and `zorp-agent`'s `library` is not gated at all. What that
@@ -61,7 +63,7 @@ step already compiles and tests. A gate that goes red for a reason with
 nothing to do with the code is the thing this repo refuses, and an ungated
 opt-in feature is the smaller problem: CLAUDE.md already says to leave
 `library` off unless you are working on retrieval. `research-pr` is back to
-the three research builds and finishes in about twenty minutes.
+the three research builds and finishes in about fourteen minutes.
 
 **The path filter names what the jobs compile, and not documentation.**
 It missed `erbga/`, which `zorp-track`'s search layer depends on, all of
