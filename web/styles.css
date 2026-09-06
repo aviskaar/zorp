@@ -3410,6 +3410,67 @@ button {
   line-height: 1.5;
 }
 
+/*
+  A folder in the file list. Native `details`, so it collapses with no
+  state of ours and the keyboard already knows how to open it. The nested
+  list indents by one step and no more: a deep tree drawn with a deep
+  indent runs the names off the right edge of a narrow pane, which is the
+  unreadable thing this replaced.
+*/
+.artifact-folder-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.artifact-folder-line::-webkit-details-marker {
+  display: none;
+}
+
+.artifact-folder-line:hover {
+  background: var(--bg-inset);
+  color: var(--text);
+}
+
+.artifact-folder-marker {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  transition: transform 0.12s ease;
+}
+
+.artifact-folder[open] > .artifact-folder-line .artifact-folder-marker {
+  transform: rotate(90deg);
+}
+
+.artifact-folder-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.artifact-folder-count {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
+.artifact-sublist {
+  margin: 0;
+  padding: 0 0 0 14px;
+  list-style: none;
+}
+
 .artifact-view {
   flex: 1;
   min-height: 0;
