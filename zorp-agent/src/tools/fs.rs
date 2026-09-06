@@ -117,7 +117,7 @@ impl Tool for WriteFile {
     }
 
     fn description(&self) -> &str {
-        "Create a new file or overwrite an existing one with the given content. For a targeted edit, prefer apply_patch."
+        "Create a new file or overwrite an existing one with the given content. Missing parent directories are created. For a targeted edit, prefer apply_patch."
     }
 
     fn schema(&self) -> Value {
