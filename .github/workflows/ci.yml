@@ -302,6 +302,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Reclaim disk before anything compiles. An ubuntu runner starts with
+      # about 14 GB free, and this job builds DuckDB from source once per
+      # feature set it resolves, which is three times, plus LanceDB and the
+      # whole arrow tree for the `library` steps below. That ran out of
+      # space in `ar` while linking libduckdb.a, and the failure reads like
+      # a compiler error rather than a full disk, which is the worst way for
+      # a job to go red.
+      #
+      # Deleting toolchains this workspace never uses buys about 17 GB, runs
+      # in well under a minute, and touches nothing on the network. It is
+      # before `Install Rust` on purpose: only CodeQL is taken out of the
+      # hosted tool cache, so the toolchain that lands after it is safe.
+      - name: Free disk space
+        run: |
+          set -eu
+          echo "free on / before: $(df -h --output=avail / | tail -1)"
+          sudo rm -rf /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet \
+                      /usr/share/swift \
+                      /opt/ghc
+          echo "free on / after:  $(df -h --output=avail / | tail -1)"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -444,6 +467,30 @@ jobs:
             echo "research stack untouched" >&2
             echo "research=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # Reclaim disk before anything compiles. An ubuntu runner starts with
+      # about 14 GB free, and this job builds DuckDB from source once per
+      # feature set it resolves, which is three times, plus LanceDB and the
+      # whole arrow tree for the `library` steps below. That ran out of
+      # space in `ar` while linking libduckdb.a, and the failure reads like
+      # a compiler error rather than a full disk, which is the worst way for
+      # a job to go red.
+      #
+      # Deleting toolchains this workspace never uses buys about 17 GB, runs
+      # in well under a minute, and touches nothing on the network. It is
+      # before `Install Rust` on purpose: only CodeQL is taken out of the
+      # hosted tool cache, so the toolchain that lands after it is safe.
+      - name: Free disk space
+        if: steps.filter.outputs.research == 'true'
+        run: |
+          set -eu
+          echo "free on / before: $(df -h --output=avail / | tail -1)"
+          sudo rm -rf /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet \
+                      /usr/share/swift \
+                      /opt/ghc
+          echo "free on / after:  $(df -h --output=avail / | tail -1)"
 
       - name: Install Rust
         if: steps.filter.outputs.research == 'true'
