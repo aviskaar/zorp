@@ -40,7 +40,7 @@ import {
 import { PRESET_DEFAULTS, preset, presetFor } from "./providers";
 import {
   automaticChoices,
-  isFirstRun,
+  shouldOnboard,
   modelGroups,
   renderContextNote,
   renderModelGroups,
@@ -2590,8 +2590,13 @@ function updateComposerWarning(settings: Settings): void {
 type OnboardStep = "workspace" | "start" | "provider" | "key" | "model" | "done";
 
 /** Remembered so a dismissal survives a reload. A person who said no to
- * this once should not be asked again every time they open the page. */
-const ONBOARD_DISMISSED = "zorp.onboarding.dismissed";
+ * this once should not be asked again every time they open the page.
+ *
+ * The name carries a version because the flow gained a step it did not have
+ * when the first browsers dismissed it. A dismissal is a person saying no to
+ * what they were shown, and they were never shown the workspace step, so the
+ * old flag is not an answer to the question this flow now asks. */
+const ONBOARD_DISMISSED = "zorp.onboarding.dismissed.v2";
 
 /** Which preset is being set up. Empty until the provider step answers. */
 let onboardPreset = "";
@@ -2608,11 +2613,18 @@ let onboardKey = "";
  * Open the flow, unless the server is already configured or this browser
  * has been through it.
  *
- * `isFirstRun` reads the server's own provenance fields, so an operator
+ * `shouldOnboard` reads the server's own provenance fields, so an operator
  * who exported `ZORP_BASE_URL` is never shown setup for work they did.
+ *
+ * A missing workspace opens it too, and not only a missing model. The two
+ * are set in different places and either one alone leaves the agent unable
+ * to do the thing it was opened for: an operator who exported a model but
+ * never picked a directory would otherwise be dropped in front of a
+ * composer that runs every tool call in whatever the server was started in.
+ * The workspace is read before this, so a configured one is known by now.
  */
 function maybeStartOnboarding(settings: Settings): void {
-  if (!isFirstRun(settings) || onboardingDismissed()) {
+  if (!shouldOnboard(settings, currentWorkspace?.configured === true) || onboardingDismissed()) {
     return;
   }
   openOnboarding();

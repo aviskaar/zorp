@@ -31,6 +31,7 @@ import {
   automaticChoices,
   freeAutoPick,
   isFirstRun,
+  shouldOnboard,
   modelGroups,
   priceClass,
   renderContextNote,
@@ -345,4 +346,18 @@ test("the note's angle bracket is text and not markup", () => {
   assert.equal(into.querySelectorAll("*").length, 1, "one paragraph and nothing inside it");
   assert.equal(into.firstElementChild?.tagName, "P");
   assert.match(into.firstElementChild?.textContent ?? "", /Settings > Context length/);
+});
+
+test("a configured server with a workspace has nothing left to ask", () => {
+  const configured = settings({ model_source: "ui", has_api_key: true, api_key_source: "ui" });
+  assert.equal(shouldOnboard(configured, true), false);
+});
+
+test("a configured server with no workspace still gets asked", () => {
+  const configured = settings({ model_source: "ui", has_api_key: true, api_key_source: "ui" });
+  assert.equal(shouldOnboard(configured, false), true);
+});
+
+test("a workspace does not stand in for a model that was never set", () => {
+  assert.equal(shouldOnboard(settings(), true), true);
 });

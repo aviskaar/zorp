@@ -49,6 +49,20 @@ export function isFirstRun(settings: Settings): boolean {
 }
 
 /**
+ * Whether the setup flow has anything left to ask.
+ *
+ * Two unset things and either one alone is enough. A model with nowhere to
+ * work and a workspace with no model both end at a composer that cannot do
+ * the thing it was opened for, and the two are set in different places, so
+ * an operator who exported `ZORP_MODEL` and never picked a directory is
+ * still owed the question. The dismissal flag is the caller's to check;
+ * this reads no storage and answers only about the server.
+ */
+export function shouldOnboard(settings: Settings, workspaceConfigured: boolean): boolean {
+  return isFirstRun(settings) || !workspaceConfigured;
+}
+
+/**
  * What a listing said a model costs.
  *
  * Three values and not two. "Free" is the provider stating zero. "Unstated"
