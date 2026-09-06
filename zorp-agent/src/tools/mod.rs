@@ -169,11 +169,42 @@ impl Context {
     }
 
     /// Resolve a repo-relative path for creation/overwrite, rejecting parent escapes.
+    ///
+    /// A missing parent directory is created, the way an editor would, because a
+    /// model that never shells out `mkdir -p` otherwise repeats the same failing
+    /// write until the repeat guard ends the attempt; dots-3 lost every trial of
+    /// a benchmark run that way. `..` is refused outright so that nothing gets
+    /// created above the nearest existing ancestor, and that ancestor is checked
+    /// against the root before anything is made under it.
     pub fn resolve_for_create(&self, rel: &str) -> Result<PathBuf, ToolError> {
         let joined = self.repo_root.join(rel);
+        if joined
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(ToolError::new(format!(
+                "path '{rel}' escapes the repository root"
+            )));
+        }
         let parent = joined
             .parent()
             .ok_or_else(|| ToolError::new(format!("invalid path '{rel}'")))?;
+        let mut existing = parent;
+        while !existing.exists() {
+            existing = existing
+                .parent()
+                .ok_or_else(|| ToolError::new(format!("invalid path '{rel}'")))?;
+        }
+        let existing_canon = existing
+            .canonicalize()
+            .map_err(|e| ToolError::new(format!("{rel}: parent {e}")))?;
+        if !existing_canon.starts_with(&self.repo_root) {
+            return Err(ToolError::new(format!(
+                "path '{rel}' escapes the repository root"
+            )));
+        }
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ToolError::new(format!("{rel}: parent {e}")))?;
         let parent_canon = parent
             .canonicalize()
             .map_err(|e| ToolError::new(format!("{rel}: parent {e}")))?;
@@ -481,6 +512,36 @@ mod tests {
         let dir = tempdir().unwrap();
         let cx = Context::new(dir.path().to_path_buf(), cancel_token());
         assert!(cx.resolve_for_create("../evil.txt").is_err());
+    }
+
+    #[test]
+    fn resolve_for_create_makes_a_missing_parent_inside_the_root() {
+        let dir = tempdir().unwrap();
+        let cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let p = cx.resolve_for_create("results/deep/out.json").unwrap();
+        assert!(p.starts_with(&cx.repo_root));
+        assert!(p.parent().unwrap().is_dir());
+        assert!(p.ends_with("results/deep/out.json"));
+    }
+
+    #[test]
+    fn resolve_for_create_makes_nothing_when_the_path_escapes() {
+        let dir = tempdir().unwrap();
+        let cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        assert!(cx.resolve_for_create("gone/../../evil/out.txt").is_err());
+        assert!(!dir.path().join("gone").exists());
+        assert!(!dir.path().parent().unwrap().join("evil").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_for_create_makes_nothing_through_a_symlink_out_of_the_root() {
+        let outside = tempdir().unwrap();
+        let dir = tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+        let cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        assert!(cx.resolve_for_create("link/new/out.txt").is_err());
+        assert!(!outside.path().join("new").exists());
     }
 
     #[test]
