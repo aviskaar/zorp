@@ -17,6 +17,8 @@ serde_json = { workspace = true }
 anyhow = "1.0"
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
-
-[dev-dependencies]
+toml = { workspace = true }
 tempfile = { workspace = true }
+# The scripted provider the harness suite serves, shared with zorp-agent's
+# transport tests so the two cannot drift apart.
+zorp-stub = { path = "../zorp-stub" }

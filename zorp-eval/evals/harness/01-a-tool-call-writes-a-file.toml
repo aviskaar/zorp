@@ -1,0 +1,27 @@
+name = "a tool call writes a file"
+about = """
+The whole path end to end, with nothing going wrong: a streamed tool call is
+parsed out of the wire format, run against the real workspace, and its result
+fed back for a final answer. It is the case that fails first when anything
+below the model trait breaks, which is why it is the first one.
+"""
+
+[agent]
+prompt = "write notes.txt"
+
+[[reply]]
+[[reply.tool_call]]
+name = "write_file"
+arguments = { path = "notes.txt", content = "hello from the stub\n" }
+
+[[reply]]
+text = "Wrote notes.txt."
+
+[expect]
+exit = "success"
+# Two, because a tool call costs a second request to say what came back.
+connections = 2
+
+[[expect.file]]
+path = "notes.txt"
+contents = "hello from the stub\n"

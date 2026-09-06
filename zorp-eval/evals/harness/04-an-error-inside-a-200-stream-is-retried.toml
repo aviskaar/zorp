@@ -1,0 +1,26 @@
+name = "an error inside a 200 stream is retried"
+about = """
+An overloaded upstream reported by a gateway inside an HTTP 200, before any
+delta has reached the caller. The status line said the request was fine, so
+nothing above the streaming parser can see this; the parser has to name it and
+the retry bound has to count it. Nothing has been delivered yet, so a second
+send cannot replay the start of one answer over the middle of another.
+"""
+
+[agent]
+prompt = "say hello"
+
+[[reply]]
+text = "never sent"
+[reply.transport]
+kind = "error_in_stream"
+code = 502
+message = "Provider returned error"
+provider_name = "Nvidia"
+
+[[reply]]
+text = "hello"
+
+[expect]
+exit = "success"
+connections = 2

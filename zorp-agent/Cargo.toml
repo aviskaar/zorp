@@ -72,3 +72,6 @@ required-features = ["research"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The scripted provider these tests run against, shared with zorp-eval's
+# deterministic harness suite so the two cannot drift apart.
+zorp-stub = { path = "../zorp-stub" }

@@ -8419,6 +8419,7 @@ dependencies = [
  "zorp-mcp",
  "zorp-search",
  "zorp-skill",
+ "zorp-stub",
  "zorp-track",
 ]
 
@@ -8434,6 +8435,8 @@ dependencies = [
  "serde_yaml_ng",
  "sha2 0.10.9",
  "tempfile",
+ "toml",
+ "zorp-stub",
 ]
 
 [[package]]
@@ -8472,6 +8475,14 @@ name = "zorp-skill"
 version = "0.4.1"
 dependencies = [
  "tempfile",
+]
+
+[[package]]
+name = "zorp-stub"
+version = "0.4.1"
+dependencies = [
+ "libc",
+ "serde_json",
 ]
 
 [[package]]

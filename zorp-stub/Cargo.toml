@@ -1,0 +1,16 @@
+[package]
+name = "zorp-stub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A scripted, loopback provider stub for zorp's deterministic tests."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+# One `setsockopt` for SO_LINGER, so a socket can die with a reset rather
+# than a close handshake. The standard library has not stabilised it.
+libc = "0.2"

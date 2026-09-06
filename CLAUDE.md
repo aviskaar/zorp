@@ -353,6 +353,35 @@ resulting artifact, deliver it in the right form.
   capabilities are called or what they cover; both have changed at least
   once already. There is no separate architecture index; there was one and
   it drifted, see `docs/DECISIONS.md` (2026-08-20).
+- `zorp-eval` has two halves and only one of them gates. `compat` spawns
+  the agent against a live provider and grades what it left behind, which
+  answers a question about models: a recent nine task run lost four tasks
+  to upstream 404s, so it can never gate a merge. `harness` runs the real
+  `zorp-agent` binary against a scripted provider on loopback, and the
+  `harness` continuous integration job gates every pull request on it. A
+  case is a TOML file in `zorp-eval/evals/harness/`, read by
+  `zorp-eval/src/harness/case.rs`, and `zorp-stub/` is the scripted
+  provider, lifted out of `zorp-agent/tests/sse_stub/` so the transport
+  tests and the suite serve the same bytes. Run it with
+  `cargo run -p zorp-eval -- harness --cases zorp-eval/evals/harness
+  --agent-binary target/debug/zorp-agent` after
+  `cargo build -p zorp-agent`. What belongs there is the layer below the
+  `Model` trait: the HTTP client, the streaming parser, the retry bound,
+  the read timeout, and the store on disk once the process is gone.
+  Everything above it is cheaper as an in-process test in
+  `zorp-agent/src/agent.rs`, which already drives a scripted model
+  through the run loop about eighty times. Three things are not
+  negotiable. An unknown field in a case is an error, because a
+  misspelled expectation that is quietly dropped is a case that passes
+  having checked nothing. An empty case directory is an error, for the
+  same reason. And every inherited `ZORP_` variable is cleared before a
+  case sets its own, because a connection count means nothing if the
+  developer's shell gets to choose the retry bound. Break a new case on
+  purpose and watch it fail before committing it. The catalogue of cases
+  worth writing is
+  `docs/superpowers/specs/2026-09-05-harness-eval-catalogue.md`, and it
+  names what is already proved at a cheaper level so nobody writes it
+  twice. See `docs/DECISIONS.md` (2026-09-05).
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.

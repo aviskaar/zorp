@@ -1,5 +1,5 @@
 use clap::Parser;
-use zorp_eval::runner;
+use zorp_eval::{harness, runner};
 mod cli;
 
 fn main() -> anyhow::Result<()> {
@@ -24,6 +24,16 @@ fn main() -> anyhow::Result<()> {
                 "Compatibility experiment complete. Results in {}",
                 db.display()
             );
+        }
+        cli::Command::Harness {
+            cases,
+            agent_binary,
+        } => {
+            // Non-zero on any failed case, so continuous integration can
+            // gate on it.
+            if !harness::run_suite(&cases, &agent_binary)? {
+                std::process::exit(1);
+            }
         }
     }
     Ok(())

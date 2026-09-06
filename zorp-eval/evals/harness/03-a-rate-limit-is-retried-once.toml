@@ -1,0 +1,24 @@
+name = "a rate limit is retried once"
+about = """
+A 429 on the status line is retried and the run still succeeds. The connection
+count is the whole point: a retry and a slow first send look identical from
+the caller, and this is the only place the difference is observable. The
+`Retry-After` is one second so the case costs a second and not a minute.
+"""
+
+[agent]
+prompt = "say hello"
+
+[[reply]]
+text = "never sent"
+[reply.transport]
+kind = "status"
+code = 429
+retry_after = 1
+
+[[reply]]
+text = "hello"
+
+[expect]
+exit = "success"
+connections = 2
