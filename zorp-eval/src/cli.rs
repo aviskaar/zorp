@@ -26,4 +26,12 @@ pub enum Command {
         #[arg(long, default_value = "../target/release/zorp-agent")]
         agent_binary: PathBuf,
     },
+    /// Run the deterministic harness suite: the real agent binary against a
+    /// scripted provider on loopback. No network, no key, no model.
+    Harness {
+        #[arg(long, default_value = "evals/harness")]
+        cases: PathBuf,
+        #[arg(long, default_value = "../target/debug/zorp-agent")]
+        agent_binary: PathBuf,
+    },
 }

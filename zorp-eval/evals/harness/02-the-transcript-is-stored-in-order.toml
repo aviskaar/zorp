@@ -1,0 +1,23 @@
+name = "the transcript is stored in order"
+about = """
+What the store holds after the process is gone. The in-process tests can see
+the messages the loop built; only a case that spawns the binary can see what
+survived to disk, and resume reads exactly this. The tool row between the two
+assistant rows is the part worth pinning: an answer stored without the call
+that earned it replays as a model that knew something it was never told.
+"""
+
+[agent]
+prompt = "read notes then answer"
+
+[[reply]]
+[[reply.tool_call]]
+name = "write_file"
+arguments = { path = "seen.txt", content = "ok\n" }
+
+[[reply]]
+text = "Done."
+
+[expect]
+exit = "success"
+transcript_roles = ["system", "user", "assistant", "tool", "assistant"]

@@ -189,6 +189,43 @@ jobs:
             [ -s "dist-site/$want" ] || { echo "styles.css wants $want, not in the site" >&2; exit 1; }
           done < <(grep -o 'fonts/[A-Za-z0-9._-]*\.woff2' styles.css | sort -u)
 
+  harness:
+    # The deterministic half of zorp-eval: the real agent binary against a
+    # scripted provider on loopback. Every job above stops at the `Model`
+    # trait, so nothing checked the HTTP client, the streaming parser, the
+    # retry bound or the store on disk once the process is gone, and that is
+    # exactly where the expensive bugs were. One of them left the streaming
+    # path with no read timeout at all for months.
+    #
+    # No network, no key and no model, so a red check here is this code and
+    # never an upstream having a bad day. The other half of zorp-eval,
+    # `compat`, does need a provider and deliberately does not gate anything.
+    runs-on: ubuntu-latest
+    # A cap, because the default is six hours. The suite takes seconds warm
+    # and each case has its own 120 second ceiling, so anything near this is
+    # stuck rather than slow.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The suite spawns this binary, so it has to exist before the runner
+      # asks for it. Debug on purpose: a case waits on timeouts and sockets,
+      # not on how fast the agent thinks.
+      - name: Build the agent under test
+        run: cargo build -p zorp-agent -p zorp-eval --locked
+
+      - name: Run the harness suite
+        run: |
+          cargo run -p zorp-eval --locked -- harness \
+            --cases zorp-eval/evals/harness \
+            --agent-binary target/debug/zorp-agent
+
   research:
     # Full build of zorp-track and the research-feature surface of
     # zorp-agent. Runs nightly, and on pull requests that touch the
