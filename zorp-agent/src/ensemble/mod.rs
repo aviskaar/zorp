@@ -190,6 +190,18 @@ change or delete any file: the outputs are hashed before and after you, and a \
 reviewer that altered one is dropped with its findings. Report what you find \
 and stop.";
 
+/// A reviewer's verdict, kept against the hashes of what it examined.
+struct Memo {
+    /// The watched files that were hashed to make this verdict, so a
+    /// later round can tell whether any of them moved.
+    key: Snapshot,
+    /// What the reviewer really examined. Not read back out of `key`:
+    /// a reviewer that examined nothing gets the whole snapshot as its
+    /// key, and the record would then say it read every watched file.
+    examined: Vec<String>,
+    verdict: ReviewerVerdict,
+}
+
 struct Reviewed {
     result: Result<ReviewerVerdict, String>,
     examined: BTreeSet<String>,
@@ -303,7 +315,7 @@ pub fn run(
     let mut watched = hashes::watched(cwd, instruction, &roles.main.changed_paths());
     let mut before = hashes::snapshot(cwd, &watched);
     let mut ledger = Ledger::default();
-    let mut memo: Vec<Option<(Snapshot, ReviewerVerdict)>> = (0..n).map(|_| None).collect();
+    let mut memo: Vec<Option<Memo>> = (0..n).map(|_| None).collect();
     let mut strikes = vec![0usize; n];
     let mut dropped = vec![false; n];
     let mut stopped = "bound";
@@ -337,12 +349,12 @@ pub fn run(
                 reviewers.push(rec);
                 continue;
             }
-            if let Some((key, verdict)) = &memo[i] {
-                if hashes::still_holds(key, &before) {
+            if let Some(memo) = &memo[i] {
+                if hashes::still_holds(&memo.key, &before) {
                     rec.status = "reused".to_string();
-                    rec.examined = key.keys().cloned().collect();
-                    rec.findings = record::raw(verdict);
-                    verdicts.push(verdict.clone());
+                    rec.examined = memo.examined.clone();
+                    rec.findings = record::raw(&memo.verdict);
+                    verdicts.push(memo.verdict.clone());
                     reviewers.push(rec);
                     continue;
                 }
@@ -393,10 +405,25 @@ pub fn run(
                     } else {
                         hashes::restrict(&before, &reviewed.examined)
                     };
-                    memo[i] = Some((key, verdict.clone()));
+                    memo[i] = Some(Memo {
+                        key,
+                        examined: rec.examined.clone(),
+                        verdict: verdict.clone(),
+                    });
                     verdicts.push(verdict);
                 }
                 Err(why) => {
+                    // One Ctrl-C sets the token every reviewer shares, so a
+                    // reviewer still running when it lands comes back
+                    // cancelled, and so does every reviewer after it. That
+                    // is the person's doing and not the reviewer's: no
+                    // strike and no prune, and the round stops here. This
+                    // module drops a reviewer for altering a watched file
+                    // or for two unusable replies, and for nothing else.
+                    if cancel.load(Ordering::SeqCst) {
+                        reviewers.push(rec);
+                        break;
+                    }
                     strikes[i] += 1;
                     let for_run = strikes[i] >= 2;
                     if for_run {
@@ -423,6 +450,15 @@ pub fn run(
             outputs_changed: Vec::new(),
             addressed: 0,
         };
+        // Before the corroboration count is read as a verdict on the work.
+        // A round cut short has reviewers that never ran, so "nothing
+        // corroborated" would describe a cancelled run as a clean
+        // convergence in the one artifact this feature exists to produce.
+        if cancel.load(Ordering::SeqCst) {
+            record.rounds.push(round_rec);
+            stopped = "cancelled";
+            break;
+        }
         if corroborated.is_empty() {
             record.rounds.push(round_rec);
             stopped = "nothing corroborated";
@@ -575,6 +611,9 @@ model = "minimax/minimax-m2.7:free"
     struct Scripted {
         replies: Arc<Mutex<VecDeque<AssistantMessage>>>,
         prompts: Arc<Mutex<Vec<String>>>,
+        /// Raised as this model answers, so a test can cancel a run from
+        /// inside a reviewer the way a person's Ctrl-C does.
+        cancel: Option<CancelToken>,
     }
 
     impl Scripted {
@@ -582,6 +621,7 @@ model = "minimax/minimax-m2.7:free"
             Scripted {
                 replies: Arc::new(Mutex::new(replies.into())),
                 prompts: Arc::new(Mutex::new(Vec::new())),
+                cancel: None,
             }
         }
         fn calls(&self) -> usize {
@@ -622,6 +662,9 @@ model = "minimax/minimax-m2.7:free"
                 })
                 .unwrap_or_default();
             self.prompts.lock().unwrap().push(last_user);
+            if let Some(cancel) = &self.cancel {
+                cancel.store(true, Ordering::SeqCst);
+            }
             self.replies
                 .lock()
                 .unwrap()
@@ -670,6 +713,9 @@ model = "minimax/minimax-m2.7:free"
         dir: tempfile::TempDir,
         main: Scripted,
         reviewers: Vec<Scripted>,
+        /// One token for the whole run, which is what makes a cancel from
+        /// inside any role reach every other one.
+        cancel: CancelToken,
     }
 
     impl Setup {
@@ -678,6 +724,7 @@ model = "minimax/minimax-m2.7:free"
                 dir: tempfile::tempdir().unwrap(),
                 main: Scripted::new(main),
                 reviewers: reviewers.into_iter().map(Scripted::new).collect(),
+                cancel: cancel_token(),
             }
         }
 
@@ -698,7 +745,7 @@ model = "minimax/minimax-m2.7:free"
                 "you do tasks",
                 8,
                 cwd.clone(),
-                cancel_token(),
+                self.cancel.clone(),
                 ApprovalMode::AutoApprove,
             )
             .register_builtins();
@@ -711,7 +758,7 @@ model = "minimax/minimax-m2.7:free"
                 roles,
                 "Write out.csv and notes.txt",
                 &cwd,
-                cancel_token(),
+                self.cancel.clone(),
                 ApprovalMode::AutoApprove,
             )
         }
@@ -878,5 +925,73 @@ model = "minimax/minimax-m2.7:free"
             .join("reviewer-0-contract-round-1.txt")
             .is_file());
         assert_eq!(finished.record.requests["main"], 5);
+    }
+
+    #[test]
+    fn a_cancel_while_reviewers_are_pending_is_not_the_reviewers_fault() {
+        let mut setup = Setup::new(
+            main_writes(),
+            vec![
+                vec![verdict("concern", "notes.txt", "vague")],
+                vec![verdict("concern", "notes.txt", "also vague")],
+            ],
+        );
+        // Reviewer 0 raises the shared flag as it answers, which is where a
+        // Ctrl-C lands mid-round: reviewer 0 finishes, and reviewer 1 comes
+        // back cancelled without ever reaching its own script.
+        setup.reviewers[0].cancel = Some(setup.cancel.clone());
+        let finished = setup.run(2);
+        let record = &finished.record;
+        assert_eq!(record.stopped, "cancelled");
+        assert!(record.prunes.is_empty(), "{:?}", record.prunes);
+        assert!(!record.rounds[0]
+            .reviewers
+            .iter()
+            .any(|r| r.status == "dropped"));
+        assert_eq!(
+            record.rounds[0].reviewers[0].status, "reviewed",
+            "reviewer 0 finished, so its work is kept"
+        );
+        assert_eq!(
+            setup.reviewers[1].calls(),
+            0,
+            "cancelled before its model was asked"
+        );
+    }
+
+    #[test]
+    fn a_reused_verdict_records_what_the_reviewer_examined_and_not_its_key() {
+        let mut main = main_writes();
+        // The revision creates a file rather than changing one, so every
+        // previously watched hash still holds and a reviewer that examined
+        // nothing, whose key is the whole snapshot, is reused.
+        main.extend([write("extra.txt", "new"), text("fixed"), text("no more")]);
+        let setup = Setup::new(
+            main,
+            vec![
+                // Examines nothing, so its key is the whole snapshot.
+                vec![verdict("blocking", "out.csv", "wrong")],
+                // Examines one file, so its key is that one file.
+                vec![
+                    call("read_file", json!({"path": "notes.txt"})),
+                    verdict("note", "notes.txt", "thin"),
+                ],
+            ],
+        );
+        let finished = setup.run(2);
+        let rounds = &finished.record.rounds;
+        assert_eq!(rounds.len(), 2, "{}", finished.record.stopped);
+        assert_eq!(rounds[1].reviewers[0].status, "reused");
+        assert!(
+            rounds[1].reviewers[0].examined.is_empty(),
+            "it examined nothing, and the whole snapshot is its key, not its reading: {:?}",
+            rounds[1].reviewers[0].examined
+        );
+        assert_eq!(rounds[1].reviewers[1].status, "reused");
+        assert_eq!(
+            rounds[1].reviewers[1].examined,
+            vec!["notes.txt"],
+            "it read one file, and the record says one file"
+        );
     }
 }
