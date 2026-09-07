@@ -44,6 +44,38 @@ fn key(locus: &str) -> String {
     locus.trim().to_lowercase()
 }
 
+/// A character that continues a filename rather than ending one: the same
+/// set `hashes::named_paths` treats as part of a path token. `/` is
+/// deliberately excluded, so a watched `notes.txt` still matches a locus
+/// that names it with a directory prefix, such as `logs/notes.txt`.
+fn is_filename_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
+}
+
+/// Whether `needle` occurs in `haystack` at a path boundary: the character
+/// immediately before and after the match, if either exists, is not part
+/// of a filename. Without this a watched `notes.txt` attaches itself to a
+/// locus naming `footnotes.txt`, and a watched `a.txt` to `spa.txt`, since
+/// both are plain substrings. A locus this rejects gets no file, which is
+/// the safe failure: the finding stays open rather than an unrelated
+/// watched file flipping it to addressed later.
+fn at_path_boundary(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    haystack.match_indices(needle).any(|(i, _)| {
+        let before_ok = haystack[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_filename_char(c));
+        let after_ok = haystack[i + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_filename_char(c));
+        before_ok && after_ok
+    })
+}
+
 /// What reaches the main model: a locus two lenses raised, or one lens
 /// raised at the highest severity. The counting is panel's `agreements`.
 pub fn corroborated(
@@ -109,7 +141,7 @@ fn finding_for(
     let lower = locus.to_lowercase();
     let file = watched
         .iter()
-        .filter(|p| lower.contains(&p.to_lowercase()))
+        .filter(|p| at_path_boundary(&lower, &p.to_lowercase()))
         .max_by_key(|p| p.len())
         .cloned();
     Finding {
@@ -127,7 +159,7 @@ fn finding_for(
 /// Every corroborated finding of the run, with its status.
 #[derive(Debug, Default)]
 pub struct Ledger {
-    pub findings: Vec<Finding>,
+    findings: Vec<Finding>,
 }
 
 impl Ledger {
@@ -381,6 +413,35 @@ mod tests {
         assert!(!text.contains("altered these files"));
         let with = return_message(&open, &["results/out.csv".to_string()], &marker);
         assert!(with.contains("altered these files"));
+    }
+
+    #[test]
+    fn file_attribution_requires_a_path_boundary() {
+        let watched: BTreeSet<String> = ["notes.txt".to_string(), "a.txt".to_string()].into();
+        let v = vec![
+            verdict(
+                "contract",
+                vec![(
+                    Severity::Concern,
+                    "footnotes.txt and spa.txt need headers",
+                    "x",
+                )],
+            ),
+            verdict(
+                "adversary",
+                vec![(
+                    Severity::Concern,
+                    "footnotes.txt and spa.txt need headers",
+                    "y",
+                )],
+            ),
+        ];
+        let found = corroborated(1, &v, &watched);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].file, None,
+            "notes.txt and a.txt are embedded inside longer names here, not named"
+        );
     }
 
     #[test]
