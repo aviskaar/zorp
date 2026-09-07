@@ -115,6 +115,8 @@ mod tests {
     use super::*;
 
     const SPEC_ROSTER: &str = r#"
+rounds = 2
+
 [main]
 model = "nvidia/nemotron-3-super-120b-a12b:free"
 
@@ -124,8 +126,6 @@ model = "minimax/minimax-m3:free"
 model = "dots-studio/dots-3-note-preview:free"
 [[reviewer]]
 model = "minimax/minimax-m2.7:free"
-
-rounds = 2
 "#;
 
     #[test]
@@ -2868,6 +2868,7 @@ Not a task in this plan, because it costs a day of the free tier and a person la
 ```bash
 ZORP_AGENT_FEATURES=ensemble evals/harbor/build-agent.sh linux/arm64
 cat > /tmp/roster.toml <<'EOF'
+rounds = 2
 [main]
 model = "nvidia/nemotron-3-super-120b-a12b:free"
 [[reviewer]]
@@ -2876,7 +2877,6 @@ model = "minimax/minimax-m3:free"
 model = "dots-studio/dots-3-note-preview:free"
 [[reviewer]]
 model = "minimax/minimax-m2.7:free"
-rounds = 2
 EOF
 ZORP_ENSEMBLE=/tmp/roster.toml scratchpad/oracle-run.sh nvidia/nemotron-3-super-120b-a12b:free ensemble-a guided-wave-localization,ont-tn-qc,small-area-equivalence,variable-star-vetting,mendota-ice-phenology
 python3 evals/harbor/ensemble_report.py jobs/<job>

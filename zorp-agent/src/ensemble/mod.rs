@@ -47,6 +47,7 @@ pub struct Roster {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RosterFile {
     main: Role,
     #[serde(default)]
@@ -56,6 +57,7 @@ struct RosterFile {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Role {
     model: String,
 }
@@ -148,6 +150,8 @@ mod tests {
     use super::*;
 
     const SPEC_ROSTER: &str = r#"
+rounds = 2
+
 [main]
 model = "nvidia/nemotron-3-super-120b-a12b:free"
 
@@ -157,8 +161,6 @@ model = "minimax/minimax-m3:free"
 model = "dots-studio/dots-3-note-preview:free"
 [[reviewer]]
 model = "minimax/minimax-m2.7:free"
-
-rounds = 2
 "#;
 
     #[test]
@@ -214,5 +216,12 @@ rounds = 2
         let mut expected = crate::panel::reviewer_tools();
         expected.push("run_command".to_string());
         assert_eq!(reviewer_tools(), expected);
+    }
+
+    #[test]
+    fn a_rounds_key_after_a_reviewer_table_is_refused() {
+        let text = "[main]\nmodel = \"a\"\n[[reviewer]]\nmodel = \"b\"\nrounds = 4\n";
+        let err = Roster::parse(text).unwrap_err();
+        assert!(err.contains("rounds"), "{err}");
     }
 }

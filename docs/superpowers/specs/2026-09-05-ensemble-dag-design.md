@@ -72,9 +72,12 @@ such tool, in the shape of the test panel already has.
 ### Roles
 
 Roles come from a TOML file named by `ZORP_ENSEMBLE`, and never from the
-instruction text:
+instruction text. `rounds` must come before the first table header,
+because TOML scopes a bare key to the most recently opened table:
 
 ```toml
+rounds = 2
+
 [main]
 model = "nvidia/nemotron-3-super-120b-a12b:free"
 
@@ -84,8 +87,6 @@ model = "minimax/minimax-m3:free"
 model = "dots-studio/dots-3-note-preview:free"
 [[reviewer]]
 model = "minimax/minimax-m2.7:free"
-
-rounds = 2
 ```
 
 All roles share the one provider endpoint and key from the environment.
