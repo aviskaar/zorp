@@ -52,13 +52,31 @@ fn is_filename_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
 }
 
+/// Whether a filename ends exactly where `rest` begins: `rest` is the text
+/// right after a candidate match. A period only continues the name when
+/// another filename character follows it, as in an extension or a second
+/// one (`out.csv.bak`); a period followed by anything else, including the
+/// end of the string, is sentence punctuation and the name has already
+/// ended. This is the one exception to `is_filename_char`: a locus like
+/// "the file to check is results/out.csv." must still attribute, or the
+/// finding it belongs to can never be settled and comes back every round.
+fn path_ends_here(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    match chars.next() {
+        None => true,
+        Some('.') => !chars.next().is_some_and(is_filename_char),
+        Some(c) => !is_filename_char(c),
+    }
+}
+
 /// Whether `needle` occurs in `haystack` at a path boundary: the character
-/// immediately before and after the match, if either exists, is not part
-/// of a filename. Without this a watched `notes.txt` attaches itself to a
-/// locus naming `footnotes.txt`, and a watched `a.txt` to `spa.txt`, since
-/// both are plain substrings. A locus this rejects gets no file, which is
-/// the safe failure: the finding stays open rather than an unrelated
-/// watched file flipping it to addressed later.
+/// immediately before the match, if it exists, is not part of a filename,
+/// and the filename ends exactly where the match ends. Without this a
+/// watched `notes.txt` attaches itself to a locus naming `footnotes.txt`,
+/// and a watched `a.txt` to `spa.txt`, since both are plain substrings. A
+/// locus this rejects gets no file, which is the safe failure: the finding
+/// stays open rather than an unrelated watched file flipping it to
+/// addressed later.
 fn at_path_boundary(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
@@ -68,11 +86,7 @@ fn at_path_boundary(haystack: &str, needle: &str) -> bool {
             .chars()
             .next_back()
             .is_none_or(|c| !is_filename_char(c));
-        let after_ok = haystack[i + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !is_filename_char(c));
-        before_ok && after_ok
+        before_ok && path_ends_here(&haystack[i + needle.len()..])
     })
 }
 
@@ -441,6 +455,53 @@ mod tests {
         assert_eq!(
             found[0].file, None,
             "notes.txt and a.txt are embedded inside longer names here, not named"
+        );
+    }
+
+    #[test]
+    fn a_trailing_period_still_attributes_but_a_second_extension_does_not() {
+        let watched: BTreeSet<String> = ["results/out.csv".to_string()].into();
+        let sentence = vec![
+            verdict(
+                "contract",
+                vec![(
+                    Severity::Concern,
+                    "the file to check is results/out.csv.",
+                    "x",
+                )],
+            ),
+            verdict(
+                "adversary",
+                vec![(
+                    Severity::Concern,
+                    "the file to check is results/out.csv.",
+                    "y",
+                )],
+            ),
+        ];
+        let found = corroborated(1, &sentence, &watched);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].file.as_deref(),
+            Some("results/out.csv"),
+            "the period ends the sentence, not the filename"
+        );
+
+        let backup = vec![
+            verdict(
+                "contract",
+                vec![(Severity::Concern, "results/out.csv.bak is stale", "x")],
+            ),
+            verdict(
+                "adversary",
+                vec![(Severity::Concern, "results/out.csv.bak is stale", "y")],
+            ),
+        ];
+        let found = corroborated(1, &backup, &watched);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].file, None,
+            "out.csv.bak is a different file from out.csv"
         );
     }
 
