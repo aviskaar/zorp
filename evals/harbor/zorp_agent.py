@@ -42,6 +42,11 @@ REMOTE_BIN = "/installed-agent/zorp-agent"
 # Where the agent runs, and so the root of its path policy. See the class doc.
 AGENT_CWD = "/"
 
+# Where the ensemble roles file goes when the host names one in
+# ZORP_ENSEMBLE. The container's zorp-agent reads it from here; the
+# instruction text never names a role.
+REMOTE_ROSTER = "/installed-agent/ensemble.toml"
+
 # `uname -m` in the container to the arch name build-agent.sh writes under.
 _ARCH_DIRS = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64"}
 
@@ -49,7 +54,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ZorpAgent(BaseInstalledAgent):
-    """Runs `zorp-agent --yes "<instruction>"` inside the task container.
+    """Runs zorp-agent --yes "<instruction>" inside the task container, or
+    zorp-agent ensemble --yes when ZORP_ENSEMBLE names a roles file on the
+    host.
 
     `--yes` answers the asks an approval preset produces. It does not touch
     the hard denylist in zorp-agent/src/policy.rs, which still refuses sudo,
@@ -92,6 +99,19 @@ class ZorpAgent(BaseInstalledAgent):
             return Path(override_path).expanduser()
         return _REPO_ROOT / "target" / "harbor" / arch / "zorp-agent"
 
+    def _roster(self) -> Path | None:
+        """The host roles file, when this run is an ensemble run."""
+        path = os.environ.get("ZORP_ENSEMBLE")
+        return Path(path).expanduser() if path else None
+
+    def _command(self, instruction: str, log_path: str) -> str:
+        """The one shell line the container runs, plain or ensemble."""
+        mode = "ensemble --yes" if self._roster() else "--yes"
+        return (
+            f"{REMOTE_BIN} {mode} {shlex.quote(instruction)} "
+            f"2>&1 | stdbuf -oL tee {log_path}"
+        )
+
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         uname = await self.exec_as_agent(environment, command="uname -m")
@@ -113,6 +133,12 @@ class ZorpAgent(BaseInstalledAgent):
         await environment.upload_file(binary, REMOTE_BIN)
         await self.exec_as_root(environment, command=f"chmod 0755 {REMOTE_BIN}")
 
+        roster = self._roster()
+        if roster:
+            if not roster.is_file():
+                raise FileNotFoundError(f"ZORP_ENSEMBLE names no file: {roster}")
+            await environment.upload_file(roster, REMOTE_ROSTER)
+
     @override
     @with_prompt_template
     async def run(
@@ -123,10 +149,7 @@ class ZorpAgent(BaseInstalledAgent):
     ) -> None:
         env = self._zorp_env()
         log_path = f"{self.environment_logs_dir}/zorp-agent.txt"
-        command = (
-            f"{REMOTE_BIN} --yes {shlex.quote(instruction)} "
-            f"2>&1 | stdbuf -oL tee {log_path}"
-        )
+        command = self._command(instruction, log_path)
 
         try:
             await self.exec_as_agent(
@@ -170,5 +193,12 @@ class ZorpAgent(BaseInstalledAgent):
         # scoped env that carries `--ae`), so a value on the command line wins.
         env["ZORP_RETRY_ATTEMPTS"] = "20"
         env["ZORP_RETRY_BUDGET_SECS"] = "300"
+
+        if self._roster():
+            env["ZORP_ENSEMBLE"] = REMOTE_ROSTER
+            # Reviewer transcripts and ensemble.json land beside
+            # zorp-agent.txt, so a trial is read the way trials are read
+            # today and nothing has to be downloaded afterwards.
+            env["ZORP_ENSEMBLE_LOG_DIR"] = str(self.environment_logs_dir)
 
         return env
