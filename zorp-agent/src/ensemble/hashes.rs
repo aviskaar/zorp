@@ -38,14 +38,20 @@ pub fn resolve(root: &Path, path: &str) -> PathBuf {
 
 /// Path-like tokens in the instruction: absolute paths, and relative ones
 /// with at least one directory and an extension. Trailing punctuation is
-/// the sentence's, not the path's.
+/// the sentence's, not the path's. A scheme-qualified URL is matched and
+/// dropped whole, first: `regex` has no lookbehind, so without it the
+/// absolute-path alternative starts happily on the second slash of a
+/// URL's `//` and reads straight through the host into the route.
 pub fn named_paths(instruction: &str) -> BTreeSet<String> {
-    let re = regex::Regex::new(r"(?:/(?:[\w.-]+/)*[\w.-]+)|(?:\b(?:[\w-]+/)+[\w-]+\.[A-Za-z0-9]+)")
-        .expect("a literal regex");
+    let re = regex::Regex::new(
+        r"(?:[A-Za-z][\w+.-]*://\S+)|(?:/(?:[\w.-]+/)*[\w.-]+)|(?:\b(?:[\w-]+/)+[\w-]+\.[A-Za-z0-9]+)",
+    )
+    .expect("a literal regex");
     re.find_iter(instruction)
-        .map(|m| {
-            m.as_str()
-                .trim_end_matches(['.', ',', ':', ';', ')', '\'', '"'])
+        .map(|m| m.as_str())
+        .filter(|s| !s.contains("://"))
+        .map(|s| {
+            s.trim_end_matches(['.', ',', ':', ';', ')', '\'', '"'])
                 .to_string()
         })
         .filter(|s| s.len() > 1)
@@ -174,11 +180,17 @@ mod tests {
         let text = "Write /app/results/summary.json and results/out.csv. \
                     Use python3 and numpy. See https://example.com/docs.";
         let paths = named_paths(text);
-        assert!(paths.contains("/app/results/summary.json"), "{paths:?}");
-        assert!(paths.contains("results/out.csv"), "{paths:?}");
-        assert!(!paths.contains("python3"));
-        assert!(!paths.contains("numpy."));
-        assert!(!paths.iter().any(|p| p.ends_with('.')), "{paths:?}");
+        // Exact-set equality, not a handful of contains() checks: the only
+        // things a run has to hash are the two real paths. A URL is not a
+        // watched file, however path-shaped its host and route look.
+        assert_eq!(
+            paths,
+            [
+                "/app/results/summary.json".to_string(),
+                "results/out.csv".to_string(),
+            ]
+            .into()
+        );
     }
 
     #[test]
