@@ -128,6 +128,7 @@ pub fn write(dir: &Path, record: &EnsembleRecord) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ensemble::ledger::Status;
 
     #[test]
     fn a_record_is_written_with_its_labels() {
@@ -136,13 +137,27 @@ mod tests {
             reviewers: vec!["r0".to_string()],
             rounds: 2,
         };
-        let mut record = EnsembleRecord::new(&roster, "do the thing", 20);
+        let instruction = "do the thing";
+        let mut record = EnsembleRecord::new(&roster, instruction, 20);
+        record.main_outcomes.push("first attempt ok".to_string());
+        record.requests.insert("main".to_string(), 5);
+        record.requests.insert("reviewer-0".to_string(), 3);
+        record.stopped = "bound".to_string();
+
         record.prunes.push(Prune::Tampered {
             reviewer: 0,
             model: "r0".to_string(),
             round: 1,
             files: vec!["out.csv".to_string()],
         });
+        record.prunes.push(Prune::Unusable {
+            reviewer: 1,
+            model: "r1".to_string(),
+            round: 2,
+            why: "no findings block".to_string(),
+            for_run: true,
+        });
+
         record.rounds.push(RoundRecord {
             round: 1,
             reviewers: vec![ReviewerRecord {
@@ -159,27 +174,85 @@ mod tests {
                 }],
                 requests: 3,
             }],
-            corroborated: vec![],
+            corroborated: vec![Finding {
+                round: 1,
+                locus: "out.csv".to_string(),
+                key: "out.csv".to_string(),
+                severity: Severity::Concern,
+                raised_by: vec!["adversary".to_string(), "contract".to_string()],
+                claims_model_authored: vec![("contract".to_string(), "missing column".to_string())],
+                file: Some("out.csv".to_string()),
+                status: Status::Open,
+            }],
             outputs_changed: vec![],
             addressed: 0,
         });
+
+        record.open_at_end.push(Finding {
+            round: 1,
+            locus: "notes.txt".to_string(),
+            key: "notes.txt".to_string(),
+            severity: Severity::Blocking,
+            raised_by: vec!["reproduction".to_string()],
+            claims_model_authored: vec![],
+            file: None,
+            status: Status::Open,
+        });
+
         let dir = tempfile::tempdir().unwrap();
         let path = write(&dir.path().join("nested"), &record).unwrap();
         assert!(path.ends_with("ensemble.json"));
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
         assert_eq!(json["roster"]["main"], "m");
         assert_eq!(json["run_id"], record.run_id);
-        assert_eq!(json["instruction_sha256"].as_str().unwrap().len(), 64);
+        assert_eq!(json["review_steps"], 20);
+        assert_eq!(json["stopped"], "bound");
+        assert_eq!(json["main_outcomes"][0], "first attempt ok");
+        assert_eq!(json["requests"]["main"], 5);
+        assert_eq!(json["requests"]["reviewer-0"], 3);
+
+        // The literal digest of "do the thing", computed independently
+        // (shasum -a 256), so a truncation or a wrong input cannot pass
+        // by coincidence.
+        assert_eq!(
+            json["instruction_sha256"],
+            "12422cebeadd97366c31ee59300562cc3b9bca05e01005cc7a4a0945265c4472"
+        );
+        assert!(json["instruction_sha256"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
         assert_eq!(json["prunes"][0]["kind"], "tampered");
         assert_eq!(json["prunes"][0]["files"][0], "out.csv");
-        assert_eq!(
-            json["rounds"][0]["reviewers"][0]["findings"][0]["claim_model_authored"],
-            "looks off"
-        );
-        assert_eq!(
-            json["rounds"][0]["reviewers"][0]["findings"][0]["severity"],
-            "note"
-        );
+        assert_eq!(json["prunes"][1]["kind"], "unusable");
+        assert_eq!(json["prunes"][1]["why"], "no findings block");
+        assert_eq!(json["prunes"][1]["for_run"], true);
+
+        let reviewer = &json["rounds"][0]["reviewers"][0];
+        assert_eq!(reviewer["index"], 0);
+        assert_eq!(reviewer["model"], "r0");
+        assert_eq!(reviewer["lens"], "contract");
+        assert_eq!(reviewer["status"], "reviewed");
+        assert_eq!(reviewer["requests"], 3);
+        assert_eq!(reviewer["findings"][0]["locus"], "out.csv");
+        assert_eq!(reviewer["findings"][0]["claim_model_authored"], "looks off");
+        assert_eq!(reviewer["findings"][0]["severity"], "note");
+
+        let corroborated = &json["rounds"][0]["corroborated"][0];
+        assert_eq!(corroborated["round"], 1);
+        assert_eq!(corroborated["locus"], "out.csv");
+        assert_eq!(corroborated["severity"], "concern");
+        assert_eq!(corroborated["status"], "open");
+        assert_eq!(corroborated["raised_by"][0], "adversary");
+        assert_eq!(corroborated["raised_by"][1], "contract");
+
+        assert_eq!(json["open_at_end"][0]["locus"], "notes.txt");
+        assert_eq!(json["open_at_end"][0]["severity"], "blocking");
+        assert_eq!(json["open_at_end"][0]["status"], "open");
+        assert_eq!(json["open_at_end"][0]["raised_by"][0], "reproduction");
     }
 }
