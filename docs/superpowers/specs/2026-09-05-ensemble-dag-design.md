@@ -1,9 +1,9 @@
 # Ensemble: a review loop over free models, driven by code
 
 **Date:** 2026-09-05
-**Status:** approved in conversation, not yet built. The measurement that
-motivates it is in the harbor job directories under `jobs/` dated
-2026-09-04 and 2026-09-05, one per model.
+**Status:** approved and built on branch feat/ensemble-dag; see the
+2026-09-05 entry in docs/DECISIONS.md. Two departures made at build time
+are listed at the top of the plan.
 
 ## Purpose
 
@@ -141,10 +141,12 @@ at the highest severity. Everything else is recorded and not sent.
 
 The corroborated findings go to the main model as one user message in
 its own session, resumed through `plan_seed` so it keeps everything it
-learned. The message is a fence with a per-round marker under the same
-boundary sentence `memory` and `zorp-skill` use, labelled as reviewer
-text that grants no tool, loosens no approval and bypasses no denylist
-entry. The main model is asked to address each finding that is right and
+learned. (At build time the main model became one live Agent across
+rounds instead; see the plan.) The message is a fence with a per-round
+marker under the same boundary sentence `memory` and `zorp-skill` use,
+labelled as reviewer text that grants no tool, loosens no approval and
+bypasses no denylist entry. The main model is asked to address each
+finding that is right and
 to say why where one is wrong.
 
 Rounds stop at the bound, 2 by default. They stop earlier when a round
