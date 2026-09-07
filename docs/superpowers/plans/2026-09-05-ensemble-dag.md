@@ -2049,7 +2049,7 @@ fn run_ensemble(address: SocketAddr, dir: &Path) -> Output {
     let roster = dir.join("roster.toml");
     std::fs::write(
         &roster,
-        "[main]\nmodel = \"m\"\n[[reviewer]]\nmodel = \"r0\"\nrounds = 1\n",
+        "rounds = 1\n[main]\nmodel = \"m\"\n[[reviewer]]\nmodel = \"r0\"\n",
     )
     .unwrap();
     Command::new(env!("CARGO_BIN_EXE_zorp-agent"))
@@ -2311,11 +2311,11 @@ From the worktree root, with the key sourced from the scratchpad env file and ne
 cargo build -p zorp-agent --features ensemble
 mkdir -p /tmp/ens-smoke && cd /tmp/ens-smoke
 cat > roster.toml <<'EOF'
+rounds = 1
 [main]
 model = "nvidia/nemotron-3-super-120b-a12b:free"
 [[reviewer]]
 model = "minimax/minimax-m3:free"
-rounds = 1
 EOF
 ZORP_ENSEMBLE=roster.toml ZORP_BASE_URL=https://openrouter.ai/api/v1 ZORP_MAX_STEPS=10 \
   <path-to-worktree>/target/debug/zorp-agent ensemble --yes --no-verify \
