@@ -12,7 +12,11 @@ use std::process::{Command, Output};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use sse_stub::{scripted_server, Ending, Framing, Reply};
+use sse_stub::{scripted_server_recording, Ending, Framing, Reply};
+
+/// A model name a roster never names, textually nothing like "m" or "r0",
+/// so a substring check on the wire cannot pass by accident either way.
+const WRONG_MODEL: &str = "definitely-not-the-roster-model";
 
 /// A finished answer with no tool calls. The stub frames it; the content
 /// is what `parse_verdict` will read.
@@ -34,23 +38,34 @@ fn run_ensemble(address: SocketAddr, dir: &Path) -> Output {
         "rounds = 1\n[main]\nmodel = \"m\"\n[[reviewer]]\nmodel = \"r0\"\n",
     )
     .unwrap();
-    Command::new(env!("CARGO_BIN_EXE_zorp-agent"))
-        .current_dir(dir)
-        .args([
-            "ensemble",
-            "--yes",
-            "--no-verify",
-            "--base-url",
-            &format!("http://{address}/v1"),
-            "say something",
-        ])
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zorp-agent"));
+    command.current_dir(dir).args([
+        "ensemble",
+        "--yes",
+        "--no-verify",
+        "--base-url",
+        &format!("http://{address}/v1"),
+        "say something",
+    ]);
+    // Every ZORP_ variable the developer's shell happens to have set is
+    // cleared before this case sets its own, the same rule zorp-eval's
+    // harness enforces at zorp-eval/src/harness/mod.rs: a connection count
+    // means nothing if the shell gets to choose the retry bound or the
+    // model.
+    for (key, _) in std::env::vars() {
+        if key.starts_with("ZORP_") {
+            command.env_remove(key);
+        }
+    }
+    command
         .env("ZORP_STATE_DB", dir.join("s.db"))
         .env("ZORP_ENSEMBLE", &roster)
         .env("ZORP_ENSEMBLE_LOG_DIR", dir.join("log"))
+        // Set, not cleared, and obviously wrong: if the roster's own main
+        // model silently lost to this one, the wire-body assertion below
+        // has something concrete to catch it on.
+        .env("ZORP_MODEL", WRONG_MODEL)
         .env(zorp::RETRY_ATTEMPTS_VAR, "1")
-        .env_remove("ZORP_API_KEY")
-        .env_remove("ZORP_SYSTEM")
-        .env_remove("ZORP_MODEL")
         .output()
         .unwrap()
 }
@@ -59,7 +74,7 @@ fn run_ensemble(address: SocketAddr, dir: &Path) -> Output {
 fn the_subcommand_runs_main_then_each_reviewer_and_writes_the_record() {
     // Main answers "done", the reviewer answers an empty verdict, and the
     // script repeats its last entry for anything past the end.
-    let (address, connections) = scripted_server(
+    let (address, connections, requests) = scripted_server_recording(
         Framing::Chunked,
         vec![answer("done"), answer("```json\n{\"findings\":[]}\n```")],
     );
@@ -68,6 +83,21 @@ fn the_subcommand_runs_main_then_each_reviewer_and_writes_the_record() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert_eq!(connections.load(Ordering::SeqCst), 2, "{stderr}");
+    // The roster's own main model reached the wire, not the one --model
+    // or ZORP_MODEL set (run_ensemble sets ZORP_MODEL to WRONG_MODEL for
+    // exactly this check).
+    let seen = requests.lock().unwrap();
+    assert!(
+        seen[0].contains("\"model\":\"m\""),
+        "first request did not name the roster's main model: {}",
+        seen[0]
+    );
+    assert!(
+        !seen[0].contains(WRONG_MODEL),
+        "first request carried the overridden model instead of the roster's: {}",
+        seen[0]
+    );
+    drop(seen);
     let record: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join("log").join("ensemble.json")).unwrap(),
     )

@@ -889,7 +889,18 @@ fn ensemble(instruction: &str, auto_approve: bool, no_verify: bool, overrides: &
     );
     let merged = user_flavor.merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
-    let (base_url, _configured_model) = resolve_host_and_model(overrides, &merged);
+    // The roster names every model this subcommand ever uses, so the base
+    // URL is all this needs from resolve_host_and_model's job. Calling it
+    // for that alone would call `pick` for a model name too, and an empty
+    // one against the default Ollama URL walks into an interactive model
+    // picker that blocks on stdin, a prompt --yes does not skip and whose
+    // answer would be thrown away regardless.
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "ZORP_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);

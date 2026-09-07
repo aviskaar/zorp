@@ -24,7 +24,7 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::json;
@@ -103,14 +103,21 @@ pub fn drain_request(stream: &mut TcpStream) {
 }
 
 fn try_drain_request(stream: &mut TcpStream) -> bool {
+    try_drain_request_bytes(stream).is_some()
+}
+
+/// Read the whole request the way `try_drain_request` does, and keep it
+/// instead of throwing it away. `None` means the same thing it means there:
+/// the connection ended before a complete request arrived.
+fn try_drain_request_bytes(stream: &mut TcpStream) -> Option<Vec<u8>> {
     let mut request = Vec::new();
     let mut buffer = [0u8; 1024];
     let header_end = loop {
         let Ok(read) = stream.read(&mut buffer) else {
-            return false;
+            return None;
         };
         if read == 0 {
-            return false;
+            return None;
         }
         request.extend_from_slice(&buffer[..read]);
         if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
@@ -124,14 +131,22 @@ fn try_drain_request(stream: &mut TcpStream) -> bool {
         .unwrap_or(0);
     while request.len() < header_end + length {
         let Ok(read) = stream.read(&mut buffer) else {
-            return false;
+            return None;
         };
         if read == 0 {
-            return false;
+            return None;
         }
         request.extend_from_slice(&buffer[..read]);
     }
-    true
+    Some(request)
+}
+
+/// Read the whole request and hand it back as text, headers and body both.
+/// A sibling to `drain_request`, kept separate so the transport tests that
+/// depend on `drain_request` and `scripted_server` never change shape.
+pub fn drain_request_recording(stream: &mut TcpStream) -> String {
+    let bytes = try_drain_request_bytes(stream).expect("request ended before headers");
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Accept one connection, answer with event-stream headers, then hand the
@@ -248,6 +263,41 @@ pub fn scripted_server(
         }
     });
     (address, connections)
+}
+
+/// [`scripted_server`], plus a record of every request body it read. Additive:
+/// `scripted_server` and `drain_request` are unchanged and every existing
+/// caller keeps serving the same bytes.
+///
+/// A test that cares which model a request named needs the body, not just
+/// the count of connections, and a mutex is the whole cost of keeping it: one
+/// writer per accepted connection, read back after the process under test
+/// has exited.
+pub fn scripted_server_recording(
+    framing: Framing,
+    script: impl Into<Arc<[Reply]>>,
+) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+    let script: Arc<[Reply]> = script.into();
+    assert!(
+        !script.is_empty(),
+        "a script with no replies serves nothing"
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for (i, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { return };
+            counter.fetch_add(1, Ordering::SeqCst);
+            let request = drain_request_recording(&mut stream);
+            recorder.lock().unwrap().push(request);
+            serve(framing, script[i.min(script.len() - 1)].clone(), stream);
+        }
+    });
+    (address, connections, requests)
 }
 
 /// Finish one request on a keep-alive connection, then leave the next
