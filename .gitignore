@@ -36,3 +36,7 @@ docs/paper/zorp-paper.tex
 # Ignored so it is not committed by accident; un-ignore it deliberately if
 # the report is meant to be tracked.
 /graphify-out/
+
+# Per-run scratch from local agent jobs (transcripts, workspaces, artifacts).
+# Written into the repo root by the harness when jobs are driven by hand.
+/jobs/
