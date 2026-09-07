@@ -74,6 +74,10 @@ name = "stub_search_mcp_server"
 path = "tests/fixtures/stub_search_mcp_server.rs"
 required-features = ["research"]
 
+[[test]]
+name = "ensemble_cli"
+required-features = ["ensemble"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 # The scripted provider these tests run against, shared with zorp-eval's
