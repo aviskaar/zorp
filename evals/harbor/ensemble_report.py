@@ -8,11 +8,11 @@ stdout for checks passed and failed, and agent/ensemble.json, the record
 zorp-agent ensemble wrote. Prints one table per task and one per lens.
 
 The rule this script lives under: it selects on code-derived columns only.
-Lens, severity, status, whether a finding was corroborated, whether it was
-addressed by a hash change, why a reviewer was pruned, and request counts.
-It never reads claim_model_authored, and it does not read locus either,
-because a locus is also the reviewer's own words. The roster gets decided
-by a person reading these tables, not by this script.
+Lens, status, whether a finding was corroborated, whether it was addressed
+by a hash change, why a reviewer was pruned, and request counts. It never
+reads claim_model_authored, and it does not read locus either, because a
+locus is also the reviewer's own words. The roster gets decided by a
+person reading these tables, not by this script.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ from pathlib import Path
 _PASSED = re.compile(r"(\d+) passed")
 _FAILED = re.compile(r"(\d+) (?:failed|errors?)")
 
+# Every status a reviewer can carry, in the order record.rs documents them.
+_STATUSES = ("reviewed", "reused", "unusable", "dropped", "skipped")
+
 
 def checks(test_stdout: str) -> tuple[int, int]:
     """Verifier checks passed and not passed, from pytest's summary line."""
@@ -35,9 +38,15 @@ def checks(test_stdout: str) -> tuple[int, int]:
 
 
 def _read_json(path: Path) -> dict | None:
+    """Read a JSON file. A trial that never wrote one returns None quietly;
+    a file that exists but fails to parse also returns None, but says so
+    on stderr first, so the two cases do not look the same to a reader."""
+    if not path.is_file():
+        return None
     try:
         return json.loads(path.read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        print(f"warning: {path}: unreadable, treating as no record ({e})", file=sys.stderr)
         return None
 
 
@@ -73,7 +82,10 @@ def per_task(rows: list[dict]) -> str:
     for r in sorted(rows, key=lambda r: r["task"]):
         passed, failed = r["checks"]
         rec = r["record"]
-        corroborated = sum(len(x["corroborated"]) for x in rec["rounds"]) if rec else 0
+        # Sum the per-lens maps, not len(rounds[].corroborated): that list
+        # is re-derived every round, so a locus still open from an earlier
+        # round would otherwise be counted again in every round it survives.
+        corroborated = sum(sum(x["newly_corroborated_by_lens"].values()) for x in rec["rounds"]) if rec else 0
         addressed = sum(x["addressed"] for x in rec["rounds"]) if rec else 0
         open_at_end = len(rec["open_at_end"]) if rec else 0
         lines.append(
@@ -85,15 +97,20 @@ def per_task(rows: list[dict]) -> str:
 
 
 def per_lens(rows: list[dict]) -> str:
-    """Per lens: findings raised, corroborated, addressed, and in how many
-    passing trials each happened. Which lens's findings preceded a pass is
-    the question the roster gets decided on."""
+    """Per lens: what each reviewer status accounts for, findings raised,
+    newly corroborated, and addressed, and in how many passing trials the
+    addressed credit landed. Which lens's findings preceded a pass is the
+    question the roster gets decided on.
+
+    Every one of a reviewer's five statuses is counted, not just reviewed
+    and dropped: a lens that only ever reused a prior verdict, or came
+    back unusable, or was skipped when a run was cancelled, still did
+    something, and a table that shows it doing nothing is wrong."""
     raised: dict[str, int] = defaultdict(int)
     corroborated: dict[str, int] = defaultdict(int)
     addressed: dict[str, int] = defaultdict(int)
     in_passing: dict[str, int] = defaultdict(int)
-    reviewed: dict[str, int] = defaultdict(int)
-    dropped: dict[str, int] = defaultdict(int)
+    status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for r in rows:
         rec = r["record"]
         if not rec:
@@ -103,23 +120,20 @@ def per_lens(rows: list[dict]) -> str:
             for rv in rnd["reviewers"]:
                 lens = rv["lens"]
                 raised[lens] += len(rv["findings"])
-                if rv["status"] == "reviewed":
-                    reviewed[lens] += 1
-                if rv["status"] == "dropped":
-                    dropped[lens] += 1
-            for f in rnd["corroborated"]:
-                for lens in f["raised_by"]:
-                    corroborated[lens] += 1
-                    if f["status"] == "addressed":
-                        addressed[lens] += 1
-                        if passing:
-                            in_passing[lens] += 1
-    lenses = sorted(set(raised) | set(reviewed) | set(dropped))
-    lines = ["lens | reviews | dropped | raised | corroborated | addressed | addressed in passing trials"]
+                status_counts[lens][rv["status"]] += 1
+            for lens, n in rnd.get("newly_corroborated_by_lens", {}).items():
+                corroborated[lens] += n
+            for lens, n in rnd.get("addressed_by_lens", {}).items():
+                addressed[lens] += n
+                if passing:
+                    in_passing[lens] += n
+    lenses = sorted(set(raised) | set(status_counts) | set(corroborated) | set(addressed))
+    lines = ["lens | " + " | ".join(_STATUSES) + " | raised | corroborated | addressed | addressed in passing trials"]
     for lens in lenses:
+        counts = status_counts[lens]
         lines.append(
-            f"{lens} | {reviewed[lens]} | {dropped[lens]} | {raised[lens]} | "
-            f"{corroborated[lens]} | {addressed[lens]} | {in_passing[lens]}"
+            f"{lens} | " + " | ".join(str(counts[s]) for s in _STATUSES) +
+            f" | {raised[lens]} | {corroborated[lens]} | {addressed[lens]} | {in_passing[lens]}"
         )
     return "\n".join(lines)
 

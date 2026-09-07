@@ -8,7 +8,7 @@
 //! with a per-round marker under a boundary sentence, the shape `memory`
 //! and `zorp-skill` use, and every line of model text inside it says so.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -179,32 +179,47 @@ pub struct Ledger {
 impl Ledger {
     /// Add findings. A locus that is already open is not added twice; one
     /// that was addressed and comes back is a new finding.
-    pub fn admit(&mut self, findings: Vec<Finding>) -> usize {
-        let mut added = 0;
+    ///
+    /// Returns how many newly admitted findings each lens raised, keyed by
+    /// lens name off `raised_by`, which is code-derived. A finding two
+    /// lenses raised counts once for each of them: both contributed to the
+    /// corroboration. A locus already open from an earlier round is not
+    /// re-admitted and so is not re-counted here, which is what keeps this
+    /// additive across a run instead of double-counting an open finding
+    /// every round it stays open.
+    pub fn admit(&mut self, findings: Vec<Finding>) -> BTreeMap<String, usize> {
+        let mut by_lens: BTreeMap<String, usize> = BTreeMap::new();
         for f in findings {
             let open_already = self
                 .findings
                 .iter()
                 .any(|o| o.key == f.key && o.status == Status::Open);
             if !open_already {
+                for lens in &f.raised_by {
+                    *by_lens.entry(lens.clone()).or_default() += 1;
+                }
                 self.findings.push(f);
-                added += 1;
             }
         }
-        added
+        by_lens
     }
 
     /// Flip to addressed every open finding whose file changed.
-    pub fn settle(&mut self, changed: &[String]) -> usize {
-        let mut n = 0;
+    ///
+    /// Returns how many addressed findings each lens gets credit for, the
+    /// same per-lens attribution `admit` uses.
+    pub fn settle(&mut self, changed: &[String]) -> BTreeMap<String, usize> {
+        let mut by_lens: BTreeMap<String, usize> = BTreeMap::new();
         for f in self.findings.iter_mut() {
             let touched = f.file.as_ref().is_some_and(|p| changed.contains(p));
             if f.status == Status::Open && touched {
                 f.status = Status::Addressed;
-                n += 1;
+                for lens in &f.raised_by {
+                    *by_lens.entry(lens.clone()).or_default() += 1;
+                }
             }
         }
-        n
+        by_lens
     }
 
     pub fn open(&self) -> Vec<&Finding> {
@@ -382,14 +397,37 @@ mod tests {
             verdict("adversary", vec![(Severity::Blocking, "notes.txt", "b")]),
         ];
         let mut ledger = Ledger::default();
-        assert_eq!(ledger.admit(corroborated(1, &v, &watched())), 2);
-        assert_eq!(ledger.admit(corroborated(2, &v, &watched())), 0);
-        assert_eq!(ledger.settle(&["notes.txt".to_string()]), 1);
+        let first_admit = ledger.admit(corroborated(1, &v, &watched()));
+        assert_eq!(first_admit.values().sum::<usize>(), 2);
+        assert_eq!(first_admit.get("contract"), Some(&1));
+        assert_eq!(first_admit.get("adversary"), Some(&1));
+        assert_eq!(
+            ledger
+                .admit(corroborated(2, &v, &watched()))
+                .values()
+                .sum::<usize>(),
+            0,
+            "both loci are already open, so nothing is newly admitted"
+        );
+        let settled = ledger.settle(&["notes.txt".to_string()]);
+        assert_eq!(settled.values().sum::<usize>(), 1);
+        assert_eq!(
+            settled.get("adversary"),
+            Some(&1),
+            "adversary is the lens that raised notes.txt"
+        );
+        assert!(
+            !settled.contains_key("contract"),
+            "contract's finding was on out.csv, not the file that changed"
+        );
         let open = ledger.open();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].locus, "results/out.csv");
         assert_eq!(
-            ledger.admit(corroborated(2, &v, &watched())),
+            ledger
+                .admit(corroborated(2, &v, &watched()))
+                .values()
+                .sum::<usize>(),
             1,
             "notes.txt is open again"
         );

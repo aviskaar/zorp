@@ -53,11 +53,25 @@ impl EnsembleRecord {
 pub struct RoundRecord {
     pub round: usize,
     pub reviewers: Vec<ReviewerRecord>,
+    /// The human-readable detail: every finding corroborated this round,
+    /// re-derived and so repeated for a locus still open from an earlier
+    /// round. A reader must sum `newly_corroborated_by_lens` for a count,
+    /// never `.len()` on this, or a finding open across three rounds
+    /// counts as three.
     pub corroborated: Vec<Finding>,
     /// Watched paths the revision changed.
     pub outputs_changed: Vec<String>,
-    /// Open findings the revision addressed, by hash change.
+    /// Open findings the revision addressed, by hash change. The sum of
+    /// `addressed_by_lens`'s values.
     pub addressed: usize,
+    /// How many findings each lens gets credit for among those newly
+    /// admitted this round, keyed by lens name off `raised_by`. Empty
+    /// when nothing corroborated. This is code-derived and additive
+    /// across rounds, unlike `corroborated`.
+    pub newly_corroborated_by_lens: BTreeMap<String, usize>,
+    /// The same per-lens attribution, for findings this round's revision
+    /// addressed.
+    pub addressed_by_lens: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -184,8 +198,13 @@ mod tests {
                 file: Some("out.csv".to_string()),
                 status: Status::Open,
             }],
-            outputs_changed: vec![],
-            addressed: 0,
+            outputs_changed: vec!["out.csv".to_string()],
+            addressed: 1,
+            newly_corroborated_by_lens: BTreeMap::from([
+                ("adversary".to_string(), 1),
+                ("contract".to_string(), 1),
+            ]),
+            addressed_by_lens: BTreeMap::from([("contract".to_string(), 1)]),
         });
 
         record.open_at_end.push(Finding {
@@ -249,6 +268,23 @@ mod tests {
         assert_eq!(corroborated["status"], "open");
         assert_eq!(corroborated["raised_by"][0], "adversary");
         assert_eq!(corroborated["raised_by"][1], "contract");
+
+        assert_eq!(json["rounds"][0]["addressed"], 1);
+        assert_eq!(
+            json["rounds"][0]["newly_corroborated_by_lens"]["adversary"],
+            1
+        );
+        assert_eq!(
+            json["rounds"][0]["newly_corroborated_by_lens"]["contract"],
+            1
+        );
+        assert_eq!(json["rounds"][0]["addressed_by_lens"]["contract"], 1);
+        assert!(
+            json["rounds"][0]["addressed_by_lens"]
+                .get("adversary")
+                .is_none(),
+            "only contract was given credit for the addressed finding"
+        );
 
         assert_eq!(json["open_at_end"][0]["locus"], "notes.txt");
         assert_eq!(json["open_at_end"][0]["severity"], "blocking");
