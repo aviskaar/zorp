@@ -125,13 +125,25 @@ resulting artifact, deliver it in the right form.
   on the hashes of what the reviewer examined, a finding is addressed
   when the file it names changes hash and never on a model's word, and a
   reviewer is dropped only for altering an output or for two unusable
-  replies. Every run writes `ensemble.json` and the reviewer transcripts
-  to `ZORP_ENSEMBLE_LOG_DIR`, and `evals/harbor/ensemble_report.py` reads
-  them on code-derived columns only. Three things are not negotiable.
+  replies. A dropped reviewer's edit stays in the file, because this
+  hashes and never copies, so the main model is told which files were
+  altered even when the round corroborated nothing, and that round stops
+  with its own reason rather than `nothing corroborated`. Stopping
+  quietly there hands the verifier a file a reviewer wrote, and a
+  contaminated reward looks exactly like a real one. Every run writes
+  `ensemble.json` and the reviewer transcripts to
+  `ZORP_ENSEMBLE_LOG_DIR`, and `evals/harbor/ensemble_report.py` reads
+  them on code-derived columns only. Four things are not negotiable.
   Code launches every run and review, there is no tool that starts one,
   and `agent.rs` has a test saying so. No roster changes on a model's
-  opinion. And findings text is stored as `claim_model_authored` and
-  nothing that decides anything reads it. Run `cargo test -p zorp-agent
+  opinion. No reviewer reads another reviewer, by construction and not by
+  instruction: a transcript is held in memory and all of them are written
+  when the run ends, on every path that ends one, so an earlier
+  reviewer's transcript does not exist while a later one is running. A
+  reviewer has a shell and would otherwise just read it, agreement
+  between two lenses would be an echo, and agreement is the whole of what
+  this measures. And findings text is stored as `claim_model_authored`
+  and nothing that decides anything reads it. Run `cargo test -p zorp-agent
   --features ensemble` whenever any of it changes. See
   `docs/superpowers/specs/2026-09-05-ensemble-dag-design.md` and
   `docs/DECISIONS.md` (2026-09-05) before changing any of it.

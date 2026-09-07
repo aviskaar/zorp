@@ -97,6 +97,19 @@ fn the_subcommand_runs_main_then_each_reviewer_and_writes_the_record() {
         "first request carried the overridden model instead of the roster's: {}",
         seen[0]
     );
+    // And the reviewer's own model, on its own request. A reviewer that
+    // silently fell back to ZORP_MODEL would pass every assertion above.
+    assert_eq!(seen.len(), 2, "one main request and one reviewer request");
+    assert!(
+        seen[1].contains("\"model\":\"r0\""),
+        "the reviewer request did not name the roster's reviewer model: {}",
+        seen[1]
+    );
+    assert!(
+        !seen[1].contains(WRONG_MODEL),
+        "the reviewer request carried the overridden model instead of the roster's: {}",
+        seen[1]
+    );
     drop(seen);
     let record: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join("log").join("ensemble.json")).unwrap(),
@@ -110,6 +123,38 @@ fn the_subcommand_runs_main_then_each_reviewer_and_writes_the_record() {
         .join("log")
         .join("reviewer-0-contract-round-1.txt")
         .is_file());
+}
+
+/// Zero review steps is refused the way a roster's `rounds = 0` is, and the
+/// message names the variable. Left accepted, every reviewer comes back
+/// unusable, the roster empties itself by round two, and nothing says why.
+#[test]
+fn zero_review_steps_is_a_configuration_error_that_names_the_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    let roster = dir.path().join("roster.toml");
+    std::fs::write(
+        &roster,
+        "rounds = 1\n[main]\nmodel = \"m\"\n[[reviewer]]\nmodel = \"r0\"\n",
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zorp-agent"));
+    command
+        .current_dir(dir.path())
+        .args(["ensemble", "--yes", "say something"]);
+    for (key, _) in std::env::vars() {
+        if key.starts_with("ZORP_") {
+            command.env_remove(key);
+        }
+    }
+    let out = command
+        .env("ZORP_STATE_DB", dir.path().join("s.db"))
+        .env("ZORP_ENSEMBLE", &roster)
+        .env("ZORP_ENSEMBLE_REVIEW_STEPS", "0")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("ZORP_ENSEMBLE_REVIEW_STEPS"), "{stderr}");
 }
 
 #[test]

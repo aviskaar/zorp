@@ -872,10 +872,24 @@ fn ensemble(instruction: &str, auto_approve: bool, no_verify: bool, overrides: &
         eprintln!("zorp-agent: {e}");
         std::process::exit(2);
     });
-    let review_steps = std::env::var(REVIEW_STEPS_VAR)
+    // Zero is refused the way a roster's `rounds = 0` is. With no steps
+    // every reviewer comes back unusable and the roster empties itself by
+    // round two, and nothing in the record names the variable that did it.
+    let review_steps = match std::env::var(REVIEW_STEPS_VAR)
         .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_REVIEW_STEPS);
+        .filter(|v| !v.is_empty())
+    {
+        None => DEFAULT_REVIEW_STEPS,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!(
+                    "zorp-agent: {REVIEW_STEPS_VAR} must be a whole number of at least 1, not {v:?}"
+                );
+                std::process::exit(2);
+            }
+        },
+    };
 
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);

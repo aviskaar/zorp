@@ -28,6 +28,7 @@ pub struct EnsembleRecord {
     pub requests: BTreeMap<String, usize>,
     pub open_at_end: Vec<Finding>,
     /// Why the loop ended: `bound`, `nothing corroborated`,
+    /// `nothing corroborated; a reviewer altered outputs`,
     /// `revision changed no output`, or `cancelled`.
     pub stopped: String,
 }

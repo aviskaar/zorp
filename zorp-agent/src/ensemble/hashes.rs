@@ -129,13 +129,18 @@ pub fn changed(before: &Snapshot, after: &Snapshot) -> Vec<String> {
 /// transcript's tool-call arguments in code; the reviewer is never asked
 /// what it looked at. A path the reviewer spelled differently from the
 /// watched form is missed, which only costs a memo hit, never a check.
+///
+/// "Mentions" is `ledger::at_path_boundary`, the same one the ledger uses
+/// to attribute a finding to a file, so a watched `notes.txt` is not read
+/// out of a mention of `footnotes.txt` here while the ledger refuses it
+/// there.
 pub fn examined(transcript: &[Message], watched: &BTreeSet<String>) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for m in transcript.iter().filter(|m| m.role == "assistant") {
         for call in &m.tool_calls {
             let args = call.arguments.to_string();
             for p in watched {
-                if args.contains(p.as_str()) {
+                if super::ledger::at_path_boundary(&args, p) {
                     out.insert(p.clone());
                 }
             }
@@ -238,6 +243,24 @@ mod tests {
         ];
         let seen = examined(&transcript, &set);
         assert_eq!(seen, ["out/a.csv".to_string()].into());
+    }
+
+    /// The same boundary rule the ledger uses for a locus. A watched
+    /// `notes.txt` is not read out of a mention of `footnotes.txt`, and it
+    /// is still read out of a mention of itself.
+    #[test]
+    fn examined_will_not_read_a_watched_name_out_of_a_longer_one() {
+        let set: BTreeSet<String> = ["notes.txt".to_string()].into();
+        let longer = vec![call(
+            "run_command",
+            json!({"command": "wc -l footnotes.txt"}),
+        )];
+        assert!(
+            examined(&longer, &set).is_empty(),
+            "footnotes.txt is not notes.txt"
+        );
+        let itself = vec![call("run_command", json!({"command": "wc -l notes.txt"}))];
+        assert_eq!(examined(&itself, &set), ["notes.txt".to_string()].into());
     }
 
     #[test]

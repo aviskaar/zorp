@@ -10,19 +10,22 @@
 //! `docs/superpowers/specs/2026-09-05-ensemble-dag-design.md` and
 //! `docs/DECISIONS.md` (2026-09-05).
 //!
-//! Two rules are not negotiable. Code launches every run and review here;
-//! no tool starts one, and `agent.rs` has a test saying so. And no roster
+//! Three rules are not negotiable. Code launches every run and review here;
+//! no tool starts one, and `agent.rs` has a test saying so. No roster
 //! changes on a model's opinion: a reviewer is dropped for altering an
-//! output, or for two unusable replies, and for nothing else.
+//! output, or for two unusable replies, and for nothing else. And no
+//! reviewer reads another reviewer: transcripts are held in memory and
+//! written when the run ends, so an earlier one does not exist while a
+//! later reviewer, which has a shell, is running.
 
 pub mod hashes;
 pub mod ledger;
 pub mod record;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -206,11 +209,43 @@ struct Reviewed {
     result: Result<ReviewerVerdict, String>,
     examined: BTreeSet<String>,
     requests: usize,
+    /// What the reviewer's renderer wrote, held until the run is over.
+    transcript: Vec<u8>,
+}
+
+/// One reviewer's transcript, in memory while the run is going.
+///
+/// A reviewer has a shell, so a transcript on disk is a transcript the next
+/// reviewer can read, and reading trips no hash check. Telling a reviewer
+/// not to look is not a check either. So the file simply does not exist
+/// while a later reviewer is running: `run` collects these and `finish`
+/// writes them all, in the log directory under the names they always had,
+/// on every path that ends a run.
+#[derive(Clone, Default)]
+struct Transcript(Arc<Mutex<Vec<u8>>>);
+
+impl Transcript {
+    fn bytes(&self) -> Vec<u8> {
+        self.0.lock().map(|held| held.clone()).unwrap_or_default()
+    }
+}
+
+impl std::io::Write for Transcript {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(mut held) = self.0.lock() {
+            held.extend_from_slice(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// One reviewer, start to finish. Builds its own agent from a clone of
-/// the model, on the allow-list, with its transcript going to a file
-/// when one is given.
+/// the model, on the allow-list, with its transcript kept in memory and
+/// handed back for the caller to write once the run is over.
 #[allow(clippy::too_many_arguments)]
 fn review(
     model: &dyn Model,
@@ -221,9 +256,9 @@ fn review(
     max_steps: usize,
     cancel: CancelToken,
     approval: ApprovalMode,
-    transcript: Option<PathBuf>,
 ) -> Reviewed {
     let tools = reviewer_tools();
+    let transcript = Transcript::default();
     let mut agent = Agent::new(
         model.clone_box(),
         REVIEWER_SYSTEM_PROMPT,
@@ -232,12 +267,8 @@ fn review(
         cancel,
         approval,
     )
-    .register_builtins_filtered(Some(&tools));
-    if let Some(path) = transcript {
-        if let Ok(file) = File::create(&path) {
-            agent = agent.with_renderer(Box::new(LineRenderer::new(file, false)));
-        }
-    }
+    .register_builtins_filtered(Some(&tools))
+    .with_renderer(Box::new(LineRenderer::new(transcript.clone(), false)));
     let listing = watched
         .iter()
         .map(|p| format!("- {p}"))
@@ -271,6 +302,7 @@ fn review(
         result,
         examined,
         requests,
+        transcript: transcript.bytes(),
     }
 }
 
@@ -299,12 +331,21 @@ pub fn run(
         .min(config.roster.reviewers.len())
         .min(lenses.len());
     let mut record = EnsembleRecord::new(&config.roster, instruction, config.review_steps);
-    let _ = std::fs::create_dir_all(&config.log_dir);
+    // Every reviewer transcript, path and bytes, written by `finish` and
+    // nowhere else. Nothing is in the log directory until the run is over.
+    let mut transcripts: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
     let mut outcome = roles.main.run(instruction);
     record.main_outcomes.push(outcome.describe());
     if matches!(outcome, Outcome::Cancelled) {
-        return finish(config, record, &roles.main, outcome, "cancelled");
+        return finish(
+            config,
+            record,
+            &roles.main,
+            outcome,
+            "cancelled",
+            &transcripts,
+        );
     }
 
     // The one spelling of a watched path is the one the tool used, made
@@ -359,7 +400,7 @@ pub fn run(
                     continue;
                 }
             }
-            let transcript = config
+            let transcript_path = config
                 .log_dir
                 .join(format!("reviewer-{i}-{}-round-{round}.txt", lens.name));
             let reviewed = review(
@@ -371,8 +412,8 @@ pub fn run(
                 config.review_steps,
                 cancel.clone(),
                 approval.clone(),
-                Some(transcript),
             );
+            transcripts.push((transcript_path, reviewed.transcript));
             rec.requests = reviewed.requests;
             *record.requests.entry(format!("reviewer-{i}")).or_default() += reviewed.requests;
 
@@ -462,7 +503,16 @@ pub fn run(
             stopped = "cancelled";
             break;
         }
-        if corroborated.is_empty() {
+        // A reviewer that altered a watched file is dropped and its edit
+        // stays in the file: this module hashes rather than copies, so
+        // there is nothing to restore from. The main model is the only
+        // thing that can put its own output back, so it is told, even when
+        // the round corroborated nothing. Stopping here without telling it
+        // is how a tampered output reaches the verifier and is graded, and
+        // a contaminated reward looks exactly like a real one.
+        let tampered = !altered_this_round.is_empty();
+        let nothing_corroborated = corroborated.is_empty();
+        if nothing_corroborated && !tampered {
             record.rounds.push(round_rec);
             stopped = "nothing corroborated";
             break;
@@ -489,6 +539,12 @@ pub fn run(
             stopped = "cancelled";
             break;
         }
+        // The round had nothing but the tampering to report, and it has now
+        // been reported. There is no finding to take to a second round.
+        if nothing_corroborated {
+            stopped = "nothing corroborated; a reviewer altered outputs";
+            break;
+        }
         if changed.is_empty() {
             stopped = "revision changed no output";
             break;
@@ -497,16 +553,29 @@ pub fn run(
     }
 
     record.open_at_end = ledger.open().into_iter().cloned().collect();
-    finish(config, record, &roles.main, outcome, stopped)
+    finish(config, record, &roles.main, outcome, stopped, &transcripts)
 }
 
+/// The one place a run ends, and so the one place the reviewer transcripts
+/// are written. Every path out of `run` comes through here, which is what
+/// keeps a run that stopped early from losing them.
 fn finish(
     config: &EnsembleConfig,
     mut record: EnsembleRecord,
     main: &Agent,
     outcome: Outcome,
     stopped: &str,
+    transcripts: &[(PathBuf, Vec<u8>)],
 ) -> Finished {
+    let _ = std::fs::create_dir_all(&config.log_dir);
+    for (path, bytes) in transcripts {
+        if let Err(e) = std::fs::write(path, bytes) {
+            eprintln!(
+                "zorp-agent: ensemble transcript not written: {}: {e}",
+                path.display()
+            );
+        }
+    }
     record
         .requests
         .insert("main".to_string(), assistant_count(main));
@@ -611,6 +680,9 @@ model = "minimax/minimax-m2.7:free"
         assert!(err.contains("rounds"), "{err}");
     }
 
+    /// One directory listing per model call, in call order.
+    type Listings = Arc<Mutex<Vec<Vec<String>>>>;
+
     /// A model that answers from a script and remembers every prompt it
     /// was handed. `clone_box` shares the script, so the count survives the
     /// clone the loop makes per review.
@@ -621,6 +693,10 @@ model = "minimax/minimax-m2.7:free"
         /// Raised as this model answers, so a test can cancel a run from
         /// inside a reviewer the way a person's Ctrl-C does.
         cancel: Option<CancelToken>,
+        /// A directory listed as this model answers, one listing per call.
+        /// This is what a reviewer with a shell can see of the log
+        /// directory while it is running, from inside the run.
+        watching: Option<(PathBuf, Listings)>,
     }
 
     impl Scripted {
@@ -629,6 +705,7 @@ model = "minimax/minimax-m2.7:free"
                 replies: Arc::new(Mutex::new(replies.into())),
                 prompts: Arc::new(Mutex::new(Vec::new())),
                 cancel: None,
+                watching: None,
             }
         }
         fn calls(&self) -> usize {
@@ -671,6 +748,17 @@ model = "minimax/minimax-m2.7:free"
             self.prompts.lock().unwrap().push(last_user);
             if let Some(cancel) = &self.cancel {
                 cancel.store(true, Ordering::SeqCst);
+            }
+            if let Some((dir, seen)) = &self.watching {
+                let names = std::fs::read_dir(dir)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                seen.lock().unwrap().push(names);
             }
             self.replies
                 .lock()
@@ -780,10 +868,18 @@ model = "minimax/minimax-m2.7:free"
         ]
     }
 
+    /// The dropped reviewer's edit stays in the file: this module hashes
+    /// and never copies, so nothing can put it back but the main model.
+    /// Its findings still go nowhere, but it must be told which files were
+    /// touched, even with nothing corroborated, or the verifier grades a
+    /// file a reviewer wrote and the reward looks exactly like a real one.
     #[test]
-    fn a_reviewer_that_edits_an_output_is_dropped_and_its_finding_never_reaches_main() {
+    fn a_reviewer_that_edits_an_output_is_dropped_and_main_is_told_which_file() {
+        let mut main = main_writes();
+        // The revision: put out.csv back the way this run left it.
+        main.extend([write("out.csv", "1,2\n"), text("restored")]);
         let setup = Setup::new(
-            main_writes(),
+            main,
             vec![
                 vec![
                     call("run_command", json!({"command": "printf x >> out.csv"})),
@@ -801,9 +897,49 @@ model = "minimax/minimax-m2.7:free"
         );
         assert_eq!(record.rounds[0].reviewers[0].status, "dropped");
         assert!(record.rounds[0].corroborated.is_empty());
-        assert_eq!(record.stopped, "nothing corroborated");
-        assert_eq!(setup.main.calls(), 3, "main was never asked again");
-        assert!(!setup.main.last_prompt().contains("TAMPER-CLAIM"));
+        assert_eq!(
+            record.stopped, "nothing corroborated; a reviewer altered outputs",
+            "the stop reason names the tampering and is not the clean-convergence one"
+        );
+        assert_eq!(setup.main.calls(), 5, "main was asked again");
+        let prompt = setup.main.last_prompt();
+        assert!(
+            prompt.contains("out.csv"),
+            "the altered file is named to main: {prompt}"
+        );
+        // A dropped reviewer's opinion is still worth nothing, and an empty
+        // fence is worth nothing either.
+        assert!(!prompt.contains("TAMPER-CLAIM"), "{prompt}");
+        assert!(!prompt.contains(ledger::FENCE_OPEN), "{prompt}");
+        assert_eq!(record.rounds.len(), 1, "there is no second round to take");
+    }
+
+    /// Independence is the whole of what a corroborated finding means: two
+    /// lenses agreeing is worth something only if neither could read the
+    /// other. A reviewer has a shell, so the check cannot be an instruction
+    /// or a hidden path, and reading trips no hash. The transcript simply
+    /// does not exist yet.
+    #[test]
+    fn an_earlier_reviewers_transcript_does_not_exist_while_a_later_one_runs() {
+        let mut setup = Setup::new(main_writes(), vec![vec![nothing()], vec![nothing()]]);
+        let log = setup.dir.path().join("log");
+        let seen: Listings = Arc::new(Mutex::new(Vec::new()));
+        setup.reviewers[1].watching = Some((log.clone(), seen.clone()));
+        setup.run(1);
+
+        let listings = seen.lock().unwrap();
+        assert!(!listings.is_empty(), "reviewer 1 never looked");
+        for names in listings.iter() {
+            assert!(
+                !names.iter().any(|n| n.starts_with("reviewer-")),
+                "reviewer 1 could read an earlier reviewer's transcript: {names:?}"
+            );
+        }
+        drop(listings);
+        // And they are all there once the run is over, beside the record,
+        // under the names they always had.
+        assert!(log.join("reviewer-0-contract-round-1.txt").is_file());
+        assert!(log.join("reviewer-1-reproduction-round-1.txt").is_file());
     }
 
     #[test]
@@ -1048,6 +1184,18 @@ model = "minimax/minimax-m2.7:free"
             setup.reviewers[1].calls(),
             0,
             "cancelled before its model was asked"
+        );
+        // The transcripts are written when the run ends, and a cancel ends
+        // a run. A flush on the way out of the loop's bottom would lose
+        // them here.
+        assert!(
+            setup
+                .dir
+                .path()
+                .join("log")
+                .join("reviewer-0-contract-round-1.txt")
+                .is_file(),
+            "a cancelled run still leaves the transcripts it made"
         );
     }
 

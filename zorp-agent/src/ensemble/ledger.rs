@@ -77,7 +77,12 @@ fn path_ends_here(rest: &str) -> bool {
 /// locus this rejects gets no file, which is the safe failure: the finding
 /// stays open rather than an unrelated watched file flipping it to
 /// addressed later.
-fn at_path_boundary(haystack: &str, needle: &str) -> bool {
+///
+/// `hashes::examined` asks the same question of a tool call's arguments
+/// and takes the same answer from here. Two spellings of "mentions this
+/// path" in one feature is two behaviours to keep in step, and this is the
+/// one that was already debugged.
+pub(super) fn at_path_boundary(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
@@ -260,6 +265,15 @@ For each finding: if it is right, fix the work in place and say what you \
 changed. If it is wrong, say why in one sentence. Do not start the task over \
 and do not rewrite outputs a finding does not touch. When you are done, stop.";
 
+/// What is asked when a reviewer altered a file and nothing corroborated.
+/// The findings ask reads as nonsense with no findings under it, and an
+/// empty fence gives a model nothing to act on, so neither is sent.
+const RESTORE_ASK: &str = "\
+No reviewer finding was corroborated, so there is nothing else to weigh. \
+Check each file named above against what your own run wrote. If a reviewer \
+changed it, put it back the way your work left it and say what you changed. \
+Change nothing else. When you are done, stop.";
+
 /// A marker for this one round that no reviewer could have written into a
 /// claim: the clock, the process and the round, hashed to sixteen hex
 /// characters. Same construction as `memory::nonce`.
@@ -285,17 +299,28 @@ fn severity_word(s: Severity) -> &'static str {
     }
 }
 
-/// The one user message the main model receives per round.
+/// The one user message the main model receives per round. The caller
+/// sends it when there is something to send: an open finding, a file a
+/// dropped reviewer altered, or both. With neither there is no message.
 pub fn return_message(open: &[&Finding], altered: &[String], marker: &str) -> String {
     let mut out = String::with_capacity(2048);
-    out.push_str(FRAME);
-    out.push_str("\n\n");
+    // The frame is what the fence is, so it goes with the fence. With no
+    // findings there is no fence, and saying "the block below holds
+    // findings" above nothing is a sentence that is not true.
+    if !open.is_empty() {
+        out.push_str(FRAME);
+        out.push_str("\n\n");
+    }
     if !altered.is_empty() {
         out.push_str(&format!(
             "A reviewer altered these files and was dropped for it. Check them and \
              restore them if they are yours: {}\n\n",
             altered.join(", ")
         ));
+    }
+    if open.is_empty() {
+        out.push_str(RESTORE_ASK);
+        return out;
     }
     out.push_str(&format!("{FENCE_OPEN} {marker}\n"));
     for (n, f) in open.iter().enumerate() {
@@ -471,6 +496,21 @@ mod tests {
         assert!(!text.contains("altered these files"));
         let with = return_message(&open, &["results/out.csv".to_string()], &marker);
         assert!(with.contains("altered these files"));
+    }
+
+    /// Nothing corroborated but a reviewer altered a file. The main model
+    /// is the only thing that can put its own output back, so the message
+    /// has to be one it can act on: no fence with nothing in it, and no
+    /// ask about findings that are not there.
+    #[test]
+    fn an_altered_file_with_no_findings_is_a_message_about_the_file() {
+        let marker = marker(1);
+        let text = return_message(&[], &["results/out.csv".to_string()], &marker);
+        assert!(text.contains("results/out.csv"), "{text}");
+        assert!(!text.contains(FENCE_OPEN), "{text}");
+        assert!(!text.contains(FENCE_CLOSE), "{text}");
+        assert!(!text.contains("For each finding"), "{text}");
+        assert!(text.contains("put it back"), "{text}");
     }
 
     #[test]
