@@ -3339,6 +3339,35 @@ mod tests {
         assert!(!names.contains(&"invoke_subagent".to_string()));
     }
 
+    /// The ensemble's reviewer gets the read tools plus a shell and nothing
+    /// that launches a run, a review or a subagent, and nothing that
+    /// writes. Code launches every run. Same shape as the panel test above.
+    #[cfg(feature = "ensemble")]
+    #[test]
+    fn ensemble_reviewer_tools_carry_nothing_that_launches_a_run_or_writes() {
+        let model = Scripted::new(vec![text("done")]);
+        let allow = crate::ensemble::reviewer_tools();
+        let a = agent(model).register_builtins_filtered(Some(&allow));
+        let names = a.tool_names();
+        for forbidden in [
+            "spawn_subagent",
+            "monitor_subagents",
+            "cancel_subagent",
+            "invoke_subagent",
+            "write_file",
+            "apply_patch",
+            "take_note",
+            "start_background_process",
+        ] {
+            assert!(
+                !names.contains(&forbidden.to_string()),
+                "{forbidden} must not reach a reviewer"
+            );
+        }
+        assert!(names.contains(&"run_command".to_string()));
+        assert!(names.contains(&"read_file".to_string()));
+    }
+
     #[test]
     fn test_trace_event_serialization() {
         let event = TraceEvent::Turn {
