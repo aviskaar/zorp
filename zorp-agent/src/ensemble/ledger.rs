@@ -180,14 +180,21 @@ impl Ledger {
     /// Add findings. A locus that is already open is not added twice; one
     /// that was addressed and comes back is a new finding.
     ///
-    /// Returns how many newly admitted findings each lens raised, keyed by
-    /// lens name off `raised_by`, which is code-derived. A finding two
-    /// lenses raised counts once for each of them: both contributed to the
-    /// corroboration. A locus already open from an earlier round is not
-    /// re-admitted and so is not re-counted here, which is what keeps this
+    /// Returns `(count, by_lens)`: `count` is the number of distinct
+    /// findings newly admitted, the number a task-level table needs.
+    /// `by_lens` is the same count broken out per lens, keyed by lens name
+    /// off `raised_by`, which is code-derived; a finding two lenses raised
+    /// counts once in `count` but once for each lens in `by_lens`, since
+    /// both contributed to the corroboration. Summing `by_lens` is not a
+    /// substitute for `count`: it answers "how much credit did each lens
+    /// earn," not "how many findings were there," and a finding raised by
+    /// two lenses would silently double a task-level total built that way.
+    /// A locus already open from an earlier round is not re-admitted and so
+    /// is not re-counted in either number, which is what keeps both
     /// additive across a run instead of double-counting an open finding
     /// every round it stays open.
-    pub fn admit(&mut self, findings: Vec<Finding>) -> BTreeMap<String, usize> {
+    pub fn admit(&mut self, findings: Vec<Finding>) -> (usize, BTreeMap<String, usize>) {
+        let mut count = 0usize;
         let mut by_lens: BTreeMap<String, usize> = BTreeMap::new();
         for f in findings {
             let open_already = self
@@ -195,31 +202,35 @@ impl Ledger {
                 .iter()
                 .any(|o| o.key == f.key && o.status == Status::Open);
             if !open_already {
+                count += 1;
                 for lens in &f.raised_by {
                     *by_lens.entry(lens.clone()).or_default() += 1;
                 }
                 self.findings.push(f);
             }
         }
-        by_lens
+        (count, by_lens)
     }
 
     /// Flip to addressed every open finding whose file changed.
     ///
-    /// Returns how many addressed findings each lens gets credit for, the
-    /// same per-lens attribution `admit` uses.
-    pub fn settle(&mut self, changed: &[String]) -> BTreeMap<String, usize> {
+    /// Returns `(count, by_lens)` the same shape `admit` does, for the same
+    /// reason: a task-level table wants the number of findings addressed,
+    /// and a lens-level table wants the credit split.
+    pub fn settle(&mut self, changed: &[String]) -> (usize, BTreeMap<String, usize>) {
+        let mut count = 0usize;
         let mut by_lens: BTreeMap<String, usize> = BTreeMap::new();
         for f in self.findings.iter_mut() {
             let touched = f.file.as_ref().is_some_and(|p| changed.contains(p));
             if f.status == Status::Open && touched {
                 f.status = Status::Addressed;
+                count += 1;
                 for lens in &f.raised_by {
                     *by_lens.entry(lens.clone()).or_default() += 1;
                 }
             }
         }
-        by_lens
+        (count, by_lens)
     }
 
     pub fn open(&self) -> Vec<&Finding> {
@@ -397,19 +408,19 @@ mod tests {
             verdict("adversary", vec![(Severity::Blocking, "notes.txt", "b")]),
         ];
         let mut ledger = Ledger::default();
-        let first_admit = ledger.admit(corroborated(1, &v, &watched()));
-        assert_eq!(first_admit.values().sum::<usize>(), 2);
-        assert_eq!(first_admit.get("contract"), Some(&1));
-        assert_eq!(first_admit.get("adversary"), Some(&1));
+        let (first_count, first_by_lens) = ledger.admit(corroborated(1, &v, &watched()));
+        assert_eq!(first_count, 2, "two distinct loci, not lens credits summed");
+        assert_eq!(first_by_lens.values().sum::<usize>(), 2);
+        assert_eq!(first_by_lens.get("contract"), Some(&1));
+        assert_eq!(first_by_lens.get("adversary"), Some(&1));
+        let (repeat_count, repeat_by_lens) = ledger.admit(corroborated(2, &v, &watched()));
         assert_eq!(
-            ledger
-                .admit(corroborated(2, &v, &watched()))
-                .values()
-                .sum::<usize>(),
-            0,
+            repeat_count, 0,
             "both loci are already open, so nothing is newly admitted"
         );
-        let settled = ledger.settle(&["notes.txt".to_string()]);
+        assert_eq!(repeat_by_lens.values().sum::<usize>(), 0);
+        let (settled_count, settled) = ledger.settle(&["notes.txt".to_string()]);
+        assert_eq!(settled_count, 1, "one finding settled, not one per lens");
         assert_eq!(settled.values().sum::<usize>(), 1);
         assert_eq!(
             settled.get("adversary"),
@@ -423,14 +434,9 @@ mod tests {
         let open = ledger.open();
         assert_eq!(open.len(), 1);
         assert_eq!(open[0].locus, "results/out.csv");
-        assert_eq!(
-            ledger
-                .admit(corroborated(2, &v, &watched()))
-                .values()
-                .sum::<usize>(),
-            1,
-            "notes.txt is open again"
-        );
+        let (reopened_count, reopened_by_lens) = ledger.admit(corroborated(2, &v, &watched()));
+        assert_eq!(reopened_count, 1, "notes.txt is open again");
+        assert_eq!(reopened_by_lens.values().sum::<usize>(), 1);
     }
 
     #[test]

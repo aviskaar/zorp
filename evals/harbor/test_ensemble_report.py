@@ -35,9 +35,11 @@ LEAKY_LOCUS = "the marginal utility asymptotically approaches zero past round tw
 # rounds[].corroborated: Ledger::finding_for sets Status::Open
 # unconditionally, and a round's corroborated list is cloned before
 # settle() runs. So this fixture uses "open", the only status the
-# serializer can actually write there, and carries the addressed and
-# newly-corroborated counts on the two per-lens maps instead, matching
-# what zorp-agent/src/ensemble/record.rs now emits.
+# serializer can actually write there. The one finding here is raised by
+# two lenses, so newly_corroborated (a finding count) is 1 while
+# newly_corroborated_by_lens (a credit split) gives each lens 1: the task
+# table must read the former and the lens table the latter, or the task
+# row doubles for every finding more than one lens raised.
 RECORD = {
     "stopped": "bound",
     "requests": {"main": 40, "reviewer-0": 12, "reviewer-1": 9, "reviewer-2": 4},
@@ -71,6 +73,7 @@ RECORD = {
                 }
             ],
             "outputs_changed": ["a"],
+            "newly_corroborated": 1,
             "addressed": 1,
             "newly_corroborated_by_lens": {"contract": 1, "adversary": 1},
             "addressed_by_lens": {"contract": 1},
@@ -99,21 +102,28 @@ class TestEnsembleReport(unittest.TestCase):
         self.assertEqual(by_task["guided-wave"]["prunes"], ["tampered"])
         self.assertIsNone(by_task["cilia"]["record"])
 
-    def test_per_task_sums_the_per_lens_maps_not_the_raw_list(self):
-        # Two lenses corroborated the one locus, so per-lens credit sums to
-        # 2, not len(rounds[].corroborated), which is 1. Summing the raw
-        # list is also what double-counts a locus still open in a later
-        # round; this fixture only has one round, but the same sum call
-        # is what protects the multi-round case too.
+    def test_task_row_counts_findings_while_lens_rows_count_credit(self):
+        # One finding, raised by two lenses. The task row must read
+        # newly_corroborated (a finding count: 1), not sum
+        # newly_corroborated_by_lens's values (a credit split: 2, one per
+        # lens). The lens rows are the opposite: each lens's row reads its
+        # own credit off the map, 1 apiece, which is correct there because
+        # a lens row is about one lens, not about how many findings exist.
+        # Pinning both in one test is what catches a task table quietly
+        # doubling for every finding more than one lens raised.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             make_trial(root, "guided-wave", 0.0, "== 16 passed, 1 failed ==", RECORD)
             rows = trials([root])
         task_table = per_task(rows)
+        lens_table = per_lens(rows)
         self.assertIn(
-            "guided-wave | 0.0 | 16/17 | 1 | 2 | 1 | 0 | tampered | 65 | bound",
+            "guided-wave | 0.0 | 16/17 | 1 | 1 | 1 | 0 | tampered | 65 | bound",
             task_table,
         )
+        # header: lens | reviewed | reused | unusable | dropped | skipped | raised | corroborated | addressed | addressed in passing trials
+        self.assertIn("contract | 1 | 0 | 0 | 0 | 0 | 1 | 1 | 1 | 0", lens_table)
+        self.assertIn("adversary | 0 | 1 | 0 | 0 | 0 | 1 | 1 | 0 | 0", lens_table)
 
     def test_per_lens_counts_every_status_and_the_per_lens_maps(self):
         with tempfile.TemporaryDirectory() as tmp:

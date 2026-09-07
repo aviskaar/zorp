@@ -448,6 +448,7 @@ pub fn run(
             reviewers,
             corroborated: corroborated.clone(),
             outputs_changed: Vec::new(),
+            newly_corroborated: 0,
             addressed: 0,
             newly_corroborated_by_lens: BTreeMap::new(),
             addressed_by_lens: BTreeMap::new(),
@@ -466,7 +467,9 @@ pub fn run(
             stopped = "nothing corroborated";
             break;
         }
-        round_rec.newly_corroborated_by_lens = ledger.admit(corroborated);
+        let (newly_corroborated, newly_corroborated_by_lens) = ledger.admit(corroborated);
+        round_rec.newly_corroborated = newly_corroborated;
+        round_rec.newly_corroborated_by_lens = newly_corroborated_by_lens;
         let message = {
             let open: Vec<&Finding> = ledger.open();
             ledger::return_message(&open, &altered_this_round, &ledger::marker(round))
@@ -477,8 +480,8 @@ pub fn run(
         watched = hashes::watched(cwd, instruction, &roles.main.changed_paths());
         let after = hashes::snapshot(cwd, &watched);
         let changed = hashes::changed(&before, &after);
-        let addressed_by_lens = ledger.settle(&changed);
-        round_rec.addressed = addressed_by_lens.values().sum();
+        let (addressed, addressed_by_lens) = ledger.settle(&changed);
+        round_rec.addressed = addressed;
         round_rec.addressed_by_lens = addressed_by_lens;
         round_rec.outputs_changed = changed.clone();
         record.rounds.push(round_rec);
@@ -918,10 +921,11 @@ model = "minimax/minimax-m2.7:free"
         assert!(prompt.contains(ledger::FENCE_OPEN), "{prompt}");
         assert!(prompt.contains("[contract] FIRST-CLAIM"), "{prompt}");
         assert!(prompt.contains("[reproduction] SECOND-CLAIM"), "{prompt}");
-        // One finding, raised by both lenses, so both get credit: the
-        // per-lens map is the ledger's real detail and `addressed` is its
-        // sum, 2, not the distinct-finding count of 1.
-        assert_eq!(finished.record.rounds[0].addressed, 2);
+        // One finding, raised by both lenses. `addressed` and
+        // `newly_corroborated` count the finding, not the lens credits: 1,
+        // not 2, even though both lenses show up in the per-lens maps.
+        assert_eq!(finished.record.rounds[0].addressed, 1);
+        assert_eq!(finished.record.rounds[0].newly_corroborated, 1);
         assert_eq!(
             finished.record.rounds[0].addressed_by_lens.get("contract"),
             Some(&1)
@@ -987,6 +991,7 @@ model = "minimax/minimax-m2.7:free"
         assert_eq!(record.rounds.len(), 2, "{}", record.stopped);
 
         assert_eq!(record.rounds[0].corroborated.len(), 1);
+        assert_eq!(record.rounds[0].newly_corroborated, 1);
         assert_eq!(
             record.rounds[0].newly_corroborated_by_lens.get("contract"),
             Some(&1),
@@ -997,6 +1002,11 @@ model = "minimax/minimax-m2.7:free"
             record.rounds[1].corroborated.len(),
             1,
             "the human-readable detail re-derives the still-open finding"
+        );
+        assert_eq!(
+            record.rounds[1].newly_corroborated, 0,
+            "the locus was already open after round 1, so round 2 admits \
+             nothing new for it"
         );
         assert!(
             record.rounds[1].newly_corroborated_by_lens.is_empty(),

@@ -55,22 +55,31 @@ pub struct RoundRecord {
     pub reviewers: Vec<ReviewerRecord>,
     /// The human-readable detail: every finding corroborated this round,
     /// re-derived and so repeated for a locus still open from an earlier
-    /// round. A reader must sum `newly_corroborated_by_lens` for a count,
-    /// never `.len()` on this, or a finding open across three rounds
-    /// counts as three.
+    /// round. A reader must read `newly_corroborated` for a count, never
+    /// `.len()` on this, or a finding open across three rounds counts as
+    /// three.
     pub corroborated: Vec<Finding>,
     /// Watched paths the revision changed.
     pub outputs_changed: Vec<String>,
-    /// Open findings the revision addressed, by hash change. The sum of
-    /// `addressed_by_lens`'s values.
+    /// How many distinct findings were newly admitted this round. A finding
+    /// two lenses raised still counts once here: this is a count of
+    /// findings, not of lens credits, which is what a task-level table
+    /// needs. Summing `newly_corroborated_by_lens`'s values instead would
+    /// double it for every finding more than one lens raised.
+    pub newly_corroborated: usize,
+    /// Open findings the revision addressed, by hash change. A count of
+    /// findings, the same relationship to `addressed_by_lens` that
+    /// `newly_corroborated` has to `newly_corroborated_by_lens`.
     pub addressed: usize,
     /// How many findings each lens gets credit for among those newly
     /// admitted this round, keyed by lens name off `raised_by`. Empty
     /// when nothing corroborated. This is code-derived and additive
-    /// across rounds, unlike `corroborated`.
+    /// across rounds, unlike `corroborated`. A lens-level table sums
+    /// this; a task-level table must use `newly_corroborated` instead.
     pub newly_corroborated_by_lens: BTreeMap<String, usize>,
     /// The same per-lens attribution, for findings this round's revision
-    /// addressed.
+    /// addressed. A task-level table must use `addressed`, not the sum of
+    /// this.
     pub addressed_by_lens: BTreeMap<String, usize>,
 }
 
@@ -199,6 +208,7 @@ mod tests {
                 status: Status::Open,
             }],
             outputs_changed: vec!["out.csv".to_string()],
+            newly_corroborated: 1,
             addressed: 1,
             newly_corroborated_by_lens: BTreeMap::from([
                 ("adversary".to_string(), 1),
@@ -269,6 +279,11 @@ mod tests {
         assert_eq!(corroborated["raised_by"][0], "adversary");
         assert_eq!(corroborated["raised_by"][1], "contract");
 
+        // One finding, raised by two lenses: newly_corroborated is 1 (a
+        // count of findings), while newly_corroborated_by_lens credits
+        // both lenses. A reader that summed the map for a task-level
+        // total would get 2 for this one finding.
+        assert_eq!(json["rounds"][0]["newly_corroborated"], 1);
         assert_eq!(json["rounds"][0]["addressed"], 1);
         assert_eq!(
             json["rounds"][0]["newly_corroborated_by_lens"]["adversary"],

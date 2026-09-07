@@ -82,10 +82,13 @@ def per_task(rows: list[dict]) -> str:
     for r in sorted(rows, key=lambda r: r["task"]):
         passed, failed = r["checks"]
         rec = r["record"]
-        # Sum the per-lens maps, not len(rounds[].corroborated): that list
-        # is re-derived every round, so a locus still open from an earlier
-        # round would otherwise be counted again in every round it survives.
-        corroborated = sum(sum(x["newly_corroborated_by_lens"].values()) for x in rec["rounds"]) if rec else 0
+        # newly_corroborated and addressed are counts of findings, not of
+        # lens credits: summing the per-lens maps instead would double a
+        # finding two lenses raised. Not len(rounds[].corroborated) either,
+        # since that list is re-derived every round, so a locus still open
+        # from an earlier round would otherwise be counted again in every
+        # round it survives.
+        corroborated = sum(x["newly_corroborated"] for x in rec["rounds"]) if rec else 0
         addressed = sum(x["addressed"] for x in rec["rounds"]) if rec else 0
         open_at_end = len(rec["open_at_end"]) if rec else 0
         lines.append(
