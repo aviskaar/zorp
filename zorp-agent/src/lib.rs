@@ -80,7 +80,9 @@ pub use render::{
     LineRenderer, Renderer,
 };
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
-pub use session::{new_session_id, render_change_summary, SessionRow, Store};
+pub use session::{
+    new_session_id, render_change_summary, ProjectRow, SessionRow, SetProject, Store,
+};
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
 pub use tools::patch::ApplyPatch;

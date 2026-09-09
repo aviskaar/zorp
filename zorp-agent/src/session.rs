@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS message_images (
     part_index INTEGER NOT NULL,
     mime_type TEXT NOT NULL,
     data BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created INTEGER NOT NULL
 );";
 
 /// Per-session lookup indexes. Applied with IF NOT EXISTS on every open so
@@ -90,6 +95,37 @@ pub struct SessionRow {
     /// clock, so this is the finest grain anything downstream can honestly
     /// put a date on.
     pub updated: i64,
+    /// The project this conversation is filed under, or `None`.
+    ///
+    /// A label and nothing more. Nothing about the conversation changes
+    /// when it gets one: the messages, the `task`, the title, the branch
+    /// and delete behaviour are all as they were. It travels into the
+    /// recall index so a search or a memory recall can be scoped to one
+    /// project, and it is a person's word, never a model's.
+    pub project_id: Option<String>,
+}
+
+/// A stored project's row. A name a person typed, and when they typed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRow {
+    pub id: String,
+    /// Typed by a person. No model writes this, reads it to decide
+    /// anything, or is asked to pick one.
+    pub name: String,
+    /// Epoch milliseconds.
+    pub created: i64,
+}
+
+/// What `Store::set_session_project` did, when it did not fail.
+///
+/// Three outcomes rather than a bool because the caller answers a different
+/// status for each: a move that happened, a session that is not there, and
+/// a project that is not there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetProject {
+    Done,
+    NoSuchSession,
+    NoSuchProject,
 }
 
 /// SQLite-backed session persistence.
@@ -234,6 +270,14 @@ fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
     const COLUMNS: &[(&str, &str)] = &[
         ("session_reasoning_mode", "TEXT"),
         ("display_title", "TEXT"),
+        // Which project this conversation is filed under, or NULL for
+        // none. Added only here and never to `SCHEMA`'s `sessions`
+        // definition, so a database written before projects existed picks
+        // it up on the next open exactly as a fresh one does. No foreign
+        // key: the store opens with SQLite's defaults, where a foreign key
+        // clause is not enforced anyway, and `set_session_project` checks
+        // the project exists before it writes.
+        ("project_id", "TEXT"),
     ];
 
     for (column, sql_type) in COLUMNS {
@@ -440,6 +484,90 @@ impl Store {
         Ok(())
     }
 
+    /// Every project, oldest first.
+    ///
+    /// Ordered by `created` rather than by name so the sidebar keeps the
+    /// order a person built it in. A list that re-sorts itself when a
+    /// project is renamed, or that puts a new one in the middle, is a list
+    /// nobody can learn the shape of.
+    pub fn projects(&self) -> Result<Vec<ProjectRow>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, created FROM projects ORDER BY created ASC, id ASC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProjectRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// File a new project under `id`. The name is stored as given; what
+    /// counts as an acceptable name is the caller's business, and
+    /// `zorp-web` clamps it on the one path in.
+    pub fn create_project(&mut self, id: &str, name: &str) -> Result<(), BoxErr> {
+        self.conn.execute(
+            "INSERT INTO projects (id, name, created) VALUES (?1, ?2, ?3)",
+            (id, name, now()),
+        )?;
+        Ok(())
+    }
+
+    /// Remove a project and unfile every conversation in it. Returns
+    /// whether there was such a project.
+    ///
+    /// **No conversation is deleted here, ever.** A project is a label, and
+    /// removing a label removes a label. Both statements run in one
+    /// transaction so a crash between them cannot leave a session pointing
+    /// at a project that is gone.
+    pub fn delete_project(&mut self, id: &str) -> Result<bool, BoxErr> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
+            [id],
+        )?;
+        let deleted = tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(deleted > 0)
+    }
+
+    /// Move a conversation into a project, or out of every project with
+    /// `None`.
+    ///
+    /// `updated` is bumped on purpose. Two things read it. The sidebar
+    /// sorts on it, so a conversation that has just been filed surfaces at
+    /// the top of its new group rather than wherever it was. And the recall
+    /// feed skips a conversation whose fingerprint has not moved, so the
+    /// project id is part of that fingerprint and this write is what makes
+    /// the next pass rewrite the index row.
+    pub fn set_session_project(
+        &mut self,
+        session_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<SetProject, BoxErr> {
+        if let Some(project_id) = project_id {
+            let known: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            if known == 0 {
+                return Ok(SetProject::NoSuchProject);
+            }
+        }
+        let changed = self.conn.execute(
+            "UPDATE sessions SET project_id = ?2, updated = ?3 WHERE id = ?1",
+            (session_id, project_id, now()),
+        )?;
+        Ok(if changed > 0 {
+            SetProject::Done
+        } else {
+            SetProject::NoSuchSession
+        })
+    }
+
     /// Remove a conversation and everything recorded under it. Returns
     /// whether a session row actually existed, so a caller can tell "gone"
     /// from "never was" and answer a 404 rather than a false 204.
@@ -504,8 +632,8 @@ impl Store {
             return Ok(false);
         };
         let inserted = tx.execute(
-            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, created, updated) \
-             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, ?3, ?3 \
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, project_id, created, updated) \
+             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, project_id, ?3, ?3 \
              FROM sessions WHERE id = ?1",
             (from, to, now()),
         )?;
@@ -556,8 +684,8 @@ impl Store {
 
     pub fn latest_session(&self) -> Result<Option<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated FROM sessions \
-             ORDER BY updated DESC, created DESC LIMIT 1",
+            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+             FROM sessions ORDER BY updated DESC, created DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
@@ -569,6 +697,7 @@ impl Store {
                 status: row.get(4)?,
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
+                project_id: row.get(7)?,
             }))
         } else {
             Ok(None)
@@ -595,8 +724,8 @@ impl Store {
     /// sidebar needs.
     pub fn sessions(&self) -> Result<Vec<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated FROM sessions \
-             ORDER BY rowid DESC",
+            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+             FROM sessions ORDER BY rowid DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SessionRow {
@@ -607,6 +736,7 @@ impl Store {
                 status: row.get(4)?,
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
+                project_id: row.get(7)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1376,5 +1506,127 @@ CREATE TABLE file_changes (
             .map(|s| s.id)
             .collect();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
+    }
+
+    fn project_of(store: &Store, id: &str) -> Option<String> {
+        store
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .project_id
+    }
+
+    #[test]
+    fn a_database_without_project_id_gets_it_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        create_pre_reasoning_mode_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, task, repo, model, status, created, updated) \
+                 VALUES ('s1', 'ask', '/r', 'm', 'running', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open_at(&path).unwrap();
+        assert_eq!(project_of(&store, "s1"), None);
+    }
+
+    #[test]
+    fn a_session_can_be_filed_under_a_project_and_taken_back_out() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+
+        assert_eq!(
+            store.set_session_project("s1", Some("p1")).unwrap(),
+            SetProject::Done
+        );
+        assert_eq!(project_of(&store, "s1"), Some("p1".to_string()));
+
+        assert_eq!(
+            store.set_session_project("s1", None).unwrap(),
+            SetProject::Done
+        );
+        assert_eq!(project_of(&store, "s1"), None);
+    }
+
+    #[test]
+    fn projects_come_back_oldest_first() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_project("p1", "First").unwrap();
+        store.create_project("p2", "Second").unwrap();
+        let names: Vec<String> = store
+            .projects()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, vec!["First".to_string(), "Second".to_string()]);
+    }
+
+    #[test]
+    fn deleting_a_project_unfiles_its_conversations_and_deletes_none() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+
+        assert!(store.delete_project("p1").unwrap());
+        assert!(store.projects().unwrap().is_empty());
+        // The conversation is still there, and it is no longer filed.
+        assert_eq!(project_of(&store, "s1"), None);
+        assert_eq!(store.sessions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deleting_a_project_that_is_not_there_says_so() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert!(!store.delete_project("nope").unwrap());
+    }
+
+    #[test]
+    fn moving_into_an_unknown_project_changes_nothing() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+
+        assert_eq!(
+            store.set_session_project("s1", Some("ghost")).unwrap(),
+            SetProject::NoSuchProject
+        );
+        assert_eq!(project_of(&store, "s1"), Some("p1".to_string()));
+    }
+
+    #[test]
+    fn moving_a_session_that_is_not_there_says_so() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        assert_eq!(
+            store.set_session_project("ghost", Some("p1")).unwrap(),
+            SetProject::NoSuchSession
+        );
+    }
+
+    #[test]
+    fn a_branch_lands_in_its_parents_project() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+        store
+            .record_message("s1", 0, &Message::user("ask"))
+            .unwrap();
+        store
+            .record_message("s1", 1, &Message::assistant("answered"))
+            .unwrap();
+
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+        assert_eq!(project_of(&store, "s2"), Some("p1".to_string()));
     }
 }
