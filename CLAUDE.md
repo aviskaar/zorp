@@ -259,6 +259,25 @@ resulting artifact, deliver it in the right form.
   Retrieval is per message and off by default, and the model cannot ask for
   it. Run `cargo test -p zorp-web --features memory` whenever any of it
   changes. See `docs/DECISIONS.md` (2026-08-22) first.
+- Projects (`projects` in the session store, `sessions.project_id`,
+  `/api/projects` and `PUT /api/sessions/:id/project`) group conversations
+  in the sidebar and scope what they read. A project is a name a person
+  typed and a nullable column on the session row: nothing about a
+  conversation changes when it joins one, and no model names, picks, or
+  reads a project. Three things are not negotiable. Deleting a project
+  unfiles its conversations and deletes none of them, in one transaction,
+  which is why the sidebar's delete control asks nothing. The label is
+  copied into the recall index as one more column on `conversations`, so
+  `GET /api/recall/search?project=` narrows the same scan rather than
+  reading a second index file, and it is part of the feed's fingerprint,
+  because a conversation that moved has not changed a word and a skip would
+  leave the index saying it is where it was. And a turn in a project reads
+  only that project's conversations for memory, with no fallback to
+  everything: a project is what the person chose as the context, and the
+  turn runs with no block and says so rather than quietly widening a scope
+  somebody set. A conversation in no project reads everything, as it always
+  did. `sessions.task` is untouched by all of it. See
+  `docs/DECISIONS.md` (2026-09-09).
 - `title` (`zorp-web/src/title.rs`) is the sidebar's session name: one
   model call per conversation, made after the first turn has both a
   question and an answer, on by default and off with
