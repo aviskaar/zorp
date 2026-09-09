@@ -275,3 +275,127 @@ test("the confirmation names the conversation being deleted", () => {
 
   assert.match(asked, /Writing hello\.txt/);
 });
+
+/* ------------------------------------------------------------------ */
+/* the move menu                                                       */
+/* ------------------------------------------------------------------ */
+
+function project(id: string, name: string) {
+  return { id, name, created: 1 };
+}
+
+/** A stored conversation: the server sent an `updated`, so there is a row
+ * to write a label to. */
+function stored(over: Partial<SessionSummary> = {}): SessionSummary {
+  return summary({ updated: 1_700_000_000_000, ...over });
+}
+
+function withMenu(
+  doc: Document,
+  session: SessionSummary,
+  projects: { id: string; name: string; created: number }[],
+  onMove: (session: SessionSummary, projectId: string | null) => void = () => {},
+): HTMLElement {
+  const row = sessionRow(doc, session, {
+    active: false,
+    when: "2m ago",
+    onOpen: () => {},
+    onDelete: () => {},
+    projects,
+    onMove,
+  });
+  doc.body.querySelector("#list")!.append(row);
+  return row;
+}
+
+test("the menu offers every project the conversation is not already in", () => {
+  const doc = fixture();
+  const row = withMenu(doc, stored({ project_id: "p1" }), [
+    project("p1", "Kitchen"),
+    project("p2", "Roof"),
+    project("p3", "Garden"),
+  ]);
+
+  const labels = Array.from(row.querySelectorAll(".session-move")).map((n) => n.textContent);
+  assert.deepEqual(labels, ["Move to Roof", "Move to Garden"]);
+});
+
+test("a conversation in a project can be taken out of it", () => {
+  const doc = fixture();
+  const moved: (string | null)[] = [];
+  const row = withMenu(
+    doc,
+    stored({ project_id: "p1" }),
+    [project("p1", "Kitchen")],
+    (_, projectId) => moved.push(projectId),
+  );
+
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+  (row.querySelector(".session-unfile") as HTMLButtonElement).click();
+
+  assert.deepEqual(moved, [null]);
+  assert.equal(row.querySelector(".session-menu")!.hasAttribute("hidden"), true);
+});
+
+/** Nothing to remove it from, so nothing that says so. */
+test("a conversation in no project is offered no way out of one", () => {
+  const doc = fixture();
+  const row = withMenu(doc, stored(), [project("p1", "Kitchen")]);
+
+  assert.equal(row.querySelector(".session-unfile"), null);
+  assert.equal(row.querySelectorAll(".session-move").length, 1);
+});
+
+test("moving names the project that was chosen", () => {
+  const doc = fixture();
+  const moved: (string | null)[] = [];
+  const row = withMenu(
+    doc,
+    stored(),
+    [project("p1", "Kitchen"), project("p2", "Roof")],
+    (_, projectId) => moved.push(projectId),
+  );
+
+  (row.querySelector(".session-menu-btn") as HTMLButtonElement).click();
+  (row.querySelector('.session-move[data-project-id="p2"]') as HTMLButtonElement).click();
+
+  assert.deepEqual(moved, ["p2"]);
+});
+
+/** A conversation that exists only in the server's memory has no stored
+ * row, so there is nothing to label. Offering the menu anyway would be
+ * offering a control whose every entry answers 404. */
+test("a conversation with no stored row is offered no move at all", () => {
+  const doc = fixture();
+  const row = withMenu(doc, summary(), [project("p1", "Kitchen")]);
+
+  assert.equal(row.querySelectorAll(".session-move").length, 0);
+  assert.equal(row.querySelector(".session-unfile"), null);
+  // Delete is still there: an unsaved conversation can still be closed.
+  assert.ok(row.querySelector(".session-delete"));
+});
+
+/** A project name is typed by a person into a box that sits beside titles
+ * a model wrote, and it lands the same way they do. */
+test("a project name that looks like markup lands as text", () => {
+  const doc = fixture();
+  const row = withMenu(doc, stored(), [project("p1", "<img src=x onerror=alert(1)>")]);
+
+  assert.equal(row.querySelectorAll("img").length, 0);
+  assert.equal(
+    row.querySelector(".session-move")!.textContent,
+    "Move to <img src=x onerror=alert(1)>",
+  );
+});
+
+/** With no projects and no handler, the row is exactly the row it was
+ * before any of this. */
+test("with no projects the menu holds only delete", () => {
+  const doc = fixture();
+  const row = render(doc, stored());
+
+  assert.deepEqual(
+    Array.from(row.querySelectorAll(".session-menu-item")).map((n) => n.textContent),
+    ["Delete"],
+  );
+});

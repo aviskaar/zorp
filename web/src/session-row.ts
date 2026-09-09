@@ -18,7 +18,7 @@
  * a jsdom document and read back what actually landed.
  */
 
-import type { SessionSummary } from "./api";
+import type { ProjectSummary, SessionSummary } from "./api";
 
 /**
  * Shown when a session has no title at all.
@@ -43,6 +43,18 @@ export interface SessionRowOptions {
    * only opens the menu or backs out of the dialog.
    */
   onDelete: (session: SessionSummary) => void;
+  /**
+   * Every project there is, so the menu can offer the ones this
+   * conversation is not already in. Empty is the ordinary case for
+   * somebody who has made none, and it draws no move items at all.
+   */
+  projects?: ProjectSummary[];
+  /**
+   * File this conversation under a project, or take it out of one with
+   * `null`. No confirmation: filing is a label and unfiling is taking a
+   * label off, and neither touches a message.
+   */
+  onMove?: (session: SessionSummary, projectId: string | null) => void;
 }
 
 function el(doc: Document, tag: string, className: string): HTMLElement {
@@ -105,6 +117,48 @@ export function sessionRow(
   const menu = el(doc, "div", "session-menu");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
+
+  // Moving needs somewhere to write the label. A conversation that exists
+  // only in the server's memory has no stored row yet, which is what a
+  // missing `updated` says, so it gets no move items rather than a menu
+  // whose every entry answers 404.
+  const stored = session.updated !== undefined;
+  const projects = options.projects ?? [];
+  const move = options.onMove;
+  const moveItems: HTMLButtonElement[] = [];
+  if (stored && move) {
+    for (const project of projects) {
+      if (project.id === session.project_id) {
+        continue;
+      }
+      const item = el(doc, "button", "session-menu-item session-move") as HTMLButtonElement;
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.dataset.projectId = project.id;
+      // A project name is text a person typed into a box. It lands here
+      // the way every other name in this file does and never through a
+      // template string that becomes markup.
+      item.textContent = `Move to ${project.name}`;
+      item.addEventListener("click", () => {
+        closeMenu();
+        move(session, project.id);
+      });
+      moveItems.push(item);
+    }
+    if (session.project_id) {
+      const item = el(doc, "button", "session-menu-item session-unfile") as HTMLButtonElement;
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.textContent = "Remove from project";
+      item.addEventListener("click", () => {
+        closeMenu();
+        move(session, null);
+      });
+      moveItems.push(item);
+    }
+  }
+  menu.append(...moveItems);
+
   const deleteBtn = el(doc, "button", "session-menu-item session-delete") as HTMLButtonElement;
   deleteBtn.type = "button";
   deleteBtn.setAttribute("role", "menuitem");
