@@ -273,7 +273,7 @@ pub fn spawn_turn(
 /// Compiled away entirely without the feature, which is what keeps a build
 /// that never opted into this from doing anything at all with the store.
 #[cfg(feature = "recall")]
-fn feed_recall(indexer: RecallFeed, session_id: String) {
+pub(crate) fn feed_recall(indexer: RecallFeed, session_id: String) {
     match indexer {
         Some(indexer) => indexer.index_session(session_id),
         // A router embedded without the process worker cannot promise
