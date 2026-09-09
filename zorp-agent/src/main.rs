@@ -2286,7 +2286,8 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     // dangling tool call for the provider to refuse, and the oldest material
     // dropped first when the window will not hold it.
     let budget = zorp_agent::ContextBudget::from_env();
-    let plan = zorp_agent::plan_seed(messages, &system, &budget);
+    let latest = store.latest_compaction(id).unwrap_or_default();
+    let plan = zorp_agent::plan_seed(messages, &system, &budget, latest.as_ref());
     if let Some(notice) = plan.report.notice() {
         eprintln!("zorp-agent: {notice}");
     }

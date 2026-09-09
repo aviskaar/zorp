@@ -324,7 +324,21 @@ pub struct CompactionReport {
     pub elided_argument_bytes: usize,
     /// Whole messages dropped from the front of a seeded transcript. Only ever
     /// non-zero on the seed path, never inside a live run.
+    ///
+    /// This is the fallback now, not the preferred path. A caller that can
+    /// make a model call summarizes the dropped range first and re-plans;
+    /// one that cannot, or whose call failed, gets this and says so.
     pub dropped_messages: usize,
+    /// The seed was over budget and a summary would be the better answer.
+    ///
+    /// Set together with `summary_boundary`. The caller may run one and
+    /// re-plan with the recorded compaction, or ignore this entirely, in
+    /// which case the plan it already holds is the deterministic drop and
+    /// is perfectly usable. A failure to summarize never blocks a turn.
+    pub needs_summary: bool,
+    /// The `messages.seq` of the last message the drop took, when it took
+    /// any. Everything at or below it is what a summary would cover.
+    pub summary_boundary: Option<i64>,
 }
 
 impl CompactionReport {
@@ -366,8 +380,11 @@ impl CompactionReport {
             ));
         }
         if self.dropped_messages > 0 {
+            // Named as the fallback, because it is one: this is what a turn
+            // gets when no summary could be written. A summarized turn
+            // re-plans and its report has no drop in it at all.
             parts.push(format!(
-                "{} older message{} dropped from this request",
+                "{} older message{} dropped from this request without a summary",
                 self.dropped_messages,
                 if self.dropped_messages == 1 { "" } else { "s" }
             ));
@@ -561,6 +578,23 @@ pub fn repair_tool_calls(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
+/// Line a seq list back up with a repaired body.
+///
+/// `repair_tool_calls` may insert a synthetic tool result and may drop an
+/// orphaned one, so a one-to-one mapping cannot be assumed after it runs.
+/// A shorter body keeps the first `len` seqs; a longer one repeats the last
+/// real seq for what was inserted, since a synthetic result belongs to the
+/// call it answers. The list is only ever read to name a boundary, and a
+/// boundary one message out is a boundary a message either side of a
+/// synthetic result, which is the same conversation either way.
+fn align_seqs(seqs: &[i64], len: usize) -> Vec<i64> {
+    let mut out: Vec<i64> = seqs.iter().copied().take(len).collect();
+    while out.len() < len {
+        out.push(out.last().copied().unwrap_or(0));
+    }
+    out
+}
+
 /// The transcript a turn should start from, plus what it cost to get there.
 #[derive(Clone, Debug)]
 pub struct SeedPlan {
@@ -582,21 +616,65 @@ pub struct SeedPlan {
 /// Over budget, the oldest exchanges go first, whole. A user message and
 /// everything that answered it leave together, so the model never sees a reply
 /// to a question that is no longer there.
-pub fn plan_seed(stored: Vec<MessageRecord>, system: &str, budget: &ContextBudget) -> SeedPlan {
+///
+/// `latest` is the most recent recorded compaction for the session, when
+/// there is one. With it, the records handed back are the system prompt,
+/// then `compaction::block` carrying the summary, then the stored messages
+/// after the summary's boundary, verbatim. It is a prefix replacement and
+/// not a whole-conversation replacement, and the block counts as a record
+/// so `with_message_records` treats it as already persisted and `sync`
+/// never offers it to the recorder. The summary reaches the model and never
+/// the store, which is the memory block's trick and is load bearing for the
+/// same reason.
+///
+/// Over budget with no compaction to lean on, the drop still happens, and
+/// the report says `needs_summary` with the boundary it dropped up to. A
+/// caller that can make a model call summarizes that range, records it, and
+/// asks for a fresh plan; one that cannot keeps the plan it has, which is
+/// exactly today's behaviour. A failure to summarize never blocks a turn.
+///
+/// The seq of a stored message is its position in `stored`. The recorder
+/// assigns seqs from zero, one per message, and the loader orders by them,
+/// so the two agree by construction.
+pub fn plan_seed(
+    stored: Vec<MessageRecord>,
+    system: &str,
+    budget: &ContextBudget,
+    latest: Option<&crate::session::Compaction>,
+) -> SeedPlan {
     let mut report = CompactionReport::default();
 
-    let mut body: Vec<Message> = stored
+    // Which stored seq each surviving message came from, so a boundary this
+    // function reports is a seq the store recognizes and not an index into
+    // a vector that has already had messages taken out of it.
+    let after = latest.map(|c| c.boundary_seq).unwrap_or(-1);
+    let kept: Vec<(i64, Message)> = stored
         .into_iter()
-        .map(|record| record.message)
-        .filter(|m| m.role != "system")
+        .enumerate()
+        .map(|(index, record)| (index as i64, record.message))
+        .filter(|(seq, m)| *seq > after && m.role != "system")
         .collect();
-    body = repair_tool_calls(body);
+    let mut seqs: Vec<i64> = kept.iter().map(|(seq, _)| *seq).collect();
+    let mut body: Vec<Message> = kept.into_iter().map(|(_, m)| m).collect();
+    // `repair_tool_calls` can add a synthetic result and drop an orphan, so
+    // the seq list is rebuilt against the repaired body rather than assumed
+    // to still line up. A synthetic message inherits the seq of the call it
+    // answers, which is the last real one before it.
+    let repaired = repair_tool_calls(body);
+    seqs = align_seqs(&seqs, repaired.len());
+    body = repaired;
+
+    let summary_block = latest
+        .map(|c| crate::compaction::block(&c.summary, &crate::compaction::block_nonce(&c.summary)));
 
     // Drop whole exchanges off the front while the rest is still too big. The
-    // system message is counted in but never dropped.
+    // system message and the summary block are counted in but never dropped.
     loop {
-        let mut candidate = Vec::with_capacity(body.len() + 1);
+        let mut candidate = Vec::with_capacity(body.len() + 2);
         candidate.push(Message::system(system));
+        if let Some(block) = &summary_block {
+            candidate.push(block.clone());
+        }
         candidate.extend(body.iter().cloned());
         if !over_budget(&candidate, budget) || body.is_empty() {
             break;
@@ -612,13 +690,22 @@ pub fn plan_seed(stored: Vec<MessageRecord>, system: &str, budget: &ContextBudge
         if cut >= body.len() {
             break;
         }
+        // The last seq this drop takes. A caller that can summarize covers
+        // everything at or below it and asks for a fresh plan.
+        report.summary_boundary = seqs.get(cut - 1).copied().or(report.summary_boundary);
+        report.needs_summary = true;
         body.drain(0..cut);
+        seqs.drain(0..cut.min(seqs.len()));
         report.dropped_messages += cut;
     }
 
-    body = repair_tool_calls(body);
-    let mut messages = Vec::with_capacity(body.len() + 1);
+    let repaired = repair_tool_calls(body);
+    body = repaired;
+    let mut messages = Vec::with_capacity(body.len() + 2);
     messages.push(Message::system(system));
+    if let Some(block) = summary_block {
+        messages.push(block);
+    }
     messages.extend(body);
 
     let elision = compact_tool_results(&mut messages, budget);
@@ -798,7 +885,12 @@ mod tests {
             record(Message::user("second")),
         ];
 
-        let plan = plan_seed(stored, "the current prompt", &ContextBudget::default());
+        let plan = plan_seed(
+            stored,
+            "the current prompt",
+            &ContextBudget::default(),
+            None,
+        );
 
         let roles: Vec<&str> = plan
             .records
@@ -817,7 +909,7 @@ mod tests {
             record(Message::assistant("converted it")),
         ];
 
-        let plan = plan_seed(stored, "prompt", &ContextBudget::default());
+        let plan = plan_seed(stored, "prompt", &ContextBudget::default(), None);
 
         assert_eq!(plan.records[1].message.text(), "convert a.md with pandoc");
         assert_eq!(plan.records[2].message.text(), "converted it");
@@ -833,11 +925,166 @@ mod tests {
             record(Message::assistant_with_calls("on it", vec![call("c1")])),
         ];
 
-        let plan = plan_seed(stored, "prompt", &ContextBudget::default());
+        let plan = plan_seed(stored, "prompt", &ContextBudget::default(), None);
 
         let last = &plan.records[plan.records.len() - 1].message;
         assert_eq!(last.role, "tool");
         assert_eq!(last.tool_call_id.as_deref(), Some("c1"));
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* stage two: seeding from a recorded summary                        */
+    /* ---------------------------------------------------------------- */
+
+    fn compaction(boundary_seq: i64, summary: &str) -> crate::session::Compaction {
+        crate::session::Compaction {
+            id: 1,
+            boundary_seq,
+            summary: summary.to_string(),
+            focus: None,
+            model: "m".to_string(),
+            tokens_before: 9000,
+            tokens_after: 1200,
+            manual: false,
+            created: 1,
+        }
+    }
+
+    /// The seed is a prefix replacement: the prompt, the block, and then
+    /// everything after the boundary verbatim.
+    #[test]
+    fn a_recorded_summary_replaces_the_prefix_and_nothing_else() {
+        let stored = vec![
+            record(Message::system("an old prompt")),
+            record(Message::user("first")),
+            record(Message::assistant("first answer")),
+            record(Message::user("second")),
+            record(Message::assistant("second answer")),
+        ];
+        let latest = compaction(2, "## All user messages\n1. first");
+
+        let plan = plan_seed(
+            stored,
+            "the current prompt",
+            &ContextBudget::default(),
+            Some(&latest),
+        );
+
+        let texts: Vec<String> = plan
+            .records
+            .iter()
+            .map(|r| r.message.text().into_owned())
+            .collect();
+        assert_eq!(plan.records[0].message.role, "system");
+        assert_eq!(texts[0], "the current prompt");
+        // The block, and it is a user message, never a system one.
+        assert_eq!(plan.records[1].message.role, "user");
+        assert!(texts[1].starts_with(crate::compaction::SUMMARY_MARKER_PREFIX));
+        assert!(texts[1].contains("1. first"));
+        // Then the tail, verbatim and in order. Nothing at or below the
+        // boundary is sent, and nothing above it is summarized away.
+        assert_eq!(texts[2], "second");
+        assert_eq!(texts[3], "second answer");
+        assert_eq!(texts.len(), 4);
+    }
+
+    /// The block counts as a record. `with_message_records` uses
+    /// `records.len()` as the persisted cursor, so a block that did not
+    /// count would be handed to the recorder and written into the store,
+    /// which is the one thing this whole design is arranged to prevent.
+    #[test]
+    fn the_summary_block_is_one_of_the_records() {
+        let stored = vec![
+            record(Message::user("first")),
+            record(Message::assistant("first answer")),
+            record(Message::user("second")),
+        ];
+        let latest = compaction(1, "## All user messages\n1. first");
+
+        let with = plan_seed(
+            stored.clone(),
+            "prompt",
+            &ContextBudget::default(),
+            Some(&latest),
+        );
+        let without = plan_seed(stored, "prompt", &ContextBudget::default(), None);
+
+        assert_eq!(with.records.len(), 3, "prompt, block, and the one message");
+        assert_eq!(without.records.len(), 4, "prompt and three messages");
+    }
+
+    /// With nothing recorded the seed is exactly what it always was.
+    #[test]
+    fn no_recorded_summary_means_todays_seed() {
+        let stored = vec![
+            record(Message::system("old")),
+            record(Message::user("first")),
+            record(Message::assistant("answer")),
+        ];
+        let plan = plan_seed(stored, "prompt", &ContextBudget::default(), None);
+        let roles: Vec<&str> = plan
+            .records
+            .iter()
+            .map(|r| r.message.role.as_str())
+            .collect();
+        assert_eq!(roles, vec!["system", "user", "assistant"]);
+        assert!(!plan.report.needs_summary);
+        assert_eq!(plan.report.summary_boundary, None);
+    }
+
+    /// Over budget with nothing recorded, the drop still happens, and the
+    /// report names the boundary a summary would cover. The plan handed
+    /// back is usable as it is: a caller that cannot summarize keeps it.
+    #[test]
+    fn an_over_budget_seed_asks_for_a_summary_and_still_drops() {
+        let budget = ContextBudget::default().with_limit(Some(400));
+        let stored = vec![
+            record(Message::system("prompt")),
+            record(Message::user("x".repeat(3000))),
+            record(Message::assistant("first answer")),
+            record(Message::user("the newest question")),
+        ];
+
+        let plan = plan_seed(stored, "prompt", &budget, None);
+
+        assert!(plan.report.needs_summary, "{:?}", plan.report);
+        assert!(plan.report.dropped_messages > 0);
+        // The boundary is a stored seq, counted over the record as it is on
+        // disk, system message included.
+        assert_eq!(plan.report.summary_boundary, Some(2));
+        let texts: Vec<String> = plan
+            .records
+            .iter()
+            .map(|r| r.message.text().into_owned())
+            .collect();
+        assert!(texts.iter().any(|t| t == "the newest question"));
+        assert!(
+            plan.report.notice().unwrap().contains("without a summary"),
+            "the fallback must say it is one"
+        );
+    }
+
+    /// A summary that is itself too big does not get the turn stuck: the
+    /// tail is still dropped under it and the newest exchange survives.
+    #[test]
+    fn an_oversized_summary_does_not_stop_the_seed_fitting_what_it_can() {
+        let budget = ContextBudget::default().with_limit(Some(400));
+        let latest = compaction(0, &"s".repeat(4000));
+        let stored = vec![
+            record(Message::user("first")),
+            record(Message::user("x".repeat(3000))),
+            record(Message::assistant("first answer")),
+            record(Message::user("the newest question")),
+        ];
+
+        let plan = plan_seed(stored, "prompt", &budget, Some(&latest));
+
+        let texts: Vec<String> = plan
+            .records
+            .iter()
+            .map(|r| r.message.text().into_owned())
+            .collect();
+        assert!(texts.iter().any(|t| t == "the newest question"));
     }
 
     /// Dropping the front of a transcript must not orphan the results of a
@@ -854,7 +1101,7 @@ mod tests {
             record(Message::user("the new question")),
         ];
 
-        let plan = plan_seed(stored, "prompt", &budget);
+        let plan = plan_seed(stored, "prompt", &budget, None);
 
         assert!(plan.report.dropped_messages > 0, "nothing was dropped");
         let messages: Vec<Message> = plan.records.iter().map(|r| r.message.clone()).collect();
@@ -877,7 +1124,7 @@ mod tests {
             record(Message::user("the only question ".repeat(100))),
         ];
 
-        let plan = plan_seed(stored, "prompt", &budget);
+        let plan = plan_seed(stored, "prompt", &budget, None);
 
         assert_eq!(plan.records.len(), 2);
         assert!(plan.records[1]
@@ -1057,6 +1304,7 @@ mod tests {
             elided_tool_arguments: 3,
             elided_argument_bytes: 8192,
             dropped_messages: 3,
+            ..CompactionReport::default()
         };
         let notice = report.notice().unwrap();
         assert!(notice.contains("2 older tool results elided"), "{notice}");

@@ -375,6 +375,32 @@ pub fn block(summary: &str, nonce: &str) -> Message {
     Message::user(out)
 }
 
+/// Ask a model for a summary of `older`, and clamp what comes back.
+///
+/// The one place a summary is asked for in this workspace. The browser and
+/// the CLI both come through here, so there is one prompt and one clamp and
+/// they cannot drift apart. The caller supplies the model, because the
+/// browser resolves one from settings and the CLI already holds the
+/// session's own.
+///
+/// `Err` carries the provider's own words, or says the reply was not a
+/// summary. The caller decides what to do about it, and the answer is
+/// always the same shape: fall back to stage one, say why, and go on. A
+/// failure to summarize never blocks a turn.
+pub fn summarize(
+    model: &dyn crate::model::Model,
+    older: &[Message],
+    focus: Option<&str>,
+    standing: Option<&str>,
+) -> Result<String, String> {
+    let reply = model
+        .complete(&prompt(older, focus, standing), &[])
+        .map_err(|e| e.to_string())?;
+    clamp(&reply.content).ok_or_else(|| {
+        "the model did not answer with a summary in the sections that were asked for".to_string()
+    })
+}
+
 /// A nonce for a block, derived from the summary it will fence.
 pub fn block_nonce(summary: &str) -> String {
     nonce(summary)
