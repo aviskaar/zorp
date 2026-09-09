@@ -58,6 +58,7 @@ fn a_real_model_finds_a_conversation_by_meaning() {
                     title: title.to_string(),
                     updated: 0,
                     fingerprint: "fp".to_string(),
+                    project_id: None,
                 },
                 &embedder.identity(),
                 &[(
@@ -82,7 +83,7 @@ fn a_real_model_finds_a_conversation_by_meaning() {
     }
 
     let hits = index
-        .search(&embedder.embed(query).expect("a local embedding"), 3)
+        .search(&embedder.embed(query).expect("a local embedding"), 3, None)
         .unwrap();
     for hit in &hits {
         println!("{:>8.4}  {}  {}", hit.score, hit.conversation_id, hit.title);

@@ -1607,6 +1607,11 @@ struct RecallSearch {
     #[serde(default)]
     q: String,
     limit: Option<usize>,
+    /// Narrow the search to one project. Absent searches everything.
+    ///
+    /// An id nothing is filed under is not an error: it is a filter that
+    /// matches nothing, and the page never sends one it did not just list.
+    project: Option<String>,
 }
 
 #[cfg(not(feature = "recall"))]
@@ -1620,7 +1625,11 @@ async fn recall_search() -> impl IntoResponse {
 #[cfg(feature = "recall")]
 async fn recall_search(Query(params): Query<RecallSearch>) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(crate::recall::DEFAULT_LIMIT);
-    match tokio::task::spawn_blocking(move || crate::recall::search(&params.q, limit)).await {
+    match tokio::task::spawn_blocking(move || {
+        crate::recall::search(&params.q, limit, params.project.as_deref())
+    })
+    .await
+    {
         Ok(Ok(hits)) => {
             let rows: Vec<serde_json::Value> = hits
                 .into_iter()
