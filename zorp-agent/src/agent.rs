@@ -292,11 +292,20 @@ pub struct AgentConfig {
 }
 
 /// The name of the first argument whose value is a compaction marker, if any.
+///
+/// Two markers now. The elision marker stands in for an argument body that
+/// was left out, and the summary marker opens the block that stands in for
+/// a run of messages that was left out. Both are labels, neither is a
+/// value, and a model that copies either back into a call has handed a
+/// label to a tool. The shell ran an elided one and said 127.
 fn copied_marker_argument(call: &crate::model::ToolCall) -> Option<&str> {
     call.arguments.as_object()?.iter().find_map(|(key, value)| {
         value
             .as_str()
-            .is_some_and(|s| s.starts_with(crate::context_window::ELIDED_ARGUMENT_MARKER_PREFIX))
+            .is_some_and(|s| {
+                s.starts_with(crate::context_window::ELIDED_ARGUMENT_MARKER_PREFIX)
+                    || s.starts_with(crate::compaction::SUMMARY_MARKER_PREFIX)
+            })
             .then_some(key.as_str())
     })
 }
@@ -1202,7 +1211,7 @@ impl Agent {
     }
 }
 
-fn canonical_to_string(val: &serde_json::Value) -> String {
+pub(crate) fn canonical_to_string(val: &serde_json::Value) -> String {
     match val {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<_> = map.iter().collect();
