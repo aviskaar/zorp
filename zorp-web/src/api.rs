@@ -453,19 +453,11 @@ async fn create_project_route(Json(body): Json<ProjectBody>) -> impl IntoRespons
     };
     let id = zorp_agent::new_session_id();
     match store.create_project(&id, &name) {
-        Ok(()) => {
-            let created = store
-                .projects()
-                .ok()
-                .and_then(|ps| ps.into_iter().find(|p| p.id == id))
-                .map(|p| p.created)
-                .unwrap_or_default();
-            (
-                StatusCode::CREATED,
-                Json(json!({"id": id, "name": name, "created": created})),
-            )
-                .into_response()
-        }
+        Ok(created) => (
+            StatusCode::CREATED,
+            Json(json!({"id": id, "name": name, "created": created})),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

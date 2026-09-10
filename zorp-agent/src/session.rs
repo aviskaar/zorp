@@ -532,15 +532,20 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// File a new project under `id`. The name is stored as given; what
-    /// counts as an acceptable name is the caller's business, and
-    /// `zorp-web` clamps it on the one path in.
-    pub fn create_project(&mut self, id: &str, name: &str) -> Result<(), BoxErr> {
+    /// File a new project under `id`, and answer with the epoch
+    /// milliseconds it was created at, since that is what the caller has to
+    /// hand back and reading the list again to find it would be a scan for
+    /// one number it already wrote.
+    ///
+    /// The name is stored as given; what counts as an acceptable name is
+    /// the caller's business, and `zorp-web` clamps it on the one path in.
+    pub fn create_project(&mut self, id: &str, name: &str) -> Result<i64, BoxErr> {
+        let created = now();
         self.conn.execute(
             "INSERT INTO projects (id, name, created) VALUES (?1, ?2, ?3)",
-            (id, name, now()),
+            (id, name, created),
         )?;
-        Ok(())
+        Ok(created)
     }
 
     /// Remove a project and unfile every conversation in it. Returns
