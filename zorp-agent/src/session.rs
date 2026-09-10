@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, 
 CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);";
 
 /// A stored session's header row.
+#[derive(Clone)]
 pub struct SessionRow {
     pub id: String,
     /// The first thing the user asked for, stored verbatim.

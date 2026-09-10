@@ -19,6 +19,12 @@ pub enum ChatCommand {
     Exit,
     Tools,
     Reasoning(ReasoningCommand),
+    /// Fork the conversation you are in at one of its answers.
+    ///
+    /// The browser's button is per answer because the page has the answers
+    /// on screen to click. A terminal does not, so the number is optional
+    /// and defaults to the most recent.
+    Branch(Option<usize>),
     Capsules,
     LoadCapsule(String),
     UnloadCapsule(String),
@@ -70,6 +76,13 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
         "tools" | "commands" => ChatCommand::Tools,
+        "branch" => match remainder {
+            "" => ChatCommand::Branch(None),
+            n => match n.parse::<usize>() {
+                Ok(n) if n > 0 => ChatCommand::Branch(Some(n)),
+                _ => ChatCommand::Unknown("branch".to_string()),
+            },
+        },
         "capsules" => ChatCommand::Capsules,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),
@@ -113,6 +126,27 @@ mod tests {
         assert_eq!(parse_command("/approve", &[]), ChatCommand::Approve);
         assert_eq!(parse_command("/tools", &[]), ChatCommand::Tools);
         assert_eq!(parse_command("/deny", &[]), ChatCommand::Deny);
+    }
+
+    /// The number is optional because a terminal cannot see the answers to
+    /// click one. Zero and anything that is not a number are refusals
+    /// rather than a silent default, because both are somebody meaning
+    /// something the command cannot do.
+    #[test]
+    fn branch_takes_an_optional_answer_number() {
+        assert_eq!(parse_command("/branch", &[]), ChatCommand::Branch(None));
+        assert_eq!(
+            parse_command("/branch 2", &[]),
+            ChatCommand::Branch(Some(2))
+        );
+        assert_eq!(
+            parse_command("/branch 0", &[]),
+            ChatCommand::Unknown("branch".to_string())
+        );
+        assert_eq!(
+            parse_command("/branch latest", &[]),
+            ChatCommand::Unknown("branch".to_string())
+        );
     }
 
     #[test]
