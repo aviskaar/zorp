@@ -64,11 +64,19 @@ research = ["dep:zorp-track", "mcp"]
 # part of `research`: it drags in LanceDB's arrow stack at build time.
 library  = ["research", "zorp-track/library"]
 clipboard = ["dep:arboard"]
+# The review loop over free models: one model works, others test it, the
+# findings go back. Off by default. It is a harness experiment and a plain
+# run should not carry it.
+ensemble = []
 
 [[bin]]
 name = "stub_search_mcp_server"
 path = "tests/fixtures/stub_search_mcp_server.rs"
 required-features = ["research"]
+
+[[test]]
+name = "ensemble_cli"
+required-features = ["ensemble"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -15,6 +15,8 @@ pub mod critique;
 #[cfg(feature = "research")]
 pub mod deliver;
 mod embed;
+#[cfg(feature = "ensemble")]
+pub mod ensemble;
 mod flavor;
 mod identity;
 mod instructions;
