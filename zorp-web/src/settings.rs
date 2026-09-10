@@ -28,9 +28,6 @@ pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// Hardcoded fallback model, same reasoning.
 pub const DEFAULT_MODEL: &str = "gpt-4o";
 
-/// Env var that overrides where the settings file lives. Real usage always
-/// resolves to `~/.config/zorp/web.toml`; this exists so tests can point it
-/// at a private temp file instead of touching the developer's real config.
 /// Where an effective field's value came from, so the UI can say "from
 /// ZORP_MODEL" instead of implying the user chose it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

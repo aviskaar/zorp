@@ -528,9 +528,14 @@ fn print_config(overrides: &Overrides) {
         ("max tokens", &max_tokens),
     ];
     let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    // The values are padded too, so the provenance starts in one column.
+    // That is the column somebody is reading down: the values differ by
+    // definition, and a ragged "(from ...)" is what makes four of them hard
+    // to compare.
+    let value_width = rows.iter().map(|(_, r)| r.value.len()).max().unwrap_or(0);
     for (key, resolved) in rows {
         println!(
-            "{key:<width$}  {}  (from {})",
+            "{key:<width$}  {:<value_width$}  (from {})",
             resolved.value,
             resolved.source.describe()
         );
