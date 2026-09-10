@@ -570,6 +570,12 @@ resulting artifact, deliver it in the right form.
   prove that too. See
   `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
   any of it.
+- The terminal is line oriented and stays that way. No alternate screen, no
+  panes, no `ratatui`: a full screen mode would cost piping, scrollback,
+  selection and screen reader support, and every win it was supposed to buy
+  turned out to be better line output instead. A line editor is not a TUI
+  and is not ruled out. See `docs/DECISIONS.md` (2026-09-10) before
+  reaching for a layout.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is two stages. Stage one is deterministic and always runs
