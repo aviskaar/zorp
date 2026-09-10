@@ -317,10 +317,17 @@ resulting artifact, deliver it in the right form.
   somebody set. A conversation in no project reads everything, as it always
   did. `sessions.task` is untouched by all of it. See
   `docs/DECISIONS.md` (2026-09-09).
-- `title` (`zorp-web/src/title.rs`) is the sidebar's session name: one
+- `title` (`zorp-agent/src/title.rs`) is a conversation's short name: one
   model call per conversation, made after the first turn has both a
   question and an answer, on by default and off with
-  `ZORP_SESSION_TITLES=0`. Three things are not negotiable. It writes to
+  `ZORP_SESSION_TITLES=0`. It is in `zorp-agent` because both surfaces
+  write the column. It used to be in `zorp-web`, which meant a conversation
+  started in the terminal never got a name, including later in the browser
+  sidebar, where it showed its raw first message forever. `zorp-web` keeps
+  only the part that resolves a model out of its saved settings and puts
+  the answer on the event stream, the same split `compaction.rs` uses, and
+  the project-name path reads the moved `scrub` so there is one set of
+  character rules rather than two that drift. Three things are not negotiable. It writes to
   `sessions.display_title` and never to `sessions.task`, because `task`
   is the verbatim first message and `recall::index_one` reads it into the
   search index while `memory::block` quotes that title into a later turn
