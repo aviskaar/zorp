@@ -443,6 +443,67 @@ async fn branching_at_an_answer_copies_the_transcript_up_to_it() {
     );
 }
 
+/// The stored status says `running` while a turn is in flight, not only on
+/// the very first one.
+///
+/// `create_session` writes `running` once, at the start of a conversation.
+/// The closing write below it sets `done`, and without an opening write on
+/// every turn the column then reads `done` for the whole of turn two while
+/// turn two is writing messages. The CLI has only this column to ask, so it
+/// would delete or branch a conversation this process is still writing to.
+///
+/// The turn is parked on an approval, the same trick the test below uses, so
+/// the read happens while the turn is genuinely in flight rather than after
+/// it raced to the end.
+#[tokio::test]
+async fn a_turn_in_flight_says_running_in_the_store() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    std::env::set_var("ZORP_BASE_URL", &base);
+    std::env::set_var("ZORP_MODEL", "m");
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    std::env::remove_var("ZORP_API_KEY");
+    let id = seed(&db);
+    {
+        // What a finished turn leaves behind, which is the state this is
+        // about: the opening write has to put it back.
+        let store = Store::open_at(&db).unwrap();
+        store.set_status(&id, "done").unwrap();
+    }
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/turn"),
+            r#"{"message":"carry on"}"#,
+        )
+        .await,
+        202
+    );
+
+    let mut events = EventStream::connect(addr, &id);
+    let parked = tokio::task::spawn_blocking(move || {
+        let ok = events.wait_for("\"type\":\"approval_request\"", PATIENCE);
+        (events, ok)
+    })
+    .await
+    .unwrap();
+    assert!(parked.1, "the agent never parked on an approval");
+
+    let store = Store::open_at(&db).unwrap();
+    assert_eq!(
+        store.session_status(&id).unwrap().as_deref(),
+        Some("running"),
+        "a turn is writing to this conversation and the column does not say so"
+    );
+}
+
 /// A session with a turn in flight is refused rather than deleted out from
 /// under the thread still writing to it.
 ///

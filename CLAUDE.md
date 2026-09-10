@@ -335,6 +335,31 @@ resulting artifact, deliver it in the right form.
   existing event stream via a `session_title` frame, and the browser puts
   it on the page through `textContent`. See `docs/DECISIONS.md`
   (2026-08-22) before changing any of it.
+- The browser and the terminal share one session store, so `zorp-agent
+  sessions` lists conversations from both, newest first,
+  `zorp-agent resume` with no id continues the most recent one, and
+  `zorp-agent rm` and `zorp-agent branch` reach `Store::delete_session` and
+  `Store::branch_session`, which the browser was the only caller of. `rm`
+  asks before it destroys anything unless `--yes` is passed, and `/branch
+  [n]` does the same job from inside the chat REPL, defaulting to the most
+  recent answer because a terminal has no answers on screen to click.
+  Both read `sessions.status` first and refuse a conversation recorded as
+  running, naming what they read, with `--force` to get past it. That
+  column is worth exactly what the writes behind it are worth: `zorp-web`
+  now writes the closing status where it wrote none before, which is what
+  makes it mean anything, and a process killed mid-turn still leaves a
+  stale `running` behind, which is why the refusal is one `--force` clears
+  rather than a wall.
+  `zorp-agent/src/sessions.rs` is the part with rules in it: a name is
+  `display_title` when something wrote one and the first line of the
+  verbatim `task` otherwise, never the other way round, and it is scrubbed
+  of control and bidirectional characters before it reaches a line, because
+  an override in a listing reorders every row drawn after it and that is
+  how one conversation impersonates another in a list somebody is picking
+  from. `resume` takes a unique id prefix the way git takes a short sha. An
+  ambiguous prefix prints the candidates and exits non-zero rather than
+  guessing: the wrong guess drops somebody into a stranger's thread and the
+  transcript that follows reads perfectly plausibly.
 - Branching (`POST /api/sessions/:id/branch`, `Store::branch_session`)
   copies a chat's stored messages up to and including its Nth answer into
   a new session, named by ordinal because the browser counts answers as

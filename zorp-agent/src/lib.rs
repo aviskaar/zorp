@@ -1,4 +1,4 @@
-//! zorp-agent — a research agent built on the tiny zorp core.
+//! zorp-agent: a research agent built on the tiny zorp core.
 //! Milestone 1 (walking skeleton): normalized model turns + a bare agent loop.
 
 mod agent;
@@ -35,6 +35,7 @@ mod sandbox;
 #[cfg(feature = "search")]
 mod search_tool;
 mod session;
+pub mod sessions;
 mod skill_tool;
 pub mod streaming;
 mod tools;

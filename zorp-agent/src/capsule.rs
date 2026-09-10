@@ -26,7 +26,7 @@ pub struct Capsule {
     pub dir: PathBuf,
     /// Session state keys this capsule declares it writes, from the optional
     /// `writes:` frontmatter field (comma-separated). Empty for capsules that
-    /// only inject instructions, which is every capsule today — no capsule
+    /// only inject instructions, which is every capsule today. No capsule
     /// capability writes shared session state yet. Declared purely so two
     /// capsules that claim the same key can be caught at `/load` time before
     /// either one runs, rather than surfacing as unexplained cross-capsule
@@ -100,7 +100,7 @@ fn split_frontmatter(text: &str) -> Result<(String, String), String> {
     Ok((frontmatter, body.to_string()))
 }
 
-/// Parse flat `key: value` lines. Not a general YAML parser — capsules only
+/// Parse flat `key: value` lines. Not a general YAML parser, because capsules only
 /// use flat scalar frontmatter fields (`name`, `description`).
 fn parse_frontmatter_fields(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut fields = BTreeMap::new();
@@ -118,7 +118,7 @@ fn parse_frontmatter_fields(text: &str) -> Result<BTreeMap<String, String>, Stri
     Ok(fields)
 }
 
-/// Command names a capsule can never shadow — built-ins always win.
+/// Command names a capsule can never shadow. Built-ins always win.
 pub const RESERVED_NAMES: &[&str] = &[
     "help",
     "h",
@@ -178,7 +178,7 @@ impl CapsuleRegistry {
     }
 
     /// All discovered capsule names, in each capsule's originally-declared
-    /// case. Not sorted — iteration order follows the internal map's
+    /// case. Not sorted: iteration order follows the internal map's
     /// lowercased keys, not the declared-case names; callers that need a
     /// sorted display (e.g. `/capsules`) sort separately (see `list_display`).
     pub fn names(&self) -> Vec<String> {
@@ -324,7 +324,7 @@ impl CapsuleState {
 
     /// Register `capsule` in the live registry and immediately mark it
     /// active. Used by `/capsule-create` right after writing a freshly
-    /// drafted `CAPSULE.md` to disk — the capsule is usable on the very
+    /// drafted `CAPSULE.md` to disk, so the capsule is usable on the very
     /// next turn without a separate `/load`.
     pub fn create_and_load(&mut self, capsule: Capsule) {
         let name = capsule.name.clone();
@@ -362,7 +362,7 @@ impl CapsuleState {
                 if c.description.is_empty() {
                     format!("{marker} {}", c.name)
                 } else {
-                    format!("{marker} {} — {}", c.name, c.description)
+                    format!("{marker} {}: {}", c.name, c.description)
                 }
             })
             .collect::<Vec<_>>()
@@ -770,7 +770,7 @@ mod tests {
 
         let display = state.list_display();
         let lines: Vec<&str> = display.lines().collect();
-        assert_eq!(lines, vec!["  alpha — first", "● zeta — last"]);
+        assert_eq!(lines, vec!["  alpha: first", "● zeta: last"]);
     }
 
     #[test]

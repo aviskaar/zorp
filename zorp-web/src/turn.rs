@@ -222,6 +222,31 @@ fn record(backlog: &mut Vec<Event>, event: Event) {
 /// raised cancel flag, and a run that was stopped a moment after it finished
 /// still comes back `Complete`. The flag decides whether the transcript reads
 /// "you stopped this" or "this fell over".
+/// What `sessions.status` should say once a turn has ended.
+///
+/// The column existed and only the CLI ever wrote it, so every conversation
+/// the browser made sat at `running` for the rest of its life. That made the
+/// column useless to anything that wanted to ask whether a turn is in
+/// flight, which is what `zorp-agent rm` and `zorp-agent branch` want before
+/// they touch a row another process may be writing to.
+///
+/// The same words the CLI writes, from `report_outcome`, so one column does
+/// not carry two vocabularies.
+fn closing_status(outcome: &Result<Outcome, String>, stopped: bool) -> &'static str {
+    if stopped {
+        return "cancelled";
+    }
+    match outcome {
+        Ok(Outcome::Complete(_)) => "done",
+        Ok(Outcome::StepLimit) => "step-limit",
+        Ok(Outcome::VerificationFailed { .. }) => "unverified",
+        Ok(Outcome::Cancelled) => "cancelled",
+        Ok(Outcome::RepeatedAction) => "repeated",
+        Ok(Outcome::Blocked) => "blocked",
+        Ok(Outcome::Error(_)) | Err(_) => "error",
+    }
+}
+
 fn closing_events(outcome: Result<Outcome, String>, stopped: bool) -> Vec<EventKind> {
     let mut kinds = Vec::new();
     match outcome {
@@ -299,6 +324,16 @@ pub fn spawn_turn(
         guard.cancel = Some(Arc::clone(&cancel));
         (Arc::clone(&guard.seq), Arc::clone(&guard.auto_approve))
     };
+    // The opening half of the closing write below, and it has to be here
+    // rather than left to `create_session`: that runs once, and this thread
+    // is about to start writing messages on every turn after the first one
+    // too. Without it the column reads `done` while a turn is in flight, and
+    // the CLI, which has only this column to ask, would delete or branch a
+    // conversation this process is still writing to. Best effort for the
+    // same reason the closing write is.
+    if let Ok(store) = Store::open_default() {
+        let _ = store.set_status(&session_id, "running");
+    }
     let approver = Arc::new(WebApprover::new(
         tx.clone(),
         Arc::clone(&seq),
@@ -345,6 +380,18 @@ pub fn spawn_turn(
         // Read after the run, not before, so a stop that lands during the
         // final moments of a turn is still reported as a stop.
         let stopped = cancel.load(std::sync::atomic::Ordering::SeqCst);
+        // Say the turn is over in the store as well as in this process.
+        // Nothing here read that column before, which left every browser
+        // conversation reading as `running` forever and made the column
+        // worthless to the CLI, which cannot see this process's threads and
+        // has nothing else to ask.
+        //
+        // Best effort, like every other write on this path: a status that
+        // could not be written is a stale status, and the CLI treats a stale
+        // one as something `--force` gets past rather than as a wall.
+        if let Ok(store) = Store::open_default() {
+            let _ = store.set_status(&session_id, closing_status(&outcome, stopped));
+        }
         // The final answer arrives in Outcome::Complete rather than through
         // the renderer. The CLI prints it in finish(); the browser has to be
         // sent it explicitly or the turn ends with activity and no reply.

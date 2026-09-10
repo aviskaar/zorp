@@ -171,7 +171,7 @@ impl Flavor {
     }
 
     /// True if this flavor declares shell verification commands or loosens
-    /// approval — the fields a project flavor may apply only once trusted.
+    /// approval: the fields a project flavor may apply only once trusted.
     pub fn wants_privilege(&self) -> bool {
         !self.verify_commands().is_empty() || approval_loosens(&self.approval)
     }

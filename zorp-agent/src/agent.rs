@@ -455,7 +455,7 @@ impl Agent {
         self
     }
 
-    /// Override the trace file, bypassing the `ZORP_TRACE_FILE` env var —
+    /// Override the trace file, bypassing the `ZORP_TRACE_FILE` env var.
     /// primarily for tests, which cannot safely share a process-global env var.
     pub fn with_trace_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.trace_file = std::fs::OpenOptions::new()
@@ -466,7 +466,7 @@ impl Agent {
         self
     }
 
-    /// Override the trace identity, bypassing env vars — primarily for tests.
+    /// Override the trace identity, bypassing env vars. Primarily for tests.
     pub fn with_trace_identity(mut self, identity: TraceIdentity) -> Self {
         self.trace_identity = identity;
         self
