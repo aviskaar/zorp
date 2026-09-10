@@ -486,15 +486,7 @@ async fn delete_project(
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    let affected: Vec<String> = store
-        .sessions()
-        .map(|rows| {
-            rows.into_iter()
-                .filter(|s| s.project_id.as_deref() == Some(id.as_str()))
-                .map(|s| s.id)
-                .collect()
-        })
-        .unwrap_or_default();
+    let affected: Vec<String> = store.sessions_in_project(&id).unwrap_or_default();
     match store.delete_project(&id) {
         Ok(true) => {
             for session_id in affected {

@@ -504,6 +504,34 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// The project one conversation is filed under.
+    ///
+    /// `None` covers both a conversation nobody filed and one the store has
+    /// never heard of, because a caller asking which project to read from
+    /// does the same thing either way. One indexed row rather than the whole
+    /// session list, since this runs on every turn that asks for memory.
+    pub fn session_project(&self, id: &str) -> Result<Option<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT project_id FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query([id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Every conversation filed under a project, so a caller can tell which
+    /// index rows a delete is about to invalidate.
+    pub fn sessions_in_project(&self, project_id: &str) -> Result<Vec<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM sessions WHERE project_id = ?1")?;
+        let rows = stmt.query_map([project_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// File a new project under `id`. The name is stored as given; what
     /// counts as an acceptable name is the caller's business, and
     /// `zorp-web` clamps it on the one path in.
@@ -1581,6 +1609,30 @@ CREATE TABLE file_changes (
         // The conversation is still there, and it is no longer filed.
         assert_eq!(project_of(&store, "s1"), None);
         assert_eq!(store.sessions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn one_session_answers_for_its_own_project_and_a_project_for_its_sessions() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_session("s2", "ask", "/r", "m").unwrap();
+        store.create_session("s3", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+        store.set_session_project("s3", Some("p1")).unwrap();
+
+        assert_eq!(
+            store.session_project("s1").unwrap(),
+            Some("p1".to_string())
+        );
+        // Filed under nothing and never heard of both read as no project.
+        assert_eq!(store.session_project("s2").unwrap(), None);
+        assert_eq!(store.session_project("nope").unwrap(), None);
+
+        let mut in_project = store.sessions_in_project("p1").unwrap();
+        in_project.sort();
+        assert_eq!(in_project, vec!["s1".to_string(), "s3".to_string()]);
+        assert!(store.sessions_in_project("p2").unwrap().is_empty());
     }
 
     #[test]

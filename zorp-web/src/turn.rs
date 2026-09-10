@@ -347,11 +347,8 @@ fn recall_into_turn(
 fn session_project(session_id: &str) -> Option<String> {
     zorp_agent::Store::open_default()
         .ok()?
-        .sessions()
+        .session_project(session_id)
         .ok()?
-        .into_iter()
-        .find(|s| s.id == session_id)?
-        .project_id
 }
 
 #[cfg(not(feature = "memory"))]
