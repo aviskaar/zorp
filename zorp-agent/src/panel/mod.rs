@@ -35,8 +35,10 @@
 //! `agent.rs` already carries a test asserting a filtered agent has no
 //! `spawn_subagent`; this module does not add one.
 
+mod report_text;
 mod verdict;
 
+pub use report_text::lines as report_lines;
 pub use verdict::{
     parse_verdict, Agreement, PanelFinding, PanelReport, ParseError, ReviewerFailure,
     ReviewerVerdict, Severity,

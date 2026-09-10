@@ -553,6 +553,18 @@ resulting artifact, deliver it in the right form.
   prove that too. See
   `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
   any of it.
+- The panel is reachable from both surfaces now: `zorp-agent panel [path]`
+  and `/panel [path]` in the chat REPL, beside the browser's button. The
+  2026-08-20 rules are unchanged and are what the CLI path is tested
+  against: a panel is launched by a person and never by a model, and a
+  reviewer gets strictly less than the panel that launched it, which means
+  `reviewer_tools()` and never the caller's approval mode. `--yes` on the
+  outer command does not reach a reviewer; the CLI passes a fixed
+  `AutoApprove` over a tool set with nothing approval gated in it, which is
+  the honest name for a gate with nothing behind it rather than a
+  loosening. A partial panel says so and exits non-zero, because two of two
+  agreeing is a weaker claim than two of five and the count alone cannot
+  tell them apart.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is two stages. Stage one is deterministic and always runs

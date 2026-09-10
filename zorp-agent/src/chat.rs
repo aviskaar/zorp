@@ -32,6 +32,11 @@ pub enum ChatCommand {
     /// on screen to click. A terminal does not, so the number is optional
     /// and defaults to the most recent.
     Branch(Option<usize>),
+    /// Review this conversation's last answer with the panel.
+    ///
+    /// With a path, reviews that file instead. A person types this, which
+    /// is the same bound the browser's button has.
+    Panel(Option<String>),
     Capsules,
     LoadCapsule(String),
     UnloadCapsule(String),
@@ -91,6 +96,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
                 _ => ChatCommand::Unknown("branch".to_string()),
             },
         },
+        "panel" => ChatCommand::Panel((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),
