@@ -110,7 +110,6 @@ import {
   type Settings,
   type SettingsSource,
   type SettingsUpdate,
-  type CompactionRecord,
   type SessionSummary,
   type StreamStatus,
   type Workspace,
@@ -2311,23 +2310,17 @@ async function openSession(session: SessionSummary): Promise<void> {
       // A stored call is drawn as the live tool event is. Consecutive lines
       // share one group, and `appendMessage` starts a new one, so a call, an
       // answer and another call land in two groups, the same as live.
-      // Markers are drawn after the entry whose seq the boundary names.
-      // Oldest first, and each one is taken as it is passed, so two
-      // compactions in one conversation land in the order they happened.
-      const pending = [...transcript.compactions].sort(
-        (a, b) => a.boundary_seq - b.boundary_seq,
-      );
-      const drawMarkersUpTo = (seq: number) => {
-        while (pending.length && pending[0].boundary_seq <= seq) {
+      // Markers go after the entry the server counted them to. Oldest
+      // first, so two compactions in one conversation land in the order
+      // they happened.
+      const pending = [...transcript.compactions].sort((a, b) => a.after - b.after);
+      const drawMarkersUpTo = (drawn: number) => {
+        while (pending.length && pending[0].after <= drawn) {
           const record = pending.shift()!;
           closeActivityGroup();
           dom.transcript.append(
             compactionMarker(document, {
-              // Replay has the boundary and not the count the live frame
-              // carried, so it counts what the summary stands for: every
-              // stored message at or below the boundary, after the one
-              // before it.
-              messages: coveredBy(record, transcript.compactions),
+              messages: record.messages,
               tokens_before: record.tokens_before,
               tokens_after: record.tokens_after,
               summary: record.summary,
@@ -2336,19 +2329,16 @@ async function openSession(session: SessionSummary): Promise<void> {
         }
       };
 
-      transcript.messages.forEach((message: Message) => {
+      transcript.messages.forEach((message: Message, index: number) => {
         if (message.role === "tool") {
           appendActivity(activityLine(message.name, message.summary, message.phrase));
         } else {
           appendMessage(message.role, message.content);
         }
-        if (typeof message.seq === "number") {
-          drawMarkersUpTo(message.seq);
-        }
+        drawMarkersUpTo(index + 1);
       });
-      // Anything whose boundary is past the last drawn message still
-      // belongs on the page: the messages it covers may all have been
-      // tool rows this list does not draw.
+      // Anything counted past the last entry still belongs on the page: the
+      // messages it covers may all have been rows this list does not draw.
       drawMarkersUpTo(Number.MAX_SAFE_INTEGER);
       // A replayed group is over by construction, so it shows its count.
       closeActivityGroup();
@@ -2364,21 +2354,6 @@ async function openSession(session: SessionSummary): Promise<void> {
   dom.scroller.scrollTop = dom.scroller.scrollHeight;
   dom.input.focus();
   await ensureStream(session.id, true);
-}
-
-/**
- * How many messages one compaction stands in for.
- *
- * The boundary of the one before it, or the start of the conversation. The
- * live `compacting` frame carries this count directly; a replay has only
- * the boundaries, so it is arithmetic on them, and the two agree because
- * both are counting the same stored messages.
- */
-function coveredBy(record: CompactionRecord, all: CompactionRecord[]): number {
-  const previous = all
-    .filter((other) => other.boundary_seq < record.boundary_seq)
-    .reduce((highest, other) => Math.max(highest, other.boundary_seq), -1);
-  return Math.max(0, record.boundary_seq - previous);
 }
 
 function startNewChat(): void {

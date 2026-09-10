@@ -425,6 +425,14 @@ impl<W: Write + Send> Renderer for LineRenderer<W> {
         let _ = writeln!(self.out, "{shown}");
     }
 
+    fn compacting(&mut self, messages: usize, tokens_before: u64, manual: bool) {
+        self.notice(&compacting_line(messages, tokens_before, manual));
+    }
+
+    fn compacted(&mut self, result: &crate::context_window::CompactionOutcome) {
+        self.notice(&compacted_line(result));
+    }
+
     fn assistant(&mut self, text: &str) {
         let rendered = render_assistant_text(text, self.color);
         let _ = writeln!(self.out, "{rendered}");
@@ -570,6 +578,50 @@ impl<W: Write + Send + 'static> Renderer for SpinnerRenderer<W> {
             let rendered = render_assistant_text(text, self.color);
             let _ = writeln!(out, "{rendered}");
         }
+    }
+
+    fn compacting(&mut self, messages: usize, tokens_before: u64, manual: bool) {
+        self.notice(&compacting_line(messages, tokens_before, manual));
+    }
+
+    fn compacted(&mut self, result: &crate::context_window::CompactionOutcome) {
+        self.notice(&compacted_line(result));
+    }
+}
+
+/// The two lines a terminal shows for a compaction.
+///
+/// One wording, shared by both terminal renderers, so the CLI's one-shot
+/// output and its chat REPL do not describe the same event two ways.
+///
+/// The summary itself is never printed. It is a page of text, the terminal
+/// is where the conversation is, and a summary of the conversation printed
+/// into the conversation reads like part of it. The line says a model wrote
+/// it and says the transcript is still on disk, which is what a reader
+/// needs to know to go and check.
+fn compacting_line(messages: usize, tokens_before: u64, manual: bool) -> String {
+    let why = if manual {
+        "asked for"
+    } else {
+        "window filling"
+    };
+    format!(
+        "compacting: summarizing {messages} older messages ({why}, about {tokens_before} tokens)"
+    )
+}
+
+fn compacted_line(result: &crate::context_window::CompactionOutcome) -> String {
+    if result.ok {
+        format!(
+            "compacted: about {} tokens, down from {}. The summary is model-written and the \
+             full transcript is still on disk.",
+            result.tokens_after, result.tokens_before
+        )
+    } else {
+        format!(
+            "compaction failed: {}. Older material was elided instead.",
+            result.reason.as_deref().unwrap_or("no reason given")
+        )
     }
 }
 

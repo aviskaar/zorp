@@ -44,15 +44,8 @@ export interface SessionSummary {
 }
 
 /** One persisted turn in a session transcript. */
-/**
- * A stored message's own `messages.seq`.
- *
- * Absent from an older server. The browser needs it to put a compaction
- * marker where the live turn drew one: a boundary is a seq, and this list
- * drops the system and tool rows, so a position in it is not one.
- */
 export type Message =
-  | { role: "user" | "assistant"; content: string; seq?: number }
+  | { role: "user" | "assistant"; content: string }
   /**
    * A stored tool call, drawn as an activity line exactly as the live `tool`
    * event is. `name` is the form the live event carries, `run_command(ls)`,
@@ -60,7 +53,7 @@ export type Message =
    * and `phrase` is the model's own description of the call, model-authored
    * and display only.
    */
-  | { role: "tool"; name: string; summary: string; phrase?: string; seq?: number };
+  | { role: "tool"; name: string; summary: string; phrase?: string };
 
 /**
  * One recorded compaction, for a reopened transcript.
@@ -74,6 +67,16 @@ export type Message =
 export interface CompactionRecord {
   id: number;
   boundary_seq: number;
+  /**
+   * How many transcript entries this marker follows.
+   *
+   * Worked out on the server, because a boundary is a stored `messages.seq`
+   * and this transcript drops the system and tool rows, so a position in it
+   * is not one. The seqs live on that side and never come over the wire.
+   */
+  after: number;
+  /** How many stored messages the summary stands for. */
+  messages: number;
   /** Model-authored. Drawn as plain text, labelled as model-written. */
   summary: string;
   tokens_before: number;

@@ -238,25 +238,39 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match store.load_messages(&id) {
-        Ok(messages) => Json(json!({
-            "messages": transcript(&messages),
-            "compactions": compaction_rows(&store, &id),
-        }))
-        .into_response(),
+        Ok(messages) => {
+            let (rows, seqs) = transcript_with_seqs(&messages);
+            let compactions = compaction_rows(&store, &id, &seqs);
+            Json(json!({"messages": rows, "compactions": compactions})).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
 }
 
 /// The compaction markers a reopened transcript draws, oldest first.
-fn compaction_rows(store: &zorp_agent::Store, id: &str) -> Vec<serde_json::Value> {
+///
+/// `after` is how many transcript entries the marker follows, worked out
+/// here rather than in the browser. A boundary is a `messages.seq` and the
+/// transcript drops the system and tool rows, so the browser has no way to
+/// turn one into a position; the seqs behind the entries live on this side
+/// and never go on the wire. `messages` per marker is what the summary
+/// stands for, counted from the boundary before it, so a replayed marker
+/// says what the live one said.
+fn compaction_rows(store: &zorp_agent::Store, id: &str, seqs: &[i64]) -> Vec<serde_json::Value> {
+    let mut previous = -1i64;
     store
         .compactions(id)
         .unwrap_or_default()
         .into_iter()
         .map(|c| {
+            let after = seqs.iter().filter(|seq| **seq <= c.boundary_seq).count();
+            let covered = (c.boundary_seq - previous).max(0);
+            previous = c.boundary_seq;
             json!({
                 "id": c.id,
                 "boundary_seq": c.boundary_seq,
+                "after": after,
+                "messages": covered,
                 "summary": c.summary,
                 "tokens_before": c.tokens_before,
                 "tokens_after": c.tokens_after,
@@ -282,48 +296,52 @@ fn compaction_rows(store: &zorp_agent::Store, id: &str) -> Vec<serde_json::Value
 /// new is written for it. A `tool` message is never an entry of its own; it
 /// only supplies a status, and a call whose result never got stored has an
 /// empty one.
-fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
+fn transcript_with_seqs(messages: &[zorp_agent::Message]) -> (Vec<serde_json::Value>, Vec<i64>) {
     let results: HashMap<&str, &zorp_agent::Message> = messages
         .iter()
         .filter(|m| m.role == "tool")
         .filter_map(|m| Some((m.tool_call_id.as_deref()?, m)))
         .collect();
     let mut out = Vec::new();
+    // The stored seq behind each emitted entry, parallel to `out`. Not on
+    // the wire: the entry shape is what it has always been. It is used here
+    // to place the compaction markers, because a boundary is a
+    // `messages.seq` and this list drops the system and tool rows, so a
+    // position in it is not one. Index is seq, because the recorder assigns
+    // them from zero, one per message, and the loader orders by them.
+    let mut seqs: Vec<i64> = Vec::new();
     for (seq, m) in messages.iter().enumerate() {
         if m.role != "user" && m.role != "assistant" {
             continue;
         }
-        // The stored seq of the message this entry came from. The browser
-        // needs it to put a compaction marker where the live turn drew one:
-        // a boundary is a `messages.seq`, and the transcript above drops
-        // system and tool rows, so a position in this list is not one.
-        // Index is seq, because the recorder assigns them from zero, one
-        // per message, and the loader orders by them.
-        let seq = seq as i64;
         // Message content is structured to carry images; the browser
         // transcript wants the text of each turn.
+        let seq = seq as i64;
         let text = m.text();
         if !text.trim().is_empty() {
-            out.push(json!({"role": &m.role, "content": text, "seq": seq}));
+            out.push(json!({"role": &m.role, "content": text}));
+            seqs.push(seq);
         }
         for call in &m.tool_calls {
             let summary = results
                 .get(call.id.as_str())
                 .and_then(|result| zorp_agent::summary_from_content(&call.name, &result.text()))
                 .unwrap_or_default();
-            let mut entry = json!({
-                "role": "tool",
-                "name": call.display_name(),
-                "summary": summary,
-                "seq": seq,
-            });
+            let mut entry =
+                json!({"role": "tool", "name": call.display_name(), "summary": summary});
             if let Some(phrase) = call.description() {
                 entry["phrase"] = json!(phrase);
             }
             out.push(entry);
+            seqs.push(seq);
         }
     }
-    out
+    (out, seqs)
+}
+
+/// The transcript alone, which is what every existing caller wants.
+fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
+    transcript_with_seqs(messages).0
 }
 
 /// Delete a conversation: its messages, its recorded file changes, and the
