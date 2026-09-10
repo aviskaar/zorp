@@ -233,6 +233,21 @@ pub trait RunRecorder: Send {
     /// is not `messages` and is never read by anything that reads
     /// `messages`.
     fn compaction(&mut self, _c: &crate::session::Compaction) {}
+
+    /// The store seq the next recorded message will get, when this recorder
+    /// numbers messages in a store at all.
+    ///
+    /// A compaction's `boundary_seq` is a store seq, and the agent works in
+    /// live transcript indexes, which are not the same number. The browser
+    /// seeds a turn with a fresh system message the store never held, so its
+    /// live index runs one ahead of the store from the first turn on. This
+    /// is what closes that gap: the agent and this counter advance together,
+    /// one per recorded message, so their difference is the offset between
+    /// the two numberings. `None` from a recorder with no store leaves the
+    /// agent's own index, which is what it always used.
+    fn next_message_seq(&self) -> Option<i64> {
+        None
+    }
 }
 
 /// Writes a summary of the older conversation, when the window fills.
@@ -941,6 +956,19 @@ impl Agent {
         crate::compaction::boundary(&self.messages, start)
     }
 
+    /// How far the live transcript's indexes run ahead of the store's seqs.
+    ///
+    /// Both counters advance one per recorded message, so their difference
+    /// is fixed for a run and is whatever the seed left it at. Zero when
+    /// nothing is recording, or when the recorder does not number into a
+    /// store.
+    fn store_seq_offset(&self) -> i64 {
+        match self.recorder.as_ref().and_then(|r| r.next_message_seq()) {
+            Some(next) => self.recorded_messages as i64 - next,
+            None => 0,
+        }
+    }
+
     /// Write a summary covering `messages[start..cut]` and put the block in
     /// their place. `start` is the front of the transcript that is not
     /// already summarized.
@@ -987,7 +1015,8 @@ impl Agent {
             self.recorded_messages
         );
 
-        let boundary_seq = (cut as i64) - 1;
+        // A store seq, never a live index. See `RunRecorder::next_message_seq`.
+        let boundary_seq = (cut as i64) - 1 - self.store_seq_offset();
         let block = crate::compaction::block(&summary, &crate::compaction::block_nonce(&summary));
         self.messages.splice(start..cut, std::iter::once(block));
         self.message_metadata
@@ -2428,6 +2457,78 @@ mod tests {
             a.message_metadata.push(MessageMetadata::default());
         }
         a.recorded_messages = a.messages.len();
+    }
+
+    /// A recorded boundary is a store seq, on a transcript whose live
+    /// indexes do not match the store's.
+    ///
+    /// The browser is that transcript: it seeds every turn with a fresh
+    /// system message the store never held, so live index 1 is store seq 0
+    /// and stays one ahead for the life of the session. A boundary written
+    /// as a live index is one too high, and the next seed then keeps only
+    /// what is after it, so the oldest message the summary did not cover is
+    /// dropped from the seed as well. It is in neither place, and the model
+    /// sees an answer with no question in front of it.
+    #[test]
+    fn a_recorded_boundary_is_a_store_seq_and_not_a_live_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.db");
+        let mut store = crate::session::Store::open_at(&path).unwrap();
+        store.create_session("s1", "t", "/r", "m").unwrap();
+        // The browser's shape: no system row, seq 0 is the first user message.
+        let mut seq = 0i64;
+        for i in 0..10 {
+            store
+                .record_message(
+                    "s1",
+                    seq,
+                    &Message::user(format!("a question about something {i}")),
+                )
+                .unwrap();
+            seq += 1;
+            store
+                .record_message("s1", seq, &Message::assistant(format!("answer {i}")))
+                .unwrap();
+            seq += 1;
+        }
+        let stored = store.load_message_records("s1").unwrap();
+
+        let summarizer = ScriptedSummarizer::ok();
+        let calls = summarizer.calls.clone();
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(200)))
+            .with_summarizer(Box::new(summarizer))
+            .with_summarized_through(1)
+            .with_recorder(Box::new(crate::recorder::SqliteRecorder::new(
+                crate::session::Store::open_at(&path).unwrap(),
+                "s1".into(),
+                20,
+                0,
+            )));
+        // What the browser hands the agent: a fresh system message in front
+        // of the stored transcript, all of it already persisted.
+        for r in stored {
+            a.messages.push(r.message);
+            a.message_metadata.push(MessageMetadata::default());
+        }
+        a.recorded_messages = a.messages.len();
+
+        a.enforce_history_budget();
+
+        let covered = calls.lock().unwrap()[0];
+        let verify = crate::session::Store::open_at(&path).unwrap();
+        let c = verify.latest_compaction("s1").unwrap().unwrap();
+        let all = verify.load_messages("s1").unwrap();
+        // The summary covered the first `covered` stored messages, so the
+        // boundary is the last of them and the next seed starts at the one
+        // after it. Nothing falls between the two.
+        assert_eq!(c.boundary_seq, covered as i64 - 1, "{covered} covered");
+        assert_eq!(all[c.boundary_seq as usize].text(), "answer 5");
+        assert_eq!(
+            all[(c.boundary_seq + 1) as usize].text(),
+            "a question about something 6",
+            "the first message the next seed keeps is the first one the summary did not cover"
+        );
     }
 
     /// The boundary keeps the last KEEP_RECENT exchanges verbatim and

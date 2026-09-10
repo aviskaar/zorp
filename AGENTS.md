@@ -542,8 +542,9 @@ resulting artifact, deliver it in the right form.
   things that read `messages`: the recall feed embeds them, the memory block
   quotes them and tells the model to cite them, titling reads the first
   pair, and branching copies them. It reaches the model as a fenced,
-  labelled `user` message appended to the seed, the way the memory block
-  does, so it is never persisted as a message; `messages` is not written,
+  labelled `user` message standing in front of the messages it replaced,
+  put there when the seed is planned and never recorded, the same way the
+  memory block reaches a turn without reaching the store; `messages` is not written,
   rewritten or deleted by any of it and the full transcript stays on disk.
   Bounded at three summaries a turn, and a failed one falls back to stage
   one rather than blocking the turn. No model can ask for a compaction and

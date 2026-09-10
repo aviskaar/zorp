@@ -60,6 +60,10 @@ impl RunRecorder for SqliteRecorder {
             eprintln!("zorp-agent: failed to persist compaction: {e}");
         }
     }
+
+    fn next_message_seq(&self) -> Option<i64> {
+        Some(self.msg_seq)
+    }
 }
 
 #[cfg(test)]
