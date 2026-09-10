@@ -98,7 +98,10 @@ fn first_line(raw: &str) -> String {
     line
 }
 
-fn scrub(line: &str) -> String {
+/// `pub` because a recall snippet is under the same rule: it is a stored
+/// message, which can be a pasted file or a page the agent fetched, and a
+/// bidirectional override in one reorders every line drawn after it.
+pub fn scrub(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut spaced = true;
     for c in line.chars() {

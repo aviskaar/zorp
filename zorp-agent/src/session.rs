@@ -660,6 +660,33 @@ impl Store {
     /// never heard of, because a caller asking which project to read from
     /// does the same thing either way. One indexed row rather than the whole
     /// session list, since this runs on every turn that asks for memory.
+    /// One session's header row, by id.
+    ///
+    /// An indexed single row query rather than `sessions()` plus a linear
+    /// `find`. The recall feed did exactly that on every finished turn,
+    /// walking every conversation in the store to answer a question about
+    /// one, and #195 replaced two of the same pattern for the same reason.
+    pub fn session(&self, id: &str) -> Result<Option<SessionRow>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+             FROM sessions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(SessionRow {
+                id: row.get(0)?,
+                task: row.get(1)?,
+                repo: row.get(2)?,
+                model: row.get(3)?,
+                status: row.get(4)?,
+                display_title: row.get(5)?,
+                updated: row.get(6)?,
+                project_id: row.get(7)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
     pub fn session_project(&self, id: &str) -> Result<Option<String>, BoxErr> {
         let mut stmt = self
             .conn

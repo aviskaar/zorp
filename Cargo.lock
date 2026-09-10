@@ -8404,6 +8404,7 @@ dependencies = [
  "ureq",
  "zorp",
  "zorp-mcp",
+ "zorp-recall",
  "zorp-search",
  "zorp-skill",
  "zorp-stub",

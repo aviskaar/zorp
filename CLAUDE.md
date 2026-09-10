@@ -559,6 +559,23 @@ resulting artifact, deliver it in the right form.
   turned out to be better line output instead. A line editor is not a TUI
   and is not ruled out. See `docs/DECISIONS.md` (2026-09-10) before
   reaching for a layout.
+- `recall` and `memory` are in `zorp-agent` now, behind non-default
+  features of those names, and `zorp-web` re-exports them. They were in
+  `zorp-web`, which meant the terminal could not search or recall its own
+  conversations even though the index is over a store both surfaces share.
+  Lifted rather than copied: two chunkers or two fingerprints means the
+  index silently holds two conventions the day they disagree, and
+  `there_is_one_chunker_and_one_fingerprint` fails if a second appears.
+  They are in `zorp-agent` rather than in `zorp-recall` because that crate
+  deliberately depends on no other workspace member, and the store the
+  chunker reads is here. `zorp-agent recall <query>`, `--index`,
+  `/recall` in the REPL, and `--recall` on a turn. Every rule is unchanged
+  and still enforced where it was: conversation text goes to a loopback
+  address or it goes nowhere, the unit is a verbatim message, an assistant
+  line is labelled as model output in the terminal too, and the block is
+  appended to the seed so it reaches the model and never the store. A
+  finished CLI turn feeds its own session to the index, the way a finished
+  browser turn does. See `docs/DECISIONS.md` (2026-08-22, 2026-08-24).
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is two stages. Stage one is deterministic and always runs

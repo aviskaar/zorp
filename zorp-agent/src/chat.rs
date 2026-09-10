@@ -32,6 +32,9 @@ pub enum ChatCommand {
     /// on screen to click. A terminal does not, so the number is optional
     /// and defaults to the most recent.
     Branch(Option<usize>),
+    /// Search your own conversations. A person reading their own history;
+    /// the model gets nothing from this.
+    Recall(String),
     Capsules,
     LoadCapsule(String),
     UnloadCapsule(String),
@@ -91,6 +94,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
                 _ => ChatCommand::Unknown("branch".to_string()),
             },
         },
+        "recall" => ChatCommand::Recall(remainder.to_string()),
         "capsules" => ChatCommand::Capsules,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),

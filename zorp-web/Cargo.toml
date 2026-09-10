@@ -22,7 +22,7 @@ search = ["zorp-agent/search"]
 # `search` opts into an egress path, this one opts into a capability that
 # refuses to have one. It also decides whether the search box appears,
 # which the operator of the server should turn on rather than discover.
-recall = ["dep:zorp-recall", "dep:sha2"]
+recall = ["zorp-agent/recall", "dep:zorp-recall", "dep:sha2"]
 # Zorp mode: running one pre-registered `investigate` attempt from the
 # browser, and reading back what it recorded.
 #
@@ -38,7 +38,7 @@ research = ["dep:zorp-track", "zorp-agent/research"]
 # text in front of a person, this puts it in front of a model. Off by
 # default, and off again per turn unless the person sending it ticks the
 # box.
-memory = ["recall"]
+memory = ["zorp-agent/memory", "recall"]
 # Browser voice transcription through a local Qwen3-ASR runtime. The route
 # shape exists without this feature and explains that it is off.
 voice = ["dep:zorp-voice"]
