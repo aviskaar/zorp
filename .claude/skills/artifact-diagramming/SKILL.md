@@ -1,12 +1,12 @@
 ---
 name: artifact-diagramming
-description: How to hand-author an SVG diagram or chart for zorp's side pane, where scripts do not run and no chart library will load. Use when drawing an architecture diagram, a data flow, a state machine, a sequence, or a chart.
+description: How to hand-author an SVG diagram or chart for zorp's side pane, where scripts do not run and no chart library will work. Use when drawing an architecture diagram, a data flow, a state machine, a sequence, or a chart.
 ---
 
 # Drawing a diagram
 
 zorp's browser shows `.svg` files, and `.html` files with inline SVG, in its
-side pane. **Scripts do not run there and no library will load**, so every
+side pane. **Scripts do not run there, so no chart library works.** Every
 diagram is one you write by hand. See `artifact-design` for the rest of that
 constraint.
 

@@ -27,7 +27,12 @@ So:
   will say so. A page whose content appears only after JavaScript is a blank
   page.
 - **No external anything.** No CDN, no `<link>` to Google Fonts, no remote
-  images. Those requests do not leave.
+  images. `sandbox` alone does not block those loads, so this one is a rule
+  and not a wall: the page has to stand on its own. It is read on a laptop
+  with no network, it is copied out of the workspace and opened somewhere
+  else, and a file the model wrote should not phone anywhere on the reader's
+  behalf. A page whose fonts arrive from a third party is also a page that
+  told that third party somebody opened it.
 - **No chart library.** Chart.js, D3, Plotly and every other one are
   scripts. Draw the chart as SVG yourself; see the `artifact-diagramming`
   skill.
