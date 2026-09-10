@@ -501,7 +501,7 @@ struct ProjectBody {
 /// result has to be something. A name that survives none of that is a 400
 /// rather than a row nobody can read.
 async fn create_project_route(Json(body): Json<ProjectBody>) -> impl IntoResponse {
-    let name = crate::title::scrub(&body.name);
+    let name = zorp_agent::title::scrub(&body.name);
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, "a project needs a name").into_response();
     }
