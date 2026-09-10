@@ -324,6 +324,16 @@ pub fn spawn_turn(
         guard.cancel = Some(Arc::clone(&cancel));
         (Arc::clone(&guard.seq), Arc::clone(&guard.auto_approve))
     };
+    // The opening half of the closing write below, and it has to be here
+    // rather than left to `create_session`: that runs once, and this thread
+    // is about to start writing messages on every turn after the first one
+    // too. Without it the column reads `done` while a turn is in flight, and
+    // the CLI, which has only this column to ask, would delete or branch a
+    // conversation this process is still writing to. Best effort for the
+    // same reason the closing write is.
+    if let Ok(store) = Store::open_default() {
+        let _ = store.set_status(&session_id, "running");
+    }
     let approver = Arc::new(WebApprover::new(
         tx.clone(),
         Arc::clone(&seq),
