@@ -6,6 +6,7 @@ use std::thread;
 /// (using `content_type`), then the thread exits. Returns "http://127.0.0.1:PORT".
 /// Reads the client's full request (headers + Content-Length body) before
 /// responding, so it stays reliable under parallel test execution.
+#[allow(dead_code)]
 pub fn mock(status: u16, content_type: &str, body: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();

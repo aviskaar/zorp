@@ -2667,10 +2667,73 @@ fn handle_chat_command(
         ChatCommand::Say(text) => {
             if !text.is_empty() {
                 run_and_render(agent, &text, out);
+                // After the answer, so the person has it before anything
+                // else is asked of the model, and only if this conversation
+                // has no name yet.
+                spawn_titling(session_id, agent.config().model);
             }
         }
     }
     exit
+}
+
+/// Name this conversation, if it still needs a name.
+///
+/// One model call per conversation, not per turn: `title_session_in` reads
+/// `display_title` first and does nothing when there is one, and that read
+/// survives a restart because it asks the store rather than remembering.
+///
+/// On its own thread, because the person is already typing the next thing
+/// and a sidebar label is not worth making them wait for. The thread opens
+/// its own store handle for the same reason `zorp-web`'s does: the one in
+/// the REPL is borrowed and this outlives the borrow.
+///
+/// Every failure is the same failure: nothing is written and the first
+/// message keeps showing. A conversation with no title is not a broken
+/// conversation, which is why nothing here is reported.
+fn spawn_titling(session_id: &str, model: Box<dyn zorp_agent::Model>) {
+    if !zorp_agent::title::enabled() {
+        return;
+    }
+    let session_id = session_id.to_string();
+    std::thread::spawn(move || {
+        let Ok(store) = Store::open_default() else {
+            return;
+        };
+        zorp_agent::title::title_session_in(&store, &session_id, |question, answer| {
+            // No reasoning mode, and never the one the person set for their
+            // own work: a sidebar label is not worth a thinking budget.
+            let reply = model
+                .complete(&zorp_agent::title::prompt(question, answer), &[])
+                .ok()?;
+            Some(reply.content)
+        });
+    });
+}
+
+/// The same, run to completion rather than spawned.
+///
+/// `resume` exits the process as soon as it has printed, so a background
+/// thread would be killed before it wrote anything.
+///
+/// The one-shot path deliberately does not do this. A one-shot is one
+/// command whose whole value is that it answers and exits, and a second
+/// model call for a label would double what it costs and how long it takes.
+/// A conversation started that way gets its name the first time anybody
+/// comes back to it, which is the first time the name is worth anything.
+fn title_now(session_id: &str, model: Box<dyn zorp_agent::Model>) {
+    if !zorp_agent::title::enabled() {
+        return;
+    }
+    let Ok(store) = Store::open_default() else {
+        return;
+    };
+    zorp_agent::title::title_session_in(&store, session_id, |question, answer| {
+        let reply = model
+            .complete(&zorp_agent::title::prompt(question, answer), &[])
+            .ok()?;
+        Some(reply.content)
+    });
 }
 
 fn run_and_render(agent: &mut Agent, text: &str, out: &mut dyn Renderer) {
@@ -3071,7 +3134,9 @@ fn resume(wanted: Option<&str>, auto_approve: bool, no_verify: bool, overrides: 
     }
 
     eprintln!("zorp-agent: resuming session {id}...");
+    let model = agent.config().model;
     let outcome = agent.resume();
+    title_now(id, model);
     finish(outcome, Some((&store, id)));
 }
 

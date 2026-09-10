@@ -38,6 +38,7 @@ mod session;
 pub mod sessions;
 mod skill_tool;
 pub mod streaming;
+pub mod title;
 mod tools;
 mod trust;
 #[cfg(feature = "research")]
