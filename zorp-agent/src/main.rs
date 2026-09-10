@@ -120,6 +120,23 @@ struct Overrides {
 }
 
 #[derive(Subcommand)]
+enum ConfigAction {
+    /// Set a saved value. Use `unset` to remove one.
+    Set {
+        /// One of: model, base-url, provider, max-tokens.
+        key: String,
+        value: String,
+    },
+    /// Remove a saved value, so the chain falls through to the default.
+    Unset {
+        /// One of: model, base-url, provider, max-tokens.
+        key: String,
+    },
+    /// Print the path to the saved settings file.
+    Path,
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Start an interactive chat session.
     Chat,
@@ -145,6 +162,15 @@ enum Command {
     Diff,
     /// Scaffold a new flavor manifest at ./.zorp/flavors/<name>.toml.
     New { name: String },
+    /// Show the effective configuration and where each value came from, or
+    /// change what is saved.
+    ///
+    /// The saved file is shared with the browser, so configuring zorp is
+    /// one job rather than two. The API key is never written to it.
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
     /// Delete a conversation and everything recorded under it.
     ///
     /// Takes a unique id prefix. This removes messages and recorded file
@@ -242,6 +268,7 @@ fn main() {
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
+        Some(Command::Config { action }) => config(action, &overrides),
         Some(Command::Rm { id, yes, force }) => remove_session(&id, yes || cli.yes, force),
         Some(Command::Branch { id, answer, force }) => branch_session(&id, answer, force),
         #[cfg(feature = "research")]
@@ -440,6 +467,158 @@ fn scaffold(name: &str) {
     println!("created {}", path.display());
 }
 
+/// `zorp-agent config`, and its three actions.
+fn config(action: Option<ConfigAction>, overrides: &Overrides) {
+    match action {
+        None => print_config(overrides),
+        Some(ConfigAction::Path) => println!("{}", zorp_agent::config::path().display()),
+        Some(ConfigAction::Set { key, value }) => config_write(&key, Some(&value)),
+        Some(ConfigAction::Unset { key }) => config_write(&key, None),
+    }
+}
+
+/// Print the effective configuration and, for each value, where it came
+/// from.
+///
+/// The provenance is the useful half. A person debugging why they are
+/// talking to the wrong model can already see the value: it is in the
+/// wrong answers they are getting. What they cannot see is which of the
+/// flag, the variable, the flavor and the file won.
+fn print_config(overrides: &Overrides) {
+    use zorp_agent::config;
+
+    let saved = config::load().unwrap_or_default();
+    let (_, project_flavor) = resolve_flavor(overrides);
+    let (user_flavor, _) = resolve_flavor(overrides);
+    let merged = user_flavor.merge(project_flavor);
+
+    let base_url = config::resolve(
+        overrides.base_url.as_deref(),
+        "ZORP_BASE_URL",
+        merged.base_url.as_deref(),
+        saved.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let model = config::resolve(
+        overrides.model.as_deref(),
+        "ZORP_MODEL",
+        merged.model.as_deref(),
+        saved.model.as_deref(),
+        "(not set)",
+    );
+    let provider = config::resolve(
+        overrides.provider.as_deref(),
+        "ZORP_PROVIDER",
+        merged.provider.map(|p| p.name()),
+        saved.provider.as_deref(),
+        "openai",
+    );
+    let max_tokens = config::resolve(
+        overrides.max_tokens.map(|v| v.to_string()).as_deref(),
+        "ZORP_MAX_TOKENS",
+        merged.max_tokens.map(|v| v.to_string()).as_deref(),
+        saved.max_tokens.map(|v| v.to_string()).as_deref(),
+        "(provider default)",
+    );
+
+    let rows = [
+        ("model", &model),
+        ("base url", &base_url),
+        ("provider", &provider),
+        ("max tokens", &max_tokens),
+    ];
+    let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (key, resolved) in rows {
+        println!(
+            "{key:<width$}  {}  (from {})",
+            resolved.value,
+            resolved.source.describe()
+        );
+    }
+
+    // Said and never shown. The key is the one thing that is not in the
+    // file and must not be, and a person still needs to know whether one
+    // is set.
+    println!(
+        "{:<width$}  {}",
+        "api key",
+        if std::env::var("ZORP_API_KEY")
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false)
+        {
+            "set in $ZORP_API_KEY, and never written to the file"
+        } else {
+            "not set"
+        }
+    );
+    println!("\nsaved settings: {}", zorp_agent::config::path().display());
+}
+
+/// Write one saved value, or remove it.
+///
+/// The keys are the four sharable settings and nothing else. There is
+/// deliberately no way to write an API key here: it is not on `Saved`, so
+/// there is nothing for a key to be written into.
+fn config_write(key: &str, value: Option<&str>) {
+    let mut saved = zorp_agent::config::load().unwrap_or_default();
+    let normalized = key.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "model" => saved.model = value.map(str::to_string),
+        "base-url" | "baseurl" | "url" => saved.base_url = value.map(str::to_string),
+        "provider" => {
+            if let Some(v) = value {
+                // Parsed before it is written, so an unusable value is a
+                // refusal now rather than a confusing failure on the next
+                // run.
+                if v.parse::<Provider>().is_err() {
+                    eprintln!("zorp-agent: unknown provider '{v}'. Use openai or anthropic.");
+                    std::process::exit(2);
+                }
+            }
+            saved.provider = value.map(str::to_string);
+        }
+        "max-tokens" | "maxtokens" => match value {
+            Some(v) => match v.parse::<u32>() {
+                Ok(n) => saved.max_tokens = Some(n),
+                Err(_) => {
+                    eprintln!("zorp-agent: max-tokens must be a number, got '{v}'");
+                    std::process::exit(2);
+                }
+            },
+            None => saved.max_tokens = None,
+        },
+        "api-key" | "apikey" | "key" => {
+            eprintln!(
+                "zorp-agent: the API key is never written to a file. Set $ZORP_API_KEY instead."
+            );
+            std::process::exit(2);
+        }
+        other => {
+            eprintln!(
+                "zorp-agent: unknown setting '{other}'. One of: model, base-url, provider, \
+                 max-tokens."
+            );
+            std::process::exit(2);
+        }
+    }
+    match zorp_agent::config::save(&saved) {
+        Ok(()) => {
+            let path = zorp_agent::config::path();
+            match value {
+                Some(v) => println!("{normalized} = {v}  ({})", path.display()),
+                None => println!("{normalized} unset  ({})", path.display()),
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "zorp-agent: could not write {}: {e}",
+                zorp_agent::config::path().display()
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
 fn open_store() -> Option<Store> {
     match Store::open_default() {
         Ok(s) => Some(s),
@@ -575,11 +754,24 @@ fn prompt_trust(project: &Flavor) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-fn pick(flag: Option<&str>, env: &str, flavor: Option<&str>, default: &str) -> String {
-    flag.map(str::to_string)
-        .or_else(|| std::env::var(env).ok().filter(|s| !s.is_empty()))
-        .or_else(|| flavor.map(str::to_string))
-        .unwrap_or_else(|| default.to_string())
+/// The whole resolution chain for one setting, in one place.
+///
+/// Flag, environment variable, flavor, saved file, default. The saved file
+/// is the new step and it sits below the flavor on purpose: a project that
+/// pins a model means it for that project, where the file is a person's
+/// standing preference across all of them. Nothing that used to win stops
+/// winning, which was the point.
+///
+/// `saved` is passed in rather than read here so a caller that resolves
+/// several settings reads the file once.
+fn pick_with(
+    flag: Option<&str>,
+    env: &'static str,
+    flavor: Option<&str>,
+    saved: Option<&str>,
+    default: &str,
+) -> String {
+    zorp_agent::config::resolve(flag, env, flavor, saved, default).value
 }
 
 fn build_policy(flag: Option<&str>, user: &Flavor, repo_root: &Path) -> Policy {
@@ -719,16 +911,20 @@ struct OllamaModel {
 }
 
 fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, String) {
-    let base_url = pick(
+    // Read once for both, rather than once per setting.
+    let saved = zorp_agent::config::load().unwrap_or_default();
+    let base_url = pick_with(
         overrides.base_url.as_deref(),
         "ZORP_BASE_URL",
         merged.base_url.as_deref(),
+        saved.base_url.as_deref(),
         "http://localhost:11434/v1",
     );
-    let mut model_name = pick(
+    let mut model_name = pick_with(
         overrides.model.as_deref(),
         "ZORP_MODEL",
         merged.model.as_deref(),
+        saved.model.as_deref(),
         "",
     );
 
@@ -779,7 +975,15 @@ fn resolve_provider(
             return env.parse();
         }
     }
-    Ok(merged.provider.unwrap_or_default())
+    if let Some(provider) = merged.provider {
+        return Ok(provider);
+    }
+    if let Some(saved) = zorp_agent::config::load().and_then(|s| s.provider) {
+        if !saved.trim().is_empty() {
+            return saved.parse();
+        }
+    }
+    Ok(Provider::default())
 }
 
 fn resolve_max_tokens(overrides: &Overrides, merged: &Flavor) -> Option<u32> {
@@ -791,6 +995,7 @@ fn resolve_max_tokens(overrides: &Overrides, merged: &Flavor) -> Option<u32> {
                 .and_then(|v| v.parse().ok())
         })
         .or(merged.max_tokens)
+        .or_else(|| zorp_agent::config::load().and_then(|s| s.max_tokens))
 }
 
 fn run(
