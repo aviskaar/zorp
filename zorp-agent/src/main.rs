@@ -166,6 +166,14 @@ enum Command {
     /// Match a co-written draft against real venues.
     #[cfg(feature = "research")]
     Deliver { question: String },
+    /// Run the instruction with a main model, have reviewer models test it,
+    /// and send corroborated findings back for revision. Roles come from
+    /// the TOML file named by ZORP_ENSEMBLE.
+    #[cfg(feature = "ensemble")]
+    Ensemble {
+        /// The task, as a plain run takes it.
+        instruction: String,
+    },
 }
 
 fn main() {
@@ -218,6 +226,10 @@ fn main() {
         }) => critique(&question, critique_rounds, cli.yes, &overrides),
         #[cfg(feature = "research")]
         Some(Command::Deliver { question }) => deliver(&question, cli.yes, &overrides),
+        #[cfg(feature = "ensemble")]
+        Some(Command::Ensemble { instruction }) => {
+            ensemble(&instruction, cli.yes, cli.no_verify, &overrides)
+        }
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -836,6 +848,173 @@ fn run(
         let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
         finish(outcome, status_target);
     }
+}
+
+/// `zorp-agent ensemble`. Builds the main agent exactly as `run` does, with
+/// the roster's main model in place of the configured one, and one model
+/// per reviewer on the same endpoint and key. Then hands everything to the
+/// loop, which is the only thing that launches a run or a review.
+#[cfg(feature = "ensemble")]
+fn ensemble(instruction: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
+    use zorp_agent::ensemble::{
+        self, EnsembleConfig, Roles, Roster, DEFAULT_REVIEW_STEPS, LOG_DIR_VAR, REVIEW_STEPS_VAR,
+        ROSTER_VAR,
+    };
+
+    let roster_path = std::env::var(ROSTER_VAR)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            eprintln!("zorp-agent: ensemble needs {ROSTER_VAR} naming a roles file");
+            std::process::exit(2);
+        });
+    let roster = Roster::load(Path::new(&roster_path)).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    // Zero is refused the way a roster's `rounds = 0` is. With no steps
+    // every reviewer comes back unusable and the roster empties itself by
+    // round two, and nothing in the record names the variable that did it.
+    let review_steps = match std::env::var(REVIEW_STEPS_VAR)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        None => DEFAULT_REVIEW_STEPS,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!(
+                    "zorp-agent: {REVIEW_STEPS_VAR} must be a whole number of at least 1, not {v:?}"
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    // The roster names every model this subcommand ever uses, so the base
+    // URL is all this needs from resolve_host_and_model's job. Calling it
+    // for that alone would call `pick` for a model name too, and an empty
+    // one against the default Ollama URL walks into an interactive model
+    // picker that blocks on stdin, a prompt --yes does not skip and whose
+    // answer would be thrown away regardless.
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "ZORP_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
+    let max_tokens = resolve_max_tokens(overrides, &merged);
+    let url = join_url(&base_url, provider.path_suffix());
+    let model_for = |name: &str| -> zorp_agent::ConfiguredHttpModel {
+        HttpModel {
+            url: url.clone(),
+            api_key: api_key.clone(),
+            model: name.to_string(),
+            provider,
+            max_tokens,
+        }
+        .try_with_env_reasoning_mode(merged.reasoning_mode)
+        .unwrap_or_else(|e| {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        })
+    };
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let session_id = new_session_id();
+    let mut main = Agent::new(
+        Box::new(model_for(&roster.main)),
+        system,
+        steps,
+        cwd.clone(),
+        cancel.clone(),
+        approval.clone(),
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    main = attach_mcp_tools(main, overrides, true);
+    main = attach_verifier(main, no_verify, &gated);
+    let recorder_store = open_store();
+    if let Some(store) = &recorder_store {
+        if let Err(e) = store.create_session(
+            &session_id,
+            instruction,
+            &cwd.display().to_string(),
+            &roster.main,
+        ) {
+            eprintln!("zorp-agent: could not create session: {e}");
+        } else if let Ok(rec_store) = Store::open_default() {
+            main = main.with_recorder(Box::new(SqliteRecorder::new(
+                rec_store,
+                session_id.clone(),
+                0,
+                0,
+            )));
+        }
+    }
+
+    let reviewers: Vec<Box<dyn zorp_agent::Model>> = roster
+        .reviewers
+        .iter()
+        .map(|name| Box::new(model_for(name)) as Box<dyn zorp_agent::Model>)
+        .collect();
+    let log_dir = std::env::var(LOG_DIR_VAR)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.join("scratch").join("ensemble").join(&session_id));
+    let config = EnsembleConfig {
+        roster,
+        review_steps,
+        log_dir,
+    };
+    eprintln!(
+        "zorp-agent: ensemble, main {} with {} reviewers, {} rounds, record in {}",
+        config.roster.main,
+        config.roster.reviewers.len(),
+        config.roster.rounds,
+        config.log_dir.display()
+    );
+    let finished = ensemble::run(
+        &config,
+        Roles { main, reviewers },
+        instruction,
+        &cwd,
+        cancel,
+        approval,
+    );
+    eprintln!(
+        "zorp-agent: ensemble stopped: {}; {} open findings",
+        finished.record.stopped,
+        finished.record.open_at_end.len()
+    );
+    let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
+    finish(finished.outcome, status_target);
 }
 
 /// Prepended to the composed system prompt for `validate`, which narrows the

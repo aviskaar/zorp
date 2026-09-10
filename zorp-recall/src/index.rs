@@ -78,6 +78,13 @@ pub struct Conversation {
     pub updated: i64,
     /// What the conversation looked like when it was indexed.
     pub fingerprint: String,
+    /// Which project the conversation is filed under, or `None`.
+    ///
+    /// A label the store owns and this index copies, so a search or a
+    /// recall can be narrowed to one project without a second index file.
+    /// It is part of the fingerprint upstream, so a conversation that moved
+    /// is rewritten here rather than keeping the label it had.
+    pub project_id: Option<String>,
 }
 
 /// One message that matched, with everything needed to say where it came
@@ -264,6 +271,7 @@ impl Index {
             title,
             updated,
             fingerprint,
+            project_id,
         } = conversation;
         let (id, title, fingerprint) = (id.as_str(), title.as_str(), fingerprint.as_str());
         let current = self.meta(EMBEDDER_KEY)?;
@@ -288,11 +296,12 @@ impl Index {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM chunks WHERE conversation_id = ?1", [id])?;
         tx.execute(
-            "INSERT INTO conversations (id, title, fingerprint, updated) \
-             VALUES (?1, ?2, ?3, ?4) \
+            "INSERT INTO conversations (id, title, fingerprint, updated, project_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT(id) DO UPDATE SET title = excluded.title, \
-             fingerprint = excluded.fingerprint, updated = excluded.updated",
-            rusqlite::params![id, title, fingerprint, updated],
+             fingerprint = excluded.fingerprint, updated = excluded.updated, \
+             project_id = excluded.project_id",
+            rusqlite::params![id, title, fingerprint, updated, project_id],
         )?;
         {
             let mut insert = tx.prepare(
@@ -383,11 +392,19 @@ impl Index {
     /// One row per conversation, carrying its best-scoring message. Scores
     /// are not filtered here: what counts as too weak to show is a question
     /// about a user interface, and this is not one.
-    pub fn search(&self, query: &[f32], limit: usize) -> Result<Vec<Hit>, IndexError> {
+    /// `project` narrows the search to one project. `None` searches
+    /// everything, which is what it did before projects existed and what a
+    /// conversation with no project still gets.
+    pub fn search(
+        &self,
+        query: &[f32],
+        limit: usize,
+        project: Option<&str>,
+    ) -> Result<Vec<Hit>, IndexError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let scored = self.scan(query)?;
+        let scored = self.scan(query, project)?;
 
         // Best chunk per conversation, ties going to the earlier message.
         // An arbitrary tie-break would make the same search show a
@@ -439,11 +456,16 @@ impl Index {
     /// Every row carries its own provenance. Nothing here filters by score,
     /// for the same reason `search` does not: what is too weak to show is a
     /// question for the caller that has to display it.
-    pub fn search_passages(&self, query: &[f32], limit: usize) -> Result<Vec<Passage>, IndexError> {
+    pub fn search_passages(
+        &self,
+        query: &[f32],
+        limit: usize,
+        project: Option<&str>,
+    ) -> Result<Vec<Passage>, IndexError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let mut scored = self.scan(query)?;
+        let mut scored = self.scan(query, project)?;
         scored.sort_by(|a, b| {
             b.score
                 .total_cmp(&a.score)
@@ -458,7 +480,7 @@ impl Index {
     ///
     /// The one place that reads vectors out of the file, so the two search
     /// shapes above cannot drift apart on what a score means.
-    fn scan(&self, query: &[f32]) -> Result<Vec<Passage>, IndexError> {
+    fn scan(&self, query: &[f32], project: Option<&str>) -> Result<Vec<Passage>, IndexError> {
         let Some(stored) = self.dimensions()? else {
             return Ok(Vec::new());
         };
@@ -470,11 +492,21 @@ impl Index {
         }
         let query = normalized(query);
 
-        let mut stmt = self.conn.prepare(
-            "SELECT c.conversation_id, v.title, v.updated, c.seq, c.role, c.text, c.vector \
-             FROM chunks c JOIN conversations v ON v.id = c.conversation_id",
-        )?;
-        let rows = stmt.query_map([], |row| {
+        // The filter is a WHERE clause on the join and not a pass over the
+        // results, so a scoped search reads only its own project's vectors.
+        // An id nobody filed anything under matches nothing, which is what
+        // a filter does and not an error.
+        let sql = "SELECT c.conversation_id, v.title, v.updated, c.seq, c.role, c.text, c.vector \
+             FROM chunks c JOIN conversations v ON v.id = c.conversation_id";
+        let filtered = format!("{sql} WHERE v.project_id = ?1");
+        let mut stmt = self
+            .conn
+            .prepare(if project.is_some() { &filtered } else { sql })?;
+        let bound: Vec<&dyn rusqlite::ToSql> = match project.as_ref() {
+            Some(project) => vec![project],
+            None => Vec::new(),
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(bound), |row| {
             Ok(Passage {
                 conversation_id: row.get(0)?,
                 title: row.get(1)?,
@@ -540,6 +572,13 @@ fn migrate(conn: &Connection) -> Result<(), IndexError> {
             "ALTER TABLE conversations ADD COLUMN updated INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
+    }
+    // `project_id` is nullable and defaults to NULL, which reads back as
+    // "not filed" rather than as a project. A conversation indexed before
+    // this column existed keeps its vectors and picks up its real label on
+    // the next pass, because the label is part of the fingerprint upstream.
+    if !columns.iter().any(|c| c == "project_id") {
+        conn.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT", [])?;
     }
     Ok(())
 }

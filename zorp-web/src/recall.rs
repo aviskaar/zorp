@@ -341,7 +341,7 @@ fn index_one(
         .load_messages(&session.id)
         .map_err(|e| RecallError::Store(e.to_string()))?;
     let chunks = chunks_for(&messages);
-    let print = fingerprint(&session.task, &chunks);
+    let print = fingerprint(&session.task, session.project_id.as_deref(), &chunks);
     if index.fingerprint(&session.id)?.as_deref() == Some(print.as_str()) {
         return Ok(Report {
             skipped: 1,
@@ -379,6 +379,7 @@ fn index_one(
             title: session.task.clone(),
             updated: session.updated,
             fingerprint: print,
+            project_id: session.project_id.clone(),
         },
         &embedder.identity(),
         &embedded,
@@ -701,7 +702,15 @@ fn run_pass(
 }
 
 /// Search. Blocking; call it off the async runtime.
-pub fn search(query: &str, limit: usize) -> Result<Vec<zorp_recall::Hit>, RecallError> {
+///
+/// `project` narrows it to one project's conversations. An id nothing is
+/// filed under matches nothing, which is what a filter does; the page never
+/// sends one it did not just list.
+pub fn search(
+    query: &str,
+    limit: usize,
+    project: Option<&str>,
+) -> Result<Vec<zorp_recall::Hit>, RecallError> {
     let query = query.trim();
     if query.is_empty() {
         return Err(RecallError::EmptyQuery);
@@ -709,7 +718,7 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<zorp_recall::Hit>, Recall
     let embedder = embedder()?;
     let index = Index::open_at(&index_path())?;
     let vector = embedder.embed(query)?;
-    Ok(index.search(&vector, limit.clamp(1, MAX_LIMIT))?)
+    Ok(index.search(&vector, limit.clamp(1, MAX_LIMIT), project)?)
 }
 
 /// Search, answering messages rather than conversations.
@@ -720,7 +729,11 @@ pub fn search(query: &str, limit: usize) -> Result<Vec<zorp_recall::Hit>, Recall
 /// conversation when that is where the answer is.
 ///
 /// Blocking; call it off the async runtime.
-pub fn passages(query: &str, limit: usize) -> Result<Vec<zorp_recall::Passage>, RecallError> {
+pub fn passages(
+    query: &str,
+    limit: usize,
+    project: Option<&str>,
+) -> Result<Vec<zorp_recall::Passage>, RecallError> {
     let query = query.trim();
     if query.is_empty() {
         return Err(RecallError::EmptyQuery);
@@ -728,7 +741,7 @@ pub fn passages(query: &str, limit: usize) -> Result<Vec<zorp_recall::Passage>, 
     let embedder = embedder()?;
     let index = Index::open_at(&index_path())?;
     let vector = embedder.embed(query)?;
-    Ok(index.search_passages(&vector, limit.clamp(1, MAX_LIMIT))?)
+    Ok(index.search_passages(&vector, limit.clamp(1, MAX_LIMIT), project)?)
 }
 
 /// The messages worth embedding, in order.
@@ -753,14 +766,21 @@ fn chunks_for(messages: &[zorp_agent::Message]) -> Vec<Chunk> {
 }
 
 /// What this conversation looked like, so the next reindex can tell whether
-/// it moved. Over the title and the exact text of every chunk, so a message
-/// edited in place counts as a change and a conversation that only grew
-/// still gets re-embedded whole. Re-embedding a grown conversation whole is
-/// wasteful and it is also correct, and correct is the one that matters at
-/// this size.
-fn fingerprint(title: &str, chunks: &[Chunk]) -> String {
+/// it moved. Over the title, the project it is filed under, and the exact
+/// text of every chunk, so a message edited in place counts as a change and
+/// a conversation that only grew still gets re-embedded whole. Re-embedding
+/// a grown conversation whole is wasteful and it is also correct, and
+/// correct is the one that matters at this size.
+///
+/// The project is in here because a moved conversation has not changed a
+/// word and must still be rewritten: the label is what a scoped search
+/// filters on, and a skip would leave the index saying the conversation is
+/// still where it was. That is the whole job of this fingerprint.
+fn fingerprint(title: &str, project: Option<&str>, chunks: &[Chunk]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(title.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(project.unwrap_or("").as_bytes());
     for chunk in chunks {
         hasher.update([0u8]);
         hasher.update(chunk.seq.to_le_bytes());

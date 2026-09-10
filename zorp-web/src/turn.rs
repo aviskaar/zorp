@@ -46,6 +46,7 @@ fn seed_transcript(
 /// The row is written here, from this store handle, before the seed is
 /// planned again with it. That ordering is the whole function: the second
 /// `plan_seed` reads the compaction that the first one asked for.
+#[allow(clippy::too_many_arguments)]
 fn summarize_before_seeding(
     store: &mut Store,
     session_id: &str,
@@ -325,7 +326,7 @@ pub fn spawn_turn(
         // would be a search for what the answer turned out to need, which
         // is a different thing from what the question asked for, and the
         // model would already have answered without it.
-        let recalled = recall_into_turn(use_memory, &message, &tx, &seq);
+        let recalled = recall_into_turn(use_memory, &session_id, &message, &tx, &seq);
 
         let outcome = run_agent(
             Ask {
@@ -382,7 +383,7 @@ pub fn spawn_turn(
 /// Compiled away entirely without the feature, which is what keeps a build
 /// that never opted into this from doing anything at all with the store.
 #[cfg(feature = "recall")]
-fn feed_recall(indexer: RecallFeed, session_id: String) {
+pub(crate) fn feed_recall(indexer: RecallFeed, session_id: String) {
     match indexer {
         Some(indexer) => indexer.index_session(session_id),
         // A router embedded without the process worker cannot promise
@@ -405,6 +406,7 @@ fn feed_recall(_indexer: RecallFeed, _session_id: String) {}
 #[cfg(feature = "memory")]
 fn recall_into_turn(
     use_memory: UseMemory,
+    session_id: &str,
     message: &str,
     tx: &std::sync::mpsc::Sender<Event>,
     seq: &Arc<Mutex<u64>>,
@@ -412,7 +414,15 @@ fn recall_into_turn(
     if !use_memory {
         return None;
     }
-    let (block, kind) = match crate::memory::recall_for(message, crate::memory::DEFAULT_PASSAGES) {
+    // Which project this conversation is filed under, if any. A brand new
+    // conversation has no store row on its first message, and that reads as
+    // no project, which is the same answer as a conversation nobody filed.
+    let project = session_project(session_id);
+    let (block, kind) = match crate::memory::recall_for(
+        message,
+        crate::memory::DEFAULT_PASSAGES,
+        project.as_deref(),
+    ) {
         Ok(found) => (
             found.block,
             EventKind::Memory {
@@ -441,9 +451,20 @@ fn recall_into_turn(
     block
 }
 
+/// The project a conversation is filed under, or `None` for a conversation
+/// with no project and for one the store has not heard of yet.
+#[cfg(feature = "memory")]
+fn session_project(session_id: &str) -> Option<String> {
+    zorp_agent::Store::open_default()
+        .ok()?
+        .session_project(session_id)
+        .ok()?
+}
+
 #[cfg(not(feature = "memory"))]
 fn recall_into_turn(
     _use_memory: UseMemory,
+    _session_id: &str,
     _message: &str,
     _tx: &std::sync::mpsc::Sender<Event>,
     _seq: &Arc<Mutex<u64>>,

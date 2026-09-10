@@ -12,10 +12,10 @@ enabled, it exports traces over OTLP/HTTP using the standard
 ## Span hierarchy
 
 ```
-agent_run                  one call to Agent::run / Agent::resume
+agent_run                   one call to Agent::run / Agent::resume
 └── agent_step              one iteration of the agent loop
-    ├── model completion     LLM call span (model.rs)
-    └── tool_span             one span per tool invocation
+    ├── model_complete      LLM call span (model.rs)
+    └── tool_execute        one span per tool invocation
 ```
 
 Key attributes: `zorp.task` (with values of secret-bearing environment

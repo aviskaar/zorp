@@ -41,6 +41,32 @@ export interface SessionSummary {
   id: string;
   title: string;
   updated_at: string;
+  /**
+   * The project this conversation is filed under, or `null` for none.
+   *
+   * A label and nothing else: the transcript, the title, the branch and
+   * delete behaviour are all unchanged by it. The name behind the id comes
+   * from `listProjects`, and like every other name in the sidebar it is
+   * text a person typed and reaches the page through `textContent`.
+   */
+  project_id?: string | null;
+  /**
+   * When the server last wrote this conversation, in epoch milliseconds.
+   *
+   * Absent for a conversation that exists only in the server's memory and
+   * has no stored row yet. That absence is the signal: there is nothing to
+   * label, so the row offers no move items.
+   */
+  updated?: number;
+}
+
+/** One project, as the server lists them: oldest first. */
+export interface ProjectSummary {
+  id: string;
+  /** Typed by a person. It goes on the page through `textContent`. */
+  name: string;
+  /** Epoch milliseconds. */
+  created: number;
 }
 
 /** One persisted turn in a session transcript. */
@@ -779,6 +805,40 @@ export async function newSession(): Promise<string> {
 export async function listSessions(): Promise<SessionSummary[]> {
   const sessions = await request<SessionSummary[]>("GET", "/api/sessions");
   return Array.isArray(sessions) ? sessions : [];
+}
+
+/**
+ * Every project, oldest first, so the sidebar keeps the order they were
+ * made in.
+ */
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const body = await request<{ projects?: ProjectSummary[] }>("GET", "/api/projects");
+  return Array.isArray(body?.projects) ? body.projects : [];
+}
+
+/**
+ * Make a project. A 400 means the name did not survive being trimmed, or
+ * was too long; the server's own message says which.
+ */
+export async function createProject(name: string): Promise<ProjectSummary> {
+  return request<ProjectSummary>("POST", "/api/projects", { name });
+}
+
+/**
+ * Remove a project. **This deletes no conversation.** Everything filed
+ * under it is unfiled and stays where it was.
+ */
+export async function deleteProject(id: string): Promise<void> {
+  await request<void>("DELETE", `/api/projects/${segment(id)}`);
+}
+
+/**
+ * File a conversation under a project, or take it out of one with `null`.
+ * A 409 means a turn is running on it; a 404 means the server has no such
+ * session or no such project.
+ */
+export async function setSessionProject(id: string, projectId: string | null): Promise<void> {
+  await request<void>("PUT", `/api/sessions/${segment(id)}/project`, { project_id: projectId });
 }
 
 /** Replay a stored conversation. */
@@ -1582,11 +1642,19 @@ export async function recallStatus(): Promise<RecallStatus> {
  * Search. Returns the raw rows: `conversation-search.ts` is what checks
  * their shape, because it is the thing that puts them on the page.
  */
-export async function recallSearch(query: string, limit?: number): Promise<unknown> {
+export async function recallSearch(
+  query: string,
+  limit?: number,
+  project?: string,
+): Promise<unknown> {
   const cap = limit === undefined ? "" : `&limit=${encodeURIComponent(String(limit))}`;
+  // A project nothing is filed under matches nothing, which is what a
+  // filter does. The server does not treat it as an error and neither does
+  // this, because the page only ever sends an id it just listed.
+  const scope = project ? `&project=${encodeURIComponent(project)}` : "";
   const body = await request<{ hits?: unknown }>(
     "GET",
-    `/api/recall/search?q=${encodeURIComponent(query)}${cap}`,
+    `/api/recall/search?q=${encodeURIComponent(query)}${cap}${scope}`,
   );
   return body?.hits;
 }

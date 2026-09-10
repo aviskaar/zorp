@@ -979,4 +979,135 @@ mod on {
         .unwrap();
         serde_json::from_str(&body).unwrap()
     }
+
+    /* ---------------------------------------------------------------- */
+    /* project scope                                                     */
+    /* ---------------------------------------------------------------- */
+
+    fn put_blocking(url: &str, body: &str) -> (u16, String) {
+        match ureq::put(url)
+            .set("content-type", "application/json")
+            .send_string(body)
+        {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    async fn make_project(addr: SocketAddr, name: &str) -> String {
+        let body = serde_json::json!({ "name": name }).to_string();
+        tokio::task::spawn_blocking(move || {
+            let (status, text) = post_blocking(&format!("http://{addr}/api/projects"), &body);
+            assert_eq!(status, 201, "{text}");
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn file_under(addr: SocketAddr, session: &str, project: Option<&str>) {
+        let session = session.to_string();
+        let body = serde_json::json!({ "project_id": project }).to_string();
+        tokio::task::spawn_blocking(move || {
+            let (status, text) = put_blocking(
+                &format!("http://{addr}/api/sessions/{session}/project"),
+                &body,
+            );
+            assert_eq!(status, 204, "{text}");
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A conversation with a store row, so it can be filed under a project.
+    /// A session that exists only in the process has nothing to label.
+    fn stored_session(db: &Path, id: &str) {
+        use zorp_agent::Store;
+        let store = Store::open_at(db).unwrap();
+        store
+            .create_session(id, "a new thread", "repo", "model")
+            .unwrap();
+    }
+
+    /// A conversation filed under a project reads that project and nothing
+    /// else.
+    ///
+    /// The fact it would have found lives in another project, so the turn
+    /// runs with no block at all. There is no widening: a project is what
+    /// the person chose as the context, and quoting a conversation from
+    /// outside it is exactly what the scope is there to prevent.
+    #[tokio::test]
+    async fn a_conversation_in_a_project_recalls_only_that_project() {
+        let _env = ENV.lock().await;
+        let (model, requests) = capturing_model();
+        let fixture = set_up(Some(&embedding_server()), &model);
+        let addr = spawn().await;
+
+        stored_session(&fixture.sessions_db(), "conv-asker");
+        let theirs = make_project(addr, "Someone else").await;
+        let ours = make_project(addr, "Ours").await;
+        file_under(addr, "conv-old", Some(&theirs)).await;
+        file_under(addr, "conv-asker", Some(&ours)).await;
+        build_index(addr).await;
+
+        let events = EventStream::connect(addr, "conv-asker");
+        turn(
+            addr,
+            "conv-asker",
+            "why does the billing job fail at the weekend",
+            true,
+        )
+        .await;
+        let events = drain(events).await;
+
+        let request = model_request(&requests);
+        assert!(
+            recalled(&request).is_none(),
+            "a scoped turn quoted a conversation from another project: {request}"
+        );
+        // And the browser is still told memory ran, so an answer with no
+        // block is visibly an answer with no block.
+        assert!(
+            events.text().contains("\"type\":\"memory\""),
+            "no memory event reached the browser: {}",
+            events.text()
+        );
+    }
+
+    /// A conversation in no project keeps reading everything, exactly as it
+    /// did before projects existed. Same question, same corpus, same
+    /// index: the only difference is the label on the asking session.
+    #[tokio::test]
+    async fn a_conversation_in_no_project_still_recalls_everything() {
+        let _env = ENV.lock().await;
+        let (model, requests) = capturing_model();
+        let fixture = set_up(Some(&embedding_server()), &model);
+        let addr = spawn().await;
+
+        stored_session(&fixture.sessions_db(), "conv-asker");
+        let theirs = make_project(addr, "Someone else").await;
+        file_under(addr, "conv-old", Some(&theirs)).await;
+        build_index(addr).await;
+
+        let events = EventStream::connect(addr, "conv-asker");
+        turn(
+            addr,
+            "conv-asker",
+            "why does the billing job fail at the weekend",
+            true,
+        )
+        .await;
+        drain(events).await;
+
+        let request = model_request(&requests);
+        let (_, block) = recalled(&request).expect("nothing was recalled into an unfiled turn");
+        assert!(
+            block.contains("port 8642"),
+            "the recalled fact is missing: {block}"
+        );
+    }
 }

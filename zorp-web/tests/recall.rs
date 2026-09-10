@@ -56,6 +56,39 @@ async fn post(url: String) -> (u16, String) {
     .unwrap()
 }
 
+/// A POST with a body, for the routes that take one.
+#[cfg(feature = "recall")]
+async fn post_body(url: String, body: String) -> (u16, String) {
+    tokio::task::spawn_blocking(move || {
+        match ureq::post(&url)
+            .set("content-type", "application/json")
+            .send_string(&body)
+        {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[cfg(feature = "recall")]
+async fn put_body(url: String, body: String) -> (u16, String) {
+    tokio::task::spawn_blocking(move || {
+        match ureq::put(&url)
+            .set("content-type", "application/json")
+            .send_string(&body)
+        {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
 fn json(body: &str) -> serde_json::Value {
     serde_json::from_str(body).unwrap_or_else(|_| panic!("not JSON: {body}"))
 }
@@ -613,5 +646,132 @@ mod on {
             .find(|s| s["id"] == "conv-dog")
             .expect("the session is not listed");
         assert_eq!(unnamed["title"], "Walking the dog", "{listed}");
+    }
+
+    /* -------------------------------------------------------------- */
+    /* projects: the same index, scoped                                */
+    /* -------------------------------------------------------------- */
+
+    /// Make a project and answer its id.
+    async fn make_project(addr: SocketAddr, name: &str) -> String {
+        let (status, body) = post_body(
+            format!("http://{addr}/api/projects"),
+            serde_json::json!({ "name": name }).to_string(),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+        json(&body)["id"].as_str().unwrap().to_string()
+    }
+
+    async fn file_under(addr: SocketAddr, session: &str, project: Option<&str>) {
+        let (status, body) = put_body(
+            format!("http://{addr}/api/sessions/{session}/project"),
+            serde_json::json!({ "project_id": project }).to_string(),
+        )
+        .await;
+        assert_eq!(status, 204, "{body}");
+    }
+
+    async fn search_ids(addr: SocketAddr, query: &str, project: Option<&str>) -> Vec<String> {
+        let scope = match project {
+            Some(id) => format!("&project={id}"),
+            None => String::new(),
+        };
+        let (status, body) = get(format!(
+            "http://{addr}/api/recall/search?q={query}&limit=10{scope}"
+        ))
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let mut ids: Vec<String> = json(&body)["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Two conversations in two projects. A scoped search sees one, an
+    /// unscoped search sees both, and a project nothing is filed under
+    /// sees nothing rather than erroring.
+    #[tokio::test]
+    async fn a_search_can_be_scoped_to_one_project() {
+        let _env = ENV.lock().await;
+        let _fixture = set_up(Some(&embedding_server()));
+        let addr = spawn().await;
+
+        let money = make_project(addr, "Money").await;
+        let animals = make_project(addr, "Animals").await;
+        file_under(addr, "conv-money", Some(&money)).await;
+        file_under(addr, "conv-dog", Some(&animals)).await;
+
+        let (status, body) = post(format!("http://{addr}/api/recall/index")).await;
+        assert_eq!(status, 200, "{body}");
+
+        assert_eq!(
+            search_ids(addr, "invoice%20dispute", Some(&money)).await,
+            vec!["conv-money".to_string()]
+        );
+        assert!(
+            search_ids(addr, "invoice%20dispute", Some(&animals))
+                .await
+                .iter()
+                .all(|id| id != "conv-money"),
+            "a scoped search reached outside its project"
+        );
+        assert!(
+            search_ids(addr, "invoice%20dispute", None)
+                .await
+                .contains(&"conv-money".to_string()),
+            "an unscoped search stopped finding what it always found"
+        );
+        assert!(
+            search_ids(addr, "invoice%20dispute", Some("nobody-filed-this"))
+                .await
+                .is_empty(),
+            "an unknown project is a filter that matches nothing, not an error"
+        );
+    }
+
+    /// Moving a conversation moves what a scoped search finds.
+    ///
+    /// This is what the fingerprint change is for. The conversation has not
+    /// changed a word, so a feed keyed on its text alone would skip it and
+    /// the index would go on saying it is in the project it left.
+    #[tokio::test]
+    async fn a_scoped_search_follows_a_conversation_between_projects() {
+        let _env = ENV.lock().await;
+        let _fixture = set_up(Some(&embedding_server()));
+        let addr = spawn().await;
+
+        let before = make_project(addr, "Before").await;
+        let after = make_project(addr, "After").await;
+        file_under(addr, "conv-money", Some(&before)).await;
+        post(format!("http://{addr}/api/recall/index")).await;
+        assert_eq!(
+            search_ids(addr, "invoice%20dispute", Some(&before)).await,
+            vec!["conv-money".to_string()]
+        );
+
+        file_under(addr, "conv-money", Some(&after)).await;
+        let (status, body) = post(format!("http://{addr}/api/recall/index")).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            json(&body)["indexed"],
+            1,
+            "a moved conversation was skipped: {body}"
+        );
+
+        assert_eq!(
+            search_ids(addr, "invoice%20dispute", Some(&after)).await,
+            vec!["conv-money".to_string()]
+        );
+        assert!(
+            search_ids(addr, "invoice%20dispute", Some(&before))
+                .await
+                .is_empty(),
+            "the index still has the conversation in the project it left"
+        );
     }
 }

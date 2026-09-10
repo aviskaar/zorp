@@ -415,13 +415,189 @@ button {
   overflow-wrap: anywhere;
 }
 
-.session-list {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 12px;
+/* The column the session rows scroll in. One list without projects, one
+   per group with them, so the scrolling belongs to the container rather
+   than to any one list. */
+.session-scroll {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  padding-bottom: 12px;
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A project: a foldable heading with its conversations under it. Native
+   `details`, so folding needs no script and keyboard support is the
+   browser's. */
+.project-group {
+  margin-bottom: 4px;
+}
+
+.project-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.project-summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 120ms ease;
+  flex-shrink: 0;
+}
+
+.project-group[open] > .project-summary::before {
+  transform: rotate(90deg);
+}
+
+.project-summary:hover {
+  background: var(--bg-hover);
+}
+
+.project-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
+/* Only on hover or focus, because it is a destructive-looking control on
+   a heading and it is not the reason anybody came to the heading. */
+.project-delete {
+  opacity: 0;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.project-summary:hover .project-delete,
+.project-delete:focus-visible {
+  opacity: 1;
+}
+
+.project-unfiled-label {
+  margin-top: 14px;
+}
+
+.new-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-project:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.new-project svg {
+  width: 14px;
+  height: 14px;
+}
+
+.project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.project-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.project-input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.project-create {
+  align-self: flex-start;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.project-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--danger);
+}
+
+.project-error:empty {
+  display: none;
+}
+
+/* What the search box searches. Hidden until there is a project to pick. */
+.recall-project {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* Named for a screen reader and off the page for everyone else. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .session-empty {
@@ -2534,7 +2710,7 @@ button {
 /* ---------------------------------------------------------------- scrollbars */
 
 .scroller::-webkit-scrollbar,
-.session-list::-webkit-scrollbar,
+.session-scroll::-webkit-scrollbar,
 .card-args::-webkit-scrollbar,
 .code-block::-webkit-scrollbar,
 #input::-webkit-scrollbar {
@@ -2543,7 +2719,7 @@ button {
 }
 
 .scroller::-webkit-scrollbar-thumb,
-.session-list::-webkit-scrollbar-thumb,
+.session-scroll::-webkit-scrollbar-thumb,
 .card-args::-webkit-scrollbar-thumb,
 .code-block::-webkit-scrollbar-thumb,
 #input::-webkit-scrollbar-thumb {
@@ -2554,7 +2730,7 @@ button {
 }
 
 .scroller::-webkit-scrollbar-thumb:hover,
-.session-list::-webkit-scrollbar-thumb:hover {
+.session-scroll::-webkit-scrollbar-thumb:hover {
   background: #313640;
   background-clip: content-box;
 }

@@ -652,8 +652,7 @@ mod tests {
         // forgery is the attack, and it fails for want of the nonce.
         let marker = user
             .lines()
-            .filter(|l| l.starts_with(FENCE_CLOSE))
-            .next_back()
+            .rfind(|l| l.starts_with(FENCE_CLOSE))
             .expect("no closing fence");
         let nonce = marker.trim_start_matches(FENCE_CLOSE).trim();
         assert_eq!(nonce.len(), 16, "{marker}");
