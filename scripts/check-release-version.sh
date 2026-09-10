@@ -73,7 +73,7 @@ is_exempt() {
     esac
 }
 
-# members = [".", "zorp-agent", ...] — flatten onto one line then split.
+# members = [".", "zorp-agent", ...], so flatten onto one line then split.
 members_line=$(sed -n 's/^members = \[\(.*\)\]$/\1/p' "$cargo_file" | head -n 1)
 # Fallback: multi-line members tables are not used today; fail closed if missing.
 if [ -z "$members_line" ]; then

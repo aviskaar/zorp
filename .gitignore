@@ -12,7 +12,7 @@ scratchpad/
 .env
 .env.*
 
-# Local-only reference material (not redistributed — see NOTICE.md)
+# Local-only reference material (not redistributed, see NOTICE.md)
 /reference/
 
 # LaTeX intermediates from the paper build (docs/paper/Makefile cleans

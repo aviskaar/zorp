@@ -12,8 +12,8 @@ zorp starts from the opposite premise. **The human is the author of record**, an
 
 # Three commitments
 
-1. **The record is the product.** Every attempt is stored — failures and contradictory results included — as typed rows rather than narrative logs, so a claim resolves to a measurement instead of a paragraph the agent wrote about itself.
-2. **Falsification is committed in advance.** Before any evidence is gathered, the hypothesis, metric, and a numeric **kill threshold** — supplied by a human, never proposed by the agent — are written to a git-committed `prereg.md` and hash-verified on every load.
+1. **The record is the product.** Every attempt is stored as typed rows rather than narrative logs, failures and contradictory results included, so a claim resolves to a measurement instead of a paragraph the agent wrote about itself.
+2. **Falsification is committed in advance.** Before any evidence is gathered, the hypothesis, metric, and a numeric **kill threshold**, supplied by a human and never proposed by the agent, are written to a git-committed `prereg.md` and hash-verified on every load.
 3. **Capabilities are standalone and checkpointed.** Four capabilities run alone and chain only through explicit human checkpoints. A checkpoint reached with nobody available is an error, not a skipped step; unattended runs must opt in visibly.
 
 # Architecture
@@ -26,13 +26,13 @@ Two rules follow from the commitments. **The foundation does not know its consum
 
 # Mechanisms that carry the guarantee
 
-**Tamper evidence.** On every track load, `zorp-track` re-hashes each `prereg.md` (SHA-256 over raw bytes) against the hash recorded at commit time; mismatch or absence refuses the run outright. DuckDB/LanceDB stores are regenerable indexes over these files — the committed files are the source of truth, and a commit timestamp cannot be moved after results are seen.
+**Tamper evidence.** On every track load, `zorp-track` re-hashes each `prereg.md` (SHA-256 over raw bytes) against the hash recorded at commit time; mismatch or absence refuses the run outright. DuckDB/LanceDB stores are regenerable indexes over these files. The committed files are the source of truth, and a commit timestamp cannot be moved after results are seen.
 
 **The evidence record.** Six DuckDB tables: `tracks`, `preregistrations`, `experiments`, `metrics`, `checkpoints`, `validations`. A metric is a `(key, value_type, value)` tuple in typed columns, so drafting is a lookup, not a paraphrase: "p99 latency fell 40%" must resolve to a row someone who was absent can check.
 
 **Checkpoints.** Two modes only: `Interactive` (default) and `AutoApprove` (explicit opt-in). There is no third mode. Each records what the human was shown and what they decided.
 
-**Critique.** A gate between drafting and delivery, not a capability: it audits the draft against the track's own record *in code* — arithmetic, not asking a model whether it likes its draft — flags figures the record cannot account for, revises within a bound you set, and cannot move the kill threshold.
+**Critique.** A gate between drafting and delivery, not a capability: it audits the draft against the track's own record *in code*, which is arithmetic rather than asking a model whether it likes its draft. It flags figures the record cannot account for, revises within a bound you set, and cannot move the kill threshold.
 
 **Tool gating.** `validate` fails fast without a search-capable tool rather than score feasibility on no evidence; `deliver` requires a venue tool. A tool searching your own saved notes does not count as external search.
 
@@ -55,14 +55,14 @@ The decision log (through 2026-08-22) records: **aryabhatta**, an anomaly-driven
 | Working tree today | 68,976 LOC Rust · 1,404 `#[test]` sites | Measured 2026-08-22 |
 | History & packaging | 189 commits since 2026-08-08 · v0.3.2 · MSRV 1.95 | `git`; `Cargo.toml` |
 
-Tests cover the failure modes the design turns on — tampered pre-registration hashes, checkpoints with no terminal and no flag, capabilities invoked without their required tool, index rebuild after database deletion — plus integration tests driving a stub MCP server over stdio. All four capabilities were built in under a week: read this as a design report, not a mature-system retrospective.
+Tests cover the failure modes the design turns on: tampered pre-registration hashes, checkpoints with no terminal and no flag, capabilities invoked without their required tool, and index rebuild after database deletion. Integration tests drive a stub MCP server over stdio. All four capabilities were built in under a week: read this as a design report, not a mature-system retrospective.
 
 # What is *not* claimed
 
-- **No comparative evaluation yet.** Tests establish mechanisms behave as specified — tampering detected, gates refusing, records surviving index loss — not that investigations are good.
-- **Tamper evidence is scoped.** It proves the committed threshold was not altered post hoc; it inherits git's trust model (history rewriting defeats it) — a defense against quiet drift, not adversaries.
+- **No comparative evaluation yet.** Tests establish that mechanisms behave as specified, meaning tampering detected, gates refusing, and records surviving index loss. They do not establish that investigations are good.
+- **Tamper evidence is scoped.** It proves the committed threshold was not altered post hoc; it inherits git's trust model (history rewriting defeats it). A defense against quiet drift, not against adversaries.
 - **Deferred:** LanceDB provisioned but unused; one active track per session; deliver scoped to academic venues though the design need not be.
-- **Throughput bounded by design** — human checkpoints make zorp a poor fit where volume matters more than defensibility.
+- **Throughput bounded by design.** Human checkpoints make zorp a poor fit where volume matters more than defensibility.
 
 # Roadmap and availability
 
