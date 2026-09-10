@@ -27,6 +27,7 @@ import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
 import { emptySessionRow, sessionRow, UNTITLED } from "./session-row";
+import { compactionMarker } from "./compaction-marker";
 import { projectGroups } from "./project-group";
 import {
   PaneResizer,
@@ -76,6 +77,7 @@ import {
   setAutoApprove,
   getCapabilities,
   branchSession,
+  compactSession,
   createProject,
   deleteProject,
   deleteSession,
@@ -195,6 +197,7 @@ interface Elements {
   voiceMicrophone: HTMLButtonElement;
   voiceCancel: HTMLButtonElement;
   voiceStatus: HTMLElement;
+  compactingStatus: HTMLElement;
   voicePreview: HTMLElement;
   voiceToast: HTMLElement;
   voiceMeter: HTMLElement;
@@ -345,6 +348,14 @@ let turnStopped = false;
 let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
+/**
+ * How many messages the summary in flight covers.
+ *
+ * Carried on `compacting` and needed by the marker that `compacted` draws,
+ * and the two are separate frames because one of them is the thing that
+ * takes time.
+ */
+let compactingMessages = 0;
 /** Every project, as the server last listed them. Refreshed with the sessions. */
 let projects: ProjectSummary[] = [];
 let activityGroup: ActivityGroup | null = null;
@@ -578,6 +589,7 @@ function collectElements(): Elements {
     voiceMicrophone: byId<HTMLButtonElement>("voice-mic"),
     voiceCancel: byId<HTMLButtonElement>("voice-cancel"),
     voiceStatus: byId("voice-status"),
+    compactingStatus: byId("compacting-status"),
     voicePreview: byId("voice-preview"),
     voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
@@ -920,6 +932,17 @@ async function submitMessage(): Promise<void> {
   if (!message) {
     return;
   }
+
+  // The one slash command there is. A `startsWith` check and not a command
+  // table, because a table for one entry is a table nobody reads; build one
+  // when there is a second.
+  if (message === "/compact" || message.startsWith("/compact ")) {
+    dom.input.value = "";
+    autoGrowInput();
+    await runCompact(message.slice("/compact".length).trim());
+    return;
+  }
+
   dom.input.value = "";
   autoGrowInput();
 
@@ -930,6 +953,38 @@ async function submitMessage(): Promise<void> {
   }
 
   await sendMessage(message);
+}
+
+/**
+ * Summarize the older conversation now, because the person typed
+ * `/compact`.
+ *
+ * The frames do the drawing: the server sends `compacting` and `compacted`
+ * on this session's stream and the handler above puts the marker on the
+ * page, so a compaction started here looks exactly like one the window
+ * filling started. What is left for this function is the two cases the
+ * stream has nothing to say about: a conversation with nothing to compact,
+ * and a session that does not exist yet.
+ */
+async function runCompact(focus: string): Promise<void> {
+  if (!sessionId) {
+    appendActivity(noticeLine("There is no conversation to compact yet."));
+    scrollToBottomIfFollowing(isNearBottom());
+    return;
+  }
+  try {
+    const result = await compactSession(sessionId, focus);
+    if (!result.compacted) {
+      // A command that declined, not one that broke, and the server's own
+      // words say which.
+      appendActivity(noticeLine(result.reason ?? "Not enough messages to compact."));
+      scrollToBottomIfFollowing(isNearBottom());
+    }
+  } catch (error) {
+    setCompacting(false);
+    appendError(`Could not compact the conversation: ${describeError(error)}`);
+    scrollToBottomIfFollowing(isNearBottom());
+  }
 }
 
 /** Draw the queue from current state. Called on every push and every drain. */
@@ -1465,6 +1520,45 @@ function applyEvent(event: ZorpEvent): void {
       });
       break;
 
+    case "compacting":
+      // A model call the person did not ask for, sitting between their
+      // message and their answer. Saying so beats a page that looks hung,
+      // and the send button goes down because a second turn now would race
+      // the compaction for the transcript.
+      closeActivityGroup();
+      compactingMessages = event.messages;
+      setCompacting(true);
+      break;
+
+    case "compacted":
+      setCompacting(false);
+      if (event.ok) {
+        // A seam in the transcript, not an activity line: the older
+        // conversation is not in the request any more, and that is a fact
+        // about the conversation rather than about something the agent did.
+        closeActivityGroup();
+        dom.transcript.append(
+          compactionMarker(document, {
+            messages: compactingMessages,
+            tokens_before: event.tokens_before,
+            tokens_after: event.tokens_after,
+            summary: event.summary ?? "",
+          }),
+        );
+        scrollToBottomIfFollowing(isNearBottom());
+      } else {
+        // The turn went ahead on the deterministic elision that has always
+        // been there. The server's own words say why the summary did not
+        // happen.
+        appendActivity(
+          noticeLine(
+            `The conversation could not be summarized: ${event.reason ?? "no reason given"}. ` +
+              "Older material was dropped from this request instead; the full transcript is still on disk.",
+          ),
+        );
+      }
+      break;
+
     case "memory":
       // Above the answer, because it is the reason for the answer. An
       // activity line would put it in with the tool calls, where it reads
@@ -1584,6 +1678,30 @@ function finishTurn(): void {
   if (next !== undefined) {
     paintQueue();
     void sendMessage(next);
+  }
+}
+
+/**
+ * Say that the conversation is being summarized, and hold the send button.
+ *
+ * The button goes down rather than becoming a stop button: compaction is
+ * one blocking model call, there is nothing to stop halfway that would
+ * leave the transcript in a state worth having, and the server answers 409
+ * to a turn started underneath it anyway.
+ */
+function setCompacting(active: boolean): void {
+  dom.composer.classList.toggle("is-compacting", active);
+  dom.send.disabled = active;
+  if (active) {
+    dom.compactingStatus.hidden = false;
+    dom.compactingStatus.textContent =
+      "Summarizing the conversation so it fits the model's window";
+  } else {
+    dom.compactingStatus.hidden = true;
+    dom.compactingStatus.textContent = "";
+    // A turn that is still running keeps its stop button; one that is not
+    // gets its arrow back.
+    dom.send.disabled = false;
   }
 }
 
@@ -2369,13 +2487,36 @@ async function openSession(session: SessionSummary): Promise<void> {
       // A stored call is drawn as the live tool event is. Consecutive lines
       // share one group, and `appendMessage` starts a new one, so a call, an
       // answer and another call land in two groups, the same as live.
-      transcript.messages.forEach((message: Message) => {
+      // Markers go after the entry the server counted them to. Oldest
+      // first, so two compactions in one conversation land in the order
+      // they happened.
+      const pending = [...transcript.compactions].sort((a, b) => a.after - b.after);
+      const drawMarkersUpTo = (drawn: number) => {
+        while (pending.length && pending[0].after <= drawn) {
+          const record = pending.shift()!;
+          closeActivityGroup();
+          dom.transcript.append(
+            compactionMarker(document, {
+              messages: record.messages,
+              tokens_before: record.tokens_before,
+              tokens_after: record.tokens_after,
+              summary: record.summary,
+            }),
+          );
+        }
+      };
+
+      transcript.messages.forEach((message: Message, index: number) => {
         if (message.role === "tool") {
           appendActivity(activityLine(message.name, message.summary, message.phrase));
         } else {
           appendMessage(message.role, message.content);
         }
+        drawMarkersUpTo(index + 1);
       });
+      // Anything counted past the last entry still belongs on the page: the
+      // messages it covers may all have been rows this list does not draw.
+      drawMarkersUpTo(Number.MAX_SAFE_INTEGER);
       // A replayed group is over by construction, so it shows its count.
       closeActivityGroup();
       // A reopened chat's answers name files too, and nothing else here asks

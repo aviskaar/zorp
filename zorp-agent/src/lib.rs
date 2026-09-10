@@ -8,6 +8,7 @@ mod capsule;
 mod chat;
 #[cfg(feature = "research")]
 pub mod co_write;
+pub mod compaction;
 mod context;
 pub mod context_window;
 #[cfg(feature = "research")]
@@ -41,7 +42,9 @@ mod trust;
 pub mod validate;
 mod verify;
 
-pub use agent::{web_search_availability, Agent, Outcome, RunRecorder, ToolAvailability};
+pub use agent::{
+    web_search_availability, Agent, Outcome, RunRecorder, Summarizer, ToolAvailability,
+};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use capsule::{
     default_user_capsules_dir, extract_fenced_block, is_reserved, project_capsules_dir, Capsule,
@@ -50,8 +53,8 @@ pub use capsule::{
 pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use context_window::{
-    compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, ContextBudget,
-    ContextUsage, SeedPlan, TokenUsage, UsageSource,
+    compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, CompactionOutcome,
+    ContextBudget, ContextUsage, SeedPlan, TokenUsage, UsageSource,
 };
 pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
 // `resolve_configured` and `resolve_scoped` are re-exported and nothing names
@@ -91,7 +94,7 @@ pub use render::{
 };
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
 pub use session::{
-    new_session_id, render_change_summary, ProjectRow, SessionRow, SetProject, Store,
+    new_session_id, render_change_summary, Compaction, ProjectRow, SessionRow, SetProject, Store,
 };
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
