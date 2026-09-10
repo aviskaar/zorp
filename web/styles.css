@@ -44,10 +44,11 @@
   --accent-glow: rgba(94, 234, 212, 0.12);
 
   /* The logo's own colours, from its dark version: white nodes and edges,
-     electric blue on the two accent nodes. Kept separate from --accent
-     because the mark is the brand and does not follow this UI's palette. */
+     and the brand green on the two accent nodes. Still its own token rather
+     than --accent, because the mark is the brand and the UI palette may
+     move without it, but the two now hold the same green on purpose. */
   --brand-fg: #ffffff;
-  --brand-accent: #1450f5;
+  --brand-accent: #5eead4;
 
   --warn: #f5b544;
   --warn-soft: rgba(245, 181, 68, 0.09);
