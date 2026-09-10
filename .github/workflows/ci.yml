@@ -226,6 +226,55 @@ jobs:
             --cases zorp-eval/evals/harness \
             --agent-binary target/debug/zorp-agent
 
+  features:
+    # The non-default features that are cheap to compile. `cargo test
+    # --workspace` resolves default features only, so until this job existed
+    # nothing in CI compiled a line of `otel`, `search`, `clipboard`,
+    # `memory` or `voice`: a `#[cfg(feature = ...)]` block could rot for
+    # months and the first person to find out was whoever turned the feature
+    # on. Every one of them is opt-in for a reason, which is exactly why no
+    # other job reaches them.
+    #
+    # These are the cheap ones, so they sit on the per-pull-request path with
+    # no path filter. `library` is deliberately not here: it drags in LanceDB
+    # and the whole arrow tree, so it lives in the `research` pair below,
+    # where a slow build is already being paid for. `recall` is not here
+    # either, `build-and-test` already runs it, and `research` has its own
+    # two jobs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # clippy rather than test, because none of these three has a test the
+      # default build does not already run: the question here is only whether
+      # the feature-gated code still compiles. `--all-targets` and
+      # `-D warnings` make it the same gate the `clippy` job applies to the
+      # default build, over code no lint had ever seen. One invocation for
+      # all three: they are independent optional dependencies, and three
+      # separate compiles of the same crate would cost three times as much to
+      # catch a combination nobody ships.
+      - name: Clippy zorp-agent (otel, search, clipboard)
+        run: cargo clippy -p zorp-agent --features otel,search,clipboard --all-targets --locked -- -D warnings
+
+      # test rather than clippy, because these three do have tests of their
+      # own and those tests are the point. `capabilities.rs` pins what the
+      # browser is told about `web_search` in a build that has it,
+      # `memory.rs` drives a whole recalled turn byte for byte, and
+      # `voice.rs` covers the routes that only exist with the feature.
+      # None of it touches the network: the search tests use a nonsense key
+      # and never spend a search, and the memory and voice tests run their
+      # servers on loopback.
+      - name: Test zorp-web (search, memory, voice)
+        run: cargo test -p zorp-web --features search,memory,voice --locked
+
   research:
     # Full build of zorp-track and the research-feature surface of
     # zorp-agent. Runs nightly, and on pull requests that touch the
@@ -245,9 +294,43 @@ jobs:
     # partial cache hit, which put a warm-ish run at twenty one minutes.
     # A genuinely cold cache would pay both builds, and 45 was no longer
     # far enough above that to tell slow from stuck.
-    timeout-minutes: 60
+    #
+    # Raised again from 60 for the `library` step below, which is a fourth
+    # DuckDB build and the arrow tree on top of the three above. A cold run
+    # that got through everything but the last step measured 47 minutes.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      # Reclaim disk before anything compiles. This job builds the bundled
+      # DuckDB amalgamation once per feature set it resolves: each one gives
+      # `libduckdb-sys` a different metadata hash, so none of them shares a
+      # build with the others, and a debug build of it is enormous. The
+      # runner starts with about 87 GB free and three of those builds is
+      # already most of it. A fourth failed in `ar` while linking
+      # libduckdb.a with "No space left on device", which reads like a
+      # compiler error and is not one, the worst way for a job to go red.
+      #
+      # Deleting toolchains this workspace never uses reclaims about 22 GB
+      # (measured: 87 GB free to 108 GB) in well under two minutes, and that
+      # is the difference between the fourth build fitting and not. `rm -rf`
+      # of a path a future image stops shipping is a no-op, so this cannot
+      # start failing because somebody upstream reorganised the image, and
+      # it touches nothing on the network. It is before `Install Rust` on
+      # purpose: only CodeQL is taken out of the hosted tool cache, so the
+      # toolchain that lands after it is safe. `df -h /` is printed on both
+      # sides so the next person can see the real headroom rather than
+      # guess at it.
+      - name: Free disk for the bundled DuckDB and arrow builds
+        run: |
+          set -eu
+          df -h /
+          sudo rm -rf /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet \
+                      /usr/share/swift \
+                      /opt/ghc
+          df -h /
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -296,6 +379,28 @@ jobs:
 
       - name: Test zorp-web (research feature)
         run: cargo test -p zorp-web --features research --locked
+
+      # The `library` feature: the LanceDB-backed store behind validate's
+      # cited sources. It is off by default on every crate that has it, so
+      # nothing else in this file compiles a line of it and it could rot
+      # with nothing going red.
+      #
+      # Nightly and on pushes to main, deliberately not on `research-pr`. It
+      # is the fourth DuckDB build in this job plus the whole arrow tree,
+      # which took the pull request path from about fourteen minutes to
+      # forty eight before it ran out of disk. Nothing is waiting on this
+      # job, so a day is a fine distance to catch rot in an opt-in feature
+      # from.
+      #
+      # zorp-track owns the feature and holds the one test behind it.
+      # zorp-agent's `library` surface is a single `#[cfg]` in validate
+      # calling that same API, and compiling it is a fifth DuckDB build and
+      # a second arrow tree in one target directory, which did not fit even
+      # with 17 GB freed. One call site is not worth a step that cannot
+      # finish, so it stays ungated, and the reason is runner disk rather
+      # than anything about the code.
+      - name: Test zorp-track (library feature)
+        run: cargo test -p zorp-track --features library --locked
 
   research-pr:
     # Same coverage for pull requests, gated on paths so unrelated PRs
@@ -348,13 +453,60 @@ jobs:
             exit 0
           fi
           echo "$changed"
-          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|zorp-agent/src/(validate|investigate|co_write|critique|deliver|ensemble)/|zorp-agent/Cargo\.toml$|zorp-web/src/investigate\.rs$|zorp-web/tests/investigate\.rs$|zorp-web/Cargo\.toml$|evals/harbor/|Cargo\.toml$|Cargo\.lock$)'; then
+          # Everything this names is compiled by one of the steps below.
+          # `erbga/` is here because zorp-track's search layer depends on it
+          # and nothing else builds that pairing. `zorp-agent/tests/` is all
+          # of it, not the research test files by name, because the research
+          # step builds every target in the crate and a shared helper under
+          # `tests/common/` breaks them all; naming files would also go stale
+          # the first time somebody adds one. `src/lib.rs` and `src/main.rs`
+          # on both crates declare and wire the research modules, and
+          # `zorp-web/src/api.rs` is where the investigate routes and the
+          # `cfg!(feature = "research")` answer live. This file is in the
+          # list because a change to these steps should run these steps.
+          #
+          # `docs/` is deliberately out, specs included: a documentation
+          # change cannot break a build, and firing a twenty minute job on
+          # one teaches people to ignore the job. The nightly run is the
+          # backstop for whatever the filter cannot name.
+          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|erbga/|zorp-agent/src/(validate|investigate|co_write|critique|deliver|ensemble)/|zorp-agent/src/(lib|main)\.rs$|zorp-agent/tests/|zorp-agent/Cargo\.toml$|zorp-web/src/(investigate|api|lib)\.rs$|zorp-web/tests/investigate\.rs$|zorp-web/Cargo\.toml$|evals/harbor/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
             echo "research stack touched" >&2
             echo "research=true" >> "$GITHUB_OUTPUT"
           else
             echo "research stack untouched" >&2
             echo "research=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # Reclaim disk before anything compiles. This job builds the bundled
+      # DuckDB amalgamation once per feature set it resolves: each one gives
+      # `libduckdb-sys` a different metadata hash, so none of them shares a
+      # build with the others, and a debug build of it is enormous. The
+      # runner starts with about 87 GB free and three of those builds is
+      # already most of it. A fourth failed in `ar` while linking
+      # libduckdb.a with "No space left on device", which reads like a
+      # compiler error and is not one, the worst way for a job to go red.
+      #
+      # Deleting toolchains this workspace never uses reclaims about 22 GB
+      # (measured: 87 GB free to 108 GB) in well under two minutes, and that
+      # is the difference between the fourth build fitting and not. `rm -rf`
+      # of a path a future image stops shipping is a no-op, so this cannot
+      # start failing because somebody upstream reorganised the image, and
+      # it touches nothing on the network. It is before `Install Rust` on
+      # purpose: only CodeQL is taken out of the hosted tool cache, so the
+      # toolchain that lands after it is safe. `df -h /` is printed on both
+      # sides so the next person can see the real headroom rather than
+      # guess at it.
+      - name: Free disk for the bundled DuckDB and arrow builds
+        if: steps.filter.outputs.research == 'true'
+        run: |
+          set -eu
+          df -h /
+          sudo rm -rf /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet \
+                      /usr/share/swift \
+                      /opt/ghc
+          df -h /
 
       - name: Install Rust
         if: steps.filter.outputs.research == 'true'
@@ -406,3 +558,4 @@ jobs:
       - name: Test zorp-web (research feature)
         if: steps.filter.outputs.research == 'true'
         run: cargo test -p zorp-web --features research --locked
+

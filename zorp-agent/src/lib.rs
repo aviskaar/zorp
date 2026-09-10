@@ -45,22 +45,31 @@ pub use agent::{web_search_availability, Agent, Outcome, RunRecorder, ToolAvaila
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use capsule::{
     default_user_capsules_dir, extract_fenced_block, is_reserved, project_capsules_dir, Capsule,
-    CapsuleRegistry, CapsuleState, RESERVED_NAMES,
+    CapsuleRegistry, CapsuleState,
 };
 pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use context_window::{
-    compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, repair_tool_calls,
-    CompactionReport, ContextBudget, ContextUsage, SeedPlan, TokenUsage, UsageSource,
+    compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, ContextBudget,
+    ContextUsage, SeedPlan, TokenUsage, UsageSource,
 };
 pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
+// `resolve_configured` and `resolve_scoped` are re-exported and nothing names
+// them. Dropping them from this list is not the fix: `flavor` is a private
+// module and both are one-line wrappers their own tests are the only caller
+// of, so un-exporting them turns them into dead code and the clippy gate goes
+// red. Either they keep earning a place in the public API or they get deleted
+// along with the tests that hold them up.
 pub use flavor::{
-    content_hash, is_valid_flavor_name, layer_paths, named_flavor_exists, project_raw, resolve,
+    content_hash, is_valid_flavor_name, named_flavor_exists, project_raw, resolve,
     resolve_configured, resolve_scoped, resolve_scoped_configured, ApprovalSection,
     ConfiguredFlavor, Flavor, Scope, ToolsSection, VerifySection,
 };
 pub use identity::DEFAULT_SYSTEM_PROMPT;
 pub use instructions::load as load_instructions;
+// `parse_assistant` sits in the same trap as the two flavor functions above:
+// a one-line wrapper over `parse_assistant_completion`, in a private module,
+// with tests as its only caller.
 pub use model::{
     messages_to_body, parse_assistant, parse_assistant_completion, AssistantMessage,
     ConfiguredHttpModel, ContentPart, HttpModel, Message, MessageMetadata, MessageRecord, Model,
@@ -68,13 +77,12 @@ pub use model::{
 };
 pub use panel::{
     default_lenses, reviewer_tools, Agreement, Lens, PanelConfig, PanelFinding, PanelObserver,
-    PanelReport, ReviewerFailure, ReviewerVerdict, Severity, SilentObserver, Target,
+    PanelReport, ReviewerVerdict, Target,
 };
 pub use policy::{Decision, Policy, Preset};
 pub use provider::Provider;
 pub use reasoning::{
-    parse_env_reasoning_mode, reasoning_payload, CompletionOptions, CompletionTelemetry,
-    ReasoningMode,
+    parse_env_reasoning_mode, CompletionOptions, CompletionTelemetry, ReasoningMode,
 };
 pub use recorder::SqliteRecorder;
 pub use render::{

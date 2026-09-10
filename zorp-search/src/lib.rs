@@ -7,7 +7,7 @@
 
 mod tavily;
 
-pub use tavily::{TavilyProvider, TAVILY_API_KEY_VAR, TAVILY_BASE_URL, TAVILY_BASE_URL_VAR};
+pub use tavily::TavilyProvider;
 
 use std::fmt;
 

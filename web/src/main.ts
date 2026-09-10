@@ -11,6 +11,7 @@ import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { AnswerCount, branchButton } from "./branch";
+import { artifactTree } from "./artifact-tree";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
 import { queueView, renderQueue, type QueueView } from "./message-queue";
@@ -3394,32 +3395,45 @@ function renderArtifactList(files: Artifact[], truncated: boolean): void {
     dom.artifactList.append(empty);
     return;
   }
-  for (const file of files) {
-    const row = el("li");
-    const button = el("button", "artifact-item") as HTMLButtonElement;
-    button.type = "button";
-    button.dataset.path = file.path;
-    if (file.path === openArtifact) {
-      button.dataset.open = "yes";
-    }
-    button.append(
-      textNode("span", "artifact-name", file.path),
-      textNode("span", "artifact-size", humanBytes(file.bytes)),
-    );
-    if (producedThisTurn.has(file.path)) {
-      // Which of these the run wrote is worth knowing after the fact, so the
-      // mark outlives the badge on the button.
-      button.dataset.fresh = "yes";
-      button.append(textNode("span", "artifact-fresh", "new"));
-    }
-    button.addEventListener("click", () => {
-      closeFilesMenu();
-      showArtifactsPane();
-      void showArtifact(file.path);
-    });
-    row.append(button);
-    dom.artifactList.append(row);
+  // The rows are the same as they ever were; only where they sit changed.
+  // A folder holding the open file or one this turn wrote starts open, and
+  // every other folder starts shut, since a run that wrote two hundred
+  // images into one directory is the column this replaced.
+  const reveal = new Set(producedThisTurn);
+  if (openArtifact) {
+    reveal.add(openArtifact);
   }
+  dom.artifactList.append(
+    ...artifactTree(document, files, {
+      reveal,
+      row: (file, label) => {
+        const button = el("button", "artifact-item") as HTMLButtonElement;
+        button.type = "button";
+        button.dataset.path = file.path;
+        // The whole path is still worth knowing, just not worth a whole row.
+        button.title = file.path;
+        if (file.path === openArtifact) {
+          button.dataset.open = "yes";
+        }
+        button.append(
+          textNode("span", "artifact-name", label),
+          textNode("span", "artifact-size", humanBytes(file.bytes)),
+        );
+        if (producedThisTurn.has(file.path)) {
+          // Which of these the run wrote is worth knowing after the fact, so
+          // the mark outlives the badge on the button.
+          button.dataset.fresh = "yes";
+          button.append(textNode("span", "artifact-fresh", "new"));
+        }
+        button.addEventListener("click", () => {
+          closeFilesMenu();
+          showArtifactsPane();
+          void showArtifact(file.path);
+        });
+        return button;
+      },
+    }),
+  );
   if (truncated) {
     const note = el("li", "artifact-none");
     note.textContent = "That is as many as this pane lists. Narrower is better than wrong.";

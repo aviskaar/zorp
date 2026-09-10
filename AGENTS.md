@@ -547,6 +547,12 @@ resulting artifact, deliver it in the right form.
   card, open while it waits and folded to its head once settled; both put
   every string on the page through `textContent` and are tested without
   a page. See `docs/DECISIONS.md` (2026-09-05).
+  `web/src/artifact-tree.ts` groups the Files pane's listing by directory
+  and draws each folder as a native `details`, with the top level open and
+  everything under it shut unless it holds the open file or one this turn
+  wrote; the row still carries the whole path and shows only the leaf, and a
+  folder name is model-written text so it lands through `textContent` like
+  the rest. See `docs/DECISIONS.md` (2026-09-05).
   `web/src/file-links.ts` turns a code span or a relative markdown link in
   an answer into a button that opens that file in the artifact pane, and
   the workspace listing is the only thing that decides what is a file, so
