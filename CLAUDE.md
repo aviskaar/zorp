@@ -563,11 +563,22 @@ resulting artifact, deliver it in the right form.
   prints a secret**: a key is reported as set or not set, never its value,
   never a prefix, never its length, and a test greps the whole report to
   prove it, because this is the thing people paste into bug reports. And a
-  probe goes the way the real path goes, through `zorp::http_agent` with the
-  same timeouts, because a doctor that reached an endpoint the real feature
-  would refuse would report healthy on the one configuration that cannot
-  work. A feature that is off is reported and never counted as a failure, or
-  every default build would exit non-zero.
+  probe goes where the real path goes, the same resolved endpoint, because a
+  doctor that reached a URL the real feature would refuse would report
+  healthy on the one configuration that cannot work. It builds its own HTTP
+  agent rather than reusing `zorp::http_agent`, whose read timeout is 900
+  seconds because it is for answers a model is still writing: a diagnostic
+  that hangs for fifteen minutes is worse than one that says it could not
+  tell, so this one waits ten, the way `zorp-web`'s settings probes and
+  `zorp-search` each build and bound their own. A feature that is off is
+  reported and never counted as a failure, or every default build would exit
+  non-zero.
+- The terminal is line oriented and stays that way. No alternate screen, no
+  panes, no `ratatui`: a full screen mode would cost piping, scrollback,
+  selection and screen reader support, and every win it was supposed to buy
+  turned out to be better line output instead. A line editor is not a TUI
+  and is not ruled out. See `docs/DECISIONS.md` (2026-09-10) before
+  reaching for a layout.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is two stages. Stage one is deterministic and always runs
