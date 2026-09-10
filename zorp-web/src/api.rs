@@ -108,6 +108,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/branch", post(branch_session))
+        .route("/api/sessions/:id/compact", post(compact_session))
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/panel", post(start_panel))
@@ -222,15 +223,48 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
 }
 
 /// Replay a conversation from the store.
+///
+/// Every message, always. Compaction changes what is sent to a model and
+/// never what is on disk, so a reopened conversation shows what was said
+/// even where a summary stood in for part of it during a turn.
+///
+/// `compactions` comes alongside rather than inside `messages`, because a
+/// summary is not a message: the browser draws a marker after the message
+/// whose seq matches a boundary, and the marker is labelled model-written
+/// and drawn as plain text. Nothing that reads `messages` sees a summary.
 async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
     let store = match zorp_agent::Store::open_default() {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match store.load_messages(&id) {
-        Ok(messages) => Json(json!({"messages": transcript(&messages)})).into_response(),
+        Ok(messages) => Json(json!({
+            "messages": transcript(&messages),
+            "compactions": compaction_rows(&store, &id),
+        }))
+        .into_response(),
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
+}
+
+/// The compaction markers a reopened transcript draws, oldest first.
+fn compaction_rows(store: &zorp_agent::Store, id: &str) -> Vec<serde_json::Value> {
+    store
+        .compactions(id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "boundary_seq": c.boundary_seq,
+                "summary": c.summary,
+                "tokens_before": c.tokens_before,
+                "tokens_after": c.tokens_after,
+                "created": c.created,
+                "manual": c.manual,
+            })
+        })
+        .collect()
 }
 
 /// What the browser rebuilds a reopened transcript from, in stored order.
@@ -255,23 +289,34 @@ fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
         .filter_map(|m| Some((m.tool_call_id.as_deref()?, m)))
         .collect();
     let mut out = Vec::new();
-    for m in messages {
+    for (seq, m) in messages.iter().enumerate() {
         if m.role != "user" && m.role != "assistant" {
             continue;
         }
+        // The stored seq of the message this entry came from. The browser
+        // needs it to put a compaction marker where the live turn drew one:
+        // a boundary is a `messages.seq`, and the transcript above drops
+        // system and tool rows, so a position in this list is not one.
+        // Index is seq, because the recorder assigns them from zero, one
+        // per message, and the loader orders by them.
+        let seq = seq as i64;
         // Message content is structured to carry images; the browser
         // transcript wants the text of each turn.
         let text = m.text();
         if !text.trim().is_empty() {
-            out.push(json!({"role": &m.role, "content": text}));
+            out.push(json!({"role": &m.role, "content": text, "seq": seq}));
         }
         for call in &m.tool_calls {
             let summary = results
                 .get(call.id.as_str())
                 .and_then(|result| zorp_agent::summary_from_content(&call.name, &result.text()))
                 .unwrap_or_default();
-            let mut entry =
-                json!({"role": "tool", "name": call.display_name(), "summary": summary});
+            let mut entry = json!({
+                "role": "tool",
+                "name": call.display_name(),
+                "summary": summary,
+                "seq": seq,
+            });
             if let Some(phrase) = call.description() {
                 entry["phrase"] = json!(phrase);
             }
@@ -458,6 +503,91 @@ async fn list_lenses() -> Json<serde_json::Value> {
         .map(|l| serde_json::json!({"name": l.name, "instruction": l.instruction}))
         .collect();
     Json(serde_json::json!({ "lenses": lenses }))
+}
+
+#[derive(Deserialize)]
+struct CompactBody {
+    /// What to steer the summary toward, from `/compact <focus>`.
+    ///
+    /// A person's own words, and untrusted like any other: it is fenced as
+    /// a preference when it reaches the model and can change no rule about
+    /// what the summary must contain.
+    #[serde(default)]
+    focus: Option<String>,
+}
+
+/// Summarize the older part of this conversation, because a person asked.
+///
+/// The window does not have to be known. Auto-compaction needs a target to
+/// be over and there is none without `ZORP_CONTEXT_TOKENS`, but a person
+/// asking is its own trigger, so this works in every configuration.
+///
+/// A running turn is refused with the same 409 and the same words
+/// `delete_session` and `branch_session` use: the turn's thread is writing
+/// to the transcript this would summarize, and a boundary taken mid-turn
+/// would name a message the turn has already moved past.
+///
+/// A conversation too short to compact answers 200 and says so, rather than
+/// doing nothing. That is the difference between a command that declined
+/// and a command that broke, and the words are Claude Code's because that
+/// is the sentence a person is most likely to have seen before.
+///
+/// **Nothing in `messages` is written, rewritten, or deleted.** The row
+/// goes to `compactions`, and the next turn seeds from it.
+async fn compact_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CompactBody>,
+) -> impl IntoResponse {
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+    let settings = state.settings.clone();
+    let workspace = state.workspace_root();
+    let session = state.get(&id);
+    let focus = body
+        .focus
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string);
+
+    let answered = tokio::task::spawn_blocking(move || {
+        crate::compaction::compact_stored(&id, focus, &settings, workspace.as_deref(), session)
+    })
+    .await;
+
+    match answered {
+        Ok(Ok(crate::compaction::Compacted::TooShort)) => Json(json!({
+            "compacted": false,
+            "reason": zorp_agent::compaction::NOT_ENOUGH,
+        }))
+        .into_response(),
+        Ok(Ok(crate::compaction::Compacted::Done {
+            boundary_seq,
+            tokens_before,
+            tokens_after,
+        })) => Json(json!({
+            "compacted": true,
+            "boundary_seq": boundary_seq,
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+        }))
+        .into_response(),
+        Ok(Err(crate::compaction::CompactError::NoSuchSession)) => {
+            (StatusCode::NOT_FOUND, "no such session").into_response()
+        }
+        Ok(Err(crate::compaction::CompactError::Failed(reason))) => {
+            (StatusCode::BAD_GATEWAY, reason).into_response()
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "compaction crashed".to_string(),
+        )
+            .into_response(),
+    }
 }
 
 /// Launch a review panel on this session.

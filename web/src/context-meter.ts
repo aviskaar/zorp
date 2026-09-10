@@ -100,15 +100,23 @@ export function meterView(reading: ContextReading): MeterView {
 
   const fraction = Math.min(1, used / limit);
   const left = Math.max(0, Math.round((1 - fraction) * 100));
+  const state = fraction >= FULL_AT ? "full" : fraction >= WARN_AT ? "warn" : "ok";
+  // Only once it is worth knowing. Said at every level it would be noise,
+  // and said with no window it would be a lie: auto-compaction cannot fire
+  // without one, and the unknown-window wording already gives the right
+  // advice, which is to set the variable.
+  const willCompact =
+    state === "ok" ? "" : " zorp will summarize older messages when this fills.";
   return {
     label: `${estimated ? "~" : ""}${left}% left`,
     detail:
       `${withThousands(used)} of ${withThousands(limit)} tokens used, ` +
       `${left}% of the window left. ` +
       "The window comes from ZORP_CONTEXT_TOKENS, not from the model. " +
-      provenance,
+      provenance +
+      willCompact,
     fraction,
-    state: fraction >= FULL_AT ? "full" : fraction >= WARN_AT ? "warn" : "ok",
+    state,
   };
 }
 

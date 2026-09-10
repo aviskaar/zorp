@@ -435,6 +435,20 @@
             readers to keep one live region and one announcement.
           -->
           <p class="voice-toast" id="voice-toast" aria-hidden="true" hidden></p>
+          <!--
+            zorp is writing a summary of the older conversation so the next
+            request fits the model's window. A model call the person did not
+            ask for, sitting between their message and their answer, so it
+            says so rather than letting the page look hung. role="status" so
+            it is announced, the same as the voice line above.
+          -->
+          <p
+            class="compacting-status"
+            id="compacting-status"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></p>
           <p class="composer-hint">
             <kbd>Enter</kbd> to send, <kbd>Shift</kbd><span>+</span><kbd>Enter</kbd> for a newline
           </p>

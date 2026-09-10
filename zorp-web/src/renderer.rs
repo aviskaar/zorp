@@ -120,6 +120,26 @@ impl Renderer for WebRenderer {
             source: usage.source.as_str().to_string(),
         });
     }
+
+    fn compacting(&mut self, messages: usize, tokens_before: u64, manual: bool) {
+        self.emit(EventKind::Compacting {
+            messages,
+            tokens_before,
+            manual,
+        });
+    }
+
+    fn compacted(&mut self, result: &zorp_agent::CompactionOutcome) {
+        self.emit(EventKind::Compacted {
+            ok: result.ok,
+            boundary_seq: result.boundary_seq,
+            tokens_before: result.tokens_before,
+            tokens_after: result.tokens_after,
+            summary: result.summary.clone(),
+            reason: result.reason.clone(),
+            manual: result.manual,
+        });
+    }
 }
 
 #[cfg(test)]

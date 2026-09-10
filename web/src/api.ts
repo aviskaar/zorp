@@ -44,8 +44,15 @@ export interface SessionSummary {
 }
 
 /** One persisted turn in a session transcript. */
+/**
+ * A stored message's own `messages.seq`.
+ *
+ * Absent from an older server. The browser needs it to put a compaction
+ * marker where the live turn drew one: a boundary is a seq, and this list
+ * drops the system and tool rows, so a position in it is not one.
+ */
 export type Message =
-  | { role: "user" | "assistant"; content: string }
+  | { role: "user" | "assistant"; content: string; seq?: number }
   /**
    * A stored tool call, drawn as an activity line exactly as the live `tool`
    * event is. `name` is the form the live event carries, `run_command(ls)`,
@@ -53,10 +60,31 @@ export type Message =
    * and `phrase` is the model's own description of the call, model-authored
    * and display only.
    */
-  | { role: "tool"; name: string; summary: string; phrase?: string };
+  | { role: "tool"; name: string; summary: string; phrase?: string; seq?: number };
+
+/**
+ * One recorded compaction, for a reopened transcript.
+ *
+ * Alongside the messages and never among them: a summary is not something
+ * anybody said. The browser draws a marker after the message whose seq
+ * matches `boundary_seq`, so a reopened conversation looks the way it did
+ * live. Every message is still in `messages`; compaction changes what is
+ * sent to a model and never what is on disk.
+ */
+export interface CompactionRecord {
+  id: number;
+  boundary_seq: number;
+  /** Model-authored. Drawn as plain text, labelled as model-written. */
+  summary: string;
+  tokens_before: number;
+  tokens_after: number;
+  created: number;
+  manual: boolean;
+}
 
 export interface SessionTranscript {
   messages: Message[];
+  compactions: CompactionRecord[];
 }
 
 /**
@@ -325,6 +353,47 @@ export interface ContextEvent {
 }
 
 /**
+ * zorp is writing a summary of the older conversation, right now.
+ *
+ * A model call the person did not ask for, sitting between their message
+ * and their answer, so the composer says what is happening and holds the
+ * send button until `compacted`. `manual` is true when they asked for it
+ * with `/compact`.
+ */
+export interface CompactingEvent {
+  seq: number;
+  type: "compacting";
+  messages: number;
+  tokens_before: number;
+  manual: boolean;
+}
+
+/**
+ * The summary landed, or it did not.
+ *
+ * `summary` is **model-authored text**. It is drawn under a collapsed
+ * marker, labelled as model-written, as plain text through `textContent`
+ * and never through the markdown renderer: a summary drawn as headings and
+ * lists starts to look like part of the conversation, and the whole point
+ * of the marker is that it is not.
+ *
+ * `ok` false carries `reason` in the server's own words and the turn went
+ * ahead anyway on the deterministic elision that has always been there. A
+ * failed summary never blocks a turn.
+ */
+export interface CompactedEvent {
+  seq: number;
+  type: "compacted";
+  ok: boolean;
+  boundary_seq?: number;
+  tokens_before: number;
+  tokens_after: number;
+  summary?: string;
+  reason?: string;
+  manual: boolean;
+}
+
+/**
  * This session now has a short, model-written name.
  *
  * Arrives after `done`, because the server asks for it once the turn has
@@ -546,6 +615,8 @@ export type ZorpEvent =
   | AssistantEvent
   | ApprovalRequestEvent
   | ContextEvent
+  | CompactingEvent
+  | CompactedEvent
   | MemoryEvent
   | SessionTitleEvent
   | ErrorEvent
@@ -710,7 +781,36 @@ export async function listSessions(): Promise<SessionSummary[]> {
 /** Replay a stored conversation. */
 export async function getSession(id: string): Promise<SessionTranscript> {
   const transcript = await request<SessionTranscript>("GET", `/api/sessions/${segment(id)}`);
-  return { messages: Array.isArray(transcript?.messages) ? transcript.messages : [] };
+  return {
+    messages: Array.isArray(transcript?.messages) ? transcript.messages : [],
+    // An older server sends no compactions, and a transcript with no
+    // markers is what this page drew before they existed.
+    compactions: Array.isArray(transcript?.compactions) ? transcript.compactions : [],
+  };
+}
+
+/** What `POST /api/sessions/:id/compact` answers. */
+export interface CompactResult {
+  compacted: boolean;
+  reason?: string;
+  boundary_seq?: number;
+  tokens_before?: number;
+  tokens_after?: number;
+}
+
+/**
+ * Summarize the older part of this conversation now, because the person
+ * typed `/compact`.
+ *
+ * The window does not have to be known: a person asking is its own
+ * trigger. A 409 means a turn is running on it. A conversation too short
+ * to compact is a 200 with `compacted: false` and the reason, which is a
+ * command that declined rather than one that broke.
+ */
+export async function compactSession(id: string, focus?: string): Promise<CompactResult> {
+  return request<CompactResult>("POST", `/api/sessions/${segment(id)}/compact`, {
+    focus: focus && focus.trim() ? focus.trim() : null,
+  });
 }
 
 /**
@@ -1344,6 +1444,8 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   assistant: true,
   approval_request: true,
   context: true,
+  compacting: true,
+  compacted: true,
   memory: true,
   session_title: true,
   error: true,

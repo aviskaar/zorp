@@ -40,7 +40,9 @@ mod trust;
 pub mod validate;
 mod verify;
 
-pub use agent::{web_search_availability, Agent, Outcome, RunRecorder, ToolAvailability};
+pub use agent::{
+    web_search_availability, Agent, Outcome, RunRecorder, Summarizer, ToolAvailability,
+};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use capsule::{
     default_user_capsules_dir, extract_fenced_block, is_reserved, project_capsules_dir, Capsule,

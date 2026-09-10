@@ -205,14 +205,6 @@ const REPEAT_STREAK_LIMIT: usize = 3;
 /// (2026-09-04).
 const REASKS_PER_STEP: usize = 2;
 
-/// How many exchanges stay verbatim when a summary is written mid-run.
-///
-/// Four, which is enough for the model to still see the shape of what it
-/// is doing while the older material becomes a summary. A constant and not
-/// an env var, for the reason `REASKS_PER_STEP` is one: add a knob when a
-/// run shows the number is wrong.
-const KEEP_RECENT: usize = 4;
-
 /// How many summaries one turn may write before it gives up.
 ///
 /// A summary that is itself too long, or a window that is smaller than the
@@ -921,49 +913,14 @@ impl Agent {
     /// Where a mid-run summary should cut, or `None` when there is nothing
     /// worth cutting.
     ///
-    /// Everything except the front of the transcript that is already
-    /// summarized and the last `KEEP_RECENT` exchanges. The cut never falls
-    /// between an assistant message announcing a tool call and the result
-    /// answering it: `repair_tool_calls` is the statement of what
-    /// well-formed means, and a cut that splits a pair would leave the
-    /// transcript needing repair on the one path that must not need it.
-    ///
-    /// An exchange is counted by its assistant turn and not by its user
-    /// message, and that is the whole difference between this working and
-    /// not. A tool-using turn adds an assistant message and a result per
-    /// step and no user message at all: the run in the 2026-09-03 decision
-    /// grew from 3k tokens to 122k over sixty steps without the person
-    /// typing once. Counting user messages would compact such a turn
-    /// exactly once and then never again, which is the case this exists
-    /// for.
-    ///
-    /// Returns the index one past the last message the summary covers.
+    /// Where this run's next summary should cut. See
+    /// `compaction::boundary`, which is the one definition of it: the agent
+    /// cuts a live transcript and the manual route cuts a stored one, and a
+    /// boundary meaning two different things in those two places would put
+    /// a summary and the messages it claims to cover out of step.
     fn compaction_boundary(&self) -> Option<usize> {
         let start = self.summarized_through.max(1).min(self.messages.len());
-        let mut kept = 0usize;
-        let mut cut = self.messages.len();
-        for index in (start..self.messages.len()).rev() {
-            if self.messages[index].role == "assistant" {
-                kept += 1;
-                if kept > KEEP_RECENT {
-                    break;
-                }
-                cut = index;
-            }
-        }
-        if kept <= KEEP_RECENT {
-            return None;
-        }
-        // A user message belongs with the assistant turn that answers it,
-        // so a cut landing on an assistant takes the question with it.
-        if cut > start && self.messages[cut - 1].role == "user" {
-            cut -= 1;
-        }
-        // And never between a call and its result.
-        while cut < self.messages.len() && self.messages[cut].role == "tool" {
-            cut += 1;
-        }
-        (cut > start).then_some(cut)
+        crate::compaction::boundary(&self.messages, start)
     }
 
     /// Write a summary covering `messages[start..cut]` and put the block in
@@ -1049,6 +1006,17 @@ impl Agent {
             summary: Some(summary),
             reason: None,
             manual,
+        });
+        // The meter is drawn from `context` frames and nothing else, so it
+        // has to hear about a transcript that just got smaller. Reported
+        // here, where the window is known, rather than computed in the
+        // browser: two estimators would disagree and one of them would be
+        // on the page.
+        let limit_tokens = self.context_budget.limit_tokens;
+        self.renderer.context(&ContextUsage {
+            used_tokens: after,
+            source: UsageSource::Estimated,
+            limit_tokens,
         });
     }
 

@@ -1944,6 +1944,73 @@ button {
   cursor: default;
 }
 
+/* zorp is summarizing the older conversation. The same pulsing treatment
+   the voice status uses, because it is the same kind of statement: a thing
+   is happening that takes time and was not asked for. */
+.compacting-status {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent-dim);
+  animation: compacting-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes compacting-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* The seam where the older conversation became a summary. A marker, drawn
+   to read as one: it is not a message and it must not look like one. */
+.compaction {
+  margin: 14px 0;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+
+.compaction-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.compaction-label {
+  flex: 1;
+}
+
+.compaction-source {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The summary's own line breaks are what make its sections readable, and
+   `pre` is how they survive without becoming markup. It scrolls inside
+   itself so a long line cannot widen the transcript. */
+.compaction-body {
+  margin: 0;
+  padding: 0 12px 12px;
+  max-height: 40vh;
+  overflow: auto;
+  font-family: var(--z-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+
 .composer-hint {
   max-width: var(--reading);
   margin: 8px auto 0;
