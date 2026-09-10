@@ -9,6 +9,7 @@ pub mod api;
 pub mod approval;
 pub mod artifacts;
 pub mod auth;
+pub mod compaction;
 pub mod documents;
 pub mod event;
 #[cfg(feature = "research")]

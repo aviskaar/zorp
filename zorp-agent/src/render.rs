@@ -343,6 +343,24 @@ pub trait Renderer: Send {
     /// a request that happened, or zorp's own arithmetic on string lengths,
     /// and those two must not be shown as the same kind of fact.
     fn context(&mut self, _usage: &crate::context_window::ContextUsage) {}
+
+    /// A summary of the older conversation is being written, right now.
+    ///
+    /// Empty by default. The terminal prints a line; the browser puts the
+    /// composer into a waiting state, because this is a model call the
+    /// person did not ask for and it happens between their message and
+    /// their answer. `messages` is how many are being summarized and
+    /// `manual` says whether a person asked for this with `/compact`.
+    fn compacting(&mut self, _messages: usize, _tokens_before: u64, _manual: bool) {}
+
+    /// The summary landed, or it did not.
+    ///
+    /// `ok` false means the call failed or came back with something that
+    /// was not a summary, and `reason` says which in the provider's own
+    /// words. A failed summary never blocks a turn: stage one's
+    /// deterministic elision is what the turn then runs on, which is what
+    /// it ran on before any of this existed.
+    fn compacted(&mut self, _result: &crate::context_window::CompactionOutcome) {}
 }
 
 /// Discards all activity. Used for subagents running on a background thread,
@@ -405,6 +423,14 @@ impl<W: Write + Send> Renderer for LineRenderer<W> {
             text.to_string()
         };
         let _ = writeln!(self.out, "{shown}");
+    }
+
+    fn compacting(&mut self, messages: usize, tokens_before: u64, manual: bool) {
+        self.notice(&compacting_line(messages, tokens_before, manual));
+    }
+
+    fn compacted(&mut self, result: &crate::context_window::CompactionOutcome) {
+        self.notice(&compacted_line(result));
     }
 
     fn assistant(&mut self, text: &str) {
@@ -552,6 +578,50 @@ impl<W: Write + Send + 'static> Renderer for SpinnerRenderer<W> {
             let rendered = render_assistant_text(text, self.color);
             let _ = writeln!(out, "{rendered}");
         }
+    }
+
+    fn compacting(&mut self, messages: usize, tokens_before: u64, manual: bool) {
+        self.notice(&compacting_line(messages, tokens_before, manual));
+    }
+
+    fn compacted(&mut self, result: &crate::context_window::CompactionOutcome) {
+        self.notice(&compacted_line(result));
+    }
+}
+
+/// The two lines a terminal shows for a compaction.
+///
+/// One wording, shared by both terminal renderers, so the CLI's one-shot
+/// output and its chat REPL do not describe the same event two ways.
+///
+/// The summary itself is never printed. It is a page of text, the terminal
+/// is where the conversation is, and a summary of the conversation printed
+/// into the conversation reads like part of it. The line says a model wrote
+/// it and says the transcript is still on disk, which is what a reader
+/// needs to know to go and check.
+fn compacting_line(messages: usize, tokens_before: u64, manual: bool) -> String {
+    let why = if manual {
+        "asked for"
+    } else {
+        "window filling"
+    };
+    format!(
+        "compacting: summarizing {messages} older messages ({why}, about {tokens_before} tokens)"
+    )
+}
+
+fn compacted_line(result: &crate::context_window::CompactionOutcome) -> String {
+    if result.ok {
+        format!(
+            "compacted: about {} tokens, down from {}. The summary is model-written and the \
+             full transcript is still on disk.",
+            result.tokens_after, result.tokens_before
+        )
+    } else {
+        format!(
+            "compaction failed: {}. Older material was elided instead.",
+            result.reason.as_deref().unwrap_or("no reason given")
+        )
     }
 }
 
