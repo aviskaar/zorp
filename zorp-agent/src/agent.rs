@@ -1,7 +1,7 @@
 use crate::approval::ApprovalMode;
 use crate::context_window::{
-    compact_tool_results, estimate_tokens, stated_window, CompactionReport, ContextBudget,
-    ContextUsage, StatedWindow, UsageSource,
+    compact_tool_results, estimate_tokens, stated_window, CompactionOutcome, CompactionReport,
+    ContextBudget, ContextUsage, StatedWindow, UsageSource,
 };
 use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, Model};
 use crate::policy::{Decision, Policy};
@@ -205,6 +205,23 @@ const REPEAT_STREAK_LIMIT: usize = 3;
 /// (2026-09-04).
 const REASKS_PER_STEP: usize = 2;
 
+/// How many exchanges stay verbatim when a summary is written mid-run.
+///
+/// Four, which is enough for the model to still see the shape of what it
+/// is doing while the older material becomes a summary. A constant and not
+/// an env var, for the reason `REASKS_PER_STEP` is one: add a knob when a
+/// run shows the number is wrong.
+const KEEP_RECENT: usize = 4;
+
+/// How many summaries one turn may write before it gives up.
+///
+/// A summary that is itself too long, or a window that is smaller than the
+/// system prompt, would otherwise summarize forever. A compaction that
+/// succeeds but leaves the estimate above target still counts, which is
+/// what stops that particular loop. Past the bound the turn ends with an
+/// error a person can read and act on.
+const MAX_COMPACTIONS_PER_TURN: usize = 3;
+
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
@@ -215,6 +232,25 @@ pub trait RunRecorder: Send {
     }
 
     fn change(&mut self, c: &FileChange);
+
+    /// A summary was written for the older part of this conversation.
+    ///
+    /// Empty by default, because most recorders have nowhere to put one and
+    /// a compaction that goes unrecorded costs a re-summarize and nothing
+    /// else. `SqliteRecorder` writes it to the `compactions` table, which
+    /// is not `messages` and is never read by anything that reads
+    /// `messages`.
+    fn compaction(&mut self, _c: &crate::session::Compaction) {}
+}
+
+/// Writes a summary of the older conversation, when the window fills.
+///
+/// One method, so the web can attach a settings-backed model and a test can
+/// attach a scripted one. `Err` carries the provider's own words. A failure
+/// never blocks a turn: stage one's elision is what the run then goes on
+/// with, exactly as it did before any of this existed.
+pub trait Summarizer: Send {
+    fn summarize(&mut self, older: &[Message], focus: Option<&str>) -> Result<String, String>;
 }
 
 #[derive(Default)]
@@ -268,6 +304,21 @@ pub struct Agent {
     approval: ApprovalMode,
     verifier: Option<Verifier>,
     recorder: Option<Box<dyn RunRecorder>>,
+    /// Who writes a summary when stage one has run out of room, when
+    /// anybody can. `None` is the honest default and leaves this agent
+    /// behaving exactly as it did before stage two existed.
+    summarizer: Option<Box<dyn Summarizer>>,
+    /// Summaries written during this turn, against `MAX_COMPACTIONS_PER_TURN`.
+    compactions_this_turn: usize,
+    /// A steer for the next summary, from `/compact <focus>`.
+    compaction_focus: Option<String>,
+    /// Set when the turn has spent `MAX_COMPACTIONS_PER_TURN` and is
+    /// still over the window. The run loop reads it and ends the turn with
+    /// a readable error rather than compacting forever.
+    compaction_exhausted: Option<String>,
+    /// How many messages of this transcript are already summarized, so a
+    /// second compaction in one turn does not summarize them again.
+    summarized_through: usize,
     trace_file: Option<std::fs::File>,
     trace_identity: TraceIdentity,
     trace_seq: u64,
@@ -358,6 +409,11 @@ impl Agent {
             approval,
             verifier: None,
             recorder: None,
+            summarizer: None,
+            compactions_this_turn: 0,
+            compaction_focus: None,
+            compaction_exhausted: None,
+            summarized_through: 0,
             trace_file,
             trace_identity,
             trace_seq: 0,
@@ -441,6 +497,29 @@ impl Agent {
     /// Attach a recorder for session persistence.
     pub fn with_recorder(mut self, recorder: Box<dyn RunRecorder>) -> Self {
         self.recorder = Some(recorder);
+        self
+    }
+
+    /// Attach something that can write a summary when the window fills.
+    ///
+    /// Without one this agent behaves exactly as it did before stage two
+    /// existed: deterministic elision, and nothing else. That is not a
+    /// degraded mode, it is the mode every caller was in until now.
+    pub fn with_summarizer(mut self, summarizer: Box<dyn Summarizer>) -> Self {
+        self.summarizer = Some(summarizer);
+        self
+    }
+
+    /// How many of this transcript's messages are already covered by a
+    /// summary, so a compaction mid-run does not summarize them twice.
+    ///
+    /// A seeded turn starts with a block standing in for everything up to
+    /// the boundary, and the messages behind that block are not in
+    /// `self.messages` at all. What this counts is the front of the
+    /// transcript the agent holds: the system message, and the block when
+    /// there is one.
+    pub fn with_summarized_through(mut self, count: usize) -> Self {
+        self.summarized_through = count;
         self
     }
 
@@ -764,7 +843,213 @@ impl Agent {
         if let Some(text) = report.notice() {
             self.renderer.notice(&text);
         }
+        // Stage two, after stage one and never instead of it. Cheap and
+        // deterministic first; a model call only for what that could not
+        // free.
+        self.summarize_if_still_over(&budget);
         report
+    }
+
+    /// Stage two: replace the older messages with a summary the model
+    /// writes, when stage one has not freed enough.
+    ///
+    /// Every guard here is a reason not to make a model call. The window
+    /// has to be known, because an unknown window has no target to be over.
+    /// Something has to be attached to write the summary. The transcript
+    /// has to be over that target after stage one ran. And the turn has to
+    /// have attempts left.
+    ///
+    /// What it does on success is the delicate part, and it is delicate for
+    /// one reason: `sync` tracks what it has persisted by index. Everything
+    /// being replaced was already persisted, by the `sync()` that runs
+    /// immediately before this on every step. So the cursor moves down by
+    /// exactly the number of messages the block replaced, minus the one the
+    /// block itself occupies, and `sync` then offers the recorder nothing:
+    /// not the messages, which it already has, and above all not the block,
+    /// which must never be written into the conversation.
+    fn summarize_if_still_over(&mut self, budget: &ContextBudget) {
+        let Some(target) = budget.target_tokens() else {
+            return;
+        };
+        let before = estimate_tokens(&self.messages);
+        if before <= target || self.summarizer.is_none() {
+            return;
+        }
+        // A summary that is itself too long, or a window smaller than the
+        // system prompt, would otherwise summarize forever. A compaction
+        // that succeeded and still left the estimate over target counts as
+        // an attempt, which is what closes that particular loop.
+        if self.compactions_this_turn >= MAX_COMPACTIONS_PER_TURN {
+            self.compaction_exhausted = Some(format!(
+                "context compaction could not bring the conversation under the window after \
+                 {MAX_COMPACTIONS_PER_TURN} attempts; set ZORP_CONTEXT_TOKENS to the model's \
+                 real window or start a new chat"
+            ));
+            return;
+        }
+        let Some(boundary) = self.compaction_boundary() else {
+            return;
+        };
+        self.compact_at(boundary, before, false);
+    }
+
+    /// Summarize now, because a person asked. Returns what happened.
+    ///
+    /// The window does not have to be known: a person asking for it is the
+    /// trigger. Everything else is the automatic path, so there is one
+    /// place that splices a block into a transcript and one place that
+    /// moves the recorder's cursor under it.
+    pub fn compact_now(&mut self, focus: Option<String>) -> Option<usize> {
+        let cut = self.compaction_boundary()?;
+        let before = estimate_tokens(&self.messages);
+        let start = self.summarized_through.max(1).min(cut);
+        let count = cut - start;
+        self.compaction_focus = focus;
+        self.compact_at(cut, before, true);
+        self.compaction_focus = None;
+        Some(count)
+    }
+
+    /// How many messages a manual compaction would summarize right now.
+    pub fn compactable_messages(&self) -> usize {
+        match self.compaction_boundary() {
+            Some(cut) => cut - self.summarized_through.max(1).min(cut),
+            None => 0,
+        }
+    }
+
+    /// Where a mid-run summary should cut, or `None` when there is nothing
+    /// worth cutting.
+    ///
+    /// Everything except the front of the transcript that is already
+    /// summarized and the last `KEEP_RECENT` exchanges. The cut never falls
+    /// between an assistant message announcing a tool call and the result
+    /// answering it: `repair_tool_calls` is the statement of what
+    /// well-formed means, and a cut that splits a pair would leave the
+    /// transcript needing repair on the one path that must not need it.
+    ///
+    /// An exchange is counted by its assistant turn and not by its user
+    /// message, and that is the whole difference between this working and
+    /// not. A tool-using turn adds an assistant message and a result per
+    /// step and no user message at all: the run in the 2026-09-03 decision
+    /// grew from 3k tokens to 122k over sixty steps without the person
+    /// typing once. Counting user messages would compact such a turn
+    /// exactly once and then never again, which is the case this exists
+    /// for.
+    ///
+    /// Returns the index one past the last message the summary covers.
+    fn compaction_boundary(&self) -> Option<usize> {
+        let start = self.summarized_through.max(1).min(self.messages.len());
+        let mut kept = 0usize;
+        let mut cut = self.messages.len();
+        for index in (start..self.messages.len()).rev() {
+            if self.messages[index].role == "assistant" {
+                kept += 1;
+                if kept > KEEP_RECENT {
+                    break;
+                }
+                cut = index;
+            }
+        }
+        if kept <= KEEP_RECENT {
+            return None;
+        }
+        // A user message belongs with the assistant turn that answers it,
+        // so a cut landing on an assistant takes the question with it.
+        if cut > start && self.messages[cut - 1].role == "user" {
+            cut -= 1;
+        }
+        // And never between a call and its result.
+        while cut < self.messages.len() && self.messages[cut].role == "tool" {
+            cut += 1;
+        }
+        (cut > start).then_some(cut)
+    }
+
+    /// Write a summary covering `messages[start..cut]` and put the block in
+    /// their place. `start` is the front of the transcript that is not
+    /// already summarized.
+    fn compact_at(&mut self, cut: usize, before: u64, manual: bool) {
+        let start = self.summarized_through.max(1).min(cut);
+        let older: Vec<Message> = self.messages[start..cut].to_vec();
+        let count = older.len();
+        self.compactions_this_turn += 1;
+        self.renderer.compacting(count, before, manual);
+
+        let focus = self.compaction_focus.clone();
+        let written = match self.summarizer.as_mut() {
+            Some(summarizer) => summarizer.summarize(&older, focus.as_deref()),
+            None => Err("no summarizer is attached".to_string()),
+        };
+
+        let summary = match written {
+            Ok(summary) => summary,
+            Err(reason) => {
+                // The transcript is left exactly as stage one left it,
+                // which is what a turn ran on before any of this existed.
+                self.renderer.compacted(&CompactionOutcome {
+                    ok: false,
+                    boundary_seq: None,
+                    tokens_before: before,
+                    tokens_after: before,
+                    summary: None,
+                    reason: Some(reason),
+                    manual,
+                });
+                return;
+            }
+        };
+
+        // Everything about to be replaced has already been persisted: the
+        // `sync()` on this step ran before `enforce_history_budget`, and a
+        // manual compaction runs between turns. If that ever stops being
+        // true, the cursor arithmetic below silently drops messages from
+        // the store, so it is asserted rather than assumed.
+        debug_assert!(
+            self.recorded_messages >= cut,
+            "compaction replaced messages the recorder has not been handed: \
+             recorded {} of {cut}",
+            self.recorded_messages
+        );
+
+        let boundary_seq = (cut as i64) - 1;
+        let block = crate::compaction::block(&summary, &crate::compaction::block_nonce(&summary));
+        self.messages.splice(start..cut, std::iter::once(block));
+        self.message_metadata
+            .splice(start..cut, std::iter::once(MessageMetadata::default()));
+        // One message where `count` were, so the cursor comes down by
+        // `count - 1`. Saturating, because a recorder that was somehow
+        // behind must not underflow into re-recording the whole transcript.
+        self.recorded_messages = self
+            .recorded_messages
+            .saturating_sub(count.saturating_sub(1));
+        // The block is at `start`, and everything at or before it is now
+        // summarized.
+        self.summarized_through = start + 1;
+
+        let after = estimate_tokens(&self.messages);
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.compaction(&crate::session::Compaction {
+                id: 0,
+                boundary_seq,
+                summary: summary.clone(),
+                focus,
+                model: self.model.identity().unwrap_or_default().to_string(),
+                tokens_before: before as i64,
+                tokens_after: after as i64,
+                manual,
+                created: 0,
+            });
+        }
+        self.renderer.compacted(&CompactionOutcome {
+            ok: true,
+            boundary_seq: Some(boundary_seq),
+            tokens_before: before,
+            tokens_after: after,
+            summary: Some(summary),
+            reason: None,
+            manual,
+        });
     }
 
     /// Take the window a provider stated while refusing the request, and
@@ -845,9 +1130,19 @@ impl Agent {
         // re-ask goes back round it, so the count has to survive the trip;
         // reset once a step's reply lands.
         let mut reasks = 0usize;
+        // Per turn, so a long conversation gets its three attempts on every
+        // message rather than three for its whole life.
+        self.compactions_this_turn = 0;
+        self.compaction_exhausted = None;
         let outcome = 'run: loop {
             self.sync();
             self.enforce_history_budget();
+            // Compaction has run out of attempts and the transcript is
+            // still too big. Ending here with something a person can act on
+            // beats sending a request the provider will refuse.
+            if let Some(reason) = self.compaction_exhausted.take() {
+                break Outcome::Error(reason.into());
+            }
             if step >= self.max_steps {
                 break Outcome::StepLimit;
             }
@@ -2092,6 +2387,353 @@ mod tests {
         a.enforce_history_budget();
 
         assert!(notices.lock().unwrap().is_empty());
+    }
+
+    /* ---------------------------------------------------------------- */
+    /* stage two: a model-written summary                                */
+    /* ---------------------------------------------------------------- */
+
+    /// A summarizer that answers a fixed string, and counts how often it
+    /// was asked. No socket, so a test asserts about the loop rather than
+    /// about a model's mood.
+    #[derive(Clone)]
+    struct ScriptedSummarizer {
+        reply: Result<String, String>,
+        calls: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl ScriptedSummarizer {
+        fn ok() -> ScriptedSummarizer {
+            ScriptedSummarizer {
+                reply: Ok(full_summary()),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn failing() -> ScriptedSummarizer {
+            ScriptedSummarizer {
+                reply: Err("the provider refused the request".to_string()),
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl Summarizer for ScriptedSummarizer {
+        fn summarize(&mut self, older: &[Message], _focus: Option<&str>) -> Result<String, String> {
+            self.calls.lock().unwrap().push(older.len());
+            self.reply.clone()
+        }
+    }
+
+    fn full_summary() -> String {
+        crate::compaction::SECTIONS
+            .iter()
+            .map(|name| format!("## {name}\nNone."))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// A transcript of `pairs` user/assistant exchanges, already persisted.
+    fn seeded(a: &mut Agent, pairs: usize, body: &str) {
+        for i in 0..pairs {
+            a.messages.push(Message::user(format!("{body} {i}")));
+            a.message_metadata.push(MessageMetadata::default());
+            a.messages.push(Message::assistant(format!("answer {i}")));
+            a.message_metadata.push(MessageMetadata::default());
+        }
+        a.recorded_messages = a.messages.len();
+    }
+
+    /// The boundary keeps the last KEEP_RECENT exchanges verbatim and
+    /// summarizes what is in front of them.
+    #[test]
+    fn a_summary_covers_everything_but_the_last_few_exchanges() {
+        let summarizer = ScriptedSummarizer::ok();
+        let calls = summarizer.calls.clone();
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(200)))
+            .with_summarizer(Box::new(summarizer));
+        seeded(&mut a, 10, "a question about something");
+
+        a.enforce_history_budget();
+
+        let asked = calls.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "expected exactly one summary call");
+        // Twenty messages, the last four exchanges kept: eight stay, the
+        // system message is never summarized, so twelve go.
+        assert_eq!(asked[0], 12, "{asked:?}");
+
+        // One block where twelve messages were, and the tail is verbatim.
+        assert_eq!(a.messages.len(), 1 + 1 + 8);
+        assert_eq!(a.messages[1].role, "user");
+        assert!(a.messages[1]
+            .text()
+            .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX));
+        assert_eq!(a.messages[2].text(), "a question about something 6");
+        assert_eq!(a.messages.last().unwrap().text(), "answer 9");
+    }
+
+    /// The recorder gets the compaction and never the block.
+    ///
+    /// This is the one that matters. `sync` persists by index, so a cursor
+    /// that did not come down under the splice would write the block into
+    /// the conversation, where recall would embed it, memory would quote
+    /// it, and titling would read it.
+    #[test]
+    fn the_recorder_is_handed_the_compaction_and_never_the_block() {
+        #[derive(Default)]
+        struct Recorded {
+            messages: Arc<Mutex<Vec<Message>>>,
+            compactions: Arc<Mutex<Vec<crate::session::Compaction>>>,
+        }
+        impl RunRecorder for Recorded {
+            fn message(&mut self, m: &Message) {
+                self.messages.lock().unwrap().push(m.clone());
+            }
+            fn change(&mut self, _c: &FileChange) {}
+            fn compaction(&mut self, c: &crate::session::Compaction) {
+                self.compactions.lock().unwrap().push(c.clone());
+            }
+        }
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let compactions = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(200)))
+            .with_summarizer(Box::new(ScriptedSummarizer::ok()))
+            .with_recorder(Box::new(Recorded {
+                messages: messages.clone(),
+                compactions: compactions.clone(),
+            }));
+        // Long enough that a summary is genuinely smaller than what it
+        // replaced. A summary of two short lines is bigger than the lines,
+        // which is true and is not the case this feature is for.
+        for i in 0..10 {
+            a.push_message(
+                Message::user(format!(
+                    "a long question about something {i}: {}",
+                    "q".repeat(400)
+                )),
+                MessageMetadata::default(),
+            );
+            a.push_message(
+                Message::assistant(format!("a long answer {i}: {}", "a".repeat(400))),
+                MessageMetadata::default(),
+            );
+        }
+
+        a.sync();
+        let persisted_before = messages.lock().unwrap().len();
+        a.enforce_history_budget();
+        a.sync();
+
+        let recorded = messages.lock().unwrap().clone();
+        assert_eq!(
+            recorded.len(),
+            persisted_before,
+            "sync offered the recorder something after the compaction: {:?}",
+            &recorded[persisted_before..]
+        );
+        assert!(
+            !recorded.iter().any(|m| m
+                .text()
+                .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX)),
+            "the block was written into the conversation"
+        );
+        let written = compactions.lock().unwrap().clone();
+        assert_eq!(written.len(), 1, "the compaction was not recorded");
+        assert!(written[0].summary.contains("## All user messages"));
+        assert!(!written[0].manual, "an automatic compaction is not manual");
+        assert!(written[0].tokens_after < written[0].tokens_before);
+    }
+
+    /// A turn that cannot get under the window stops saying so, rather than
+    /// summarizing forever.
+    #[test]
+    fn compaction_gives_up_after_its_bound_with_a_readable_error() {
+        // A summary that is itself enormous, so every attempt succeeds and
+        // leaves the transcript over target. That is the loop the bound is
+        // for, and a guard that only counted failures would miss it.
+        let summarizer = ScriptedSummarizer {
+            reply: Ok(format!("{}\n{}", full_summary(), "s".repeat(3_000))),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let calls = summarizer.calls.clone();
+        // A tool loop, because that is the shape of a turn that keeps
+        // growing without anybody typing: every step adds an assistant turn
+        // and a result, so there is always more in front of the recent
+        // exchanges to compact.
+        // Distinct arguments each step, so the repeat guard has nothing to
+        // say and the only thing that can stop this run is the compaction
+        // bound.
+        let mut a = agent(Scripted::new(
+            (0..6)
+                .map(|i| wants_tool_with("read_file", json!({"path": format!("a{i}.txt")})))
+                .chain(std::iter::once(text("never reached")))
+                .collect(),
+        ))
+        .with_context_budget(ContextBudget::default().with_limit(Some(200)))
+        .with_summarizer(Box::new(summarizer));
+        seeded(&mut a, 10, "a question about something");
+
+        let outcome = a.resume();
+
+        match outcome {
+            Outcome::Error(e) => {
+                let text = e.to_string();
+                assert!(
+                    text.contains("could not bring the conversation under the window"),
+                    "{text}"
+                );
+                assert!(text.contains("3 attempts"), "{text}");
+                assert!(text.contains("ZORP_CONTEXT_TOKENS"), "{text}");
+            }
+            other => panic!("expected a readable error, got {}", other.describe()),
+        }
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            MAX_COMPACTIONS_PER_TURN,
+            "the bound was not the bound"
+        );
+    }
+
+    /// A failed summary leaves the transcript as stage one left it and the
+    /// turn goes on. This is what a turn did before stage two existed.
+    #[test]
+    fn a_failed_summary_never_blocks_the_turn() {
+        let mut a = agent(Scripted::new(vec![text("answered anyway")]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(200)))
+            .with_summarizer(Box::new(ScriptedSummarizer::failing()));
+        seeded(&mut a, 10, "a question about something");
+        let before = a.messages.len();
+
+        let outcome = a.resume();
+
+        assert!(
+            matches!(outcome, Outcome::Complete(_)),
+            "{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            a.messages.len(),
+            before + 1,
+            "a failed summary changed the transcript"
+        );
+        assert!(!a.messages.iter().any(|m| m
+            .text()
+            .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX)));
+    }
+
+    /// No summarizer attached is exactly today's behaviour: stage one, and
+    /// nothing else. Every caller was in this mode until now.
+    #[test]
+    fn without_a_summarizer_nothing_is_summarized() {
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(200)));
+        seeded(&mut a, 10, "a question about something");
+        let before = a.messages.len();
+
+        a.enforce_history_budget();
+
+        assert_eq!(a.messages.len(), before);
+        assert!(!a.messages.iter().any(|m| m
+            .text()
+            .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX)));
+    }
+
+    /// An unknown window has no target to be over, so nothing fires. The
+    /// window is still unknown by default and this feature does not change
+    /// that.
+    #[test]
+    fn an_unknown_window_never_summarizes() {
+        let summarizer = ScriptedSummarizer::ok();
+        let calls = summarizer.calls.clone();
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default())
+            .with_summarizer(Box::new(summarizer));
+        seeded(&mut a, 10, "a question about something");
+
+        a.enforce_history_budget();
+
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// A short conversation has nothing in front of the recent exchanges,
+    /// so there is nothing to summarize and no call is made.
+    #[test]
+    fn a_short_conversation_is_not_summarized() {
+        let summarizer = ScriptedSummarizer::ok();
+        let calls = summarizer.calls.clone();
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(10)))
+            .with_summarizer(Box::new(summarizer));
+        seeded(&mut a, 2, "a question");
+
+        a.enforce_history_budget();
+
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "a two-exchange thread was summarized"
+        );
+    }
+
+    /// A cut never falls between an assistant announcing a call and the
+    /// result answering it. `repair_tool_calls` is the statement of what
+    /// well-formed means and the seed path must not need it.
+    #[test]
+    fn a_summary_never_splits_a_call_from_its_result() {
+        let summarizer = ScriptedSummarizer::ok();
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default().with_limit(Some(200)))
+            .with_summarizer(Box::new(summarizer));
+        for i in 0..10 {
+            a.messages
+                .push(Message::user(format!("a question about something {i}")));
+            a.message_metadata.push(MessageMetadata::default());
+            a.messages.push(Message::assistant_with_calls(
+                "",
+                vec![ToolCall {
+                    id: format!("c{i}"),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "a.txt"}),
+                }],
+            ));
+            a.message_metadata.push(MessageMetadata::default());
+            a.messages
+                .push(Message::tool_result(&format!("c{i}"), "the file"));
+            a.message_metadata.push(MessageMetadata::default());
+        }
+        a.recorded_messages = a.messages.len();
+
+        a.enforce_history_budget();
+
+        // Whatever survived is still well-formed: every announced call has
+        // its result, and no result is orphaned.
+        let repaired = crate::context_window::repair_tool_calls(a.messages.clone());
+        assert_eq!(
+            repaired.len(),
+            a.messages.len(),
+            "the compacted transcript needed repair"
+        );
+    }
+
+    /// A person asking is the trigger, so a manual compaction does not need
+    /// a known window.
+    #[test]
+    fn a_manual_compaction_works_with_no_window_configured() {
+        let summarizer = ScriptedSummarizer::ok();
+        let calls = summarizer.calls.clone();
+        let mut a = agent(Scripted::new(vec![]))
+            .with_context_budget(ContextBudget::default())
+            .with_summarizer(Box::new(summarizer));
+        seeded(&mut a, 10, "a question about something");
+
+        let summarized = a.compact_now(Some("keep the SQL schema".to_string()));
+
+        assert_eq!(summarized, Some(12));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert!(a.messages[1]
+            .text()
+            .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX));
     }
 
     /// Compaction affects what is sent. The recorder has already been handed
@@ -3346,6 +3988,24 @@ mod tests {
         assert!(!names.contains(&"monitor_subagents".to_string()));
         assert!(!names.contains(&"cancel_subagent".to_string()));
         assert!(!names.contains(&"invoke_subagent".to_string()));
+    }
+
+    /// Compaction is not a tool, and a model cannot ask for one.
+    ///
+    /// The same rule as `panel` and `investigate`: a person or the window
+    /// filling starts one, never the model. A tool for it would let a model
+    /// decide to replace part of its own transcript with a summary it wrote
+    /// itself, which is the shape this whole design is arranged against.
+    #[test]
+    fn no_tool_starts_a_compaction() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in ["compact", "compaction", "summarize", "summarise"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
     }
 
     #[test]

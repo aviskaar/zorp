@@ -343,6 +343,24 @@ pub trait Renderer: Send {
     /// a request that happened, or zorp's own arithmetic on string lengths,
     /// and those two must not be shown as the same kind of fact.
     fn context(&mut self, _usage: &crate::context_window::ContextUsage) {}
+
+    /// A summary of the older conversation is being written, right now.
+    ///
+    /// Empty by default. The terminal prints a line; the browser puts the
+    /// composer into a waiting state, because this is a model call the
+    /// person did not ask for and it happens between their message and
+    /// their answer. `messages` is how many are being summarized and
+    /// `manual` says whether a person asked for this with `/compact`.
+    fn compacting(&mut self, _messages: usize, _tokens_before: u64, _manual: bool) {}
+
+    /// The summary landed, or it did not.
+    ///
+    /// `ok` false means the call failed or came back with something that
+    /// was not a summary, and `reason` says which in the provider's own
+    /// words. A failed summary never blocks a turn: stage one's
+    /// deterministic elision is what the turn then runs on, which is what
+    /// it ran on before any of this existed.
+    fn compacted(&mut self, _result: &crate::context_window::CompactionOutcome) {}
 }
 
 /// Discards all activity. Used for subagents running on a background thread,

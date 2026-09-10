@@ -51,6 +51,15 @@ impl RunRecorder for SqliteRecorder {
         }
         self.change_seq += 1;
     }
+
+    /// The summary goes to the `compactions` table and nowhere near
+    /// `messages`. `msg_seq` is deliberately not touched: a compaction is
+    /// not a message and must not shift the numbering of the ones that are.
+    fn compaction(&mut self, c: &crate::session::Compaction) {
+        if let Err(e) = self.store.record_compaction(&self.session_id, c) {
+            eprintln!("zorp-agent: failed to persist compaction: {e}");
+        }
+    }
 }
 
 #[cfg(test)]

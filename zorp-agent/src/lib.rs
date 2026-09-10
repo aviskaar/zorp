@@ -50,7 +50,8 @@ pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use context_window::{
     compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, repair_tool_calls,
-    CompactionReport, ContextBudget, ContextUsage, SeedPlan, TokenUsage, UsageSource,
+    CompactionOutcome, CompactionReport, ContextBudget, ContextUsage, SeedPlan, TokenUsage,
+    UsageSource,
 };
 pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
 pub use flavor::{

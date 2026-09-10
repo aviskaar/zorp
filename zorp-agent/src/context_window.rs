@@ -578,6 +578,27 @@ pub fn repair_tool_calls(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
+/// What one summarizing attempt produced, for the renderer.
+///
+/// One struct rather than seven arguments, because the browser turns it
+/// into an event frame and the CLI turns it into a line, and both need the
+/// same fields to stay in step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactionOutcome {
+    pub ok: bool,
+    /// The `messages.seq` the summary covers up to, when one was written.
+    pub boundary_seq: Option<i64>,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    /// The summary itself, so the browser can put it under the marker
+    /// without a second request. Model-authored, labelled as such.
+    pub summary: Option<String>,
+    /// Why it did not work, in the provider's own words.
+    pub reason: Option<String>,
+    /// Whether a person asked for this with `/compact`.
+    pub manual: bool,
+}
+
 /// Line a seq list back up with a repaired body.
 ///
 /// `repair_tool_calls` may insert a synthetic tool result and may drop an
