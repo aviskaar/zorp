@@ -51,11 +51,28 @@ CREATE TABLE IF NOT EXISTS message_images (
     mime_type TEXT NOT NULL,
     data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS compactions (
+    session_id TEXT NOT NULL,
+    id INTEGER NOT NULL,
+    boundary_seq INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    focus TEXT,
+    model TEXT NOT NULL,
+    tokens_before INTEGER NOT NULL,
+    tokens_after INTEGER NOT NULL,
+    manual INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    PRIMARY KEY (session_id, id)
+);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     created INTEGER NOT NULL
 );";
+
+// No per-session index for `compactions`: its primary key already leads
+// with `session_id`, so every lookup in this file is a prefix scan of the
+// index SQLite builds for the key.
 
 /// Per-session lookup indexes. Applied with IF NOT EXISTS on every open so
 /// databases created before these indexes existed pick them up too.
@@ -129,9 +146,65 @@ pub enum SetProject {
     NoSuchProject,
 }
 
+/// One recorded compaction: a model-written summary standing in for a run
+/// of older messages, and the arithmetic that justified it.
+///
+/// **This is model-authored text and it is never evidence.** It lives in
+/// its own table and not in `messages`, and that separation is the whole
+/// of the guarantee. Four things read `messages`: the recall feed embeds
+/// user and assistant rows, the memory block quotes them into later turns
+/// and tells the model to cite them, titling reads the first pair, and
+/// branching copies them. A summary in `messages` would be embedded,
+/// recalled, quoted and cited as though a person or the model had said it
+/// in conversation. In here it is invisible to all four by construction
+/// rather than by four separate filters that have to keep agreeing.
+///
+/// `messages` is never written, rewritten, or deleted by compaction. The
+/// full transcript stays on disk and `get_session` still returns all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compaction {
+    /// Position in this session's compactions, from one. Per session, so
+    /// a branch can carry its parent's numbering without renumbering.
+    pub id: i64,
+    /// The `messages.seq` of the **last message this summary covers**.
+    /// Everything with a larger seq is sent verbatim after it.
+    pub boundary_seq: i64,
+    /// What the model wrote. Model-authored, labelled as such everywhere
+    /// it surfaces, and never read by recall, memory, or titling.
+    pub summary: String,
+    /// The steer a person typed after `/compact`, when they typed one.
+    /// Untrusted text; it is fenced when it reaches the model.
+    pub focus: Option<String>,
+    /// Which model wrote the summary, so a reader can tell.
+    pub model: String,
+    /// The transcript estimate before and after, in tokens.
+    pub tokens_before: i64,
+    pub tokens_after: i64,
+    /// Whether a person asked for this with `/compact`, as opposed to the
+    /// window filling. The browser draws the same marker either way; this
+    /// is what lets a replayed marker say what the live one said.
+    pub manual: bool,
+    /// Epoch milliseconds.
+    pub created: i64,
+}
+
 /// SQLite-backed session persistence.
 pub struct Store {
     conn: Connection,
+}
+
+fn compaction_from_row(row: &rusqlite::Row<'_>) -> Result<Compaction, rusqlite::Error> {
+    Ok(Compaction {
+        id: row.get(0)?,
+        boundary_seq: row.get(1)?,
+        summary: row.get(2)?,
+        focus: row.get(3)?,
+        model: row.get(4)?,
+        tokens_before: row.get(5)?,
+        tokens_after: row.get(6)?,
+        manual: row.get(7)?,
+        created: row.get(8)?,
+    })
 }
 
 fn now() -> i64 {
@@ -485,6 +558,82 @@ impl Store {
         Ok(())
     }
 
+    /// Record one compaction and answer the id it was given.
+    ///
+    /// Ids are per session and start at one, so a branch carries its
+    /// parent's numbering unchanged. The `id` on the value handed in is
+    /// ignored; this is what assigns it.
+    ///
+    /// **Nothing in `messages` is touched.** This is the only write
+    /// compaction makes, and it is to a table no reader of the transcript
+    /// looks at.
+    pub fn record_compaction(
+        &mut self,
+        session_id: &str,
+        compaction: &Compaction,
+    ) -> Result<i64, BoxErr> {
+        let tx = self.conn.transaction()?;
+        let next: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM compactions WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO compactions (session_id, id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                session_id,
+                next,
+                compaction.boundary_seq,
+                compaction.summary,
+                compaction.focus,
+                compaction.model,
+                compaction.tokens_before,
+                compaction.tokens_after,
+                compaction.manual,
+                if compaction.created > 0 {
+                    compaction.created
+                } else {
+                    now()
+                },
+            ],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// The newest compaction for a session, which is the one a seed reads.
+    ///
+    /// Newest by `id`, not by `boundary_seq`, because ids only go up and a
+    /// boundary can in principle repeat when a manual `/compact` follows an
+    /// automatic one that summarized the same range.
+    pub fn latest_compaction(&self, session_id: &str) -> Result<Option<Compaction>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created \
+             FROM compactions WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(compaction_from_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Every compaction for a session, oldest first. What a reopened
+    /// transcript draws its markers from.
+    pub fn compactions(&self, session_id: &str) -> Result<Vec<Compaction>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created \
+             FROM compactions WHERE session_id = ?1 ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(compaction_from_row(row)?);
+        }
+        Ok(out)
+    }
+
     /// Every project, oldest first.
     ///
     /// Ordered by `created` rather than by name so the sidebar keeps the
@@ -610,6 +759,7 @@ impl Store {
         tx.execute("DELETE FROM messages WHERE session_id = ?1", [id])?;
         tx.execute("DELETE FROM file_changes WHERE session_id = ?1", [id])?;
         tx.execute("DELETE FROM message_images WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM compactions WHERE session_id = ?1", [id])?;
         let deleted = tx.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(deleted > 0)
@@ -685,6 +835,17 @@ impl Store {
              SELECT ?2, message_seq, part_index, mime_type, data \
              FROM message_images WHERE session_id = ?1 AND message_seq <= ?3 \
              ORDER BY message_seq ASC, part_index ASC",
+            (from, to, seq),
+        )?;
+        // Compactions whose boundary is inside the copied prefix. One past
+        // it would claim to summarize messages the branch does not have,
+        // and the branch would then seed from a summary of a conversation
+        // it cannot show. The summary is still not a message: it lands in
+        // the branch's own `compactions` table and never in its transcript.
+        tx.execute(
+            "INSERT INTO compactions (session_id, id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created) \
+             SELECT ?2, id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created \
+             FROM compactions WHERE session_id = ?1 AND boundary_seq <= ?3 ORDER BY id ASC",
             (from, to, seq),
         )?;
         tx.commit()?;
@@ -1526,6 +1687,130 @@ CREATE TABLE file_changes (
             .unwrap();
         store.set_session_reasoning_mode("s1", None).unwrap();
         assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);
+    }
+
+    fn a_compaction(boundary_seq: i64) -> Compaction {
+        Compaction {
+            id: 0,
+            boundary_seq,
+            summary: "## All user messages\n1. write hello.txt".to_string(),
+            focus: None,
+            model: "m".to_string(),
+            tokens_before: 9000,
+            tokens_after: 1200,
+            manual: false,
+            created: 0,
+        }
+    }
+
+    #[test]
+    fn compactions_are_numbered_per_session_from_one() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_session("s2", "ask", "/r", "m").unwrap();
+
+        assert_eq!(store.record_compaction("s1", &a_compaction(4)).unwrap(), 1);
+        assert_eq!(store.record_compaction("s1", &a_compaction(9)).unwrap(), 2);
+        // A second session starts its own numbering, which is what lets a
+        // branch carry its parent's ids without renumbering.
+        assert_eq!(store.record_compaction("s2", &a_compaction(2)).unwrap(), 1);
+
+        let ids: Vec<i64> = store
+            .compactions("s1")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn the_latest_compaction_is_the_newest_one_recorded() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        assert_eq!(store.latest_compaction("s1").unwrap(), None);
+
+        store.record_compaction("s1", &a_compaction(4)).unwrap();
+        store
+            .record_compaction(
+                "s1",
+                &Compaction {
+                    focus: Some("keep the SQL schema".to_string()),
+                    manual: true,
+                    ..a_compaction(9)
+                },
+            )
+            .unwrap();
+
+        let latest = store.latest_compaction("s1").unwrap().unwrap();
+        assert_eq!(latest.id, 2);
+        assert_eq!(latest.boundary_seq, 9);
+        assert_eq!(latest.focus.as_deref(), Some("keep the SQL schema"));
+        assert!(latest.manual);
+        assert!(latest.created > 0, "a compaction records when it happened");
+    }
+
+    /// Compaction writes to its own table and nothing else. The transcript
+    /// on disk is what was said, and that does not change because the
+    /// request got shorter.
+    #[test]
+    fn recording_a_compaction_leaves_every_message_where_it_was() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store
+            .record_message("s1", 0, &Message::user("write hello.txt"))
+            .unwrap();
+        store
+            .record_message("s1", 1, &Message::assistant("Done."))
+            .unwrap();
+
+        store.record_compaction("s1", &a_compaction(1)).unwrap();
+
+        let texts: Vec<String> = store
+            .load_messages("s1")
+            .unwrap()
+            .iter()
+            .map(|m| m.text().into_owned())
+            .collect();
+        assert_eq!(texts, vec!["write hello.txt", "Done."]);
+    }
+
+    #[test]
+    fn deleting_a_session_takes_its_compactions_with_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.record_compaction("s1", &a_compaction(4)).unwrap();
+
+        assert!(store.delete_session("s1").unwrap());
+        assert!(store.compactions("s1").unwrap().is_empty());
+    }
+
+    /// A branch copies the compactions inside the prefix it took and none
+    /// past it. One past it would claim to summarize messages the branch
+    /// does not have.
+    #[test]
+    fn a_branch_carries_the_compactions_inside_its_prefix() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        for (seq, message) in [
+            (0, Message::user("one")),
+            (1, Message::assistant("first answer")),
+            (2, Message::user("two")),
+            (3, Message::assistant("second answer")),
+        ] {
+            store.record_message("s1", seq, &message).unwrap();
+        }
+        store.record_compaction("s1", &a_compaction(1)).unwrap();
+        store.record_compaction("s1", &a_compaction(3)).unwrap();
+
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+        let boundaries: Vec<i64> = store
+            .compactions("s2")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.boundary_seq)
+            .collect();
+        assert_eq!(boundaries, vec![1]);
     }
 
     #[test]

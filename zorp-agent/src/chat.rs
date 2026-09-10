@@ -10,6 +10,13 @@ pub enum ChatCommand {
     Help,
     Model,
     Context,
+    /// Summarize the older conversation now, with an optional steer.
+    ///
+    /// `/compact` and `/compact <what to keep>`. The focus is a person's
+    /// own words and is untrusted like any other: it is fenced as a
+    /// preference when it reaches the model and can change no rule about
+    /// what the summary must contain.
+    Compact(Option<String>),
     Diff,
     Status,
     Undo,
@@ -68,6 +75,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "help" | "h" | "?" => ChatCommand::Help,
         "model" => ChatCommand::Model,
         "context" => ChatCommand::Context,
+        "compact" => ChatCommand::Compact((!remainder.is_empty()).then(|| remainder.to_string())),
         "diff" => ChatCommand::Diff,
         "status" => ChatCommand::Status,
         "undo" => ChatCommand::Undo,

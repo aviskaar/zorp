@@ -1692,6 +1692,8 @@ const HELP: &str = "\
 /help, /h, /?        show this help
 /model               show the active model
 /context             show transcript size
+/compact             summarize the older conversation so it fits the window
+/compact <what>      the same, steered toward what you want kept
 /diff                summarize this session's file changes
 /status              show session id and status
 /undo                revert the last recorded file change
@@ -2186,6 +2188,25 @@ fn handle_chat_command(
                 "session: {} ({} messages, ~{} chars)",
                 session_id, msg_n, char_count
             ));
+        }
+        ChatCommand::Compact(focus) => {
+            // A person asking is the trigger, so this works whether or not
+            // the window is known. The summary goes to the `compactions`
+            // table and never into the transcript on disk: what is sent
+            // shrinks, what was said does not.
+            let asked = agent.compactable_messages();
+            if asked == 0 {
+                out.notice(zorp_agent::compaction::NOT_ENOUGH);
+            } else {
+                out.notice(&format!("Summarizing {asked} older messages..."));
+                match agent.compact_now(focus) {
+                    Some(done) => out.notice(&format!(
+                        "{done} older messages are now a summary. The full transcript is \
+                         still on disk."
+                    )),
+                    None => out.notice(zorp_agent::compaction::NOT_ENOUGH),
+                }
+            }
         }
         ChatCommand::Status => {
             let status = store
@@ -2814,7 +2835,8 @@ fn resume(wanted: Option<&str>, auto_approve: bool, no_verify: bool, overrides: 
     // dangling tool call for the provider to refuse, and the oldest material
     // dropped first when the window will not hold it.
     let budget = zorp_agent::ContextBudget::from_env();
-    let plan = zorp_agent::plan_seed(messages, &system, &budget);
+    let latest = store.latest_compaction(id).unwrap_or_default();
+    let plan = zorp_agent::plan_seed(messages, &system, &budget, latest.as_ref());
     if let Some(notice) = plan.report.notice() {
         eprintln!("zorp-agent: {notice}");
     }
