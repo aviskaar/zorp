@@ -201,8 +201,9 @@ impl PanelObserver for SilentObserver {
 /// Assembled here, from the lens and the target, and never from another
 /// reviewer's output. That is what makes the verdicts independent, and
 /// it is enforced by this function being the only thing that builds a
-/// reviewer's prompt.
-fn reviewer_prompt(lens: &Lens, target: &Target) -> String {
+/// reviewer's prompt. The ensemble reuses it for the same reason, so
+/// there is still one builder.
+pub(crate) fn reviewer_prompt(lens: &Lens, target: &Target) -> String {
     format!(
         "You are one reviewer on a panel. Other reviewers are looking at the same \
 material from different angles; you will not see what they say and they will not \

@@ -26,7 +26,7 @@ serde = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
 ureq = { workspace = true }
-base64 = "0.22"
+base64 = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 zorp-mcp   = { path = "../zorp-mcp", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
@@ -64,11 +64,19 @@ research = ["dep:zorp-track", "mcp"]
 # part of `research`: it drags in LanceDB's arrow stack at build time.
 library  = ["research", "zorp-track/library"]
 clipboard = ["dep:arboard"]
+# The review loop over free models: one model works, others test it, the
+# findings go back. Off by default. It is a harness experiment and a plain
+# run should not carry it.
+ensemble = []
 
 [[bin]]
 name = "stub_search_mcp_server"
 path = "tests/fixtures/stub_search_mcp_server.rs"
 required-features = ["research"]
+
+[[test]]
+name = "ensemble_cli"
+required-features = ["ensemble"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

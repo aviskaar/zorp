@@ -1621,10 +1621,7 @@ CREATE TABLE file_changes (
         store.set_session_project("s1", Some("p1")).unwrap();
         store.set_session_project("s3", Some("p1")).unwrap();
 
-        assert_eq!(
-            store.session_project("s1").unwrap(),
-            Some("p1".to_string())
-        );
+        assert_eq!(store.session_project("s1").unwrap(), Some("p1".to_string()));
         // Filed under nothing and never heard of both read as no project.
         assert_eq!(store.session_project("s2").unwrap(), None);
         assert_eq!(store.session_project("nope").unwrap(), None);

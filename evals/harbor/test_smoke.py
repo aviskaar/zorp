@@ -87,6 +87,28 @@ class TestZorpAgentAdapter(unittest.TestCase):
             path = self.agent()._host_binary("amd64")
         self.assertEqual(path, Path("/opt/zorp-agent"))
 
+    def test_without_a_roster_the_command_is_the_plain_run(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ZORP_ENSEMBLE", None)
+            agent = self.agent("openai/m")
+            command = agent._command("do it", "/logs/zorp-agent.txt")
+            env = agent._zorp_env()
+        self.assertTrue(command.startswith("/installed-agent/zorp-agent --yes "))
+        self.assertNotIn(" ensemble ", command)
+        self.assertNotIn("ZORP_ENSEMBLE", env)
+
+    def test_a_roster_on_the_host_switches_to_the_ensemble_subcommand(self):
+        with patch.dict(os.environ, {"ZORP_ENSEMBLE": "/host/roster.toml"}, clear=False):
+            agent = self.agent("openai/m")
+            command = agent._command("do it", "/logs/zorp-agent.txt")
+            env = agent._zorp_env()
+        self.assertTrue(
+            command.startswith("/installed-agent/zorp-agent ensemble --yes "), command
+        )
+        self.assertIn("| stdbuf -oL tee /logs/zorp-agent.txt", command)
+        self.assertEqual(env["ZORP_ENSEMBLE"], "/installed-agent/ensemble.toml")
+        self.assertEqual(env["ZORP_ENSEMBLE_LOG_DIR"], str(agent.environment_logs_dir))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -108,6 +108,45 @@ resulting artifact, deliver it in the right form.
   `POST /api/sessions/:id/panel` on the existing event stream, and it
   occupies the session exactly as a turn does. See `docs/DECISIONS.md`
   (2026-08-20) before changing any of that.
+- `ensemble` (`zorp-agent/src/ensemble/`, non-default `ensemble` feature,
+  `zorp-agent ensemble --yes "<instruction>"`) is one model doing a task,
+  reviewer models testing it under code-defined lenses, and the
+  corroborated findings going back to the first model for a bounded
+  revision. It reuses `panel` for lenses, verdict parsing and agreement
+  counting. Roles come from the TOML file named by `ZORP_ENSEMBLE` and
+  never from the instruction. A reviewer gets the read tools plus a shell
+  and no write tool, and the check that it wrote nothing is code: the
+  watched set, what the main run changed and what the instruction names,
+  is hashed before the reviewers and after each one, and a reviewer that
+  altered a file is dropped with its findings. A finding reaches the main
+  model when two lenses raised the same locus or one raised it at
+  blocking, in one fenced user message with a per-round marker under the
+  boundary sentence `memory` and `zorp-skill` use. Verdicts are memoized
+  on the hashes of what the reviewer examined, a finding is addressed
+  when the file it names changes hash and never on a model's word, and a
+  reviewer is dropped only for altering an output or for two unusable
+  replies. A dropped reviewer's edit stays in the file, because this
+  hashes and never copies, so the main model is told which files were
+  altered even when the round corroborated nothing, and that round stops
+  with its own reason rather than `nothing corroborated`. Stopping
+  quietly there hands the verifier a file a reviewer wrote, and a
+  contaminated reward looks exactly like a real one. Every run writes
+  `ensemble.json` and the reviewer transcripts to
+  `ZORP_ENSEMBLE_LOG_DIR`, and `evals/harbor/ensemble_report.py` reads
+  them on code-derived columns only. Four things are not negotiable.
+  Code launches every run and review, there is no tool that starts one,
+  and `agent.rs` has a test saying so. No roster changes on a model's
+  opinion. No reviewer reads another reviewer, by construction and not by
+  instruction: a transcript is held in memory and all of them are written
+  when the run ends, on every path that ends one, so an earlier
+  reviewer's transcript does not exist while a later one is running. A
+  reviewer has a shell and would otherwise just read it, agreement
+  between two lenses would be an echo, and agreement is the whole of what
+  this measures. And findings text is stored as `claim_model_authored`
+  and nothing that decides anything reads it. Run `cargo test -p zorp-agent
+  --features ensemble` whenever any of it changes. See
+  `docs/superpowers/specs/2026-09-05-ensemble-dag-design.md` and
+  `docs/DECISIONS.md` (2026-09-05) before changing any of it.
 - The bolt in the composer (once "Zorp mode") is `investigate` attempts
   from the browser, the write-up they produce, and a read of what landed
   in the aryabhatta ledger. It is not a fifth capability and there is no
