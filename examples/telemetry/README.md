@@ -7,15 +7,15 @@ https://github.com/user-attachments/assets/c6076e3a-ffc3-46d5-9cf5-d0f2189f4425
 `zorp-agent` ships real span instrumentation behind the optional `otel`
 Cargo feature (`zorp-agent/src/main.rs`, `agent.rs`, `model.rs`). When
 enabled, it exports traces over OTLP/HTTP using the standard
-`OTEL_EXPORTER_OTLP_ENDPOINT` environment variable — no mocking involved.
+`OTEL_EXPORTER_OTLP_ENDPOINT` environment variable, with no mocking involved.
 
 ## Span hierarchy
 
 ```
-agent_run                  one call to Agent::run / Agent::resume
+agent_run                   one call to Agent::run / Agent::resume
 └── agent_step              one iteration of the agent loop
-    ├── model completion     LLM call span (model.rs)
-    └── tool_span             one span per tool invocation
+    ├── model_complete      LLM call span (model.rs)
+    └── tool_execute        one span per tool invocation
 ```
 
 Key attributes: `zorp.task` (with values of secret-bearing environment

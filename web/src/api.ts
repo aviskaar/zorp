@@ -41,6 +41,32 @@ export interface SessionSummary {
   id: string;
   title: string;
   updated_at: string;
+  /**
+   * The project this conversation is filed under, or `null` for none.
+   *
+   * A label and nothing else: the transcript, the title, the branch and
+   * delete behaviour are all unchanged by it. The name behind the id comes
+   * from `listProjects`, and like every other name in the sidebar it is
+   * text a person typed and reaches the page through `textContent`.
+   */
+  project_id?: string | null;
+  /**
+   * When the server last wrote this conversation, in epoch milliseconds.
+   *
+   * Absent for a conversation that exists only in the server's memory and
+   * has no stored row yet. That absence is the signal: there is nothing to
+   * label, so the row offers no move items.
+   */
+  updated?: number;
+}
+
+/** One project, as the server lists them: oldest first. */
+export interface ProjectSummary {
+  id: string;
+  /** Typed by a person. It goes on the page through `textContent`. */
+  name: string;
+  /** Epoch milliseconds. */
+  created: number;
 }
 
 /** One persisted turn in a session transcript. */
@@ -55,8 +81,39 @@ export type Message =
    */
   | { role: "tool"; name: string; summary: string; phrase?: string };
 
+/**
+ * One recorded compaction, for a reopened transcript.
+ *
+ * Alongside the messages and never among them: a summary is not something
+ * anybody said. The browser draws a marker after the message whose seq
+ * matches `boundary_seq`, so a reopened conversation looks the way it did
+ * live. Every message is still in `messages`; compaction changes what is
+ * sent to a model and never what is on disk.
+ */
+export interface CompactionRecord {
+  id: number;
+  boundary_seq: number;
+  /**
+   * How many transcript entries this marker follows.
+   *
+   * Worked out on the server, because a boundary is a stored `messages.seq`
+   * and this transcript drops the system and tool rows, so a position in it
+   * is not one. The seqs live on that side and never come over the wire.
+   */
+  after: number;
+  /** How many stored messages the summary stands for. */
+  messages: number;
+  /** Model-authored. Drawn as plain text, labelled as model-written. */
+  summary: string;
+  tokens_before: number;
+  tokens_after: number;
+  created: number;
+  manual: boolean;
+}
+
 export interface SessionTranscript {
   messages: Message[];
+  compactions: CompactionRecord[];
 }
 
 /**
@@ -374,6 +431,47 @@ export interface ContextEvent {
 }
 
 /**
+ * zorp is writing a summary of the older conversation, right now.
+ *
+ * A model call the person did not ask for, sitting between their message
+ * and their answer, so the composer says what is happening and holds the
+ * send button until `compacted`. `manual` is true when they asked for it
+ * with `/compact`.
+ */
+export interface CompactingEvent {
+  seq: number;
+  type: "compacting";
+  messages: number;
+  tokens_before: number;
+  manual: boolean;
+}
+
+/**
+ * The summary landed, or it did not.
+ *
+ * `summary` is **model-authored text**. It is drawn under a collapsed
+ * marker, labelled as model-written, as plain text through `textContent`
+ * and never through the markdown renderer: a summary drawn as headings and
+ * lists starts to look like part of the conversation, and the whole point
+ * of the marker is that it is not.
+ *
+ * `ok` false carries `reason` in the server's own words and the turn went
+ * ahead anyway on the deterministic elision that has always been there. A
+ * failed summary never blocks a turn.
+ */
+export interface CompactedEvent {
+  seq: number;
+  type: "compacted";
+  ok: boolean;
+  boundary_seq?: number;
+  tokens_before: number;
+  tokens_after: number;
+  summary?: string;
+  reason?: string;
+  manual: boolean;
+}
+
+/**
  * This session now has a short, model-written name.
  *
  * Arrives after `done`, because the server asks for it once the turn has
@@ -595,6 +693,8 @@ export type ZorpEvent =
   | AssistantEvent
   | ApprovalRequestEvent
   | ContextEvent
+  | CompactingEvent
+  | CompactedEvent
   | MemoryEvent
   | SessionTitleEvent
   | ErrorEvent
@@ -756,10 +856,73 @@ export async function listSessions(): Promise<SessionSummary[]> {
   return Array.isArray(sessions) ? sessions : [];
 }
 
+/**
+ * Every project, oldest first, so the sidebar keeps the order they were
+ * made in.
+ */
+export async function listProjects(): Promise<ProjectSummary[]> {
+  const body = await request<{ projects?: ProjectSummary[] }>("GET", "/api/projects");
+  return Array.isArray(body?.projects) ? body.projects : [];
+}
+
+/**
+ * Make a project. A 400 means the name did not survive being trimmed, or
+ * was too long; the server's own message says which.
+ */
+export async function createProject(name: string): Promise<ProjectSummary> {
+  return request<ProjectSummary>("POST", "/api/projects", { name });
+}
+
+/**
+ * Remove a project. **This deletes no conversation.** Everything filed
+ * under it is unfiled and stays where it was.
+ */
+export async function deleteProject(id: string): Promise<void> {
+  await request<void>("DELETE", `/api/projects/${segment(id)}`);
+}
+
+/**
+ * File a conversation under a project, or take it out of one with `null`.
+ * A 409 means a turn is running on it; a 404 means the server has no such
+ * session or no such project.
+ */
+export async function setSessionProject(id: string, projectId: string | null): Promise<void> {
+  await request<void>("PUT", `/api/sessions/${segment(id)}/project`, { project_id: projectId });
+}
+
 /** Replay a stored conversation. */
 export async function getSession(id: string): Promise<SessionTranscript> {
   const transcript = await request<SessionTranscript>("GET", `/api/sessions/${segment(id)}`);
-  return { messages: Array.isArray(transcript?.messages) ? transcript.messages : [] };
+  return {
+    messages: Array.isArray(transcript?.messages) ? transcript.messages : [],
+    // An older server sends no compactions, and a transcript with no
+    // markers is what this page drew before they existed.
+    compactions: Array.isArray(transcript?.compactions) ? transcript.compactions : [],
+  };
+}
+
+/** What `POST /api/sessions/:id/compact` answers. */
+export interface CompactResult {
+  compacted: boolean;
+  reason?: string;
+  boundary_seq?: number;
+  tokens_before?: number;
+  tokens_after?: number;
+}
+
+/**
+ * Summarize the older part of this conversation now, because the person
+ * typed `/compact`.
+ *
+ * The window does not have to be known: a person asking is its own
+ * trigger. A 409 means a turn is running on it. A conversation too short
+ * to compact is a 200 with `compacted: false` and the reason, which is a
+ * command that declined rather than one that broke.
+ */
+export async function compactSession(id: string, focus?: string): Promise<CompactResult> {
+  return request<CompactResult>("POST", `/api/sessions/${segment(id)}/compact`, {
+    focus: focus && focus.trim() ? focus.trim() : null,
+  });
 }
 
 /**
@@ -1393,6 +1556,8 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   assistant: true,
   approval_request: true,
   context: true,
+  compacting: true,
+  compacted: true,
   memory: true,
   session_title: true,
   error: true,
@@ -1526,11 +1691,19 @@ export async function recallStatus(): Promise<RecallStatus> {
  * Search. Returns the raw rows: `conversation-search.ts` is what checks
  * their shape, because it is the thing that puts them on the page.
  */
-export async function recallSearch(query: string, limit?: number): Promise<unknown> {
+export async function recallSearch(
+  query: string,
+  limit?: number,
+  project?: string,
+): Promise<unknown> {
   const cap = limit === undefined ? "" : `&limit=${encodeURIComponent(String(limit))}`;
+  // A project nothing is filed under matches nothing, which is what a
+  // filter does. The server does not treat it as an error and neither does
+  // this, because the page only ever sends an id it just listed.
+  const scope = project ? `&project=${encodeURIComponent(project)}` : "";
   const body = await request<{ hits?: unknown }>(
     "GET",
-    `/api/recall/search?q=${encodeURIComponent(query)}${cap}`,
+    `/api/recall/search?q=${encodeURIComponent(query)}${cap}${scope}`,
   );
   return body?.hits;
 }

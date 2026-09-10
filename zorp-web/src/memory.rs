@@ -132,8 +132,22 @@ pub struct Recollection {
 /// whole from `recall`, because the only thing worth saying about a failed
 /// recall is why, and a missing local embedder already says so in a
 /// sentence written for a person.
-pub fn recall_for(query: &str, limit: usize) -> Result<Recollection, crate::recall::RecallError> {
-    let passages = crate::recall::passages(query, limit)?;
+///
+/// `project` is the project the asking conversation is filed under.
+/// **When there is one, only that project's conversations are read.** A
+/// project is what a person chose as the context for a thread, and quoting
+/// an unrelated conversation into it is the thing that scope exists to
+/// prevent. There is no falling back to the whole history when the project
+/// turns up nothing: the turn runs with no block and the `memory` frame
+/// says so, which is a truthful answer and not a silent widening of a scope
+/// somebody set on purpose. A conversation with no project reads
+/// everything, exactly as it did before projects existed.
+pub fn recall_for(
+    query: &str,
+    limit: usize,
+    project: Option<&str>,
+) -> Result<Recollection, crate::recall::RecallError> {
+    let passages = crate::recall::passages(query, limit, project)?;
     Ok(assemble(&passages))
 }
 

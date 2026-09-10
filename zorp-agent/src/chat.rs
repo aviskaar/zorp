@@ -10,6 +10,13 @@ pub enum ChatCommand {
     Help,
     Model,
     Context,
+    /// Summarize the older conversation now, with an optional steer.
+    ///
+    /// `/compact` and `/compact <what to keep>`. The focus is a person's
+    /// own words and is untrusted like any other: it is fenced as a
+    /// preference when it reaches the model and can change no rule about
+    /// what the summary must contain.
+    Compact(Option<String>),
     Diff,
     Status,
     Undo,
@@ -19,6 +26,12 @@ pub enum ChatCommand {
     Exit,
     Tools,
     Reasoning(ReasoningCommand),
+    /// Fork the conversation you are in at one of its answers.
+    ///
+    /// The browser's button is per answer because the page has the answers
+    /// on screen to click. A terminal does not, so the number is optional
+    /// and defaults to the most recent.
+    Branch(Option<usize>),
     Capsules,
     /// List the skills this session can see.
     ///
@@ -42,7 +55,7 @@ pub enum ChatCommand {
 }
 
 /// Parse one line of REPL input. A leading `/` marks a command (case-insensitive,
-/// first word only); anything else — including an empty line — is `Say`.
+/// first word only); anything else, including an empty line, is `Say`.
 /// `capsule_names` is the set of currently discoverable capsule names, checked
 /// only after every reserved built-in name has been ruled out, so a capsule can
 /// never shadow a built-in.
@@ -69,6 +82,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "help" | "h" | "?" => ChatCommand::Help,
         "model" => ChatCommand::Model,
         "context" => ChatCommand::Context,
+        "compact" => ChatCommand::Compact((!remainder.is_empty()).then(|| remainder.to_string())),
         "diff" => ChatCommand::Diff,
         "status" => ChatCommand::Status,
         "undo" => ChatCommand::Undo,
@@ -77,6 +91,13 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
         "tools" | "commands" => ChatCommand::Tools,
+        "branch" => match remainder {
+            "" => ChatCommand::Branch(None),
+            n => match n.parse::<usize>() {
+                Ok(n) if n > 0 => ChatCommand::Branch(Some(n)),
+                _ => ChatCommand::Unknown("branch".to_string()),
+            },
+        },
         "capsules" => ChatCommand::Capsules,
         "skills" => ChatCommand::Skills,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
@@ -132,6 +153,27 @@ mod tests {
         assert_eq!(
             parse_command("/skills", &["skills".to_string()]),
             ChatCommand::Skills
+        );
+    }
+
+    /// The number is optional because a terminal cannot see the answers to
+    /// click one. Zero and anything that is not a number are refusals
+    /// rather than a silent default, because both are somebody meaning
+    /// something the command cannot do.
+    #[test]
+    fn branch_takes_an_optional_answer_number() {
+        assert_eq!(parse_command("/branch", &[]), ChatCommand::Branch(None));
+        assert_eq!(
+            parse_command("/branch 2", &[]),
+            ChatCommand::Branch(Some(2))
+        );
+        assert_eq!(
+            parse_command("/branch 0", &[]),
+            ChatCommand::Unknown("branch".to_string())
+        );
+        assert_eq!(
+            parse_command("/branch latest", &[]),
+            ChatCommand::Unknown("branch".to_string())
         );
     }
 

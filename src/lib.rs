@@ -1,4 +1,4 @@
-//! zorp — the smallest harness of all time.
+//! zorp: the smallest harness of all time.
 //! Core: zorp_raw / zorp_stream / zorp_to / zorp, plus small pub helpers
 //! (build_body, join_url, env_config, extract_content, init_exports) reused by the
 //! binary and future companion crates.
@@ -822,7 +822,7 @@ pub fn zorp(prompt: &str) -> Result<String, BoxErr> {
 /// Streaming primitive: force stream:true, POST, and deliver each SSE chunk's
 /// `choices[0].delta` to `on_delta`; accumulate delta.content into the return String.
 /// If the server ignores streaming (no `data:` frames), fall back to buffered: parse
-/// the whole body and deliver one synthetic {"content": …} delta — never silent-empty.
+/// the whole body and deliver one synthetic {"content": ...} delta, never silent-empty.
 pub fn zorp_stream(
     url: &str,
     headers: &[(&str, &str)],

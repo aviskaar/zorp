@@ -1,7 +1,7 @@
 # Test deploy of the zorp-web backend for app.zorp.dev, no Ollama sidecar:
 # recall/voice are compiled out (FEATURES empty) and chat goes to a real
 # hosted OpenAI-compatible endpoint via ZORP_BASE_URL/ZORP_API_KEY instead.
-# The frontend (web/) deploys separately, as a Cloudflare Worker — see
+# The frontend (web/) deploys separately, as a Cloudflare Worker. See
 # web/wrangler.jsonc and web/README.md's "Deploying the UI" section.
 #
 # One-time setup from the repo root:

@@ -108,6 +108,45 @@ resulting artifact, deliver it in the right form.
   `POST /api/sessions/:id/panel` on the existing event stream, and it
   occupies the session exactly as a turn does. See `docs/DECISIONS.md`
   (2026-08-20) before changing any of that.
+- `ensemble` (`zorp-agent/src/ensemble/`, non-default `ensemble` feature,
+  `zorp-agent ensemble --yes "<instruction>"`) is one model doing a task,
+  reviewer models testing it under code-defined lenses, and the
+  corroborated findings going back to the first model for a bounded
+  revision. It reuses `panel` for lenses, verdict parsing and agreement
+  counting. Roles come from the TOML file named by `ZORP_ENSEMBLE` and
+  never from the instruction. A reviewer gets the read tools plus a shell
+  and no write tool, and the check that it wrote nothing is code: the
+  watched set, what the main run changed and what the instruction names,
+  is hashed before the reviewers and after each one, and a reviewer that
+  altered a file is dropped with its findings. A finding reaches the main
+  model when two lenses raised the same locus or one raised it at
+  blocking, in one fenced user message with a per-round marker under the
+  boundary sentence `memory` and `zorp-skill` use. Verdicts are memoized
+  on the hashes of what the reviewer examined, a finding is addressed
+  when the file it names changes hash and never on a model's word, and a
+  reviewer is dropped only for altering an output or for two unusable
+  replies. A dropped reviewer's edit stays in the file, because this
+  hashes and never copies, so the main model is told which files were
+  altered even when the round corroborated nothing, and that round stops
+  with its own reason rather than `nothing corroborated`. Stopping
+  quietly there hands the verifier a file a reviewer wrote, and a
+  contaminated reward looks exactly like a real one. Every run writes
+  `ensemble.json` and the reviewer transcripts to
+  `ZORP_ENSEMBLE_LOG_DIR`, and `evals/harbor/ensemble_report.py` reads
+  them on code-derived columns only. Four things are not negotiable.
+  Code launches every run and review, there is no tool that starts one,
+  and `agent.rs` has a test saying so. No roster changes on a model's
+  opinion. No reviewer reads another reviewer, by construction and not by
+  instruction: a transcript is held in memory and all of them are written
+  when the run ends, on every path that ends one, so an earlier
+  reviewer's transcript does not exist while a later one is running. A
+  reviewer has a shell and would otherwise just read it, agreement
+  between two lenses would be an echo, and agreement is the whole of what
+  this measures. And findings text is stored as `claim_model_authored`
+  and nothing that decides anything reads it. Run `cargo test -p zorp-agent
+  --features ensemble` whenever any of it changes. See
+  `docs/superpowers/specs/2026-09-05-ensemble-dag-design.md` and
+  `docs/DECISIONS.md` (2026-09-05) before changing any of it.
 - The bolt in the composer (once "Zorp mode") is `investigate` attempts
   from the browser, the write-up they produce, and a read of what landed
   in the aryabhatta ledger. It is not a fifth capability and there is no
@@ -285,6 +324,25 @@ resulting artifact, deliver it in the right form.
   Retrieval is per message and off by default, and the model cannot ask for
   it. Run `cargo test -p zorp-web --features memory` whenever any of it
   changes. See `docs/DECISIONS.md` (2026-08-22) first.
+- Projects (`projects` in the session store, `sessions.project_id`,
+  `/api/projects` and `PUT /api/sessions/:id/project`) group conversations
+  in the sidebar and scope what they read. A project is a name a person
+  typed and a nullable column on the session row: nothing about a
+  conversation changes when it joins one, and no model names, picks, or
+  reads a project. Three things are not negotiable. Deleting a project
+  unfiles its conversations and deletes none of them, in one transaction,
+  which is why the sidebar's delete control asks nothing. The label is
+  copied into the recall index as one more column on `conversations`, so
+  `GET /api/recall/search?project=` narrows the same scan rather than
+  reading a second index file, and it is part of the feed's fingerprint,
+  because a conversation that moved has not changed a word and a skip would
+  leave the index saying it is where it was. And a turn in a project reads
+  only that project's conversations for memory, with no fallback to
+  everything: a project is what the person chose as the context, and the
+  turn runs with no block and says so rather than quietly widening a scope
+  somebody set. A conversation in no project reads everything, as it always
+  did. `sessions.task` is untouched by all of it. See
+  `docs/DECISIONS.md` (2026-09-09).
 - `title` (`zorp-web/src/title.rs`) is the sidebar's session name: one
   model call per conversation, made after the first turn has both a
   question and an answer, on by default and off with
@@ -303,6 +361,31 @@ resulting artifact, deliver it in the right form.
   existing event stream via a `session_title` frame, and the browser puts
   it on the page through `textContent`. See `docs/DECISIONS.md`
   (2026-08-22) before changing any of it.
+- The browser and the terminal share one session store, so `zorp-agent
+  sessions` lists conversations from both, newest first,
+  `zorp-agent resume` with no id continues the most recent one, and
+  `zorp-agent rm` and `zorp-agent branch` reach `Store::delete_session` and
+  `Store::branch_session`, which the browser was the only caller of. `rm`
+  asks before it destroys anything unless `--yes` is passed, and `/branch
+  [n]` does the same job from inside the chat REPL, defaulting to the most
+  recent answer because a terminal has no answers on screen to click.
+  Both read `sessions.status` first and refuse a conversation recorded as
+  running, naming what they read, with `--force` to get past it. That
+  column is worth exactly what the writes behind it are worth: `zorp-web`
+  now writes the closing status where it wrote none before, which is what
+  makes it mean anything, and a process killed mid-turn still leaves a
+  stale `running` behind, which is why the refusal is one `--force` clears
+  rather than a wall.
+  `zorp-agent/src/sessions.rs` is the part with rules in it: a name is
+  `display_title` when something wrote one and the first line of the
+  verbatim `task` otherwise, never the other way round, and it is scrubbed
+  of control and bidirectional characters before it reaches a line, because
+  an override in a listing reorders every row drawn after it and that is
+  how one conversation impersonates another in a list somebody is picking
+  from. `resume` takes a unique id prefix the way git takes a short sha. An
+  ambiguous prefix prints the candidates and exits non-zero rather than
+  guessing: the wrong guess drops somebody into a stranger's thread and the
+  transcript that follows reads perfectly plausibly.
 - Branching (`POST /api/sessions/:id/branch`, `Store::branch_session`)
   copies a chat's stored messages up to and including its Nth answer into
   a new session, named by ordinal because the browser counts answers as
@@ -498,11 +581,25 @@ resulting artifact, deliver it in the right form.
   any of it.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
-  Compaction there is deterministic: it elides oldest tool-result bodies, then
-  oldest assistant tool-call arguments, never a `command`, and on the seed path
-  only drops oldest whole exchanges. A marker copied back as an argument is
-  refused before it reaches a tool. No model writes a summary, and nothing in it ever writes to
-  the store. The window is unknown unless `ZORP_CONTEXT_TOKENS` says otherwise,
+  Compaction there is two stages. Stage one is deterministic and always runs
+  first: it elides oldest tool-result bodies, then oldest assistant tool-call
+  arguments, never a `command`, and on the seed path drops oldest whole
+  exchanges. Stage two, when that is not enough, asks the model for a
+  structured summary of the older conversation
+  (`zorp-agent/src/compaction.rs`), and `/compact` asks for one on purpose.
+  A marker copied back as an argument is refused before it reaches a tool.
+  **The summary is never evidence.** It is written to the `compactions`
+  table and never to `messages`, which is what keeps it away from the four
+  things that read `messages`: the recall feed embeds them, the memory block
+  quotes them and tells the model to cite them, titling reads the first
+  pair, and branching copies them. It reaches the model as a fenced,
+  labelled `user` message standing in front of the messages it replaced,
+  put there when the seed is planned and never recorded, the same way the
+  memory block reaches a turn without reaching the store; `messages` is not written,
+  rewritten or deleted by any of it and the full transcript stays on disk.
+  Bounded at three summaries a turn, and a failed one falls back to stage
+  one rather than blocking the turn. No model can ask for a compaction and
+  there is no tool for it. The window is unknown unless `ZORP_CONTEXT_TOKENS` says otherwise,
   on purpose: no endpoint can be asked and no default is right for everyone.
   `zorp-web` and the CLI's `resume` both seed a turn through its `plan_seed`,
   which is what gives the browser conversational memory. A provider that
@@ -512,7 +609,8 @@ resulting artifact, deliver it in the right form.
   a readable error naming both numbers and `ZORP_CONTEXT_TOKENS`. That is
   one retry and never a loop, and it neither guesses a window nor sends
   `num_ctx`. See
-  `docs/DECISIONS.md` (2026-08-19, 2026-09-03) before changing any of that.
+  `docs/DECISIONS.md` (2026-08-19, 2026-09-03, 2026-09-09) before changing
+  any of that.
 - `web/` is TypeScript and no Rust job compiles a line of it. After
   changing anything in there run `npm run check`, `npm test` and
   `npm run build` from `web/`. The tests are jsdom plus `node:test`, and

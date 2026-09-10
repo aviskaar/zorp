@@ -123,14 +123,54 @@ struct Overrides {
 enum Command {
     /// Start an interactive chat session.
     Chat,
-    /// Continue a previous session by id.
-    Resume { id: String },
+    /// Continue a previous session. With no id, the most recent one.
+    ///
+    /// An id may be given as a unique prefix, the way git takes a short
+    /// sha. An ambiguous prefix lists the candidates rather than guessing.
+    Resume { id: Option<String> },
+    /// List the conversations in the store, newest first.
+    ///
+    /// The browser and the terminal share one store, so this shows both.
+    Sessions {
+        /// How many to show. Defaults to 20.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Show every conversation, however many there are.
+        #[arg(long)]
+        all: bool,
+    },
     /// Revert the most recent recorded file change.
     Undo,
     /// Print a summary of the latest session's file changes.
     Diff,
     /// Scaffold a new flavor manifest at ./.zorp/flavors/<name>.toml.
     New { name: String },
+    /// Delete a conversation and everything recorded under it.
+    ///
+    /// Takes a unique id prefix. This removes messages and recorded file
+    /// changes, so it asks first unless --yes is passed.
+    Rm {
+        id: String,
+        /// Delete without asking.
+        #[arg(long)]
+        yes: bool,
+        /// Delete even when the stored status says a turn is running.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Copy a conversation up to one of its answers into a new one.
+    ///
+    /// Prints the new id, so the next thing to type is `resume <new id>`.
+    Branch {
+        id: String,
+        /// Which answer to branch at, counted from one. Defaults to the
+        /// most recent, which is what a terminal can see.
+        #[arg(long)]
+        answer: Option<usize>,
+        /// Branch even when the stored status says a turn is running.
+        #[arg(long)]
+        force: bool,
+    },
     /// Validate whether a question is worth investigating.
     #[cfg(feature = "research")]
     Validate { question: String },
@@ -166,6 +206,14 @@ enum Command {
     /// Match a co-written draft against real venues.
     #[cfg(feature = "research")]
     Deliver { question: String },
+    /// Run the instruction with a main model, have reviewer models test it,
+    /// and send corroborated findings back for revision. Roles come from
+    /// the TOML file named by ZORP_ENSEMBLE.
+    #[cfg(feature = "ensemble")]
+    Ensemble {
+        /// The task, as a plain run takes it.
+        instruction: String,
+    },
 }
 
 fn main() {
@@ -189,10 +237,13 @@ fn main() {
     };
     match cli.command {
         Some(Command::Chat) => chat(cli.yes, cli.no_verify, &overrides),
-        Some(Command::Resume { id }) => resume(&id, cli.yes, cli.no_verify, &overrides),
+        Some(Command::Resume { id }) => resume(id.as_deref(), cli.yes, cli.no_verify, &overrides),
+        Some(Command::Sessions { limit, all }) => list_sessions(limit, all),
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
+        Some(Command::Rm { id, yes, force }) => remove_session(&id, yes || cli.yes, force),
+        Some(Command::Branch { id, answer, force }) => branch_session(&id, answer, force),
         #[cfg(feature = "research")]
         Some(Command::Validate { question }) => validate(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
@@ -218,6 +269,10 @@ fn main() {
         }) => critique(&question, critique_rounds, cli.yes, &overrides),
         #[cfg(feature = "research")]
         Some(Command::Deliver { question }) => deliver(&question, cli.yes, &overrides),
+        #[cfg(feature = "ensemble")]
+        Some(Command::Ensemble { instruction }) => {
+            ensemble(&instruction, cli.yes, cli.no_verify, &overrides)
+        }
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: zorp-agent [--yes] [--no-verify] \"<task>\"");
@@ -245,7 +300,7 @@ fn main() {
 const SCAFFOLD_TEMPLATE: &str = r#"name = "{name}"
 
 # All keys are optional; omitted keys inherit from the layer below.
-# api_key is NEVER read from a manifest — set ZORP_API_KEY in the environment.
+# api_key is NEVER read from a manifest. Set ZORP_API_KEY in the environment.
 # model         = "qwen3.6:35b"
 # base_url      = "http://localhost:11434/v1"
 # provider      = "openai"  # openai | anthropic
@@ -836,6 +891,173 @@ fn run(
         let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
         finish(outcome, status_target);
     }
+}
+
+/// `zorp-agent ensemble`. Builds the main agent exactly as `run` does, with
+/// the roster's main model in place of the configured one, and one model
+/// per reviewer on the same endpoint and key. Then hands everything to the
+/// loop, which is the only thing that launches a run or a review.
+#[cfg(feature = "ensemble")]
+fn ensemble(instruction: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
+    use zorp_agent::ensemble::{
+        self, EnsembleConfig, Roles, Roster, DEFAULT_REVIEW_STEPS, LOG_DIR_VAR, REVIEW_STEPS_VAR,
+        ROSTER_VAR,
+    };
+
+    let roster_path = std::env::var(ROSTER_VAR)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            eprintln!("zorp-agent: ensemble needs {ROSTER_VAR} naming a roles file");
+            std::process::exit(2);
+        });
+    let roster = Roster::load(Path::new(&roster_path)).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    // Zero is refused the way a roster's `rounds = 0` is. With no steps
+    // every reviewer comes back unusable and the roster empties itself by
+    // round two, and nothing in the record names the variable that did it.
+    let review_steps = match std::env::var(REVIEW_STEPS_VAR)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        None => DEFAULT_REVIEW_STEPS,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!(
+                    "zorp-agent: {REVIEW_STEPS_VAR} must be a whole number of at least 1, not {v:?}"
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+
+    let cancel = install_cancel();
+    let approval = ApprovalMode::terminal(auto_approve);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
+    let merged = user_flavor.merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    // The roster names every model this subcommand ever uses, so the base
+    // URL is all this needs from resolve_host_and_model's job. Calling it
+    // for that alone would call `pick` for a model name too, and an empty
+    // one against the default Ollama URL walks into an interactive model
+    // picker that blocks on stdin, a prompt --yes does not skip and whose
+    // answer would be thrown away regardless.
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "ZORP_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    let api_key = std::env::var("ZORP_API_KEY").ok().filter(|s| !s.is_empty());
+    let max_tokens = resolve_max_tokens(overrides, &merged);
+    let url = join_url(&base_url, provider.path_suffix());
+    let model_for = |name: &str| -> zorp_agent::ConfiguredHttpModel {
+        HttpModel {
+            url: url.clone(),
+            api_key: api_key.clone(),
+            model: name.to_string(),
+            provider,
+            max_tokens,
+        }
+        .try_with_env_reasoning_mode(merged.reasoning_mode)
+        .unwrap_or_else(|e| {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(2);
+        })
+    };
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
+
+    let session_id = new_session_id();
+    let mut main = Agent::new(
+        Box::new(model_for(&roster.main)),
+        system,
+        steps,
+        cwd.clone(),
+        cancel.clone(),
+        approval.clone(),
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    main = attach_mcp_tools(main, overrides, true);
+    main = attach_verifier(main, no_verify, &gated);
+    let recorder_store = open_store();
+    if let Some(store) = &recorder_store {
+        if let Err(e) = store.create_session(
+            &session_id,
+            instruction,
+            &cwd.display().to_string(),
+            &roster.main,
+        ) {
+            eprintln!("zorp-agent: could not create session: {e}");
+        } else if let Ok(rec_store) = Store::open_default() {
+            main = main.with_recorder(Box::new(SqliteRecorder::new(
+                rec_store,
+                session_id.clone(),
+                0,
+                0,
+            )));
+        }
+    }
+
+    let reviewers: Vec<Box<dyn zorp_agent::Model>> = roster
+        .reviewers
+        .iter()
+        .map(|name| Box::new(model_for(name)) as Box<dyn zorp_agent::Model>)
+        .collect();
+    let log_dir = std::env::var(LOG_DIR_VAR)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cwd.join("scratch").join("ensemble").join(&session_id));
+    let config = EnsembleConfig {
+        roster,
+        review_steps,
+        log_dir,
+    };
+    eprintln!(
+        "zorp-agent: ensemble, main {} with {} reviewers, {} rounds, record in {}",
+        config.roster.main,
+        config.roster.reviewers.len(),
+        config.roster.rounds,
+        config.log_dir.display()
+    );
+    let finished = ensemble::run(
+        &config,
+        Roles { main, reviewers },
+        instruction,
+        &cwd,
+        cancel,
+        approval,
+    );
+    eprintln!(
+        "zorp-agent: ensemble stopped: {}; {} open findings",
+        finished.record.stopped,
+        finished.record.open_at_end.len()
+    );
+    let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
+    finish(finished.outcome, status_target);
 }
 
 /// Prepended to the composed system prompt for `validate`, which narrows the
@@ -1470,6 +1692,8 @@ const HELP: &str = "\
 /help, /h, /?        show this help
 /model               show the active model
 /context             show transcript size
+/compact             summarize the older conversation so it fits the window
+/compact <what>      the same, steered toward what you want kept
 /diff                summarize this session's file changes
 /status              show session id and status
 /undo                revert the last recorded file change
@@ -1478,6 +1702,7 @@ const HELP: &str = "\
 /clear               forget the conversation (keep system prompt)
 /reasoning           show the active session reasoning mode
 /reasoning <mode>    set reasoning mode for future turns in this session
+/branch [n]          fork this conversation at answer n (default: the latest)
 /capsules            list available and loaded capsules
 /skills              list the skills the model can load
 /load <name>         load a capsule
@@ -1651,7 +1876,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     }
 
     let mut out = LineRenderer::new(std::io::stdout(), color);
-    out.notice("zorp-agent chat — /help for commands, /exit to quit");
+    out.notice("zorp-agent chat. /help for commands, /exit to quit");
 
     let ctx = ChatContext {
         store: &store,
@@ -1758,7 +1983,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                 if first_text.trim_start().starts_with('/')
                                     && !parts.iter().any(|p| matches!(p, ContentPart::Image { .. }))
                                 {
-                                    // Pure text command — use existing command handler
+                                    // Pure text command, so the existing handler takes it
                                     let exit = handle_chat_command(
                                         first_text,
                                         &mut agent,
@@ -1965,6 +2190,25 @@ fn handle_chat_command(
                 session_id, msg_n, char_count
             ));
         }
+        ChatCommand::Compact(focus) => {
+            // A person asking is the trigger, so this works whether or not
+            // the window is known. The summary goes to the `compactions`
+            // table and never into the transcript on disk: what is sent
+            // shrinks, what was said does not.
+            let asked = agent.compactable_messages();
+            if asked == 0 {
+                out.notice(zorp_agent::compaction::NOT_ENOUGH);
+            } else {
+                out.notice(&format!("Summarizing {asked} older messages..."));
+                match agent.compact_now(focus) {
+                    Some(done) => out.notice(&format!(
+                        "{done} older messages are now a summary. The full transcript is \
+                         still on disk."
+                    )),
+                    None => out.notice(zorp_agent::compaction::NOT_ENOUGH),
+                }
+            }
+        }
         ChatCommand::Status => {
             let status = store
                 .as_ref()
@@ -2045,6 +2289,51 @@ fn handle_chat_command(
                 None => out.notice("reasoning turned off"),
             }
         }
+        ChatCommand::Branch(answer) => {
+            // Against the store rather than the transcript in memory,
+            // because `branch_session` copies stored rows and the answer
+            // numbering it uses is the store's. Counting what is on screen
+            // would put the two out of step the moment a turn failed to
+            // persist.
+            match store.as_ref() {
+                None => out.notice("no session store, so there is nothing to branch"),
+                Some(s) => {
+                    let total = s
+                        .load_messages(session_id)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|m| m.role == "assistant" && !m.text().trim().is_empty())
+                        .count();
+                    if total == 0 {
+                        out.notice("this conversation has no answers to branch at yet");
+                    } else {
+                        let at = answer.unwrap_or(total);
+                        if at > total {
+                            out.notice(&format!(
+                                "this conversation has {total} answer{}, so /branch {at} is \
+                                 out of range",
+                                if total == 1 { "" } else { "s" }
+                            ));
+                        } else {
+                            let new_id = zorp_agent::new_session_id();
+                            match Store::open_default()
+                                .and_then(|mut fresh| fresh.branch_session(session_id, at, &new_id))
+                            {
+                                Ok(true) => out.notice(&format!(
+                                    "branched at answer {at} of {total}. Continue it with \
+                                     `zorp-agent resume {}`",
+                                    zorp_agent::sessions::short(&new_id)
+                                )),
+                                Ok(false) => {
+                                    out.notice(&format!("this conversation has no answer {at}"))
+                                }
+                                Err(e) => out.notice(&format!("could not branch: {e}")),
+                            }
+                        }
+                    }
+                }
+            }
+        }
         ChatCommand::Capsules => out.notice(&capsules.list_display()),
         ChatCommand::Skills => {
             // Read from disk now rather than from whatever was discovered
@@ -2052,7 +2341,7 @@ fn handle_chat_command(
             // while the REPL is sitting there, and the next turn would see
             // it. Reporting a stale list would be worse than reporting
             // none.
-            let scopes = zorp_skill::scope_dirs_from_env(&cwd);
+            let scopes = zorp_skill::scope_dirs_from_env(cwd);
             let (registry, warnings) = zorp_skill::SkillRegistry::discover(&scopes);
             for warning in &warnings {
                 out.notice(warning);
@@ -2193,7 +2482,7 @@ fn handle_chat_command(
             }
         }
         ChatCommand::Unknown(name) => {
-            out.notice(&format!("unknown command '/{name}' — try /help"));
+            out.notice(&format!("unknown command '/{name}'. Try /help"));
         }
         ChatCommand::Say(text) => {
             if !text.is_empty() {
@@ -2242,11 +2531,271 @@ fn chat_undo(store: &Option<Store>, session_id: &str, cwd: &Path, out: &mut dyn 
     }
 }
 
-fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
+/// Print the conversations in the store, newest first.
+///
+/// The store is shared with the browser, so this is one list and not the
+/// terminal's own. A conversation started in a sidebar is in here, and a
+/// conversation started here is in that sidebar.
+fn list_sessions(limit: Option<usize>, all: bool) {
     let store = match open_store() {
         Some(s) => s,
         None => std::process::exit(1),
     };
+    let rows = match store.sessions() {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    };
+    if rows.is_empty() {
+        // Not an error and not an empty screen. Somebody who has just
+        // installed this needs to be told that is what they are looking at.
+        println!("No conversations yet. Run `zorp-agent chat` to start one.");
+        return;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let shown = if all {
+        rows.len()
+    } else {
+        limit
+            .unwrap_or(zorp_agent::sessions::DEFAULT_LIMIT)
+            .min(rows.len())
+    };
+    for row in rows.iter().take(shown) {
+        println!("{}", zorp_agent::sessions::line(row, now));
+    }
+    if shown < rows.len() {
+        println!("\n{} more. Pass --limit <n>, or --all.", rows.len() - shown);
+    }
+}
+
+/// The conversation `resume` was asked for, or the most recent one.
+///
+/// Exits rather than returning on anything it cannot resolve, because every
+/// caller is `main` and every failure is the same shape: say what happened
+/// in a line a person can act on, and stop.
+fn resolve_session(store: &Store, wanted: Option<&str>) -> zorp_agent::SessionRow {
+    let rows = match store.sessions() {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    };
+    let Some(wanted) = wanted else {
+        // No id at all: the most recent conversation, which is the thing
+        // somebody wants far more often than any particular one.
+        let Some(row) = rows.into_iter().next() else {
+            eprintln!("zorp-agent: no conversations yet. Run `zorp-agent chat` to start one.");
+            std::process::exit(1);
+        };
+        return row;
+    };
+    match zorp_agent::sessions::resolve(&rows, wanted) {
+        Ok(row) => row.clone(),
+        Err(zorp_agent::sessions::ResolveError::NotFound) => {
+            eprintln!("zorp-agent: no session '{wanted}'");
+            eprintln!("zorp-agent: run `zorp-agent sessions` to see what there is");
+            std::process::exit(1);
+        }
+        Err(zorp_agent::sessions::ResolveError::Ambiguous(ids)) => {
+            // Never a guess. The wrong one drops somebody into a stranger's
+            // thread and the transcript looks perfectly plausible.
+            eprintln!(
+                "zorp-agent: '{wanted}' matches {} conversations:",
+                ids.len()
+            );
+            for id in ids {
+                eprintln!("  {id}");
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Whether the stored status says a turn is in flight, and what it says.
+///
+/// The browser's own refusal reads a live map of the threads in its process.
+/// A CLI cannot see those threads, and a second `zorp-agent` cannot see the
+/// first one's, so the only shared signal is this column.
+///
+/// It is worth exactly as much as the writes behind it, and the writes were
+/// half missing: `create_session` wrote `running` and only the CLI ever
+/// wrote anything else, so every conversation the browser made read as
+/// running for the rest of its life. `zorp-web` now writes the closing
+/// status too, which makes this meaningful going forward. It does not make
+/// it reliable: a process killed mid-turn leaves `running` behind with
+/// nothing running. So this refuses and says what it read, and `--force`
+/// gets past it, rather than trapping a conversation forever on the word of
+/// a column nobody updated.
+fn running_status(store: &Store, id: &str) -> Option<String> {
+    match store.session_status(id) {
+        Ok(Some(status)) if status == "running" => Some(status),
+        _ => None,
+    }
+}
+
+/// Ask before removing something that cannot be brought back.
+fn confirm(question: &str) -> bool {
+    use std::io::Write as _;
+    eprint!("{question} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Delete a conversation and everything recorded under it.
+///
+/// The one command here that destroys something, so it is the one that
+/// asks. `--yes` answers in advance, for a script.
+fn remove_session(wanted: &str, yes: bool, force: bool) {
+    let mut store = match open_store() {
+        Some(s) => s,
+        None => std::process::exit(1),
+    };
+    let row = resolve_session(&store, Some(wanted));
+    let id = row.id.clone();
+    let label = zorp_agent::sessions::name(&row);
+
+    if !force {
+        if let Some(status) = running_status(&store, &id) {
+            eprintln!(
+                "zorp-agent: {} is recorded as '{status}'. Another turn may be writing to it.",
+                zorp_agent::sessions::short(&id)
+            );
+            eprintln!("zorp-agent: pass --force to delete it anyway.");
+            std::process::exit(1);
+        }
+    }
+
+    if !yes
+        && !confirm(&format!(
+            "Delete \"{label}\" and everything recorded under it?"
+        ))
+    {
+        eprintln!("zorp-agent: nothing deleted");
+        return;
+    }
+
+    match store.delete_session(&id) {
+        Ok(true) => println!("deleted {} ({label})", zorp_agent::sessions::short(&id)),
+        Ok(false) => {
+            eprintln!("zorp-agent: no session '{wanted}'");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// How many answers a conversation has, counted the way `branch_session`
+/// counts them: an assistant message with text, from one, in seq order.
+///
+/// Counted here so `--answer` can default to the latest and so an out of
+/// range number can say how many there are instead of failing blankly.
+fn answer_count(store: &Store, id: &str) -> usize {
+    store
+        .load_messages(id)
+        .unwrap_or_default()
+        .iter()
+        .filter(|m| m.role == "assistant" && !m.text().trim().is_empty())
+        .count()
+}
+
+/// Copy a conversation up to one of its answers into a new one.
+///
+/// The browser branches per answer because the page has the answers on
+/// screen to click. A terminal does not, so the honest shape is a number
+/// that defaults to the most recent answer.
+fn branch_session(wanted: &str, answer: Option<usize>, force: bool) {
+    let mut store = match open_store() {
+        Some(s) => s,
+        None => std::process::exit(1),
+    };
+    let row = resolve_session(&store, Some(wanted));
+    let id = row.id.clone();
+
+    if !force {
+        if let Some(status) = running_status(&store, &id) {
+            eprintln!(
+                "zorp-agent: {} is recorded as '{status}'. A copy taken while a turn is \
+                 writing is not the conversation you can see.",
+                zorp_agent::sessions::short(&id)
+            );
+            eprintln!("zorp-agent: pass --force to branch it anyway.");
+            std::process::exit(1);
+        }
+    }
+
+    let total = answer_count(&store, &id);
+    if total == 0 {
+        eprintln!(
+            "zorp-agent: {} has no answers to branch at",
+            zorp_agent::sessions::short(&id)
+        );
+        std::process::exit(1);
+    }
+    let answer = answer.unwrap_or(total);
+    if answer == 0 || answer > total {
+        eprintln!(
+            "zorp-agent: {} has {total} answer{}, so --answer {answer} is out of range",
+            zorp_agent::sessions::short(&id),
+            if total == 1 { "" } else { "s" }
+        );
+        std::process::exit(1);
+    }
+
+    let new_id = zorp_agent::new_session_id();
+    match store.branch_session(&id, answer, &new_id) {
+        Ok(true) => {
+            println!("{new_id}");
+            eprintln!(
+                "zorp-agent: branched {} at answer {answer} of {total}. Continue it with \
+                 `zorp-agent resume {}`.",
+                zorp_agent::sessions::short(&id),
+                zorp_agent::sessions::short(&new_id)
+            );
+        }
+        Ok(false) => {
+            eprintln!(
+                "zorp-agent: {} has no answer {answer}",
+                zorp_agent::sessions::short(&id)
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn resume(wanted: Option<&str>, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
+    let store = match open_store() {
+        Some(s) => s,
+        None => std::process::exit(1),
+    };
+    let chosen = resolve_session(&store, wanted);
+    let id: &str = &chosen.id;
+    // Say which one, because `resume` with no id and `resume` with a prefix
+    // both picked it rather than being handed it.
+    if wanted.map(|w| w != id).unwrap_or(true) {
+        eprintln!(
+            "zorp-agent: resuming {} ({})",
+            zorp_agent::sessions::short(id),
+            zorp_agent::sessions::name(&chosen)
+        );
+    }
     let messages = match store.load_message_records(id) {
         Ok(m) if !m.is_empty() => m,
         Ok(_) => {
@@ -2311,7 +2860,8 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     // dangling tool call for the provider to refuse, and the oldest material
     // dropped first when the window will not hold it.
     let budget = zorp_agent::ContextBudget::from_env();
-    let plan = zorp_agent::plan_seed(messages, &system, &budget);
+    let latest = store.latest_compaction(id).unwrap_or_default();
+    let plan = zorp_agent::plan_seed(messages, &system, &budget, latest.as_ref());
     if let Some(notice) = plan.report.notice() {
         eprintln!("zorp-agent: {notice}");
     }
@@ -2777,7 +3327,7 @@ mod main_tests {
             &mut out,
         );
 
-        assert_eq!(out.notices, vec!["● demo — demo capsule".to_string()]);
+        assert_eq!(out.notices, vec!["● demo: demo capsule".to_string()]);
     }
 
     #[test]

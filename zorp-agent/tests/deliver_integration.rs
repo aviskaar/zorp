@@ -2,7 +2,7 @@
 //! MCP server binary `validate_integration.rs` already uses
 //! (`tests/fixtures/stub_search_mcp_server.rs`), configured under the
 //! server name `huiban` so its tools come out prefixed
-//! `mcp__huiban__*` — the exact gate `deliver::run` checks for. No real
+//! `mcp__huiban__*`, the exact gate `deliver::run` checks for. No real
 //! huiban-specific code is needed anywhere: `mcp__<name>__<tool>`
 //! prefixing is generic in `zorp-mcp`, driven entirely by the config's
 //! `name` field.

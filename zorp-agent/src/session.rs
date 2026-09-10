@@ -50,7 +50,29 @@ CREATE TABLE IF NOT EXISTS message_images (
     part_index INTEGER NOT NULL,
     mime_type TEXT NOT NULL,
     data BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS compactions (
+    session_id TEXT NOT NULL,
+    id INTEGER NOT NULL,
+    boundary_seq INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    focus TEXT,
+    model TEXT NOT NULL,
+    tokens_before INTEGER NOT NULL,
+    tokens_after INTEGER NOT NULL,
+    manual INTEGER NOT NULL,
+    created INTEGER NOT NULL,
+    PRIMARY KEY (session_id, id)
+);
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created INTEGER NOT NULL
 );";
+
+// No per-session index for `compactions`: its primary key already leads
+// with `session_id`, so every lookup in this file is a prefix scan of the
+// index SQLite builds for the key.
 
 /// Per-session lookup indexes. Applied with IF NOT EXISTS on every open so
 /// databases created before these indexes existed pick them up too.
@@ -60,6 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, 
 CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);";
 
 /// A stored session's header row.
+#[derive(Clone)]
 pub struct SessionRow {
     pub id: String,
     /// The first thing the user asked for, stored verbatim.
@@ -90,11 +113,98 @@ pub struct SessionRow {
     /// clock, so this is the finest grain anything downstream can honestly
     /// put a date on.
     pub updated: i64,
+    /// The project this conversation is filed under, or `None`.
+    ///
+    /// A label and nothing more. Nothing about the conversation changes
+    /// when it gets one: the messages, the `task`, the title, the branch
+    /// and delete behaviour are all as they were. It travels into the
+    /// recall index so a search or a memory recall can be scoped to one
+    /// project, and it is a person's word, never a model's.
+    pub project_id: Option<String>,
+}
+
+/// A stored project's row. A name a person typed, and when they typed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRow {
+    pub id: String,
+    /// Typed by a person. No model writes this, reads it to decide
+    /// anything, or is asked to pick one.
+    pub name: String,
+    /// Epoch milliseconds.
+    pub created: i64,
+}
+
+/// What `Store::set_session_project` did, when it did not fail.
+///
+/// Three outcomes rather than a bool because the caller answers a different
+/// status for each: a move that happened, a session that is not there, and
+/// a project that is not there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetProject {
+    Done,
+    NoSuchSession,
+    NoSuchProject,
+}
+
+/// One recorded compaction: a model-written summary standing in for a run
+/// of older messages, and the arithmetic that justified it.
+///
+/// **This is model-authored text and it is never evidence.** It lives in
+/// its own table and not in `messages`, and that separation is the whole
+/// of the guarantee. Four things read `messages`: the recall feed embeds
+/// user and assistant rows, the memory block quotes them into later turns
+/// and tells the model to cite them, titling reads the first pair, and
+/// branching copies them. A summary in `messages` would be embedded,
+/// recalled, quoted and cited as though a person or the model had said it
+/// in conversation. In here it is invisible to all four by construction
+/// rather than by four separate filters that have to keep agreeing.
+///
+/// `messages` is never written, rewritten, or deleted by compaction. The
+/// full transcript stays on disk and `get_session` still returns all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compaction {
+    /// Position in this session's compactions, from one. Per session, so
+    /// a branch can carry its parent's numbering without renumbering.
+    pub id: i64,
+    /// The `messages.seq` of the **last message this summary covers**.
+    /// Everything with a larger seq is sent verbatim after it.
+    pub boundary_seq: i64,
+    /// What the model wrote. Model-authored, labelled as such everywhere
+    /// it surfaces, and never read by recall, memory, or titling.
+    pub summary: String,
+    /// The steer a person typed after `/compact`, when they typed one.
+    /// Untrusted text; it is fenced when it reaches the model.
+    pub focus: Option<String>,
+    /// Which model wrote the summary, so a reader can tell.
+    pub model: String,
+    /// The transcript estimate before and after, in tokens.
+    pub tokens_before: i64,
+    pub tokens_after: i64,
+    /// Whether a person asked for this with `/compact`, as opposed to the
+    /// window filling. The browser draws the same marker either way; this
+    /// is what lets a replayed marker say what the live one said.
+    pub manual: bool,
+    /// Epoch milliseconds.
+    pub created: i64,
 }
 
 /// SQLite-backed session persistence.
 pub struct Store {
     conn: Connection,
+}
+
+fn compaction_from_row(row: &rusqlite::Row<'_>) -> Result<Compaction, rusqlite::Error> {
+    Ok(Compaction {
+        id: row.get(0)?,
+        boundary_seq: row.get(1)?,
+        summary: row.get(2)?,
+        focus: row.get(3)?,
+        model: row.get(4)?,
+        tokens_before: row.get(5)?,
+        tokens_after: row.get(6)?,
+        manual: row.get(7)?,
+        created: row.get(8)?,
+    })
 }
 
 fn now() -> i64 {
@@ -234,6 +344,14 @@ fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
     const COLUMNS: &[(&str, &str)] = &[
         ("session_reasoning_mode", "TEXT"),
         ("display_title", "TEXT"),
+        // Which project this conversation is filed under, or NULL for
+        // none. Added only here and never to `SCHEMA`'s `sessions`
+        // definition, so a database written before projects existed picks
+        // it up on the next open exactly as a fresh one does. No foreign
+        // key: the store opens with SQLite's defaults, where a foreign key
+        // clause is not enforced anyway, and `set_session_project` checks
+        // the project exists before it writes.
+        ("project_id", "TEXT"),
     ];
 
     for (column, sql_type) in COLUMNS {
@@ -440,6 +558,199 @@ impl Store {
         Ok(())
     }
 
+    /// Record one compaction and answer the id it was given.
+    ///
+    /// Ids are per session and start at one, so a branch carries its
+    /// parent's numbering unchanged. The `id` on the value handed in is
+    /// ignored; this is what assigns it.
+    ///
+    /// **Nothing in `messages` is touched.** This is the only write
+    /// compaction makes, and it is to a table no reader of the transcript
+    /// looks at.
+    pub fn record_compaction(
+        &mut self,
+        session_id: &str,
+        compaction: &Compaction,
+    ) -> Result<i64, BoxErr> {
+        let tx = self.conn.transaction()?;
+        let next: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM compactions WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO compactions (session_id, id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                session_id,
+                next,
+                compaction.boundary_seq,
+                compaction.summary,
+                compaction.focus,
+                compaction.model,
+                compaction.tokens_before,
+                compaction.tokens_after,
+                compaction.manual,
+                if compaction.created > 0 {
+                    compaction.created
+                } else {
+                    now()
+                },
+            ],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// The newest compaction for a session, which is the one a seed reads.
+    ///
+    /// Newest by `id`, not by `boundary_seq`, because ids only go up and a
+    /// boundary can in principle repeat when a manual `/compact` follows an
+    /// automatic one that summarized the same range.
+    pub fn latest_compaction(&self, session_id: &str) -> Result<Option<Compaction>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created \
+             FROM compactions WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(compaction_from_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Every compaction for a session, oldest first. What a reopened
+    /// transcript draws its markers from.
+    pub fn compactions(&self, session_id: &str) -> Result<Vec<Compaction>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created \
+             FROM compactions WHERE session_id = ?1 ORDER BY id ASC",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(compaction_from_row(row)?);
+        }
+        Ok(out)
+    }
+
+    /// Every project, oldest first.
+    ///
+    /// Ordered by `created` rather than by name so the sidebar keeps the
+    /// order a person built it in. A list that re-sorts itself when a
+    /// project is renamed, or that puts a new one in the middle, is a list
+    /// nobody can learn the shape of.
+    pub fn projects(&self) -> Result<Vec<ProjectRow>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, created FROM projects ORDER BY created ASC, id ASC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProjectRow {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The project one conversation is filed under.
+    ///
+    /// `None` covers both a conversation nobody filed and one the store has
+    /// never heard of, because a caller asking which project to read from
+    /// does the same thing either way. One indexed row rather than the whole
+    /// session list, since this runs on every turn that asks for memory.
+    pub fn session_project(&self, id: &str) -> Result<Option<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT project_id FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query([id])?;
+        if let Some(row) = rows.next()? {
+            Ok(row.get(0)?)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Every conversation filed under a project, so a caller can tell which
+    /// index rows a delete is about to invalidate.
+    pub fn sessions_in_project(&self, project_id: &str) -> Result<Vec<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM sessions WHERE project_id = ?1")?;
+        let rows = stmt.query_map([project_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// File a new project under `id`, and answer with the epoch
+    /// milliseconds it was created at, since that is what the caller has to
+    /// hand back and reading the list again to find it would be a scan for
+    /// one number it already wrote.
+    ///
+    /// The name is stored as given; what counts as an acceptable name is
+    /// the caller's business, and `zorp-web` clamps it on the one path in.
+    pub fn create_project(&mut self, id: &str, name: &str) -> Result<i64, BoxErr> {
+        let created = now();
+        self.conn.execute(
+            "INSERT INTO projects (id, name, created) VALUES (?1, ?2, ?3)",
+            (id, name, created),
+        )?;
+        Ok(created)
+    }
+
+    /// Remove a project and unfile every conversation in it. Returns
+    /// whether there was such a project.
+    ///
+    /// **No conversation is deleted here, ever.** A project is a label, and
+    /// removing a label removes a label. Both statements run in one
+    /// transaction so a crash between them cannot leave a session pointing
+    /// at a project that is gone.
+    pub fn delete_project(&mut self, id: &str) -> Result<bool, BoxErr> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET project_id = NULL WHERE project_id = ?1",
+            [id],
+        )?;
+        let deleted = tx.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(deleted > 0)
+    }
+
+    /// Move a conversation into a project, or out of every project with
+    /// `None`.
+    ///
+    /// `updated` is bumped on purpose. Two things read it. The sidebar
+    /// sorts on it, so a conversation that has just been filed surfaces at
+    /// the top of its new group rather than wherever it was. And the recall
+    /// feed skips a conversation whose fingerprint has not moved, so the
+    /// project id is part of that fingerprint and this write is what makes
+    /// the next pass rewrite the index row.
+    pub fn set_session_project(
+        &mut self,
+        session_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<SetProject, BoxErr> {
+        if let Some(project_id) = project_id {
+            let known: i64 = self.conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get(0),
+            )?;
+            if known == 0 {
+                return Ok(SetProject::NoSuchProject);
+            }
+        }
+        let changed = self.conn.execute(
+            "UPDATE sessions SET project_id = ?2, updated = ?3 WHERE id = ?1",
+            (session_id, project_id, now()),
+        )?;
+        Ok(if changed > 0 {
+            SetProject::Done
+        } else {
+            SetProject::NoSuchSession
+        })
+    }
+
     /// Remove a conversation and everything recorded under it. Returns
     /// whether a session row actually existed, so a caller can tell "gone"
     /// from "never was" and answer a 404 rather than a false 204.
@@ -448,6 +759,7 @@ impl Store {
         tx.execute("DELETE FROM messages WHERE session_id = ?1", [id])?;
         tx.execute("DELETE FROM file_changes WHERE session_id = ?1", [id])?;
         tx.execute("DELETE FROM message_images WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM compactions WHERE session_id = ?1", [id])?;
         let deleted = tx.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(deleted > 0)
@@ -504,8 +816,8 @@ impl Store {
             return Ok(false);
         };
         let inserted = tx.execute(
-            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, created, updated) \
-             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, ?3, ?3 \
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, project_id, created, updated) \
+             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, project_id, ?3, ?3 \
              FROM sessions WHERE id = ?1",
             (from, to, now()),
         )?;
@@ -523,6 +835,17 @@ impl Store {
              SELECT ?2, message_seq, part_index, mime_type, data \
              FROM message_images WHERE session_id = ?1 AND message_seq <= ?3 \
              ORDER BY message_seq ASC, part_index ASC",
+            (from, to, seq),
+        )?;
+        // Compactions whose boundary is inside the copied prefix. One past
+        // it would claim to summarize messages the branch does not have,
+        // and the branch would then seed from a summary of a conversation
+        // it cannot show. The summary is still not a message: it lands in
+        // the branch's own `compactions` table and never in its transcript.
+        tx.execute(
+            "INSERT INTO compactions (session_id, id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created) \
+             SELECT ?2, id, boundary_seq, summary, focus, model, tokens_before, tokens_after, manual, created \
+             FROM compactions WHERE session_id = ?1 AND boundary_seq <= ?3 ORDER BY id ASC",
             (from, to, seq),
         )?;
         tx.commit()?;
@@ -556,8 +879,8 @@ impl Store {
 
     pub fn latest_session(&self) -> Result<Option<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated FROM sessions \
-             ORDER BY updated DESC, created DESC LIMIT 1",
+            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+             FROM sessions ORDER BY updated DESC, created DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
@@ -569,6 +892,7 @@ impl Store {
                 status: row.get(4)?,
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
+                project_id: row.get(7)?,
             }))
         } else {
             Ok(None)
@@ -595,8 +919,8 @@ impl Store {
     /// sidebar needs.
     pub fn sessions(&self) -> Result<Vec<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated FROM sessions \
-             ORDER BY rowid DESC",
+            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+             FROM sessions ORDER BY rowid DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SessionRow {
@@ -607,6 +931,7 @@ impl Store {
                 status: row.get(4)?,
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
+                project_id: row.get(7)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1364,6 +1689,130 @@ CREATE TABLE file_changes (
         assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);
     }
 
+    fn a_compaction(boundary_seq: i64) -> Compaction {
+        Compaction {
+            id: 0,
+            boundary_seq,
+            summary: "## All user messages\n1. write hello.txt".to_string(),
+            focus: None,
+            model: "m".to_string(),
+            tokens_before: 9000,
+            tokens_after: 1200,
+            manual: false,
+            created: 0,
+        }
+    }
+
+    #[test]
+    fn compactions_are_numbered_per_session_from_one() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_session("s2", "ask", "/r", "m").unwrap();
+
+        assert_eq!(store.record_compaction("s1", &a_compaction(4)).unwrap(), 1);
+        assert_eq!(store.record_compaction("s1", &a_compaction(9)).unwrap(), 2);
+        // A second session starts its own numbering, which is what lets a
+        // branch carry its parent's ids without renumbering.
+        assert_eq!(store.record_compaction("s2", &a_compaction(2)).unwrap(), 1);
+
+        let ids: Vec<i64> = store
+            .compactions("s1")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn the_latest_compaction_is_the_newest_one_recorded() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        assert_eq!(store.latest_compaction("s1").unwrap(), None);
+
+        store.record_compaction("s1", &a_compaction(4)).unwrap();
+        store
+            .record_compaction(
+                "s1",
+                &Compaction {
+                    focus: Some("keep the SQL schema".to_string()),
+                    manual: true,
+                    ..a_compaction(9)
+                },
+            )
+            .unwrap();
+
+        let latest = store.latest_compaction("s1").unwrap().unwrap();
+        assert_eq!(latest.id, 2);
+        assert_eq!(latest.boundary_seq, 9);
+        assert_eq!(latest.focus.as_deref(), Some("keep the SQL schema"));
+        assert!(latest.manual);
+        assert!(latest.created > 0, "a compaction records when it happened");
+    }
+
+    /// Compaction writes to its own table and nothing else. The transcript
+    /// on disk is what was said, and that does not change because the
+    /// request got shorter.
+    #[test]
+    fn recording_a_compaction_leaves_every_message_where_it_was() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store
+            .record_message("s1", 0, &Message::user("write hello.txt"))
+            .unwrap();
+        store
+            .record_message("s1", 1, &Message::assistant("Done."))
+            .unwrap();
+
+        store.record_compaction("s1", &a_compaction(1)).unwrap();
+
+        let texts: Vec<String> = store
+            .load_messages("s1")
+            .unwrap()
+            .iter()
+            .map(|m| m.text().into_owned())
+            .collect();
+        assert_eq!(texts, vec!["write hello.txt", "Done."]);
+    }
+
+    #[test]
+    fn deleting_a_session_takes_its_compactions_with_it() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.record_compaction("s1", &a_compaction(4)).unwrap();
+
+        assert!(store.delete_session("s1").unwrap());
+        assert!(store.compactions("s1").unwrap().is_empty());
+    }
+
+    /// A branch copies the compactions inside the prefix it took and none
+    /// past it. One past it would claim to summarize messages the branch
+    /// does not have.
+    #[test]
+    fn a_branch_carries_the_compactions_inside_its_prefix() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        for (seq, message) in [
+            (0, Message::user("one")),
+            (1, Message::assistant("first answer")),
+            (2, Message::user("two")),
+            (3, Message::assistant("second answer")),
+        ] {
+            store.record_message("s1", seq, &message).unwrap();
+        }
+        store.record_compaction("s1", &a_compaction(1)).unwrap();
+        store.record_compaction("s1", &a_compaction(3)).unwrap();
+
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+        let boundaries: Vec<i64> = store
+            .compactions("s2")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.boundary_seq)
+            .collect();
+        assert_eq!(boundaries, vec![1]);
+    }
+
     #[test]
     fn sessions_lists_every_session_newest_first() {
         let store = Store::open_in_memory().unwrap();
@@ -1376,5 +1825,148 @@ CREATE TABLE file_changes (
             .map(|s| s.id)
             .collect();
         assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
+    }
+
+    fn project_of(store: &Store, id: &str) -> Option<String> {
+        store
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .project_id
+    }
+
+    #[test]
+    fn a_database_without_project_id_gets_it_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.db");
+        create_pre_reasoning_mode_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute(
+                "INSERT INTO sessions (id, task, repo, model, status, created, updated) \
+                 VALUES ('s1', 'ask', '/r', 'm', 'running', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open_at(&path).unwrap();
+        assert_eq!(project_of(&store, "s1"), None);
+    }
+
+    #[test]
+    fn a_session_can_be_filed_under_a_project_and_taken_back_out() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+
+        assert_eq!(
+            store.set_session_project("s1", Some("p1")).unwrap(),
+            SetProject::Done
+        );
+        assert_eq!(project_of(&store, "s1"), Some("p1".to_string()));
+
+        assert_eq!(
+            store.set_session_project("s1", None).unwrap(),
+            SetProject::Done
+        );
+        assert_eq!(project_of(&store, "s1"), None);
+    }
+
+    #[test]
+    fn projects_come_back_oldest_first() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_project("p1", "First").unwrap();
+        store.create_project("p2", "Second").unwrap();
+        let names: Vec<String> = store
+            .projects()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, vec!["First".to_string(), "Second".to_string()]);
+    }
+
+    #[test]
+    fn deleting_a_project_unfiles_its_conversations_and_deletes_none() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+
+        assert!(store.delete_project("p1").unwrap());
+        assert!(store.projects().unwrap().is_empty());
+        // The conversation is still there, and it is no longer filed.
+        assert_eq!(project_of(&store, "s1"), None);
+        assert_eq!(store.sessions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn one_session_answers_for_its_own_project_and_a_project_for_its_sessions() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_session("s2", "ask", "/r", "m").unwrap();
+        store.create_session("s3", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+        store.set_session_project("s3", Some("p1")).unwrap();
+
+        assert_eq!(store.session_project("s1").unwrap(), Some("p1".to_string()));
+        // Filed under nothing and never heard of both read as no project.
+        assert_eq!(store.session_project("s2").unwrap(), None);
+        assert_eq!(store.session_project("nope").unwrap(), None);
+
+        let mut in_project = store.sessions_in_project("p1").unwrap();
+        in_project.sort();
+        assert_eq!(in_project, vec!["s1".to_string(), "s3".to_string()]);
+        assert!(store.sessions_in_project("p2").unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_project_that_is_not_there_says_so() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert!(!store.delete_project("nope").unwrap());
+    }
+
+    #[test]
+    fn moving_into_an_unknown_project_changes_nothing() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+
+        assert_eq!(
+            store.set_session_project("s1", Some("ghost")).unwrap(),
+            SetProject::NoSuchProject
+        );
+        assert_eq!(project_of(&store, "s1"), Some("p1".to_string()));
+    }
+
+    #[test]
+    fn moving_a_session_that_is_not_there_says_so() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        assert_eq!(
+            store.set_session_project("ghost", Some("p1")).unwrap(),
+            SetProject::NoSuchSession
+        );
+    }
+
+    #[test]
+    fn a_branch_lands_in_its_parents_project() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        store.create_project("p1", "Kitchen rebuild").unwrap();
+        store.set_session_project("s1", Some("p1")).unwrap();
+        store
+            .record_message("s1", 0, &Message::user("ask"))
+            .unwrap();
+        store
+            .record_message("s1", 1, &Message::assistant("answered"))
+            .unwrap();
+
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+        assert_eq!(project_of(&store, "s2"), Some("p1".to_string()));
     }
 }

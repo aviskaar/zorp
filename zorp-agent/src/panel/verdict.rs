@@ -5,7 +5,7 @@
 //! best guess at what it meant would put a made-up finding next to real
 //! ones with nothing to tell them apart.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -14,7 +14,7 @@ use std::fmt;
 /// Three levels, not five. A reviewer asked to grade finely spends its
 /// attention on the grade, and the only distinction the panel acts on
 /// is whether something has to be fixed before the work can be used.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Worth knowing, does not block.

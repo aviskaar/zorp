@@ -11,7 +11,7 @@
     />
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ffffff'/%3E%3Cpath d='M14 14h36L14 50h36' fill='none' stroke='%2312182b' stroke-width='6.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cg fill='%2312182b'%3E%3Ccircle cx='14' cy='14' r='6'/%3E%3Ccircle cx='50' cy='14' r='6'/%3E%3Ccircle cx='14' cy='50' r='6'/%3E%3Ccircle cx='50' cy='50' r='6'/%3E%3C/g%3E%3Cg fill='%231450f5'%3E%3Ccircle cx='32' cy='14' r='5.5'/%3E%3Ccircle cx='26.4' cy='37.6' r='5.5'/%3E%3C/g%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ffffff'/%3E%3Cpath d='M14 14h36L14 50h36' fill='none' stroke='%2312182b' stroke-width='6.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cg fill='%2312182b'%3E%3Ccircle cx='14' cy='14' r='6'/%3E%3Ccircle cx='50' cy='14' r='6'/%3E%3Ccircle cx='14' cy='50' r='6'/%3E%3Ccircle cx='50' cy='50' r='6'/%3E%3C/g%3E%3Cg fill='%235eead4'%3E%3Ccircle cx='32' cy='14' r='5.5'/%3E%3Ccircle cx='26.4' cy='37.6' r='5.5'/%3E%3C/g%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="styles.css" />
     <script>
@@ -84,6 +84,36 @@
         </button>
 
         <!--
+          A project is a name and a set of conversations filed under it. It
+          changes nothing about a conversation: the transcript, the title,
+          branching and deleting are all as they were. What it buys is a
+          sidebar you can fold, and a scope for the search box and for the
+          memory a turn reads.
+
+          The form is revealed by the button rather than always on the page,
+          because most of the time nobody is making a project and a sidebar
+          is short.
+        -->
+        <button class="new-project" id="new-project" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          Project
+        </button>
+        <form class="project-form" id="project-form" hidden>
+          <label class="sidebar-label" for="project-name">New project</label>
+          <input
+            class="project-input"
+            id="project-name"
+            type="text"
+            maxlength="80"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Kitchen rebuild"
+          />
+          <button class="project-create" id="project-create" type="submit">Create</button>
+          <p class="project-error" id="project-error" role="status"></p>
+        </form>
+
+        <!--
           Search what you already said, by meaning rather than by spelling.
           The vectors come from a model running on this machine and go into
           a file on this machine; nothing typed here is sent anywhere else,
@@ -103,6 +133,15 @@
             spellcheck="false"
             placeholder="What was I working on?"
           />
+          <!--
+            What to search. A project is its own context index, so this
+            narrows the search to one of them. Hidden until there is a
+            project to pick, since a select with one option is furniture.
+            The option labels are project names, put on the page from
+            script through `textContent`.
+          -->
+          <label class="visually-hidden" for="recall-project">Search within</label>
+          <select class="recall-project" id="recall-project" hidden></select>
           <div class="recall-foot">
             <!--
               role="status" so the count, and any refusal, is announced
@@ -115,7 +154,13 @@
         </div>
 
         <div class="sidebar-label">Sessions</div>
-        <ul class="session-list" id="session-list"></ul>
+        <!--
+          The scroller, not the list. With projects there is one list per
+          group plus one for everything unfiled, and they all scroll
+          together under this. Without a single project it holds exactly
+          one `ul.session-list`, which is what it always was.
+        -->
+        <div class="session-scroll" id="session-list"></div>
 
         <div class="sidebar-foot">
           <p>
@@ -463,6 +508,20 @@
             readers to keep one live region and one announcement.
           -->
           <p class="voice-toast" id="voice-toast" aria-hidden="true" hidden></p>
+          <!--
+            zorp is writing a summary of the older conversation so the next
+            request fits the model's window. A model call the person did not
+            ask for, sitting between their message and their answer, so it
+            says so rather than letting the page look hung. role="status" so
+            it is announced, the same as the voice line above.
+          -->
+          <p
+            class="compacting-status"
+            id="compacting-status"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></p>
           <p class="composer-hint">
             <kbd>Enter</kbd> to send, <kbd>Shift</kbd><span>+</span><kbd>Enter</kbd> for a newline
           </p>

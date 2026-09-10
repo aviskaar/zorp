@@ -197,7 +197,7 @@ fn init_escapes_special_chars() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    // Single-quoted, with the embedded ' escaped as '\'' — inert under eval.
+    // Single-quoted, with the embedded ' escaped as '\''. Inert under eval.
     assert!(
         s.contains(r#"export ZORP_SYSTEM='it'\''s $HOME'"#),
         "got: {s}"

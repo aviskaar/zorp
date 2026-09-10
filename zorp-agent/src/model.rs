@@ -1459,7 +1459,7 @@ mod tests {
             json!({"type": "enabled", "budget_tokens": 24000})
         );
         assert_eq!(sent_body["tools"][0]["name"], "read_file");
-        // Header casing on the wire is a ureq implementation detail — compare
+        // Header casing on the wire is a ureq implementation detail, so compare
         // lowercased to avoid coupling the test to it.
         let sent_headers_lower = sent_headers.to_ascii_lowercase();
         assert!(sent_headers_lower.contains("x-api-key: test-key"));

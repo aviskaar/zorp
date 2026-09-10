@@ -33,6 +33,8 @@ import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
 import { emptySessionRow, sessionRow, UNTITLED } from "./session-row";
+import { compactionMarker } from "./compaction-marker";
+import { projectGroups } from "./project-group";
 import {
   PaneResizer,
   artifactsBounds,
@@ -82,15 +84,20 @@ import {
   fetchSkills,
   getCapabilities,
   branchSession,
+  compactSession,
+  createProject,
+  deleteProject,
   deleteSession,
   getSession,
   getSettings,
   getWorkspace,
   listModels,
+  listProjects,
   listSessions,
   newSession,
   putSettings,
   recallSearch,
+  setSessionProject,
   recallStatus,
   sendTurn,
   startPanel,
@@ -115,6 +122,7 @@ import {
   type Settings,
   type SettingsSource,
   type SettingsUpdate,
+  type ProjectSummary,
   type SessionSummary,
   type StreamStatus,
   type Workspace,
@@ -161,7 +169,12 @@ interface Elements {
   recallInput: HTMLInputElement;
   recallStatus: HTMLElement;
   recallResults: HTMLElement;
+  recallProject: HTMLSelectElement;
   newChat: HTMLButtonElement;
+  newProject: HTMLButtonElement;
+  projectForm: HTMLFormElement;
+  projectName: HTMLInputElement;
+  projectError: HTMLElement;
   menu: HTMLButtonElement;
   sidebarClose: HTMLButtonElement;
   title: HTMLElement;
@@ -191,6 +204,7 @@ interface Elements {
   voiceMicrophone: HTMLButtonElement;
   voiceCancel: HTMLButtonElement;
   voiceStatus: HTMLElement;
+  compactingStatus: HTMLElement;
   voicePreview: HTMLElement;
   voiceToast: HTMLElement;
   voiceMeter: HTMLElement;
@@ -341,6 +355,16 @@ let turnStopped = false;
 let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
+/**
+ * How many messages the summary in flight covers.
+ *
+ * Carried on `compacting` and needed by the marker that `compacted` draws,
+ * and the two are separate frames because one of them is the thing that
+ * takes time.
+ */
+let compactingMessages = 0;
+/** Every project, as the server last listed them. Refreshed with the sessions. */
+let projects: ProjectSummary[] = [];
 let activityGroup: ActivityGroup | null = null;
 /**
  * The line for the call that has started and not yet reported. The agent
@@ -529,7 +553,12 @@ function collectElements(): Elements {
     recallInput: byId("recall-input"),
     recallStatus: byId("recall-status"),
     recallResults: byId("recall-results"),
+    recallProject: byId<HTMLSelectElement>("recall-project"),
     newChat: byId<HTMLButtonElement>("new-chat"),
+    newProject: byId<HTMLButtonElement>("new-project"),
+    projectForm: byId<HTMLFormElement>("project-form"),
+    projectName: byId<HTMLInputElement>("project-name"),
+    projectError: byId("project-error"),
     menu: byId<HTMLButtonElement>("menu"),
     sidebarClose: byId<HTMLButtonElement>("sidebar-close"),
     title: byId("session-title"),
@@ -569,6 +598,7 @@ function collectElements(): Elements {
     voiceMicrophone: byId<HTMLButtonElement>("voice-mic"),
     voiceCancel: byId<HTMLButtonElement>("voice-cancel"),
     voiceStatus: byId("voice-status"),
+    compactingStatus: byId("compacting-status"),
     voicePreview: byId("voice-preview"),
     voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
@@ -687,6 +717,62 @@ function wireSidebar(): void {
   dom.menu.addEventListener("click", showSidebar);
   dom.sidebarClose.addEventListener("click", hideSidebar);
   dom.scrim.addEventListener("click", closeSidebar);
+  wireProjects();
+}
+
+/**
+ * Making a project, and backing out of making one.
+ *
+ * The form is revealed rather than always drawn, because most of the time
+ * nobody is making a project and the sidebar is a list of conversations.
+ * Enter submits and Escape puts it away, which is what a one-field form on
+ * a page is expected to do.
+ */
+function wireProjects(): void {
+  const hideForm = () => {
+    dom.projectForm.hidden = true;
+    dom.projectName.value = "";
+    dom.projectError.textContent = "";
+  };
+
+  dom.newProject.addEventListener("click", () => {
+    const opening = dom.projectForm.hidden;
+    dom.projectForm.hidden = !opening;
+    if (opening) {
+      dom.projectName.focus();
+    } else {
+      hideForm();
+    }
+  });
+
+  dom.projectName.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      hideForm();
+      dom.newProject.focus();
+    }
+  });
+
+  dom.projectForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = dom.projectName.value.trim();
+    if (!name) {
+      dom.projectError.textContent = "A project needs a name.";
+      return;
+    }
+    void (async () => {
+      try {
+        await createProject(name);
+      } catch (error) {
+        // The server's own words: it is the one that decides what a name
+        // has to survive, and it says which rule this one broke.
+        dom.projectError.textContent = describeError(error);
+        return;
+      }
+      hideForm();
+      await refreshSessions();
+    })();
+  });
 }
 
 function wireScroller(): void {
@@ -855,6 +941,17 @@ async function submitMessage(): Promise<void> {
   if (!message) {
     return;
   }
+
+  // The one slash command there is. A `startsWith` check and not a command
+  // table, because a table for one entry is a table nobody reads; build one
+  // when there is a second.
+  if (message === "/compact" || message.startsWith("/compact ")) {
+    dom.input.value = "";
+    autoGrowInput();
+    await runCompact(message.slice("/compact".length).trim());
+    return;
+  }
+
   dom.input.value = "";
   autoGrowInput();
 
@@ -865,6 +962,38 @@ async function submitMessage(): Promise<void> {
   }
 
   await sendMessage(message);
+}
+
+/**
+ * Summarize the older conversation now, because the person typed
+ * `/compact`.
+ *
+ * The frames do the drawing: the server sends `compacting` and `compacted`
+ * on this session's stream and the handler above puts the marker on the
+ * page, so a compaction started here looks exactly like one the window
+ * filling started. What is left for this function is the two cases the
+ * stream has nothing to say about: a conversation with nothing to compact,
+ * and a session that does not exist yet.
+ */
+async function runCompact(focus: string): Promise<void> {
+  if (!sessionId) {
+    appendActivity(noticeLine("There is no conversation to compact yet."));
+    scrollToBottomIfFollowing(isNearBottom());
+    return;
+  }
+  try {
+    const result = await compactSession(sessionId, focus);
+    if (!result.compacted) {
+      // A command that declined, not one that broke, and the server's own
+      // words say which.
+      appendActivity(noticeLine(result.reason ?? "Not enough messages to compact."));
+      scrollToBottomIfFollowing(isNearBottom());
+    }
+  } catch (error) {
+    setCompacting(false);
+    appendError(`Could not compact the conversation: ${describeError(error)}`);
+    scrollToBottomIfFollowing(isNearBottom());
+  }
 }
 
 /** Draw the queue from current state. Called on every push and every drain. */
@@ -1400,6 +1529,45 @@ function applyEvent(event: ZorpEvent): void {
       });
       break;
 
+    case "compacting":
+      // A model call the person did not ask for, sitting between their
+      // message and their answer. Saying so beats a page that looks hung,
+      // and the send button goes down because a second turn now would race
+      // the compaction for the transcript.
+      closeActivityGroup();
+      compactingMessages = event.messages;
+      setCompacting(true);
+      break;
+
+    case "compacted":
+      setCompacting(false);
+      if (event.ok) {
+        // A seam in the transcript, not an activity line: the older
+        // conversation is not in the request any more, and that is a fact
+        // about the conversation rather than about something the agent did.
+        closeActivityGroup();
+        dom.transcript.append(
+          compactionMarker(document, {
+            messages: compactingMessages,
+            tokens_before: event.tokens_before,
+            tokens_after: event.tokens_after,
+            summary: event.summary ?? "",
+          }),
+        );
+        scrollToBottomIfFollowing(isNearBottom());
+      } else {
+        // The turn went ahead on the deterministic elision that has always
+        // been there. The server's own words say why the summary did not
+        // happen.
+        appendActivity(
+          noticeLine(
+            `The conversation could not be summarized: ${event.reason ?? "no reason given"}. ` +
+              "Older material was dropped from this request instead; the full transcript is still on disk.",
+          ),
+        );
+      }
+      break;
+
     case "memory":
       // Above the answer, because it is the reason for the answer. An
       // activity line would put it in with the tool calls, where it reads
@@ -1519,6 +1687,30 @@ function finishTurn(): void {
   if (next !== undefined) {
     paintQueue();
     void sendMessage(next);
+  }
+}
+
+/**
+ * Say that the conversation is being summarized, and hold the send button.
+ *
+ * The button goes down rather than becoming a stop button: compaction is
+ * one blocking model call, there is nothing to stop halfway that would
+ * leave the transcript in a state worth having, and the server answers 409
+ * to a turn started underneath it anyway.
+ */
+function setCompacting(active: boolean): void {
+  dom.composer.classList.toggle("is-compacting", active);
+  dom.send.disabled = active;
+  if (active) {
+    dom.compactingStatus.hidden = false;
+    dom.compactingStatus.textContent =
+      "Summarizing the conversation so it fits the model's window";
+  } else {
+    dom.compactingStatus.hidden = true;
+    dom.compactingStatus.textContent = "";
+    // A turn that is still running keeps its stop button; one that is not
+    // gets its arrow back.
+    dom.send.disabled = false;
   }
 }
 
@@ -1998,6 +2190,15 @@ function wireRecall(): void {
     }
     recallTimer = window.setTimeout(() => void runRecallSearch(query), RECALL_DEBOUNCE_MS);
   });
+  // A scope is part of the query. Changing it re-asks rather than waiting
+  // for the next keystroke, which would otherwise leave results on screen
+  // that answer a different question from the one the select now states.
+  dom.recallProject.addEventListener("change", () => {
+    const query = dom.recallInput.value;
+    if (query.trim()) {
+      void runRecallSearch(query);
+    }
+  });
   recallStatusTimer ??= window.setInterval(() => {
     if (document.visibilityState === "visible") {
       void refreshRecallStatus();
@@ -2037,7 +2238,7 @@ async function refreshRecallStatus(): Promise<void> {
 async function runRecallSearch(query: string): Promise<void> {
   recallInFlight = query;
   try {
-    const hits = coerceHits(await recallSearch(query));
+    const hits = coerceHits(await recallSearch(query, undefined, recallScope()));
     if (recallInFlight !== query) {
       return;
     }
@@ -2070,6 +2271,14 @@ async function refreshSessions(): Promise<void> {
     // server that cannot be reached.
     sessions = [];
   }
+  try {
+    projects = await listProjects();
+  } catch {
+    // An older server has no such route. No projects is the honest answer
+    // and the sidebar then reads exactly as it did before they existed.
+    projects = [];
+  }
+  renderProjectOptions();
   renderSessions();
 
   // The server names a session from its first message, so the heading catches
@@ -2084,23 +2293,109 @@ function renderSessions(): void {
   dom.sessionList.replaceChildren();
 
   if (!sessions.length) {
-    dom.sessionList.append(emptySessionRow(document));
+    const list = document.createElement("ul");
+    list.className = "session-list";
+    list.append(emptySessionRow(document));
+    dom.sessionList.append(list);
     return;
   }
 
-  for (const session of sessions) {
-    dom.sessionList.append(
-      sessionRow(document, session, {
-        active: session.id === sessionId,
-        when: relativeTime(session.updated_at),
-        onOpen: (chosen) => {
-          void openSession(chosen);
-          closeSidebar();
-        },
-        onDelete: (chosen) => void deleteSessionRow(chosen),
-      }),
-    );
+  const row = (session: SessionSummary) =>
+    sessionRow(document, session, {
+      active: session.id === sessionId,
+      when: relativeTime(session.updated_at),
+      onOpen: (chosen) => {
+        void openSession(chosen);
+        closeSidebar();
+      },
+      onDelete: (chosen) => void deleteSessionRow(chosen),
+      projects,
+      onMove: (chosen, projectId) => void moveSessionRow(chosen, projectId),
+    });
+
+  // With no projects this is one `ul` of rows and no headings, which is
+  // what the sidebar was before any of this.
+  dom.sessionList.append(
+    ...projectGroups(document, projects, sessions, row, {
+      onDeleteProject: (project) => void deleteProjectGroup(project),
+    }),
+  );
+}
+
+/**
+ * File a conversation under a project, or take it out of one.
+ *
+ * No confirmation either way. Nothing about the conversation changes: its
+ * messages, its title, its branch and delete behaviour are all as they
+ * were, and the only thing a dialog could ask about is a label.
+ */
+async function moveSessionRow(session: SessionSummary, projectId: string | null): Promise<void> {
+  try {
+    await setSessionProject(session.id, projectId);
+  } catch (error) {
+    // The server's own words. A 409 says a turn is running on it, which is
+    // the one case where this is refused.
+    window.alert(`Could not move "${session.title || UNTITLED}": ${describeError(error)}`);
+    return;
   }
+  await refreshSessions();
+}
+
+/**
+ * Remove a project. **This deletes no conversation**, which is why there is
+ * no confirmation: the control's own tooltip says what happens, and what
+ * happens is that a label goes away.
+ */
+async function deleteProjectGroup(project: ProjectSummary): Promise<void> {
+  try {
+    await deleteProject(project.id);
+  } catch (error) {
+    window.alert(`Could not delete "${project.name}": ${describeError(error)}`);
+    return;
+  }
+  await refreshSessions();
+}
+
+/**
+ * The search box's scope, or nothing for the whole history.
+ *
+ * Read at search time rather than remembered, so the select is the single
+ * statement of what is being searched.
+ */
+function recallScope(): string | undefined {
+  const chosen = dom.recallProject.value;
+  return chosen ? chosen : undefined;
+}
+
+/**
+ * Rebuild the search scope options from the current project list.
+ *
+ * The selection survives as long as its project does, because a list that
+ * refreshes every few seconds must not keep resetting what somebody chose.
+ * A project that has been deleted takes the selection back to everything,
+ * which is the only honest place for it to land.
+ */
+function renderProjectOptions(): void {
+  const chosen = dom.recallProject.value;
+  dom.recallProject.replaceChildren();
+
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "All conversations";
+  dom.recallProject.append(all);
+
+  for (const project of projects) {
+    const option = document.createElement("option");
+    option.value = project.id;
+    // A project name is text a person typed. It goes on the page the way
+    // every other name in this sidebar does.
+    option.textContent = project.name;
+    dom.recallProject.append(option);
+  }
+
+  dom.recallProject.value = projects.some((p) => p.id === chosen) ? chosen : "";
+  // A select with one option is furniture.
+  dom.recallProject.hidden = projects.length === 0;
 }
 
 /**
@@ -2201,13 +2496,36 @@ async function openSession(session: SessionSummary): Promise<void> {
       // A stored call is drawn as the live tool event is. Consecutive lines
       // share one group, and `appendMessage` starts a new one, so a call, an
       // answer and another call land in two groups, the same as live.
-      transcript.messages.forEach((message: Message) => {
+      // Markers go after the entry the server counted them to. Oldest
+      // first, so two compactions in one conversation land in the order
+      // they happened.
+      const pending = [...transcript.compactions].sort((a, b) => a.after - b.after);
+      const drawMarkersUpTo = (drawn: number) => {
+        while (pending.length && pending[0].after <= drawn) {
+          const record = pending.shift()!;
+          closeActivityGroup();
+          dom.transcript.append(
+            compactionMarker(document, {
+              messages: record.messages,
+              tokens_before: record.tokens_before,
+              tokens_after: record.tokens_after,
+              summary: record.summary,
+            }),
+          );
+        }
+      };
+
+      transcript.messages.forEach((message: Message, index: number) => {
         if (message.role === "tool") {
           appendActivity(activityLine(message.name, message.summary, message.phrase));
         } else {
           appendMessage(message.role, message.content);
         }
+        drawMarkersUpTo(index + 1);
       });
+      // Anything counted past the last entry still belongs on the page: the
+      // messages it covers may all have been rows this list does not draw.
+      drawMarkersUpTo(Number.MAX_SAFE_INTEGER);
       // A replayed group is over by construction, so it shows its count.
       closeActivityGroup();
       // A reopened chat's answers name files too, and nothing else here asks

@@ -171,7 +171,7 @@ fn a_prefix_match_is_not_a_match() {
 }
 
 /// A product member that pins its own version instead of inheriting must
-/// fail — this is the zorp-search shape that slipped past the old gate.
+/// fail. This is the zorp-search shape that slipped past the old gate.
 #[test]
 fn a_member_with_its_own_version_fails() {
     let out = check_with_members(
