@@ -19,6 +19,8 @@ pub enum ChatCommand {
     Exit,
     Tools,
     Reasoning(ReasoningCommand),
+    /// The same report `zorp-agent doctor` prints.
+    Doctor,
     Capsules,
     LoadCapsule(String),
     UnloadCapsule(String),
@@ -70,6 +72,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
         "tools" | "commands" => ChatCommand::Tools,
+        "doctor" => ChatCommand::Doctor,
         "capsules" => ChatCommand::Capsules,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),

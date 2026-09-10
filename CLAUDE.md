@@ -528,6 +528,21 @@ resulting artifact, deliver it in the right form.
   prove that too. See
   `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
   any of it.
+- `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
+  do and whether it can reach anything: which features `cfg!` reports, the
+  resolved endpoint, provider and model, whether an API key is set, whether
+  the endpoint answered, where the state files are, and the registered
+  tools. `/doctor` in the chat REPL prints the same report from the same
+  function. Exit code is 0 when everything checked was fine and 1 otherwise,
+  so it works in a script. Two rules are not negotiable. **Nothing here
+  prints a secret**: a key is reported as set or not set, never its value,
+  never a prefix, never its length, and a test greps the whole report to
+  prove it, because this is the thing people paste into bug reports. And a
+  probe goes the way the real path goes, through `zorp::http_agent` with the
+  same timeouts, because a doctor that reached an endpoint the real feature
+  would refuse would report healthy on the one configuration that cannot
+  work. A feature that is off is reported and never counted as a failure, or
+  every default build would exit non-zero.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is deterministic: it elides oldest tool-result bodies, then

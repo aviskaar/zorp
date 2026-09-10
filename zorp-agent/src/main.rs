@@ -107,6 +107,7 @@ struct Cli {
     task: Vec<String>,
 }
 
+#[derive(Default)]
 struct Overrides {
     flavor: Option<String>,
     model: Option<String>,
@@ -131,6 +132,12 @@ enum Command {
     Diff,
     /// Scaffold a new flavor manifest at ./.zorp/flavors/<name>.toml.
     New { name: String },
+    /// Say what this build can do and whether it can reach anything.
+    ///
+    /// Exits non-zero when something it checked came back bad, so it is
+    /// usable in a script and safe to paste into a bug report: no key, no
+    /// token and no manifest contents are printed.
+    Doctor,
     /// Validate whether a question is worth investigating.
     #[cfg(feature = "research")]
     Validate { question: String },
@@ -201,6 +208,7 @@ fn main() {
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
+        Some(Command::Doctor) => doctor(&overrides),
         #[cfg(feature = "research")]
         Some(Command::Validate { question }) => validate(&question, cli.yes, &overrides),
         #[cfg(feature = "research")]
@@ -395,6 +403,139 @@ fn scaffold(name: &str) {
         std::process::exit(1);
     }
     println!("created {}", path.display());
+}
+
+/// Build the doctor's report, without printing it.
+///
+/// Split from `doctor` so the shape can be tested and so `/doctor` in the
+/// chat REPL prints exactly the same thing rather than a second version of
+/// it that drifts.
+fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
+    use zorp_agent::doctor::{Check, Report};
+
+    let mut report = Report::default();
+    report.checks.push(zorp_agent::doctor::feature_check());
+
+    // What the real paths would resolve, through the same functions they
+    // use, so this reports on the configuration that would actually run.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let merged = user_flavor.merge(project_flavor);
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_default();
+
+    report.checks.push(Check::note(
+        "endpoint",
+        format!("{base_url} ({provider:?})"),
+    ));
+    if model_name.is_empty() {
+        report.checks.push(Check::bad(
+            "model",
+            "no model set. Use --model, ZORP_MODEL, or a flavor.",
+        ));
+    } else {
+        report.checks.push(Check::note("model", model_name.clone()));
+    }
+    report
+        .checks
+        .push(zorp_agent::doctor::api_key_check(&base_url));
+
+    // A probe is a network call, so it goes through the same client every
+    // other request goes through, with the same timeouts.
+    report.checks.push(probe_endpoint(&base_url));
+
+    for (name, path) in zorp_agent::doctor::state_paths() {
+        report
+            .checks
+            .push(Check::note(name, path.display().to_string()));
+    }
+    report
+        .checks
+        .push(Check::note("workspace", cwd.display().to_string()));
+
+    // The tools, observed rather than re-derived. `web_search_availability`
+    // is the same function the registration site uses, which is what makes
+    // its answer worth trusting.
+    let policy = build_policy(overrides.approval.as_deref(), &merged, &cwd);
+    let search = zorp_agent::web_search_availability(&policy);
+    report.checks.push(if search.available {
+        Check::ok("web_search", search.detail)
+    } else {
+        Check::off("web_search", search.detail)
+    });
+
+    // The model is never called: registration does not touch it, and this
+    // agent exists only to be asked what it registered.
+    let agent = Agent::new(
+        Box::new(HttpModel {
+            url: zorp_agent::join_url(&base_url, provider.path_suffix()),
+            api_key: None,
+            model: model_name.clone(),
+            provider,
+            max_tokens: None,
+        }),
+        String::new(),
+        1,
+        cwd,
+        cancel_token(),
+        ApprovalMode::NonInteractive,
+    )
+    .register_builtins_filtered(merged.tools.enabled.as_deref());
+    report
+        .checks
+        .push(Check::note("tools", agent.tool_names().join(", ")));
+
+    report
+}
+
+/// Ask the configured endpoint whether it is there.
+///
+/// Through `zorp::http_agent`, which is the client every real request uses
+/// and carries the same timeouts. A doctor that reached an endpoint the
+/// real path would refuse would be worse than no doctor: it would report
+/// healthy on the one configuration that cannot work.
+///
+/// A `GET` on the models listing, because it is the cheapest thing an
+/// OpenAI-compatible endpoint answers and it costs no tokens. A 401 is a
+/// reachable endpoint that wants a key, which is a different fault from a
+/// refused connection and is reported as such.
+fn probe_endpoint(base_url: &str) -> zorp_agent::doctor::Check {
+    use zorp_agent::doctor::Check;
+
+    let url = zorp_agent::join_url(base_url, "models");
+    let mut request = zorp::http_agent().get(&url);
+    if let Ok(key) = std::env::var("ZORP_API_KEY") {
+        if !key.trim().is_empty() {
+            request = request.set("Authorization", &format!("Bearer {key}"));
+        }
+    }
+    match request.call() {
+        Ok(response) => Check::ok(
+            "reachable",
+            format!("{} answered {}", url, response.status()),
+        ),
+        Err(ureq::Error::Status(401 | 403, _)) => Check::bad(
+            "reachable",
+            format!("{url} answered but refused the credentials"),
+        ),
+        // Anything else with a status is a server that is there and did not
+        // like this particular request, which is not what this is asking.
+        Err(ureq::Error::Status(code, _)) => {
+            Check::ok("reachable", format!("{url} answered {code}"))
+        }
+        Err(e) => Check::bad("reachable", format!("{url} did not answer: {e}")),
+    }
+}
+
+/// `zorp-agent doctor`.
+fn doctor(overrides: &Overrides) {
+    let report = doctor_report(overrides);
+    for line in report.lines() {
+        println!("{line}");
+    }
+    if !report.healthy() {
+        std::process::exit(1);
+    }
 }
 
 fn open_store() -> Option<Store> {
@@ -1649,6 +1790,7 @@ const HELP: &str = "\
 /help, /h, /?        show this help
 /model               show the active model
 /context             show transcript size
+/doctor              say what this build can do and whether it can reach anything
 /diff                summarize this session's file changes
 /status              show session id and status
 /undo                revert the last recorded file change
@@ -1702,6 +1844,10 @@ struct ChatContext<'a> {
     session_id: &'a str,
     cwd: &'a Path,
     model_name: &'a str,
+    /// What the flags said, so `/doctor` reports on the configuration this
+    /// session is actually running under rather than on the environment
+    /// alone.
+    overrides: &'a Overrides,
 }
 
 /// Line-based chat input loop, used for piped stdin and as the fallback when
@@ -1836,6 +1982,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         session_id: &session_id,
         cwd: &cwd,
         model_name: &model_name,
+        overrides,
     };
 
     if !std::io::stdin().is_terminal() {
@@ -2112,6 +2259,7 @@ fn handle_chat_command(
         session_id,
         cwd,
         model_name,
+        overrides,
     } = ctx;
     let mut exit = false;
     let capsule_names = capsules.registry().names();
@@ -2222,6 +2370,12 @@ fn handle_chat_command(
                 Some(mode) => out.notice(&format!("reasoning set to {}", mode.effort_str())),
                 None => out.notice("reasoning turned off"),
             }
+        }
+        ChatCommand::Doctor => {
+            // The same report the subcommand prints, from the same
+            // function, so the two cannot drift into saying different
+            // things about one machine.
+            out.notice(&doctor_report(overrides).lines().join("\n"));
         }
         ChatCommand::Capsules => out.notice(&capsules.list_display()),
         ChatCommand::LoadCapsule(name) => {
@@ -2771,11 +2925,16 @@ mod main_tests {
     /// same session id and model name, so only the store and the working
     /// directory are worth passing.
     fn test_ctx<'a>(store: &'a Option<Store>, cwd: &'a Path) -> ChatContext<'a> {
+        // Leaked rather than threaded through every call site: it is one
+        // small struct per test process and it keeps thirty callers from
+        // growing an argument none of them cares about.
+        let overrides: &'static Overrides = Box::leak(Box::new(Overrides::default()));
         ChatContext {
             store,
             session_id: "s1",
             cwd,
             model_name: "test-model",
+            overrides,
         }
     }
 
