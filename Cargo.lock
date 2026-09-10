@@ -8384,6 +8384,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ureq",
+ "zorp-skill",
 ]
 
 [[package]]
@@ -8535,6 +8536,7 @@ dependencies = [
  "zip 4.6.1",
  "zorp-agent",
  "zorp-recall",
+ "zorp-skill",
  "zorp-track",
  "zorp-voice",
 ]

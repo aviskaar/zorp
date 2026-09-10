@@ -20,6 +20,12 @@ import {
   searchIndicatorView,
   type SearchIndicatorView,
 } from "./search-indicator";
+import {
+  renderSkillsIndicator,
+  renderSkillsPanel,
+  skillsView,
+  type SkillsView,
+} from "./skills-view";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -73,6 +79,7 @@ import {
   approve,
   getAutoApprove,
   setAutoApprove,
+  fetchSkills,
   getCapabilities,
   branchSession,
   deleteSession,
@@ -347,6 +354,7 @@ let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
 const approvalMode: AutoApproveView = autoApproveView(document);
 const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
+const skills: SkillsView = skillsView(document);
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
 const messageQueue: string[] = [];
@@ -391,6 +399,7 @@ function start(): void {
   wireComposer();
   wireLayout();
   wireSidebar();
+  wireSkills();
   wireRecall();
   wireScroller();
   wireSettings();
@@ -2342,10 +2351,67 @@ async function refreshCapabilities(): Promise<void> {
   try {
     const capabilities = await getCapabilities();
     renderSearchIndicator(searchIndicator, capabilities.web_search);
+    // Absent from a server built before skills were reported, and `null`
+    // and absent are both drawn as no pill. A count that appeared while
+    // the answer was in flight would be a guess.
+    renderSkillsIndicator(skills, capabilities.skills ?? null);
     voiceInput.observe(capabilities.voice);
   } catch {
     renderSearchIndicator(searchIndicator, null);
+    renderSkillsIndicator(skills, null);
   }
+}
+
+/**
+ * The list behind the pill, fetched when somebody opens it.
+ *
+ * Not with the capabilities call, which every page load makes: a listing
+ * carries every description on the machine and most sessions never open it.
+ * Fetched each time it is opened rather than cached, because a skill can be
+ * added to a directory while the page is sitting there.
+ */
+function wireSkills(): void {
+  const close = () => {
+    skills.panel.hidden = true;
+    skills.button.setAttribute("aria-expanded", "false");
+  };
+
+  skills.button.addEventListener("click", () => {
+    const opening = skills.panel.hidden;
+    skills.panel.hidden = !opening;
+    skills.button.setAttribute("aria-expanded", String(opening));
+    if (!opening) {
+      return;
+    }
+    void (async () => {
+      try {
+        renderSkillsPanel(document, skills.panel, await fetchSkills());
+      } catch (error) {
+        // The server's own words. A page that said "could not list skills"
+        // would be hiding the reason it already has.
+        renderSkillsPanel(document, skills.panel, {
+          skills: [],
+          warnings: [describeError(error)],
+        });
+      }
+    })();
+  });
+
+  // A popover that only closes on its own toggle stays open forever.
+  // `focusout` fires on every path away from it, mouse or keyboard, without
+  // a document-wide listener to remember to remove.
+  skills.root.addEventListener("focusout", (event) => {
+    const next = (event as FocusEvent).relatedTarget as Node | null;
+    if (!next || !skills.root.contains(next)) {
+      close();
+    }
+  });
+  skills.root.addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Escape") {
+      close();
+      skills.button.focus();
+    }
+  });
 }
 
 /** Refresh just the topbar badge and composer banner, without opening the panel. */

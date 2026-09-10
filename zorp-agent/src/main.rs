@@ -1479,6 +1479,7 @@ const HELP: &str = "\
 /reasoning           show the active session reasoning mode
 /reasoning <mode>    set reasoning mode for future turns in this session
 /capsules            list available and loaded capsules
+/skills              list the skills the model can load
 /load <name>         load a capsule
 /unload <name>       unload a capsule
 /<capsule_name> [text]  load a capsule (if needed) and optionally send a prompt through it
@@ -2045,6 +2046,30 @@ fn handle_chat_command(
             }
         }
         ChatCommand::Capsules => out.notice(&capsules.list_display()),
+        ChatCommand::Skills => {
+            // Read from disk now rather than from whatever was discovered
+            // when the session started: a skill can be added to a directory
+            // while the REPL is sitting there, and the next turn would see
+            // it. Reporting a stale list would be worse than reporting
+            // none.
+            let scopes = zorp_skill::scope_dirs_from_env(&cwd);
+            let (registry, warnings) = zorp_skill::SkillRegistry::discover(&scopes);
+            for warning in &warnings {
+                out.notice(warning);
+            }
+            if registry.is_empty() {
+                out.notice(
+                    "no skills found. Put a directory holding a SKILL.md under \
+                     ~/.claude/skills, under .claude/skills here, or wherever \
+                     ZORP_SKILLS_DIR points.",
+                );
+            } else {
+                // The same index the model is shown in the `skill` tool's
+                // description, so what a person reads here is what the
+                // model has to choose from.
+                out.notice(&registry.index());
+            }
+        }
         ChatCommand::LoadCapsule(name) => {
             if name.is_empty() {
                 out.notice("usage: /load <capsule_name>");

@@ -9,6 +9,10 @@ license.workspace = true
 [dependencies]
 ureq = { workspace = true }   # do NOT set default-features = false
 serde_json = { workspace = true }
+# Discovery and parsing only. Loading a skill here prepends text to a
+# prompt; it registers nothing and grants nothing, because this binary has
+# no tools to grant.
+zorp-skill = { path = "zorp-skill" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

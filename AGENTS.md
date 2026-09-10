@@ -174,6 +174,23 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that. Skills are not capsules; the same entry says why both exist.
+  Three surfaces now say what is installed, and all three only read.
+  `zorp --skills` lists them and `zorp --skill <name> <prompt>` puts one
+  skill's instructions in front of a prompt, with `/skills` and
+  `/skill <name>` doing the same in that binary's stdin loop; the body goes
+  in front of the user's words and never into the system prompt, because
+  the system slot is the one channel the harness speaks in.
+  `zorp-agent`'s chat REPL gains `/skills`, which prints the same index the
+  model is shown. And `zorp-web` answers `GET /api/skills` with names,
+  descriptions, paths and scopes, reports a count on
+  `GET /api/capabilities`, and draws a toolbar pill with a popover behind
+  it. **None of those loads a skill.** There is no route that does and
+  there must never be one: loading is the `skill` tool, called by the model
+  when the task matches, gated exactly as every other tool call is, and
+  `zorp-web/tests/skills.rs` has a test saying the routes do not exist. The
+  listing carries no skill body either, so a `SKILL.md` cannot reach the
+  page at all; the strings that do reach it are a file zorp did not write
+  and go on through `textContent` like model output.
 - `zorp-recall/` is zorp's own conversation search: a loopback guard, an
   embedder that talks to a local Ollama, and a SQLite vector index over the
   conversations in `zorp-agent`'s store. Like `zorp-search` and `zorp-skill`

@@ -646,6 +646,135 @@ button {
  * server has said the tool is really there, so its absence is the normal
  * case and carries no styling at all.
  */
+/* How many skills this server can see, and what they are. A report, like
+   the search pill, with something to read behind it. */
+.skills-indicator {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.skills-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.skills-btn:hover {
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.skills-btn svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.skills-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.skills-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: min(380px, 80vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-raised);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+
+.skills-note {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.skills-empty {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.skills-scope {
+  margin: 12px 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.skills-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border-radius: 8px;
+}
+
+.skills-item:hover {
+  background: var(--bg-inset);
+}
+
+.skills-name {
+  font-family: var(--z-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.skills-description {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* A skill asking for tools and not getting them is a thing a reader should
+   be able to see rather than discover. */
+.skills-declared {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.skills-warning {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
 .search-indicator {
   display: inline-flex;
   align-items: center;
