@@ -257,7 +257,7 @@ fn main() {
 const SCAFFOLD_TEMPLATE: &str = r#"name = "{name}"
 
 # All keys are optional; omitted keys inherit from the layer below.
-# api_key is NEVER read from a manifest — set ZORP_API_KEY in the environment.
+# api_key is NEVER read from a manifest. Set ZORP_API_KEY in the environment.
 # model         = "qwen3.6:35b"
 # base_url      = "http://localhost:11434/v1"
 # provider      = "openai"  # openai | anthropic
@@ -1831,7 +1831,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     }
 
     let mut out = LineRenderer::new(std::io::stdout(), color);
-    out.notice("zorp-agent chat — /help for commands, /exit to quit");
+    out.notice("zorp-agent chat. /help for commands, /exit to quit");
 
     let ctx = ChatContext {
         store: &store,
@@ -1938,7 +1938,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                 if first_text.trim_start().starts_with('/')
                                     && !parts.iter().any(|p| matches!(p, ContentPart::Image { .. }))
                                 {
-                                    // Pure text command — use existing command handler
+                                    // Pure text command, so the existing handler takes it
                                     let exit = handle_chat_command(
                                         first_text,
                                         &mut agent,
@@ -2368,7 +2368,7 @@ fn handle_chat_command(
             }
         }
         ChatCommand::Unknown(name) => {
-            out.notice(&format!("unknown command '/{name}' — try /help"));
+            out.notice(&format!("unknown command '/{name}'. Try /help"));
         }
         ChatCommand::Say(text) => {
             if !text.is_empty() {
@@ -2953,7 +2953,7 @@ mod main_tests {
             &mut out,
         );
 
-        assert_eq!(out.notices, vec!["● demo — demo capsule".to_string()]);
+        assert_eq!(out.notices, vec!["● demo: demo capsule".to_string()]);
     }
 
     #[test]

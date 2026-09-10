@@ -26,7 +26,7 @@ pub fn mock(status: u16, content_type: &str, body: &str) -> String {
 }
 
 /// Mock server that serves a queued list of 200 JSON response bodies, one per
-/// connection, in order — for multi-turn agent runs. Returns the base URL.
+/// connection, in order, for multi-turn agent runs. Returns the base URL.
 #[allow(dead_code)]
 pub fn mock_script(bodies: Vec<&str>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

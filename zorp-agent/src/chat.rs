@@ -42,7 +42,7 @@ pub enum ChatCommand {
 }
 
 /// Parse one line of REPL input. A leading `/` marks a command (case-insensitive,
-/// first word only); anything else — including an empty line — is `Say`.
+/// first word only); anything else, including an empty line, is `Say`.
 /// `capsule_names` is the set of currently discoverable capsule names, checked
 /// only after every reserved built-in name has been ruled out, so a capsule can
 /// never shadow a built-in.

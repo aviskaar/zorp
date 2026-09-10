@@ -5,7 +5,7 @@ use std::thread;
 /// One-shot mock HTTP server. Serves one connection with `status` + `body`
 /// (using `content_type`), then the thread exits. Returns "http://127.0.0.1:PORT".
 /// Reads the client's full request (headers + Content-Length body) before
-/// responding, so the client never sees its request write reset — this keeps the
+/// responding, so the client never sees its request write reset. This keeps the
 /// helper reliable under parallel (multi-threaded) test execution.
 pub fn mock(status: u16, content_type: &str, body: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

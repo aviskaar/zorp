@@ -365,7 +365,7 @@ pub trait Renderer: Send {
 
 /// Discards all activity. Used for subagents running on a background thread,
 /// where interleaving raw stderr output from several concurrent runs would
-/// be unreadable — their progress is inspected via `monitor_subagents` instead.
+/// be unreadable. Their progress is inspected via `monitor_subagents` instead.
 pub struct NullRenderer;
 
 impl Renderer for NullRenderer {
