@@ -488,6 +488,12 @@ fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
     report
 }
 
+/// How long the reachability probe waits before calling an endpoint
+/// unreachable. Long enough for a cold local runtime to answer, short
+/// enough that somebody running `doctor` because something is wrong is not
+/// left wondering whether it is wrong too.
+const PROBE_TIMEOUT_SECS: u64 = 10;
+
 /// Ask the configured endpoint whether it is there.
 ///
 /// Through `zorp::http_agent`, which is the client every real request uses
@@ -499,11 +505,23 @@ fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
 /// OpenAI-compatible endpoint answers and it costs no tokens. A 401 is a
 /// reachable endpoint that wants a key, which is a different fault from a
 /// refused connection and is reported as such.
+///
+/// Its own agent, the way `zorp-web`'s settings probes and `zorp-search`
+/// each build one. `zorp::http_agent` is for model traffic and its read
+/// timeout is 900 seconds by default, which is right for an answer a model
+/// is still writing and wrong for a question whose whole job is to come
+/// back quickly: an endpoint that accepts the connection and then says
+/// nothing would hold this for fifteen minutes, and a diagnostic that hangs
+/// is worse than one that says it could not tell.
 fn probe_endpoint(base_url: &str) -> zorp_agent::doctor::Check {
     use zorp_agent::doctor::Check;
 
     let url = zorp_agent::join_url(base_url, "models");
-    let mut request = zorp::http_agent().get(&url);
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(PROBE_TIMEOUT_SECS))
+        .timeout_read(std::time::Duration::from_secs(PROBE_TIMEOUT_SECS))
+        .build();
+    let mut request = agent.get(&url);
     if let Ok(key) = std::env::var("ZORP_API_KEY") {
         if !key.trim().is_empty() {
             request = request.set("Authorization", &format!("Bearer {key}"));
@@ -1791,6 +1809,8 @@ const HELP: &str = "\
 /model               show the active model
 /context             show transcript size
 /doctor              say what this build can do and whether it can reach anything
+/compact             summarize the older conversation so it fits the window
+/compact <what>      the same, steered toward what you want kept
 /diff                summarize this session's file changes
 /status              show session id and status
 /undo                revert the last recorded file change
@@ -2291,6 +2311,25 @@ fn handle_chat_command(
                 session_id, msg_n, char_count
             ));
         }
+        ChatCommand::Compact(focus) => {
+            // A person asking is the trigger, so this works whether or not
+            // the window is known. The summary goes to the `compactions`
+            // table and never into the transcript on disk: what is sent
+            // shrinks, what was said does not.
+            let asked = agent.compactable_messages();
+            if asked == 0 {
+                out.notice(zorp_agent::compaction::NOT_ENOUGH);
+            } else {
+                out.notice(&format!("Summarizing {asked} older messages..."));
+                match agent.compact_now(focus) {
+                    Some(done) => out.notice(&format!(
+                        "{done} older messages are now a summary. The full transcript is \
+                         still on disk."
+                    )),
+                    None => out.notice(zorp_agent::compaction::NOT_ENOUGH),
+                }
+            }
+        }
         ChatCommand::Status => {
             let status = store
                 .as_ref()
@@ -2619,7 +2658,8 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     // dangling tool call for the provider to refuse, and the oldest material
     // dropped first when the window will not hold it.
     let budget = zorp_agent::ContextBudget::from_env();
-    let plan = zorp_agent::plan_seed(messages, &system, &budget);
+    let latest = store.latest_compaction(id).unwrap_or_default();
+    let plan = zorp_agent::plan_seed(messages, &system, &budget, latest.as_ref());
     if let Some(notice) = plan.report.notice() {
         eprintln!("zorp-agent: {notice}");
     }

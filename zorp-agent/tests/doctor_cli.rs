@@ -101,8 +101,18 @@ fn the_report_never_carries_the_api_key() {
     assert!(!run.stdout.contains(key), "{}", run.stdout);
     assert!(!run.stdout.contains("sk-proj"), "{}", run.stdout);
     assert!(!run.stdout.contains("abcdef0123456789"), "{}", run.stdout);
+    // Whole numbers, not a substring search. The report carries an
+    // ephemeral port, and `40251` contains `40`, which is this key's
+    // length: the substring form failed on whichever port the operating
+    // system happened to hand out.
+    let length = key.len().to_string();
+    let printed_numbers: Vec<&str> = run
+        .stdout
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|t| !t.is_empty())
+        .collect();
     assert!(
-        !run.stdout.contains(&key.len().to_string()),
+        !printed_numbers.contains(&length.as_str()),
         "the key's length is in the report: {}",
         run.stdout
     );

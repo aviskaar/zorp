@@ -85,6 +85,12 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     // finished rather than continued underneath it.
     case "investigate_done":
       return true;
+    // Compaction is a reader visible block that lands between a message
+    // and its answer, so anything streaming before it is finished rather
+    // than continued underneath the marker.
+    case "compacting":
+    case "compacted":
+      return true;
     default: {
       // A new event type has to make this decision on purpose.
       const unreachable: never = type;

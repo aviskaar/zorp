@@ -176,3 +176,30 @@ test("index.html carries the elements the meter writes into", () => {
     "the meter must start hidden: there is nothing measured yet",
   );
 });
+
+/* ------------------------------------------------------------------ */
+/* compaction                                                          */
+/* ------------------------------------------------------------------ */
+
+/** Once the window is worth watching, say what will happen when it fills.
+ * At every level it would be noise. */
+test("a filling window says zorp will summarize", () => {
+  const warn = meterView({ used_tokens: 80_000, limit_tokens: 100_000, source: "reported" });
+  assert.equal(warn.state, "warn");
+  assert.match(warn.detail, /zorp will summarize older messages when this fills/);
+
+  const ok = meterView({ used_tokens: 10_000, limit_tokens: 100_000, source: "reported" });
+  assert.equal(ok.state, "ok");
+  assert.doesNotMatch(ok.detail, /will summarize/);
+});
+
+/** Without a window auto-compaction cannot fire, so promising it would be a
+ * lie. The existing sentence about ZORP_CONTEXT_TOKENS is already the right
+ * advice and is left exactly as it was. */
+test("an unknown window promises no summary and keeps its own wording", () => {
+  const view = meterView({ used_tokens: 40_000, source: "estimated" });
+
+  assert.equal(view.state, "unknown");
+  assert.doesNotMatch(view.detail, /will summarize/);
+  assert.match(view.detail, /ZORP_CONTEXT_TOKENS/);
+});

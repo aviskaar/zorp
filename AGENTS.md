@@ -545,11 +545,25 @@ resulting artifact, deliver it in the right form.
   every default build would exit non-zero.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
-  Compaction there is deterministic: it elides oldest tool-result bodies, then
-  oldest assistant tool-call arguments, never a `command`, and on the seed path
-  only drops oldest whole exchanges. A marker copied back as an argument is
-  refused before it reaches a tool. No model writes a summary, and nothing in it ever writes to
-  the store. The window is unknown unless `ZORP_CONTEXT_TOKENS` says otherwise,
+  Compaction there is two stages. Stage one is deterministic and always runs
+  first: it elides oldest tool-result bodies, then oldest assistant tool-call
+  arguments, never a `command`, and on the seed path drops oldest whole
+  exchanges. Stage two, when that is not enough, asks the model for a
+  structured summary of the older conversation
+  (`zorp-agent/src/compaction.rs`), and `/compact` asks for one on purpose.
+  A marker copied back as an argument is refused before it reaches a tool.
+  **The summary is never evidence.** It is written to the `compactions`
+  table and never to `messages`, which is what keeps it away from the four
+  things that read `messages`: the recall feed embeds them, the memory block
+  quotes them and tells the model to cite them, titling reads the first
+  pair, and branching copies them. It reaches the model as a fenced,
+  labelled `user` message standing in front of the messages it replaced,
+  put there when the seed is planned and never recorded, the same way the
+  memory block reaches a turn without reaching the store; `messages` is not written,
+  rewritten or deleted by any of it and the full transcript stays on disk.
+  Bounded at three summaries a turn, and a failed one falls back to stage
+  one rather than blocking the turn. No model can ask for a compaction and
+  there is no tool for it. The window is unknown unless `ZORP_CONTEXT_TOKENS` says otherwise,
   on purpose: no endpoint can be asked and no default is right for everyone.
   `zorp-web` and the CLI's `resume` both seed a turn through its `plan_seed`,
   which is what gives the browser conversational memory. A provider that
@@ -559,7 +573,8 @@ resulting artifact, deliver it in the right form.
   a readable error naming both numbers and `ZORP_CONTEXT_TOKENS`. That is
   one retry and never a loop, and it neither guesses a window nor sends
   `num_ctx`. See
-  `docs/DECISIONS.md` (2026-08-19, 2026-09-03) before changing any of that.
+  `docs/DECISIONS.md` (2026-08-19, 2026-09-03, 2026-09-09) before changing
+  any of that.
 - `web/` is TypeScript and no Rust job compiles a line of it. After
   changing anything in there run `npm run check`, `npm test` and
   `npm run build` from `web/`. The tests are jsdom plus `node:test`, and

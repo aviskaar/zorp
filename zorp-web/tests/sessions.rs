@@ -507,6 +507,162 @@ async fn deleting_a_running_session_is_refused() {
 }
 
 /* ------------------------------------------------------------------ */
+/* manual /compact                                                     */
+/* ------------------------------------------------------------------ */
+
+/// A conversation with nothing in front of the recent exchanges declines
+/// rather than doing nothing, and says so in Claude Code's own words,
+/// because that is the sentence a person is most likely to have seen.
+#[tokio::test]
+async fn compacting_a_short_conversation_says_there_is_not_enough() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    let (status, body) = post_json(
+        format!("http://{addr}/api/sessions/{id}/compact"),
+        r#"{"focus":null}"#,
+    )
+    .await;
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["compacted"], false, "{body}");
+    assert_eq!(body["reason"], "Not enough messages to compact.", "{body}");
+
+    // And nothing was written: a declined compaction is not a compaction.
+    let replay = get_json(format!("http://{addr}/api/sessions/{id}")).await;
+    assert_eq!(
+        replay["compactions"].as_array().unwrap().len(),
+        0,
+        "{replay}"
+    );
+}
+
+#[tokio::test]
+async fn compacting_an_unknown_session_is_not_found() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ZORP_STATE_DB", dir.path().join("sessions.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/nope/compact"),
+            r#"{"focus":null}"#,
+        )
+        .await,
+        404
+    );
+}
+
+/// The same 409 and the same words delete and branch use. The turn's thread
+/// is writing to the transcript this would summarize, and a boundary taken
+/// mid-turn would name a message the turn has already moved past.
+#[tokio::test]
+async fn compacting_a_running_session_is_refused() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    std::env::set_var("ZORP_BASE_URL", &base);
+    std::env::set_var("ZORP_MODEL", "m");
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::remove_var("ZORP_API_KEY");
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/turn"),
+            r#"{"message":"carry on"}"#,
+        )
+        .await,
+        202
+    );
+    let mut events = EventStream::connect(addr, &id);
+    let parked = tokio::task::spawn_blocking(move || {
+        let ok = events.wait_for("\"type\":\"approval_request\"", PATIENCE);
+        (events, ok)
+    })
+    .await
+    .unwrap();
+    assert!(parked.1, "the agent never parked on an approval");
+
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/compact"),
+            r#"{"focus":null}"#,
+        )
+        .await,
+        409
+    );
+}
+
+/// A replayed transcript carries every message and the markers alongside
+/// them, each one counted to the entry it follows. The entries themselves
+/// are byte for byte what they always were.
+#[tokio::test]
+async fn a_replay_carries_the_compactions_and_where_to_draw_them() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+    {
+        let mut store = Store::open_at(&db).unwrap();
+        store
+            .record_compaction(
+                &id,
+                &zorp_agent::Compaction {
+                    id: 0,
+                    boundary_seq: 2,
+                    summary: "## All user messages\n1. write hello.txt".to_string(),
+                    focus: None,
+                    model: "m".to_string(),
+                    tokens_before: 9000,
+                    tokens_after: 1200,
+                    manual: true,
+                    created: 0,
+                },
+            )
+            .unwrap();
+    }
+
+    let addr = spawn().await;
+    let body = get_json(format!("http://{addr}/api/sessions/{id}")).await;
+
+    // Every message is still there. Compaction changes what is sent, not
+    // what is on disk, and the entries are the shape they always were.
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "{body}");
+    assert!(messages[0].get("seq").is_none(), "{body}");
+
+    let compactions = body["compactions"].as_array().unwrap();
+    assert_eq!(compactions.len(), 1, "{body}");
+    assert_eq!(compactions[0]["boundary_seq"], 2);
+    assert_eq!(compactions[0]["manual"], true);
+    // The marker follows the ask and the tool line, both of which came
+    // from stored messages at or below seq 2. The browser has no seqs, so
+    // this count is the whole of how it places the marker.
+    assert_eq!(compactions[0]["after"], 2, "{body}");
+    assert_eq!(compactions[0]["messages"], 3, "{body}");
+    assert!(compactions[0]["summary"]
+        .as_str()
+        .unwrap()
+        .contains("All user messages"));
+}
+
+/* ------------------------------------------------------------------ */
 /* projects                                                            */
 /* ------------------------------------------------------------------ */
 
