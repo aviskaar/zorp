@@ -367,6 +367,16 @@ resulting artifact, deliver it in the right form.
   ambiguous prefix prints the candidates and exits non-zero rather than
   guessing: the wrong guess drops somebody into a stranger's thread and the
   transcript that follows reads perfectly plausibly.
+- Projects reach the terminal too: `zorp-agent projects`, `projects new`,
+  `projects rm`, `sessions --project <id or name>`, and `/project` in the
+  chat REPL. A project is a label and nothing else, so `projects rm` says
+  in its own output how many conversations it kept, because that is the
+  thing a person is afraid of and it is the thing that does not happen. A
+  name goes through the same `title::scrub` and the same 80 character limit
+  the browser applies, from the same function rather than a second copy: an
+  override in a listing reorders every row drawn after it. A project can be
+  named by id, id prefix or name, since a person reading a listing has the
+  name in front of them. See `docs/DECISIONS.md` (2026-09-09).
 - Branching (`POST /api/sessions/:id/branch`, `Store::branch_session`)
   copies a chat's stored messages up to and including its Nth answer into
   a new session, named by ordinal because the browser counts answers as

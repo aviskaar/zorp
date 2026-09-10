@@ -32,6 +32,11 @@ pub enum ChatCommand {
     /// on screen to click. A terminal does not, so the number is optional
     /// and defaults to the most recent.
     Branch(Option<usize>),
+    /// Say which project this conversation is in, or file it in one.
+    ///
+    /// `/project` reports, `/project <name or id>` files, and
+    /// `/project none` takes it out.
+    Project(Option<String>),
     Capsules,
     LoadCapsule(String),
     UnloadCapsule(String),
@@ -91,6 +96,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
                 _ => ChatCommand::Unknown("branch".to_string()),
             },
         },
+        "project" => ChatCommand::Project((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),
