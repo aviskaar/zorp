@@ -3,10 +3,10 @@
 # ZORP Evaluation Harness
 #
 # Runs the smoke test suite in evals/smoke/*. Each task directory must contain:
-#   prompt.md   — task instruction
-#   setup.sh    — workspace initialisation
-#   verify.sh   — deterministic pass/fail check (exit 0 = PASS, non-zero = FAIL)
-#   judge.md    — (optional) LLM judge fallback if verify.sh is absent
+#   prompt.md   task instruction
+#   setup.sh    workspace initialisation
+#   verify.sh   deterministic pass/fail check (exit 0 = PASS, non-zero = FAIL)
+#   judge.md    (optional) LLM judge fallback if verify.sh is absent
 #
 # Usage:
 #   ./evals/run_evals.sh [env=LOCAL|ANTHROPIC|OPENAI] [model=<name>] [task=<dir-name>] [--llm-judge]
@@ -100,7 +100,7 @@ JUDGE_MODEL="${JUDGE_MODEL:-google/gemini-2.0-flash-lite-preview-02-05:free}"
 JUDGE_URL="${JUDGE_URL:-https://openrouter.ai/api/v1}"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]] && [[ "$JUDGE_URL" == *"openrouter"* ]]; then
-    echo "⚠️  Warning: OPENROUTER_API_KEY is not set — LLM judge may fail."
+    echo "⚠️  Warning: OPENROUTER_API_KEY is not set, so the LLM judge may fail."
 fi
 
 # Build binaries

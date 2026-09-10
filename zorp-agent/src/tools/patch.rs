@@ -207,14 +207,14 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
         Err(ApplyErr::NotFound) => (
             false,
             format!(
-                "{}: SEARCH not found — re-read the file and retry with exact text",
+                "{}: SEARCH not found. Re-read the file and retry with exact text",
                 block.path
             ),
         ),
         Err(ApplyErr::Ambiguous(matches)) => (
             false,
             format!(
-                "{}: SEARCH matches {matches} places — include more surrounding context",
+                "{}: SEARCH matches {matches} places. Include more surrounding context",
                 block.path
             ),
         ),

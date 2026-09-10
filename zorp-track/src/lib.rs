@@ -31,7 +31,7 @@ mod test_support;
 pub mod track;
 pub mod validation;
 
-pub use critique::{CritiqueFinding, CritiqueRound};
+pub use critique::CritiqueFinding;
 pub use error::TrackError;
 pub use project::Project;
 pub use track::Store;

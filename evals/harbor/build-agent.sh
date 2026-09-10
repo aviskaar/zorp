@@ -10,6 +10,10 @@
 # Harbor's task containers will run under unless you ask for something
 # else. Pass linux/amd64 explicitly if a dataset ships amd64-only images.
 #
+# ZORP_AGENT_FEATURES, if set, is passed to cargo build as --features. Use
+# it to build a binary with a non-default feature, e.g.
+# ZORP_AGENT_FEATURES=ensemble evals/harbor/build-agent.sh linux/arm64.
+#
 # Output: target/harbor/<arch>/zorp-agent
 set -euo pipefail
 
@@ -24,6 +28,11 @@ arch="${platform##*/}"
 out_dir="$repo_root/target/harbor/$arch"
 mkdir -p "$out_dir"
 
+features_flag=""
+if [ -n "${ZORP_AGENT_FEATURES:-}" ]; then
+  features_flag="--features $ZORP_AGENT_FEATURES"
+fi
+
 # A separate CARGO_TARGET_DIR keeps Linux objects out of the host's target/.
 # Named volumes keep the registry and that target dir warm between runs, so a
 # rebuild after an edit is incremental rather than a fresh 10 minute compile.
@@ -35,7 +44,7 @@ docker run --rm \
   -w /src \
   -e CARGO_TARGET_DIR=/build \
   rust:slim-bookworm \
-  sh -c 'cargo build --release --locked -p zorp-agent && cp /build/release/zorp-agent /build/zorp-agent.out'
+  sh -c "cargo build --release --locked -p zorp-agent $features_flag && cp /build/release/zorp-agent /build/zorp-agent.out"
 
 # The build wrote inside the volume, so copy it out through a throwaway container.
 container="$(docker create --platform "$platform" -v "zorp-harbor-target-$arch:/build" rust:slim-bookworm true)"

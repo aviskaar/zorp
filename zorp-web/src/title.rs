@@ -226,7 +226,12 @@ pub fn clamp(raw: &str) -> Option<String> {
 
 /// Drop control and invisible characters, turn every remaining run of
 /// whitespace into one space, and trim.
-fn scrub(line: &str) -> String {
+///
+/// `pub(crate)` because a project name is under the same rule: it is text
+/// a person typed into a box, it lands in a sidebar, and a bidirectional
+/// override in it would reorder everything drawn beside it. One set of
+/// character rules for both, rather than two that drift.
+pub(crate) fn scrub(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut spaced = true;
     for c in line.chars() {

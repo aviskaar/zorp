@@ -108,6 +108,20 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/branch", post(branch_session))
+        .route("/api/sessions/:id/compact", post(compact_session))
+        // Projects: a name a person typed, and which conversations carry
+        // it. In every build, because a project is a row in the session
+        // store and has nothing to do with whether this binary can search
+        // or recall anything.
+        .route(
+            "/api/projects",
+            get(list_projects).post(create_project_route),
+        )
+        .route("/api/projects/:id", axum::routing::delete(delete_project))
+        .route(
+            "/api/sessions/:id/project",
+            axum::routing::put(set_session_project),
+        )
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/panel", post(start_panel))
@@ -301,28 +315,89 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
             for s in sessions {
                 seen.insert(s.id.clone());
                 let title = s.display_title.unwrap_or(s.task);
-                rows.push(json!({"id": s.id, "title": title, "status": s.status}));
+                rows.push(json!({
+                    "id": s.id,
+                    "title": title,
+                    "status": s.status,
+                    "project_id": s.project_id,
+                    // Only a stored session has one, which is how the page
+                    // tells a conversation it can file from one that exists
+                    // only in this process and has no row to write to yet.
+                    "updated": s.updated,
+                }));
             }
         }
     }
     for id in state.ids() {
         if seen.insert(id.clone()) {
-            rows.push(json!({"id": id, "title": "New chat", "status": "running"}));
+            rows.push(json!({
+                "id": id,
+                "title": "New chat",
+                "status": "running",
+                "project_id": serde_json::Value::Null,
+            }));
         }
     }
     Json(json!(rows))
 }
 
 /// Replay a conversation from the store.
+///
+/// Every message, always. Compaction changes what is sent to a model and
+/// never what is on disk, so a reopened conversation shows what was said
+/// even where a summary stood in for part of it during a turn.
+///
+/// `compactions` comes alongside rather than inside `messages`, because a
+/// summary is not a message: the browser draws a marker after the message
+/// whose seq matches a boundary, and the marker is labelled model-written
+/// and drawn as plain text. Nothing that reads `messages` sees a summary.
 async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
     let store = match zorp_agent::Store::open_default() {
         Ok(s) => s,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     match store.load_messages(&id) {
-        Ok(messages) => Json(json!({"messages": transcript(&messages)})).into_response(),
+        Ok(messages) => {
+            let (rows, seqs) = transcript_with_seqs(&messages);
+            let compactions = compaction_rows(&store, &id, &seqs);
+            Json(json!({"messages": rows, "compactions": compactions})).into_response()
+        }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
+}
+
+/// The compaction markers a reopened transcript draws, oldest first.
+///
+/// `after` is how many transcript entries the marker follows, worked out
+/// here rather than in the browser. A boundary is a `messages.seq` and the
+/// transcript drops the system and tool rows, so the browser has no way to
+/// turn one into a position; the seqs behind the entries live on this side
+/// and never go on the wire. `messages` per marker is what the summary
+/// stands for, counted from the boundary before it, so a replayed marker
+/// says what the live one said.
+fn compaction_rows(store: &zorp_agent::Store, id: &str, seqs: &[i64]) -> Vec<serde_json::Value> {
+    let mut previous = -1i64;
+    store
+        .compactions(id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| {
+            let after = seqs.iter().filter(|seq| **seq <= c.boundary_seq).count();
+            let covered = (c.boundary_seq - previous).max(0);
+            previous = c.boundary_seq;
+            json!({
+                "id": c.id,
+                "boundary_seq": c.boundary_seq,
+                "after": after,
+                "messages": covered,
+                "summary": c.summary,
+                "tokens_before": c.tokens_before,
+                "tokens_after": c.tokens_after,
+                "created": c.created,
+                "manual": c.manual,
+            })
+        })
+        .collect()
 }
 
 /// What the browser rebuilds a reopened transcript from, in stored order.
@@ -340,22 +415,31 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
 /// new is written for it. A `tool` message is never an entry of its own; it
 /// only supplies a status, and a call whose result never got stored has an
 /// empty one.
-fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
+fn transcript_with_seqs(messages: &[zorp_agent::Message]) -> (Vec<serde_json::Value>, Vec<i64>) {
     let results: HashMap<&str, &zorp_agent::Message> = messages
         .iter()
         .filter(|m| m.role == "tool")
         .filter_map(|m| Some((m.tool_call_id.as_deref()?, m)))
         .collect();
     let mut out = Vec::new();
-    for m in messages {
+    // The stored seq behind each emitted entry, parallel to `out`. Not on
+    // the wire: the entry shape is what it has always been. It is used here
+    // to place the compaction markers, because a boundary is a
+    // `messages.seq` and this list drops the system and tool rows, so a
+    // position in it is not one. Index is seq, because the recorder assigns
+    // them from zero, one per message, and the loader orders by them.
+    let mut seqs: Vec<i64> = Vec::new();
+    for (seq, m) in messages.iter().enumerate() {
         if m.role != "user" && m.role != "assistant" {
             continue;
         }
         // Message content is structured to carry images; the browser
         // transcript wants the text of each turn.
+        let seq = seq as i64;
         let text = m.text();
         if !text.trim().is_empty() {
             out.push(json!({"role": &m.role, "content": text}));
+            seqs.push(seq);
         }
         for call in &m.tool_calls {
             let summary = results
@@ -368,9 +452,17 @@ fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
                 entry["phrase"] = json!(phrase);
             }
             out.push(entry);
+            seqs.push(seq);
         }
     }
-    out
+    (out, seqs)
+}
+
+/// The transcript alone, without the parallel seqs. Only the tests below
+/// want it now: `get_session` sends the markers too, so it needs both.
+#[cfg(test)]
+fn transcript(messages: &[zorp_agent::Message]) -> Vec<serde_json::Value> {
+    transcript_with_seqs(messages).0
 }
 
 /// Delete a conversation: its messages, its recorded file changes, and the
@@ -457,6 +549,165 @@ async fn branch_session(
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
+
+/// The longest project name the store will take.
+///
+/// A sidebar heading, not a description. Long enough for a real name and
+/// short enough that a group heading stays one line.
+const MAX_PROJECT_NAME: usize = 80;
+
+/// Every project a person has made, oldest first.
+///
+/// In every build. A project is a row next to the session rows and has
+/// nothing to do with whether this binary can search or recall; a page that
+/// could not list projects without the `recall` feature would hide the
+/// sidebar grouping from every default build.
+async fn list_projects() -> impl IntoResponse {
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.projects() {
+        Ok(projects) => {
+            let rows: Vec<serde_json::Value> = projects
+                .into_iter()
+                .map(|p| json!({"id": p.id, "name": p.name, "created": p.created}))
+                .collect();
+            Json(json!({ "projects": rows })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProjectBody {
+    name: String,
+}
+
+/// Make a project.
+///
+/// The name is a person's own words and no model is asked for one, here or
+/// anywhere else in this feature. It is still cleaned on the one path to
+/// the column, the same way a title is: control characters and the
+/// bidirectional overrides go, runs of whitespace become one space, and the
+/// result has to be something. A name that survives none of that is a 400
+/// rather than a row nobody can read.
+async fn create_project_route(Json(body): Json<ProjectBody>) -> impl IntoResponse {
+    let name = crate::title::scrub(&body.name);
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "a project needs a name").into_response();
+    }
+    if name.chars().count() > MAX_PROJECT_NAME {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("a project name is at most {MAX_PROJECT_NAME} characters"),
+        )
+            .into_response();
+    }
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let id = zorp_agent::new_session_id();
+    match store.create_project(&id, &name) {
+        Ok(created) => (
+            StatusCode::CREATED,
+            Json(json!({"id": id, "name": name, "created": created})),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Remove a project. **This deletes no conversation.** Everything filed
+/// under it is unfiled and stays exactly where it was.
+///
+/// With `recall`, every conversation that was in it is queued on the
+/// indexer, because the project id is part of an indexed conversation's
+/// fingerprint and the label would otherwise be stale until the next
+/// timed sweep.
+async fn delete_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let _ = &state;
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let affected: Vec<String> = store.sessions_in_project(&id).unwrap_or_default();
+    match store.delete_project(&id) {
+        Ok(true) => {
+            for session_id in affected {
+                requeue_recall(&state, session_id);
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "no such project").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetProjectBody {
+    /// The project to file this conversation under, or `null` to take it
+    /// out of the one it is in.
+    project_id: Option<String>,
+}
+
+/// File a conversation under a project, or take it out of one.
+///
+/// Nothing about the conversation changes: its messages, its `task`, its
+/// title, its branch and delete behaviour are all as they were. A busy
+/// session is refused with the same 409 and the same words `delete_session`
+/// and `branch_session` use, because the same thread is still writing to
+/// the row this would update.
+///
+/// A session that exists only in this process has no store row yet, so
+/// there is nothing to label and the answer is a 404. The sidebar does not
+/// offer the menu on such a row.
+async fn set_session_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<SetProjectBody>,
+) -> impl IntoResponse {
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.set_session_project(&id, body.project_id.as_deref()) {
+        Ok(zorp_agent::SetProject::Done) => {
+            requeue_recall(&state, id);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(zorp_agent::SetProject::NoSuchSession) => {
+            (StatusCode::NOT_FOUND, "no such session").into_response()
+        }
+        Ok(zorp_agent::SetProject::NoSuchProject) => {
+            (StatusCode::NOT_FOUND, "no such project").into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Tell the indexer this conversation's label moved, the same way a
+/// finished turn tells it the text moved.
+///
+/// Without this the index catches up on the next timed sweep, which is five
+/// minutes by default, and a search scoped to the project a conversation
+/// was just moved into would not find it.
+#[cfg(feature = "recall")]
+fn requeue_recall(state: &AppState, session_id: String) {
+    crate::turn::feed_recall(state.recall_indexer.clone(), session_id);
+}
+
+#[cfg(not(feature = "recall"))]
+fn requeue_recall(_state: &AppState, _session_id: String) {}
 
 /// A session's live state, adopting one the store knows about but this
 /// process has not seen.
@@ -550,6 +801,91 @@ async fn list_lenses() -> Json<serde_json::Value> {
         .map(|l| serde_json::json!({"name": l.name, "instruction": l.instruction}))
         .collect();
     Json(serde_json::json!({ "lenses": lenses }))
+}
+
+#[derive(Deserialize)]
+struct CompactBody {
+    /// What to steer the summary toward, from `/compact <focus>`.
+    ///
+    /// A person's own words, and untrusted like any other: it is fenced as
+    /// a preference when it reaches the model and can change no rule about
+    /// what the summary must contain.
+    #[serde(default)]
+    focus: Option<String>,
+}
+
+/// Summarize the older part of this conversation, because a person asked.
+///
+/// The window does not have to be known. Auto-compaction needs a target to
+/// be over and there is none without `ZORP_CONTEXT_TOKENS`, but a person
+/// asking is its own trigger, so this works in every configuration.
+///
+/// A running turn is refused with the same 409 and the same words
+/// `delete_session` and `branch_session` use: the turn's thread is writing
+/// to the transcript this would summarize, and a boundary taken mid-turn
+/// would name a message the turn has already moved past.
+///
+/// A conversation too short to compact answers 200 and says so, rather than
+/// doing nothing. That is the difference between a command that declined
+/// and a command that broke, and the words are Claude Code's because that
+/// is the sentence a person is most likely to have seen before.
+///
+/// **Nothing in `messages` is written, rewritten, or deleted.** The row
+/// goes to `compactions`, and the next turn seeds from it.
+async fn compact_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CompactBody>,
+) -> impl IntoResponse {
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+    let settings = state.settings.clone();
+    let workspace = state.workspace_root();
+    let session = state.get(&id);
+    let focus = body
+        .focus
+        .as_deref()
+        .map(str::trim)
+        .filter(|f| !f.is_empty())
+        .map(str::to_string);
+
+    let answered = tokio::task::spawn_blocking(move || {
+        crate::compaction::compact_stored(&id, focus, &settings, workspace.as_deref(), session)
+    })
+    .await;
+
+    match answered {
+        Ok(Ok(crate::compaction::Compacted::TooShort)) => Json(json!({
+            "compacted": false,
+            "reason": zorp_agent::compaction::NOT_ENOUGH,
+        }))
+        .into_response(),
+        Ok(Ok(crate::compaction::Compacted::Done {
+            boundary_seq,
+            tokens_before,
+            tokens_after,
+        })) => Json(json!({
+            "compacted": true,
+            "boundary_seq": boundary_seq,
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+        }))
+        .into_response(),
+        Ok(Err(crate::compaction::CompactError::NoSuchSession)) => {
+            (StatusCode::NOT_FOUND, "no such session").into_response()
+        }
+        Ok(Err(crate::compaction::CompactError::Failed(reason))) => {
+            (StatusCode::BAD_GATEWAY, reason).into_response()
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "compaction crashed".to_string(),
+        )
+            .into_response(),
+    }
 }
 
 /// Launch a review panel on this session.
@@ -1497,6 +1833,11 @@ struct RecallSearch {
     #[serde(default)]
     q: String,
     limit: Option<usize>,
+    /// Narrow the search to one project. Absent searches everything.
+    ///
+    /// An id nothing is filed under is not an error: it is a filter that
+    /// matches nothing, and the page never sends one it did not just list.
+    project: Option<String>,
 }
 
 #[cfg(not(feature = "recall"))]
@@ -1510,7 +1851,11 @@ async fn recall_search() -> impl IntoResponse {
 #[cfg(feature = "recall")]
 async fn recall_search(Query(params): Query<RecallSearch>) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(crate::recall::DEFAULT_LIMIT);
-    match tokio::task::spawn_blocking(move || crate::recall::search(&params.q, limit)).await {
+    match tokio::task::spawn_blocking(move || {
+        crate::recall::search(&params.q, limit, params.project.as_deref())
+    })
+    .await
+    {
         Ok(Ok(hits)) => {
             let rows: Vec<serde_json::Value> = hits
                 .into_iter()

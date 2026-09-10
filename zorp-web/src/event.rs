@@ -177,6 +177,37 @@ pub enum EventKind {
         limit_tokens: Option<u64>,
         source: String,
     },
+    /// A summary of the older conversation is being written, right now.
+    ///
+    /// A model call the person did not ask for, between their message and
+    /// their answer, so the page says so and holds the send button rather
+    /// than looking hung. `manual` is true when they asked with `/compact`.
+    Compacting {
+        messages: usize,
+        tokens_before: u64,
+        manual: bool,
+    },
+    /// The summary landed, or it did not.
+    ///
+    /// `summary` is model-authored text and the browser labels it as such,
+    /// drawn as plain text and never through the markdown renderer: a
+    /// summary drawn as headings and lists starts to look like part of the
+    /// conversation, and the point of the marker is that it is not.
+    ///
+    /// `ok` false carries `reason` in the provider's own words, and the
+    /// turn went ahead anyway on stage one's elision.
+    Compacted {
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        boundary_seq: Option<i64>,
+        tokens_before: u64,
+        tokens_after: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        manual: bool,
+    },
     /// One reviewer on a review panel has started.
     ///
     /// A panel is several agents working at once, so the browser needs a

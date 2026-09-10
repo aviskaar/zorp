@@ -44,10 +44,11 @@
   --accent-glow: rgba(94, 234, 212, 0.12);
 
   /* The logo's own colours, from its dark version: white nodes and edges,
-     electric blue on the two accent nodes. Kept separate from --accent
-     because the mark is the brand and does not follow this UI's palette. */
+     and the brand green on the two accent nodes. Still its own token rather
+     than --accent, because the mark is the brand and the UI palette may
+     move without it, but the two now hold the same green on purpose. */
   --brand-fg: #ffffff;
-  --brand-accent: #1450f5;
+  --brand-accent: #5eead4;
 
   --warn: #f5b544;
   --warn-soft: rgba(245, 181, 68, 0.09);
@@ -415,13 +416,189 @@ button {
   overflow-wrap: anywhere;
 }
 
-.session-list {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 12px;
+/* The column the session rows scroll in. One list without projects, one
+   per group with them, so the scrolling belongs to the container rather
+   than to any one list. */
+.session-scroll {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  padding-bottom: 12px;
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* A project: a foldable heading with its conversations under it. Native
+   `details`, so folding needs no script and keyboard support is the
+   browser's. */
+.project-group {
+  margin-bottom: 4px;
+}
+
+.project-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.project-summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-summary::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 120ms ease;
+  flex-shrink: 0;
+}
+
+.project-group[open] > .project-summary::before {
+  transform: rotate(90deg);
+}
+
+.project-summary:hover {
+  background: var(--bg-hover);
+}
+
+.project-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
+/* Only on hover or focus, because it is a destructive-looking control on
+   a heading and it is not the reason anybody came to the heading. */
+.project-delete {
+  opacity: 0;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.project-summary:hover .project-delete,
+.project-delete:focus-visible {
+  opacity: 1;
+}
+
+.project-unfiled-label {
+  margin-top: 14px;
+}
+
+.new-project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-project:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.new-project svg {
+  width: 14px;
+  height: 14px;
+}
+
+.project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.project-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.project-input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.project-create {
+  align-self: flex-start;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.project-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--danger);
+}
+
+.project-error:empty {
+  display: none;
+}
+
+/* What the search box searches. Hidden until there is a project to pick. */
+.recall-project {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* Named for a screen reader and off the page for everyone else. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .session-empty {
@@ -2073,6 +2250,73 @@ button {
   cursor: default;
 }
 
+/* zorp is summarizing the older conversation. The same pulsing treatment
+   the voice status uses, because it is the same kind of statement: a thing
+   is happening that takes time and was not asked for. */
+.compacting-status {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent-dim);
+  animation: compacting-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes compacting-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* The seam where the older conversation became a summary. A marker, drawn
+   to read as one: it is not a message and it must not look like one. */
+.compaction {
+  margin: 14px 0;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+
+.compaction-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.compaction-label {
+  flex: 1;
+}
+
+.compaction-source {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The summary's own line breaks are what make its sections readable, and
+   `pre` is how they survive without becoming markup. It scrolls inside
+   itself so a long line cannot widen the transcript. */
+.compaction-body {
+  margin: 0;
+  padding: 0 12px 12px;
+  max-height: 40vh;
+  overflow: auto;
+  font-family: var(--z-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+
 .composer-hint {
   max-width: var(--reading);
   margin: 8px auto 0;
@@ -2596,7 +2840,7 @@ button {
 /* ---------------------------------------------------------------- scrollbars */
 
 .scroller::-webkit-scrollbar,
-.session-list::-webkit-scrollbar,
+.session-scroll::-webkit-scrollbar,
 .card-args::-webkit-scrollbar,
 .code-block::-webkit-scrollbar,
 #input::-webkit-scrollbar {
@@ -2605,7 +2849,7 @@ button {
 }
 
 .scroller::-webkit-scrollbar-thumb,
-.session-list::-webkit-scrollbar-thumb,
+.session-scroll::-webkit-scrollbar-thumb,
 .card-args::-webkit-scrollbar-thumb,
 .code-block::-webkit-scrollbar-thumb,
 #input::-webkit-scrollbar-thumb {
@@ -2616,7 +2860,7 @@ button {
 }
 
 .scroller::-webkit-scrollbar-thumb:hover,
-.session-list::-webkit-scrollbar-thumb:hover {
+.session-scroll::-webkit-scrollbar-thumb:hover {
   background: #313640;
   background-clip: content-box;
 }

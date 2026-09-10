@@ -374,6 +374,9 @@ jobs:
       - name: Test zorp-agent (research feature)
         run: cargo test -p zorp-agent --features research --locked
 
+      - name: Test zorp-agent (ensemble feature)
+        run: cargo test -p zorp-agent --features ensemble --locked
+
       - name: Test zorp-web (research feature)
         run: cargo test -p zorp-web --features research --locked
 
@@ -466,7 +469,7 @@ jobs:
           # change cannot break a build, and firing a twenty minute job on
           # one teaches people to ignore the job. The nightly run is the
           # backstop for whatever the filter cannot name.
-          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|erbga/|zorp-agent/src/(validate|investigate|co_write|critique|deliver)/|zorp-agent/src/(lib|main)\.rs$|zorp-agent/tests/|zorp-agent/Cargo\.toml$|zorp-web/src/(investigate|api|lib)\.rs$|zorp-web/tests/investigate\.rs$|zorp-web/Cargo\.toml$|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(zorp-track/|erbga/|zorp-agent/src/(validate|investigate|co_write|critique|deliver|ensemble)/|zorp-agent/src/(lib|main)\.rs$|zorp-agent/tests/|zorp-agent/Cargo\.toml$|zorp-web/src/(investigate|api|lib)\.rs$|zorp-web/tests/investigate\.rs$|zorp-web/Cargo\.toml$|evals/harbor/|Cargo\.toml$|Cargo\.lock$|\.github/workflows/ci\.yml$)'; then
             echo "research stack touched" >&2
             echo "research=true" >> "$GITHUB_OUTPUT"
           else
@@ -547,6 +550,10 @@ jobs:
       - name: Test zorp-agent (research feature)
         if: steps.filter.outputs.research == 'true'
         run: cargo test -p zorp-agent --features research --locked
+
+      - name: Test zorp-agent (ensemble feature)
+        if: steps.filter.outputs.research == 'true'
+        run: cargo test -p zorp-agent --features ensemble --locked
 
       - name: Test zorp-web (research feature)
         if: steps.filter.outputs.research == 'true'

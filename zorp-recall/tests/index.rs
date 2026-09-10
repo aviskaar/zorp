@@ -25,6 +25,15 @@ fn about(id: &str, title: &str, updated: i64, fingerprint: &str) -> Conversation
         title: title.to_string(),
         updated,
         fingerprint: fingerprint.to_string(),
+        project_id: None,
+    }
+}
+
+/// The same header, filed under a project.
+fn about_in(id: &str, title: &str, updated: i64, fingerprint: &str, project: &str) -> Conversation {
+    Conversation {
+        project_id: Some(project.to_string()),
+        ..about(id, title, updated, fingerprint)
     }
 }
 
@@ -138,7 +147,7 @@ fn search_finds_a_conversation_no_substring_match_would() {
         );
     }
 
-    let hits = corpus().search(&embed(query), 5).unwrap();
+    let hits = corpus().search(&embed(query), 5, None).unwrap();
     assert!(!hits.is_empty(), "semantic search returned nothing");
     assert_eq!(hits[0].conversation_id, "conv-money");
     assert_eq!(hits[0].title, "Sorting out the account");
@@ -150,7 +159,7 @@ fn search_finds_a_conversation_no_substring_match_would() {
 /// same list with three conversations in it.
 #[test]
 fn results_are_one_row_per_conversation_naming_the_message_that_matched() {
-    let hits = corpus().search(&embed("refund"), 10).unwrap();
+    let hits = corpus().search(&embed("refund"), 10, None).unwrap();
     let money: Vec<_> = hits
         .iter()
         .filter(|h| h.conversation_id == "conv-money")
@@ -164,7 +173,7 @@ fn results_are_one_row_per_conversation_naming_the_message_that_matched() {
 /// Results are ordered by score and cut to the limit.
 #[test]
 fn results_are_ranked_and_capped() {
-    let hits = corpus().search(&embed("puppy"), 2).unwrap();
+    let hits = corpus().search(&embed("puppy"), 2, None).unwrap();
     assert_eq!(hits.len(), 2);
     assert_eq!(hits[0].conversation_id, "conv-dog");
     assert!(hits[0].score >= hits[1].score);
@@ -213,7 +222,7 @@ fn retaining_drops_conversations_the_store_no_longer_has() {
         .unwrap();
     assert_eq!(dropped, 1);
     assert_eq!(index.stats().unwrap().conversations, 2);
-    let hits = index.search(&embed("puppy"), 10).unwrap();
+    let hits = index.search(&embed("puppy"), 10, None).unwrap();
     assert!(hits.iter().all(|h| h.conversation_id != "conv-dog"));
 }
 
@@ -268,7 +277,7 @@ fn writing_under_a_different_embedder_is_refused() {
 /// in the first four floats.
 #[test]
 fn a_query_of_the_wrong_width_is_refused() {
-    let err = corpus().search(&[1.0, 0.0], 5).unwrap_err();
+    let err = corpus().search(&[1.0, 0.0], 5, None).unwrap_err();
     assert!(matches!(err, IndexError::Dimensions { .. }), "{err:?}");
     assert!(err.to_string().contains("reindex"), "{err}");
 }
@@ -278,7 +287,7 @@ fn a_query_of_the_wrong_width_is_refused() {
 #[test]
 fn searching_an_empty_index_returns_nothing() {
     let index = Index::open_in_memory().unwrap();
-    assert!(index.search(&embed("refund"), 5).unwrap().is_empty());
+    assert!(index.search(&embed("refund"), 5, None).unwrap().is_empty());
     let stats = index.stats().unwrap();
     assert_eq!(stats.conversations, 0);
     assert_eq!(stats.embedder, None);
@@ -307,7 +316,7 @@ fn the_index_persists() {
             .unwrap();
     }
     let index = Index::open_at(&path).unwrap();
-    let hits = index.search(&embed("invoice"), 5).unwrap();
+    let hits = index.search(&embed("invoice"), 5, None).unwrap();
     assert_eq!(hits[0].conversation_id, "conv-money");
 }
 
@@ -352,7 +361,7 @@ fn an_index_from_before_dates_existed_opens_and_keeps_its_vectors() {
         )
         .unwrap();
 
-    let passages = index.search_passages(&embed("invoice"), 5).unwrap();
+    let passages = index.search_passages(&embed("invoice"), 5, None).unwrap();
     assert_eq!(passages[0].conversation_id, "conv-money");
     assert_eq!(passages[0].updated, 0, "an unknown date must not be a date");
 }
@@ -363,7 +372,9 @@ fn an_index_from_before_dates_existed_opens_and_keeps_its_vectors() {
 /// worth remembering is usually said once and answered once.
 #[test]
 fn passage_search_answers_messages_not_conversations() {
-    let passages = corpus().search_passages(&embed("billing"), 5).unwrap();
+    let passages = corpus()
+        .search_passages(&embed("billing"), 5, None)
+        .unwrap();
     let money = passages
         .iter()
         .filter(|p| p.conversation_id == "conv-money")
@@ -381,7 +392,7 @@ fn passage_search_answers_messages_not_conversations() {
 /// who wrote it, and when.
 #[test]
 fn a_passage_carries_where_who_and_when() {
-    let passages = corpus().search_passages(&embed("refund"), 3).unwrap();
+    let passages = corpus().search_passages(&embed("refund"), 3, None).unwrap();
     let top = &passages[0];
     assert_eq!(top.conversation_id, "conv-money");
     assert_eq!(top.title, "Sorting out the account");
@@ -398,7 +409,7 @@ fn a_passage_carries_where_who_and_when() {
 #[test]
 fn a_model_authored_passage_stays_marked_as_one() {
     let passages = corpus()
-        .search_passages(&embed("payment history"), 5)
+        .search_passages(&embed("payment history"), 5, None)
         .unwrap();
     let assistant = passages
         .iter()
@@ -412,13 +423,128 @@ fn a_model_authored_passage_stays_marked_as_one() {
 fn passage_search_respects_the_limit() {
     assert_eq!(
         corpus()
-            .search_passages(&embed("billing"), 1)
+            .search_passages(&embed("billing"), 1, None)
             .unwrap()
             .len(),
         1
     );
     assert!(corpus()
-        .search_passages(&embed("billing"), 0)
+        .search_passages(&embed("billing"), 0, None)
+        .unwrap()
+        .is_empty());
+}
+
+/* -------------------------------------------------------------------- */
+/* projects: the same index, narrowed                                    */
+/* -------------------------------------------------------------------- */
+
+/// Two conversations about the same thing in two projects. A filtered
+/// search sees one of them, an unfiltered search sees both, and an id
+/// nothing is filed under sees nothing.
+///
+/// The last one is the reason the filter is a `WHERE` clause and not an
+/// error path: a project that has nothing in it is a search with no
+/// results, exactly like a corpus nobody has indexed.
+#[test]
+fn a_search_can_be_narrowed_to_one_project() {
+    let mut index = Index::open_in_memory().unwrap();
+    index.prepare("stub/topics").unwrap();
+    index
+        .replace(
+            about_in("conv-a", "Billing, one", MONEY_UPDATED, "fp-a", "proj-a"),
+            "stub/topics",
+            &[chunk(0, "user", "a refund on last month's charge")],
+        )
+        .unwrap();
+    index
+        .replace(
+            about_in("conv-b", "Billing, two", MONEY_UPDATED, "fp-b", "proj-b"),
+            "stub/topics",
+            &[chunk(0, "user", "the invoice has the wrong price")],
+        )
+        .unwrap();
+
+    let ids = |hits: Vec<zorp_recall::Hit>| {
+        let mut ids: Vec<String> = hits.into_iter().map(|h| h.conversation_id).collect();
+        ids.sort();
+        ids
+    };
+
+    assert_eq!(
+        ids(index.search(&embed("billing"), 10, Some("proj-a")).unwrap()),
+        vec!["conv-a".to_string()]
+    );
+    assert_eq!(
+        ids(index.search(&embed("billing"), 10, None).unwrap()),
+        vec!["conv-a".to_string(), "conv-b".to_string()]
+    );
+    assert!(index
+        .search(&embed("billing"), 10, Some("proj-empty"))
+        .unwrap()
+        .is_empty());
+
+    // Passages take the same filter, since it is the same scan.
+    let passages = index
+        .search_passages(&embed("billing"), 10, Some("proj-b"))
+        .unwrap();
+    assert!(
+        passages.iter().all(|p| p.conversation_id == "conv-b"),
+        "{passages:?}"
+    );
+}
+
+/// A conversation with no project is found by an unfiltered search and by
+/// no filtered one. There is no "unfiled" bucket to search: a filter names
+/// a project, and this conversation is in none.
+#[test]
+fn an_unfiled_conversation_is_only_found_without_a_filter() {
+    let index = corpus();
+    assert!(!index.search(&embed("refund"), 10, None).unwrap().is_empty());
+    assert!(index
+        .search(&embed("refund"), 10, Some("proj-a"))
+        .unwrap()
+        .is_empty());
+}
+
+/// An index written before projects existed opens and keeps its vectors,
+/// for the same reason the dates migration does: the embeddings are the
+/// expensive part of the file and one nullable column is not worth them.
+/// Its conversations read back as filed under nothing, which is true, and
+/// they pick up their real label on the next pass because the project is
+/// part of the fingerprint upstream.
+#[test]
+fn an_index_from_before_projects_existed_opens_and_keeps_its_vectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("recall.db");
+
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE conversations (
+             id TEXT PRIMARY KEY, title TEXT NOT NULL, fingerprint TEXT NOT NULL,
+             updated INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE chunks (
+             id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,
+             seq INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL,
+             vector BLOB NOT NULL);",
+    )
+    .unwrap();
+    drop(old);
+
+    let mut index = Index::open_at(&path).unwrap();
+    index.prepare("stub/topics").unwrap();
+    index
+        .replace(
+            about("conv-money", "Billing", MONEY_UPDATED, "fp-money"),
+            "stub/topics",
+            &[chunk(0, "user", "a refund on last month's charge")],
+        )
+        .unwrap();
+
+    let hits = index.search(&embed("invoice"), 5, None).unwrap();
+    assert_eq!(hits[0].conversation_id, "conv-money");
+    assert!(index
+        .search(&embed("invoice"), 5, Some("proj-a"))
         .unwrap()
         .is_empty());
 }

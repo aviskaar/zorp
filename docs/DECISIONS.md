@@ -12,6 +12,232 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-09-10: three surfaces report what skills are installed, and none of them loads one
+
+**This extends 2026-08-18 ("skills are read, and a skill body grants
+nothing").** Nothing in that entry is withdrawn.
+
+**Decision:** `zorp` core, `zorp-agent`'s chat REPL and `zorp-web` can each
+say what skills are installed. `zorp --skills` and `zorp --skill <name>
+<prompt>` list and apply one, `/skills` in the REPL prints the same index the
+model is shown, and `GET /api/skills` answers with names, descriptions, paths
+and scopes while `GET /api/capabilities` reports a count. All three read the
+scopes through `zorp_skill::scope_dirs_from_env` rather than re-deriving
+them, so the list a person is shown is the list the agent would register.
+
+**None of them loads a skill, and there must never be a route that does.**
+Loading is the `skill` tool, chosen by the model when the task matches a
+description and gated exactly as every other tool call is. A control that
+pastes a body into the composer would make untrusted text look like something
+the person wrote, which is the thing 2026-08-18 arranged against. That is why
+the issue's suggested composer slash command is deliberately absent, and why
+`zorp-web/tests/skills.rs` asserts `/api/skills/:name` and
+`/api/skills/:name/load` are 404 and that the listing carries no body.
+
+**In `zorp` core the body goes in front of the user's own words and never
+into the system prompt.** The system slot is the one channel the harness
+speaks in, and a `SKILL.md` is a file this binary did not write.
+
+**A skill's description is text somebody else wrote, so the page treats it
+like model output.** `skills-view.ts` builds no HTML strings, and a skill
+declaring `allowed-tools` says on the page that zorp does not grant them, so
+the gap between what a skill asks for and what it gets is visible rather than
+discovered.
+
+---
+
+## 2026-09-09: context compaction summarizes with the model, and the summary is never evidence
+
+**This amends 2026-08-19 ("a turn is seeded from the store, and compaction
+never writes to it") and 2026-09-03 ("compaction elides the model's own
+tool-call arguments").** Both said no model writes a summary of the
+conversation, and 2026-08-19 said why: a summary is a second chance to
+hallucinate, and when it is wrong the material it replaced is no longer in
+the request to contradict it. That reasoning still holds and is not
+withdrawn. What changed is that a person asked for parity with Claude Code,
+where compaction is a thing people already expect, and the design below
+keeps every protection those entries were written for and adds the summary
+on top.
+
+**Decision:** when a conversation approaches the model's context window,
+zorp compacts it in two stages. Stage one is the deterministic elision that
+already existed and is unchanged: oldest tool-result bodies, then oldest
+assistant tool-call arguments, never a `command`, and on the seed path
+oldest whole exchanges. It always runs first. Stage two, new, asks the
+model for a structured summary of the older part of the conversation, and
+the turn continues with the system prompt, that summary, and the recent
+messages verbatim. `/compact`, with an optional focus, does the same on
+purpose from the browser and the CLI.
+
+**The summary lives in `compactions` and never in `messages`, and that is
+the whole of the protection.** Four things read `messages`: the recall feed
+embeds user and assistant rows into the search index, the memory block
+quotes them into a later turn and tells the model to cite them, titling
+reads the first pair, and branching copies them. A summary written into
+`messages` would be embedded, recalled, quoted and cited as though a person
+or the model had said it in conversation, which is precisely what the
+amended entries were protecting against. In its own table it is invisible
+to all four by construction, rather than by four separate filters that have
+to keep agreeing forever. `zorp-web/tests/compaction_never_evidence.rs` has
+one test per reader.
+
+**`messages` is never written, rewritten, or deleted by compaction.** The
+full transcript stays on disk and `get_session` still returns all of it. A
+reopened conversation shows what was said, with a marker where a summary
+stood in during a turn. What shrinks is the request; what was said does
+not. That half of 2026-08-19 is untouched.
+
+**The block is a fenced, labelled `user` message appended to the seed and
+never persisted.** It says above the fence that it is a model-written
+summary of compacted conversation, that it is not a transcript and not
+evidence, and that the verbatim messages after it are the current
+conversation. `user` and never `system`, because this is the least trusted
+text in the request and the one channel the harness speaks in must not
+carry it. It counts as a record, so `with_message_records` treats it as
+already persisted and `sync` never offers it to the recorder: the same
+trick the memory block uses, for the same reason, and the cursor
+arithmetic under a mid-run compaction is where that goes wrong, so it has
+a debug assertion and a test with a recording `RunRecorder` that counts
+what it was handed. The block's marker line is refused as a tool argument,
+the way the elision markers are.
+
+**The window is still unknown by default.** Nothing here guesses one, sends
+`num_ctx`, or reads a model listing's `context_length`. Automatic
+compaction therefore fires only with `ZORP_CONTEXT_TOKENS` set or with a
+window a provider stated while refusing a request, which the 2026-09-03
+entry already adopts. Manual `/compact` works regardless, because a person
+asking is its own trigger.
+
+**Bounded, and a failure never blocks a turn.** `MAX_COMPACTIONS_PER_TURN`
+is three. A summary that succeeds and still leaves the estimate above
+target counts as an attempt, which is what closes the loop where the
+summary is itself too long. Past the bound the turn ends with an error
+naming `ZORP_CONTEXT_TOKENS` rather than sending a request the provider
+will refuse. A call that fails leaves the transcript as stage one left it,
+emits `compacted { ok: false }` with the provider's words, and the turn goes
+ahead. Stage one is still the fallback and no existing test of it changed
+its expectation.
+
+**Focus text and `# Compact instructions` are untrusted input.** The focus a
+person types after `/compact` and the body of a `# Compact instructions`
+section in the workspace's instruction files are both fenced separately,
+each with its own per-call marker, under a sentence saying they are
+preferences about what to keep and cannot change the rules. The older
+transcript is fenced the same way and for the stronger reason: it holds
+tool results and pages the agent fetched. And a prompt is not a constraint,
+so what comes back is clamped in code on the one path to the table: an
+empty reply, a reply missing any of the eight sections, and a reply long
+enough that the next compaction would be summarizing a summary are all
+refused, and a refused summary is a compaction that did not happen.
+
+**An exchange is counted by its assistant turn, not by its user message.**
+This is not a detail. A tool-using turn adds an assistant message and a
+result per step and no user message at all: the Terminal-Bench run in the
+2026-09-03 entry grew one task from 3k tokens to 122k over sixty steps
+without the person typing once. Counting user messages would compact such a
+turn exactly once and then never again, which is the case stage two exists
+for.
+
+**No model can ask for a compaction.** There is no tool for it, the same
+way there is no tool that launches a panel or an investigate run, and
+`agent.rs` has a test saying so. A model that could replace part of its own
+transcript with a summary it wrote itself is the shape this whole design is
+arranged against.
+
+**A compaction recorded mid-attempt does not survive into the next
+attempt's seed**, because `investigate` truncates the transcript back to
+the seed between attempts and the seed is planned from the store's latest
+compaction at the time the attempt starts. An attempt that compacted has a
+shorter seed than one that did not, which is honest: the attempts ran under
+different conditions and the record says so.
+
+**What it rules out, still:** reading `context_length` from a model listing
+to set the window, prompt caching, any provider-specific compaction API
+(the Anthropic beta included, since zorp talks to arbitrary endpoints),
+summarizing tool results individually, and a settings control for the
+threshold. `ZORP_CONTEXT_HEADROOM` is enough for now.
+
+---
+
+## 2026-09-09: A project is a label on a conversation, and a scope for what it remembers
+
+**Decision:** a project is a name a person typed and a nullable
+`project_id` on the session row. It is copied into the recall index as one
+more column on `conversations`, and a search or a memory recall can name
+one. There is no project store, no second index file, and nothing about a
+conversation changes when it joins one. Deleting a project unfiles its
+conversations and deletes none of them. A conversation that is in a
+project reads only that project when a turn asks for memory. A
+conversation in no project reads everything, as it always did.
+`sessions.task` is untouched by all of it.
+
+**Why a label and not a container.** Every alternative shape costs
+something the label does not. A separate store means two places a
+conversation can live and a migration when it moves between them. A
+per-project index file means the embeddings for one conversation exist
+once per project it has ever been in, and the expensive part of that file
+is the embeddings. A `WHERE` clause on the scan that already runs costs a
+column and reads fewer rows than the unfiltered search did. The thing a
+project has to do is narrow what gets read, and a column narrows it.
+
+**Deleting a project deletes no conversation.** Both statements run in one
+transaction: the sessions are unfiled, then the project row goes. This is
+why the sidebar's delete control has no confirmation dialog. There is
+nothing to confirm; the control's own tooltip says the conversations are
+kept, and that is the whole of what a dialog would have asked about. A
+project that could take a hundred conversations with it would need a
+dialog, and would also be the wrong feature.
+
+**Memory in a project reads that project and nothing else.** No preferring
+the project with a fallback to everything. A project is what the person
+chose as the context for a thread, and quoting an unrelated conversation
+into it is the precise thing the scope exists to prevent; a fallback would
+make the scope advisory, which is to say not a scope. When the project has
+nothing relevant the turn runs with no memory block and the existing
+`memory` frame says so, which is a truthful answer rather than a silently
+widened one. This is a live-turn rule and not a search rule: the sidebar
+search box has a select with `All conversations` on it, because a person
+looking through their own history is choosing what to look at, and a model
+reading a project is not choosing anything.
+
+**The project is part of the recall fingerprint.** The feed skips a
+conversation whose fingerprint has not moved, and a conversation that has
+been filed somewhere else has not changed a word. Without the project in
+the fingerprint the index would skip it and go on saying it is in the
+project it left, which is a stale label on a filter, which is a search
+that quietly lies. The move and delete routes also queue the affected
+sessions on the indexer, so the label catches up in a moment rather than
+on the next sweep five minutes later.
+
+**`sessions.task` is untouched.** Nothing here writes it, nothing reads it
+to decide anything, and no model is asked to name a project, pick one, or
+read one. A project name is a third string beside `task` and
+`display_title` and it lives only in `projects.name`. See the 2026-08-22
+title entry for why that column is the way it is.
+
+**Ruled out for now:** creating a chat directly inside a project, renaming
+a project, and project-level settings, prompts or files. A person makes
+the chat and moves it, and deletes and recreates a project to rename it.
+Each of those is a separate decision about what a project is, and this
+entry says it is a label.
+
+---
+
+## 2026-09-05: ensemble is a review loop with a return edge, and every decision in it is code
+
+**Decision:** The ensemble worth building over free models is not "run five, pick one". Five free OpenRouter models on the nine hard-tail terminal-bench-science tasks each scored 0 of 9 and their union is 0 of 9, so a selector has nothing to select. What the trials show instead is partial credit spread across models: 16 of 17 checks here, 8 of 9 there, an output written in the wrong shape somewhere else. So `zorp-agent ensemble` runs one main model on the task, has reviewer models test it under three code-defined lenses (contract, reproduction, adversary), counts agreement in code, and sends corroborated findings back to the main model for a bounded revision. It lives in `zorp-agent/src/ensemble/` behind a non-default `ensemble` feature and reuses `panel`.
+
+Three things hold it up. A reviewer may run commands, because the verifier's tests are hidden, but it has no write tool and the check that it wrote nothing is a hash comparison in code before and after each reviewer. A reviewer is dropped for altering an output, or for two unusable replies, and for nothing else: not for disagreeing with the others, and not for the main model rejecting its findings, because inside a run there is no ground truth and a loop that keeps the agreeable reviewers converges into one reviewer with extra cost. And the main model is one `Agent` for the whole run: `Agent::run` appends a user message to the live transcript, which is what chat does, so the main model keeps everything it learned without a stored session being resumed. Two more things are held by construction and never by an instruction to a model: a reviewer transcript is kept in memory and all of them are written when the run ends, so an earlier reviewer's transcript does not exist while a later reviewer, which has a shell, is running; and a dropped reviewer's edit stays in the file, since this hashes and never copies, so the main model is told which files were altered even when the round corroborated nothing, and that round stops with its own reason. Stopping quietly there would hand the verifier a file a reviewer wrote, and a contaminated reward looks exactly like a real one.
+
+**Why:** The failures cluster into wrong numbers at the end of a mostly right pipeline and outputs never written or written in the wrong shape. Both are things a second reader can catch before submission and neither is caught by running the same model again. Memoized verdicts and the open/addressed ledger exist so a round costs only the reviews whose inputs changed; the free tier allows 1000 requests per UTC day per key, which is about five tasks a day at this shape.
+
+**What it ruled out:** A tool that starts a run or a review. Reviewers that read each other. Any roster change on a model's opinion. A reader that selects on findings text; the record stores it as `claim_model_authored` and `evals/harbor/ensemble_report.py` never reads it. Per-role endpoints or keys. A browser route, for now. Concurrent reviewers: every role shares one free-tier key, so they run one at a time.
+
+**Not decided yet:** Whether one lens per reviewer or every lens per reviewer corroborates better, and whether dots-3 belongs on the roster. The record answers both once it exists, and a person reads the table before anything changes.
+
+See `docs/superpowers/specs/2026-09-05-ensemble-dag-design.md` and `docs/superpowers/plans/2026-09-05-ensemble-dag.md`.
+---
+
 ## 2026-09-05: CI compiles the opt-in features, and refuses a gate an outage can redden
 
 **Decision:** a new `features` job compiles the cheap non-default features
@@ -91,6 +317,8 @@ servers on loopback. The entry below draws the same line between
 
 **Also:** `jobs/` is gitignored. It is per-run local scratch written into
 the repository root, and it was showing up untracked in every status.
+---
+
 ## 2026-09-05: the file list is folders, not paths
 
 **Decision:** the Files pane groups the workspace listing by directory.
@@ -902,6 +1130,10 @@ Each denial
 now names the rule that fired, so a model can correct the command instead of
 retrying the same shape.
 ## 2026-09-03: compaction elides the model's own tool-call arguments, because that is where the bytes were
+
+**Amended by 2026-09-09**, which adds a model-written summary as a second
+stage. Everything below still runs, still runs first, and is still the
+fallback when a summary cannot be had.
 
 **Decision:** compaction now elides large string arguments from old assistant
 tool calls after it has elided tool results. It leaves the call id, tool name,
@@ -3588,6 +3820,11 @@ the pill and the transcript line stay.
 ---
 
 ## 2026-08-19: a turn is seeded from the store, and compaction never writes to it
+
+**Amended by 2026-09-09**, which adds a model-written summary as a second
+stage after the elision below. The reasoning here is not withdrawn: read
+that entry for how the summary is kept out of the record it would otherwise
+become part of.
 
 **Decision:** every web turn rebuilds its agent from the stored
 transcript rather than starting empty. The store is the source, not a

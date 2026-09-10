@@ -31,7 +31,117 @@ fn seed_transcript(
     budget: &ContextBudget,
 ) -> SeedPlan {
     let stored = store.load_message_records(session_id).unwrap_or_default();
-    plan_seed(stored, system, budget)
+    let latest = store.latest_compaction(session_id).unwrap_or_default();
+    plan_seed(stored, system, budget, latest.as_ref())
+}
+
+/// Summarize what the seed was about to drop, record it, and re-plan.
+///
+/// The preferred path when a seeded turn will not fit. `plan_seed` hands
+/// back a usable plan either way, so this is an improvement on it and never
+/// a precondition for it: a failed call leaves the deterministic drop in
+/// place, says so on the stream, and the turn goes ahead. A failure to
+/// summarize never blocks a turn.
+///
+/// The row is written here, from this store handle, before the seed is
+/// planned again with it. That ordering is the whole function: the second
+/// `plan_seed` reads the compaction that the first one asked for.
+#[allow(clippy::too_many_arguments)]
+fn summarize_before_seeding(
+    store: &mut Store,
+    session_id: &str,
+    system: &str,
+    budget: &ContextBudget,
+    plan: SeedPlan,
+    renderer: &mut dyn zorp_agent::Renderer,
+    settings: &SettingsHandle,
+    workspace: &std::path::Path,
+) -> SeedPlan {
+    let Some(boundary) = plan.report.summary_boundary else {
+        return plan;
+    };
+    let stored = store.load_message_records(session_id).unwrap_or_default();
+    // Everything the drop took, and nothing a previous summary already
+    // covers. System messages are the harness's and are never summarized.
+    let already = store
+        .latest_compaction(session_id)
+        .unwrap_or_default()
+        .map(|c| c.boundary_seq)
+        .unwrap_or(-1);
+    let older: Vec<zorp_agent::Message> = stored
+        .iter()
+        .enumerate()
+        .filter(|(seq, r)| {
+            let seq = *seq as i64;
+            seq > already && seq <= boundary && r.message.role != "system"
+        })
+        .map(|(_, r)| r.message.clone())
+        .collect();
+    if older.is_empty() {
+        return plan;
+    }
+
+    let before = zorp_agent::estimate_tokens(
+        &plan
+            .records
+            .iter()
+            .map(|r| r.message.clone())
+            .collect::<Vec<_>>(),
+    );
+    renderer.compacting(older.len(), before, false);
+
+    let standing = crate::compaction::SettingsSummarizer::standing_for(workspace);
+    let mut summarizer = crate::compaction::SettingsSummarizer::new(settings.clone(), standing);
+    let summary = match zorp_agent::Summarizer::summarize(&mut summarizer, &older, None) {
+        Ok(summary) => summary,
+        Err(reason) => {
+            renderer.compacted(&zorp_agent::CompactionOutcome {
+                ok: false,
+                boundary_seq: None,
+                tokens_before: before,
+                tokens_after: before,
+                summary: None,
+                reason: Some(reason),
+                manual: false,
+            });
+            return plan;
+        }
+    };
+
+    let resolved = settings.lock().unwrap().effective_model();
+    let recorded = zorp_agent::Compaction {
+        id: 0,
+        boundary_seq: boundary,
+        summary: summary.clone(),
+        focus: None,
+        model: resolved.model,
+        tokens_before: before as i64,
+        tokens_after: 0,
+        manual: false,
+        created: 0,
+    };
+    if let Err(e) = store.record_compaction(session_id, &recorded) {
+        eprintln!("zorp-web: failed to persist compaction: {e}");
+    }
+
+    let replanned = seed_transcript(store, session_id, system, budget);
+    let after = zorp_agent::estimate_tokens(
+        &replanned
+            .records
+            .iter()
+            .map(|r| r.message.clone())
+            .collect::<Vec<_>>(),
+    );
+    renderer.compacted(&zorp_agent::CompactionOutcome {
+        ok: true,
+        boundary_seq: Some(boundary),
+        tokens_before: before,
+        tokens_after: after,
+        summary: Some(summary),
+        reason: None,
+        manual: false,
+    });
+    replanned
 }
 
 /// The policy every agent on this server runs under.
@@ -112,6 +222,31 @@ fn record(backlog: &mut Vec<Event>, event: Event) {
 /// raised cancel flag, and a run that was stopped a moment after it finished
 /// still comes back `Complete`. The flag decides whether the transcript reads
 /// "you stopped this" or "this fell over".
+/// What `sessions.status` should say once a turn has ended.
+///
+/// The column existed and only the CLI ever wrote it, so every conversation
+/// the browser made sat at `running` for the rest of its life. That made the
+/// column useless to anything that wanted to ask whether a turn is in
+/// flight, which is what `zorp-agent rm` and `zorp-agent branch` want before
+/// they touch a row another process may be writing to.
+///
+/// The same words the CLI writes, from `report_outcome`, so one column does
+/// not carry two vocabularies.
+fn closing_status(outcome: &Result<Outcome, String>, stopped: bool) -> &'static str {
+    if stopped {
+        return "cancelled";
+    }
+    match outcome {
+        Ok(Outcome::Complete(_)) => "done",
+        Ok(Outcome::StepLimit) => "step-limit",
+        Ok(Outcome::VerificationFailed { .. }) => "unverified",
+        Ok(Outcome::Cancelled) => "cancelled",
+        Ok(Outcome::RepeatedAction) => "repeated",
+        Ok(Outcome::Blocked) => "blocked",
+        Ok(Outcome::Error(_)) | Err(_) => "error",
+    }
+}
+
 fn closing_events(outcome: Result<Outcome, String>, stopped: bool) -> Vec<EventKind> {
     let mut kinds = Vec::new();
     match outcome {
@@ -189,6 +324,16 @@ pub fn spawn_turn(
         guard.cancel = Some(Arc::clone(&cancel));
         (Arc::clone(&guard.seq), Arc::clone(&guard.auto_approve))
     };
+    // The opening half of the closing write below, and it has to be here
+    // rather than left to `create_session`: that runs once, and this thread
+    // is about to start writing messages on every turn after the first one
+    // too. Without it the column reads `done` while a turn is in flight, and
+    // the CLI, which has only this column to ask, would delete or branch a
+    // conversation this process is still writing to. Best effort for the
+    // same reason the closing write is.
+    if let Ok(store) = Store::open_default() {
+        let _ = store.set_status(&session_id, "running");
+    }
     let approver = Arc::new(WebApprover::new(
         tx.clone(),
         Arc::clone(&seq),
@@ -216,7 +361,7 @@ pub fn spawn_turn(
         // would be a search for what the answer turned out to need, which
         // is a different thing from what the question asked for, and the
         // model would already have answered without it.
-        let recalled = recall_into_turn(use_memory, &message, &tx, &seq);
+        let recalled = recall_into_turn(use_memory, &session_id, &message, &tx, &seq);
 
         let outcome = run_agent(
             Ask {
@@ -235,6 +380,18 @@ pub fn spawn_turn(
         // Read after the run, not before, so a stop that lands during the
         // final moments of a turn is still reported as a stop.
         let stopped = cancel.load(std::sync::atomic::Ordering::SeqCst);
+        // Say the turn is over in the store as well as in this process.
+        // Nothing here read that column before, which left every browser
+        // conversation reading as `running` forever and made the column
+        // worthless to the CLI, which cannot see this process's threads and
+        // has nothing else to ask.
+        //
+        // Best effort, like every other write on this path: a status that
+        // could not be written is a stale status, and the CLI treats a stale
+        // one as something `--force` gets past rather than as a wall.
+        if let Ok(store) = Store::open_default() {
+            let _ = store.set_status(&session_id, closing_status(&outcome, stopped));
+        }
         // The final answer arrives in Outcome::Complete rather than through
         // the renderer. The CLI prints it in finish(); the browser has to be
         // sent it explicitly or the turn ends with activity and no reply.
@@ -273,7 +430,7 @@ pub fn spawn_turn(
 /// Compiled away entirely without the feature, which is what keeps a build
 /// that never opted into this from doing anything at all with the store.
 #[cfg(feature = "recall")]
-fn feed_recall(indexer: RecallFeed, session_id: String) {
+pub(crate) fn feed_recall(indexer: RecallFeed, session_id: String) {
     match indexer {
         Some(indexer) => indexer.index_session(session_id),
         // A router embedded without the process worker cannot promise
@@ -296,6 +453,7 @@ fn feed_recall(_indexer: RecallFeed, _session_id: String) {}
 #[cfg(feature = "memory")]
 fn recall_into_turn(
     use_memory: UseMemory,
+    session_id: &str,
     message: &str,
     tx: &std::sync::mpsc::Sender<Event>,
     seq: &Arc<Mutex<u64>>,
@@ -303,7 +461,15 @@ fn recall_into_turn(
     if !use_memory {
         return None;
     }
-    let (block, kind) = match crate::memory::recall_for(message, crate::memory::DEFAULT_PASSAGES) {
+    // Which project this conversation is filed under, if any. A brand new
+    // conversation has no store row on its first message, and that reads as
+    // no project, which is the same answer as a conversation nobody filed.
+    let project = session_project(session_id);
+    let (block, kind) = match crate::memory::recall_for(
+        message,
+        crate::memory::DEFAULT_PASSAGES,
+        project.as_deref(),
+    ) {
         Ok(found) => (
             found.block,
             EventKind::Memory {
@@ -332,9 +498,20 @@ fn recall_into_turn(
     block
 }
 
+/// The project a conversation is filed under, or `None` for a conversation
+/// with no project and for one the store has not heard of yet.
+#[cfg(feature = "memory")]
+fn session_project(session_id: &str) -> Option<String> {
+    zorp_agent::Store::open_default()
+        .ok()?
+        .session_project(session_id)
+        .ok()?
+}
+
 #[cfg(not(feature = "memory"))]
 fn recall_into_turn(
     _use_memory: UseMemory,
+    _session_id: &str,
     _message: &str,
     _tx: &std::sync::mpsc::Sender<Event>,
     _seq: &Arc<Mutex<u64>>,
@@ -401,6 +578,10 @@ fn run_agent(
 
     let cwd_display = cwd.display().to_string();
     let budget = ContextBudget::from_env();
+    // Read once, before `cwd` is handed to the agent. Untrusted text from a
+    // file in whatever repository the workspace points at; fenced as a
+    // preference when it reaches the summarizing call.
+    let standing = crate::compaction::SettingsSummarizer::standing_for(&cwd);
 
     // Persist the conversation the same way the CLI does, so the sidebar and
     // replay survive a restart, and seed this turn from what is already
@@ -409,12 +590,29 @@ fn run_agent(
     // remembered nothing either, which is what the second version did.
     let mut seed: Option<SeedPlan> = None;
     let mut recorder: Option<Box<dyn zorp_agent::RunRecorder>> = None;
-    if let Ok(store) = Store::open_default() {
+    if let Ok(mut store) = Store::open_default() {
         let seq = store.message_count(session_id).unwrap_or(0);
         if seq == 0 {
             let _ = store.create_session(session_id, message, &cwd_display, "");
         }
-        seed = Some(seed_transcript(&store, session_id, &system, &budget));
+        let mut plan = seed_transcript(&store, session_id, &system, &budget);
+        // The seed will not fit and a summary is the better answer than
+        // dropping the oldest exchanges on the floor. Done before the run
+        // starts, so the turn begins from a transcript that already fits
+        // rather than compacting on its first step.
+        if plan.report.needs_summary {
+            plan = summarize_before_seeding(
+                &mut store,
+                session_id,
+                &system,
+                &budget,
+                plan,
+                renderer.as_mut(),
+                settings,
+                &cwd,
+            );
+        }
+        seed = Some(plan);
         recorder = Some(Box::new(SqliteRecorder::new(
             store,
             session_id.to_string(),
@@ -479,13 +677,37 @@ fn run_agent(
 
     agent = agent.with_policy(policy(own_port));
 
+    // Stage two, for the window filling mid-run. Attached whether or not the
+    // window is known: an unknown window fires nothing, and `/compact` needs
+    // this to be here regardless, because a person asking is its own trigger.
+    agent = agent.with_summarizer(Box::new(crate::compaction::SettingsSummarizer::new(
+        settings.clone(),
+        standing,
+    )));
+
     // The seed replaces the transcript wholesale, so it has to land before
     // the recorder: `with_message_records` sets how much the agent believes
     // is already persisted, and the recorder's own counter starts from what
     // the store actually holds. Attaching the recorder first would leave the
     // agent recording the whole replayed history a second time.
     if let Some(plan) = seed {
-        agent = agent.with_message_records(plan.records);
+        // The prompt, and the summary block when there is one. A mid-run
+        // compaction must not summarize the block it was handed, which
+        // would be a summary of a summary and would lose the transcript it
+        // stood for.
+        let summarized_through = plan
+            .records
+            .iter()
+            .take_while(|r| {
+                r.message.role == "system"
+                    || r.message
+                        .text()
+                        .starts_with(zorp_agent::compaction::SUMMARY_MARKER_PREFIX)
+            })
+            .count();
+        agent = agent
+            .with_message_records(plan.records)
+            .with_summarized_through(summarized_through);
     }
     if let Some(recorder) = recorder {
         agent = agent.with_recorder(recorder);

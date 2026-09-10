@@ -87,6 +87,22 @@ async fn post_json(url: String, body: &'static str) -> (u16, serde_json::Value) 
     .unwrap()
 }
 
+/// A body-carrying PUT, for the move route, whose answer is a status.
+async fn put_status(url: String, body: &'static str) -> u16 {
+    tokio::task::spawn_blocking(move || {
+        match ureq::put(&url)
+            .set("content-type", "application/json")
+            .send_string(body)
+        {
+            Ok(response) => response.status(),
+            Err(ureq::Error::Status(code, _)) => code,
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
 async fn delete_status(url: String) -> u16 {
     tokio::task::spawn_blocking(move || match ureq::delete(&url).call() {
         Ok(response) => response.status(),
@@ -427,6 +443,67 @@ async fn branching_at_an_answer_copies_the_transcript_up_to_it() {
     );
 }
 
+/// The stored status says `running` while a turn is in flight, not only on
+/// the very first one.
+///
+/// `create_session` writes `running` once, at the start of a conversation.
+/// The closing write below it sets `done`, and without an opening write on
+/// every turn the column then reads `done` for the whole of turn two while
+/// turn two is writing messages. The CLI has only this column to ask, so it
+/// would delete or branch a conversation this process is still writing to.
+///
+/// The turn is parked on an approval, the same trick the test below uses, so
+/// the read happens while the turn is genuinely in flight rather than after
+/// it raced to the end.
+#[tokio::test]
+async fn a_turn_in_flight_says_running_in_the_store() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    std::env::set_var("ZORP_BASE_URL", &base);
+    std::env::set_var("ZORP_MODEL", "m");
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    std::env::remove_var("ZORP_API_KEY");
+    let id = seed(&db);
+    {
+        // What a finished turn leaves behind, which is the state this is
+        // about: the opening write has to put it back.
+        let store = Store::open_at(&db).unwrap();
+        store.set_status(&id, "done").unwrap();
+    }
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/turn"),
+            r#"{"message":"carry on"}"#,
+        )
+        .await,
+        202
+    );
+
+    let mut events = EventStream::connect(addr, &id);
+    let parked = tokio::task::spawn_blocking(move || {
+        let ok = events.wait_for("\"type\":\"approval_request\"", PATIENCE);
+        (events, ok)
+    })
+    .await
+    .unwrap();
+    assert!(parked.1, "the agent never parked on an approval");
+
+    let store = Store::open_at(&db).unwrap();
+    assert_eq!(
+        store.session_status(&id).unwrap().as_deref(),
+        Some("running"),
+        "a turn is writing to this conversation and the column does not say so"
+    );
+}
+
 /// A session with a turn in flight is refused rather than deleted out from
 /// under the thread still writing to it.
 ///
@@ -487,5 +564,441 @@ async fn deleting_a_running_session_is_refused() {
         get_status(format!("http://{addr}/api/sessions/{id}")).await,
         200,
         "a refused delete must leave the session in place"
+    );
+}
+
+/* ------------------------------------------------------------------ */
+/* manual /compact                                                     */
+/* ------------------------------------------------------------------ */
+
+/// A conversation with nothing in front of the recent exchanges declines
+/// rather than doing nothing, and says so in Claude Code's own words,
+/// because that is the sentence a person is most likely to have seen.
+#[tokio::test]
+async fn compacting_a_short_conversation_says_there_is_not_enough() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    let (status, body) = post_json(
+        format!("http://{addr}/api/sessions/{id}/compact"),
+        r#"{"focus":null}"#,
+    )
+    .await;
+
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["compacted"], false, "{body}");
+    assert_eq!(body["reason"], "Not enough messages to compact.", "{body}");
+
+    // And nothing was written: a declined compaction is not a compaction.
+    let replay = get_json(format!("http://{addr}/api/sessions/{id}")).await;
+    assert_eq!(
+        replay["compactions"].as_array().unwrap().len(),
+        0,
+        "{replay}"
+    );
+}
+
+#[tokio::test]
+async fn compacting_an_unknown_session_is_not_found() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("ZORP_STATE_DB", dir.path().join("sessions.db"));
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/nope/compact"),
+            r#"{"focus":null}"#,
+        )
+        .await,
+        404
+    );
+}
+
+/// The same 409 and the same words delete and branch use. The turn's thread
+/// is writing to the transcript this would summarize, and a boundary taken
+/// mid-turn would name a message the turn has already moved past.
+#[tokio::test]
+async fn compacting_a_running_session_is_refused() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    std::env::set_var("ZORP_BASE_URL", &base);
+    std::env::set_var("ZORP_MODEL", "m");
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::remove_var("ZORP_API_KEY");
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/turn"),
+            r#"{"message":"carry on"}"#,
+        )
+        .await,
+        202
+    );
+    let mut events = EventStream::connect(addr, &id);
+    let parked = tokio::task::spawn_blocking(move || {
+        let ok = events.wait_for("\"type\":\"approval_request\"", PATIENCE);
+        (events, ok)
+    })
+    .await
+    .unwrap();
+    assert!(parked.1, "the agent never parked on an approval");
+
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/compact"),
+            r#"{"focus":null}"#,
+        )
+        .await,
+        409
+    );
+}
+
+/// A replayed transcript carries every message and the markers alongside
+/// them, each one counted to the entry it follows. The entries themselves
+/// are byte for byte what they always were.
+#[tokio::test]
+async fn a_replay_carries_the_compactions_and_where_to_draw_them() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+    {
+        let mut store = Store::open_at(&db).unwrap();
+        store
+            .record_compaction(
+                &id,
+                &zorp_agent::Compaction {
+                    id: 0,
+                    boundary_seq: 2,
+                    summary: "## All user messages\n1. write hello.txt".to_string(),
+                    focus: None,
+                    model: "m".to_string(),
+                    tokens_before: 9000,
+                    tokens_after: 1200,
+                    manual: true,
+                    created: 0,
+                },
+            )
+            .unwrap();
+    }
+
+    let addr = spawn().await;
+    let body = get_json(format!("http://{addr}/api/sessions/{id}")).await;
+
+    // Every message is still there. Compaction changes what is sent, not
+    // what is on disk, and the entries are the shape they always were.
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "{body}");
+    assert!(messages[0].get("seq").is_none(), "{body}");
+
+    let compactions = body["compactions"].as_array().unwrap();
+    assert_eq!(compactions.len(), 1, "{body}");
+    assert_eq!(compactions[0]["boundary_seq"], 2);
+    assert_eq!(compactions[0]["manual"], true);
+    // The marker follows the ask and the tool line, both of which came
+    // from stored messages at or below seq 2. The browser has no seqs, so
+    // this count is the whole of how it places the marker.
+    assert_eq!(compactions[0]["after"], 2, "{body}");
+    assert_eq!(compactions[0]["messages"], 3, "{body}");
+    assert!(compactions[0]["summary"]
+        .as_str()
+        .unwrap()
+        .contains("All user messages"));
+}
+
+/* ------------------------------------------------------------------ */
+/* projects                                                            */
+/* ------------------------------------------------------------------ */
+
+/// A helper that both moves a session and asserts nothing about it, for
+/// the arrangement half of a test.
+async fn move_to(addr: SocketAddr, session: &str, body: &'static str) -> u16 {
+    put_status(
+        format!("http://{addr}/api/sessions/{session}/project"),
+        body,
+    )
+    .await
+}
+
+/// The whole round trip a person makes: name a project, file a
+/// conversation under it, see it in the listing, take it back out.
+#[tokio::test]
+async fn a_project_can_be_made_listed_filed_into_and_emptied() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    let (status, created) = post_json(
+        format!("http://{addr}/api/projects"),
+        r#"{"name":"Kitchen rebuild"}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let project = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["name"], "Kitchen rebuild");
+    assert!(created["created"].as_i64().unwrap() > 0, "{created}");
+
+    let listed = get_json(format!("http://{addr}/api/projects")).await;
+    let projects = listed["projects"].as_array().unwrap();
+    assert_eq!(projects.len(), 1, "{listed}");
+    assert_eq!(projects[0]["name"], "Kitchen rebuild");
+
+    assert_eq!(
+        move_to(
+            addr,
+            &id,
+            Box::leak(format!(r#"{{"project_id":"{project}"}}"#).into_boxed_str()),
+        )
+        .await,
+        204
+    );
+
+    let sessions = get_json(format!("http://{addr}/api/sessions")).await;
+    let row = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(row["project_id"], project.as_str());
+
+    assert_eq!(move_to(addr, &id, r#"{"project_id":null}"#).await, 204);
+    let sessions = get_json(format!("http://{addr}/api/sessions")).await;
+    let row = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .unwrap();
+    assert!(row["project_id"].is_null(), "{sessions}");
+}
+
+/// Deleting a project takes the label away and leaves the conversation.
+/// This is the one behaviour the sidebar's missing confirmation dialog
+/// rests on, so it is a test and not a comment.
+#[tokio::test]
+async fn deleting_a_project_leaves_its_conversations_alone() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    let (_, created) = post_json(format!("http://{addr}/api/projects"), r#"{"name":"Roof"}"#).await;
+    let project = created["id"].as_str().unwrap().to_string();
+    move_to(
+        addr,
+        &id,
+        Box::leak(format!(r#"{{"project_id":"{project}"}}"#).into_boxed_str()),
+    )
+    .await;
+
+    assert_eq!(
+        delete_status(format!("http://{addr}/api/projects/{project}")).await,
+        204
+    );
+    assert_eq!(
+        delete_status(format!("http://{addr}/api/projects/{project}")).await,
+        404,
+        "a project that is already gone is a 404, not a second 204"
+    );
+
+    let sessions = get_json(format!("http://{addr}/api/sessions")).await;
+    let row = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .expect("the conversation must still be in the sidebar");
+    assert!(row["project_id"].is_null(), "{sessions}");
+    assert_eq!(
+        get_status(format!("http://{addr}/api/sessions/{id}")).await,
+        200
+    );
+}
+
+/// A name has to be a name.
+#[tokio::test]
+async fn a_project_name_is_trimmed_and_has_to_survive_it() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+
+    let addr = spawn().await;
+    assert_eq!(
+        post_status(format!("http://{addr}/api/projects"), r#"{"name":"   "}"#).await,
+        400
+    );
+    // Control characters and the bidirectional overrides are what a
+    // sidebar heading must never carry: an override reorders every label
+    // drawn beside it.
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/projects"),
+            "{\"name\":\"\\u202e\\u0007\"}"
+        )
+        .await,
+        400
+    );
+    let long = format!(r#"{{"name":"{}"}}"#, "x".repeat(81));
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/projects"),
+            Box::leak(long.into_boxed_str())
+        )
+        .await,
+        400
+    );
+
+    let (status, created) = post_json(
+        format!("http://{addr}/api/projects"),
+        r#"{"name":"  Kitchen   rebuild  "}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    assert_eq!(created["name"], "Kitchen rebuild");
+}
+
+/// Both halves of the move route's 404, and the unknown-project one in
+/// particular: an id the page did not just list is not a filter that
+/// matches nothing here, it is a write with nowhere to go.
+#[tokio::test]
+async fn moving_needs_a_session_and_a_project_that_exist() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    let (_, created) = post_json(format!("http://{addr}/api/projects"), r#"{"name":"Roof"}"#).await;
+    let project = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        move_to(
+            addr,
+            "no-such-session",
+            Box::leak(format!(r#"{{"project_id":"{project}"}}"#).into_boxed_str()),
+        )
+        .await,
+        404
+    );
+    assert_eq!(move_to(addr, &id, r#"{"project_id":"ghost"}"#).await, 404);
+}
+
+/// A session with a turn in flight is refused with the same words delete
+/// and branch use. The thread is still writing to the row this would
+/// update, and `updated` is one of the columns it writes.
+#[tokio::test]
+async fn moving_a_running_session_is_refused() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"x.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+    ]);
+    std::env::set_var("ZORP_BASE_URL", &base);
+    std::env::set_var("ZORP_MODEL", "m");
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::remove_var("ZORP_API_KEY");
+    let id = seed(&db);
+
+    let addr = spawn().await;
+    let (_, created) = post_json(format!("http://{addr}/api/projects"), r#"{"name":"Roof"}"#).await;
+    let project = created["id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        post_status(
+            format!("http://{addr}/api/sessions/{id}/turn"),
+            r#"{"message":"carry on"}"#,
+        )
+        .await,
+        202
+    );
+    let mut events = EventStream::connect(addr, &id);
+    let parked = tokio::task::spawn_blocking(move || {
+        let ok = events.wait_for("\"type\":\"approval_request\"", PATIENCE);
+        (events, ok)
+    })
+    .await
+    .unwrap();
+    assert!(parked.1, "the agent never parked on an approval");
+
+    assert_eq!(
+        move_to(
+            addr,
+            &id,
+            Box::leak(format!(r#"{{"project_id":"{project}"}}"#).into_boxed_str()),
+        )
+        .await,
+        409
+    );
+}
+
+/// A conversation that exists only in this process has no store row to
+/// label, so the move is a 404 rather than a write that goes nowhere.
+#[tokio::test]
+async fn an_unsaved_conversation_cannot_be_filed() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("sessions.db");
+    std::env::set_var("ZORP_STATE_DB", &db);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+
+    let addr = spawn().await;
+    let (_, session) = post_json(format!("http://{addr}/api/sessions"), "{}").await;
+    let id = session["id"].as_str().unwrap().to_string();
+    let (_, created) = post_json(format!("http://{addr}/api/projects"), r#"{"name":"Roof"}"#).await;
+    let project = created["id"].as_str().unwrap().to_string();
+
+    // It is in the sidebar, with no project and no `updated`, which is how
+    // the page knows not to offer the menu.
+    let sessions = get_json(format!("http://{addr}/api/sessions")).await;
+    let row = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert!(row["project_id"].is_null(), "{row}");
+    assert!(row.get("updated").is_none(), "{row}");
+
+    assert_eq!(
+        move_to(
+            addr,
+            &id,
+            Box::leak(format!(r#"{{"project_id":"{project}"}}"#).into_boxed_str()),
+        )
+        .await,
+        404
     );
 }

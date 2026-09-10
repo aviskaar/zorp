@@ -1,4 +1,4 @@
-//! Integration tests — require `npx` and `@modelcontextprotocol/server-memory` in PATH.
+//! Integration tests. They require `npx` and `@modelcontextprotocol/server-memory` in PATH.
 //! Run with: cargo test -p zorp-mcp -- --ignored
 
 use zorp_mcp::{McpConfig, McpRegistry};

@@ -154,7 +154,13 @@ fn run_repl() {
             list_skills();
             continue;
         }
-        if let Some(rest) = prompt.strip_prefix("/skill") {
+        // The command word has to end here, or `/skillet` would strip to
+        // `et` and go looking for a skill by that name instead of asking
+        // the model what a skillet is.
+        if let Some(rest) = prompt
+            .strip_prefix("/skill")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
             let rest = rest.trim();
             match rest {
                 "" => match &active {
