@@ -108,6 +108,19 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/branch", post(branch_session))
+        // Projects: a name a person typed, and which conversations carry
+        // it. In every build, because a project is a row in the session
+        // store and has nothing to do with whether this binary can search
+        // or recall anything.
+        .route(
+            "/api/projects",
+            get(list_projects).post(create_project_route),
+        )
+        .route("/api/projects/:id", axum::routing::delete(delete_project))
+        .route(
+            "/api/sessions/:id/project",
+            axum::routing::put(set_session_project),
+        )
         .route("/api/sessions/:id/turn", post(start_turn))
         .route("/api/sessions/:id/stop", post(stop_turn))
         .route("/api/sessions/:id/panel", post(start_panel))
@@ -209,13 +222,27 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
             for s in sessions {
                 seen.insert(s.id.clone());
                 let title = s.display_title.unwrap_or(s.task);
-                rows.push(json!({"id": s.id, "title": title, "status": s.status}));
+                rows.push(json!({
+                    "id": s.id,
+                    "title": title,
+                    "status": s.status,
+                    "project_id": s.project_id,
+                    // Only a stored session has one, which is how the page
+                    // tells a conversation it can file from one that exists
+                    // only in this process and has no row to write to yet.
+                    "updated": s.updated,
+                }));
             }
         }
     }
     for id in state.ids() {
         if seen.insert(id.clone()) {
-            rows.push(json!({"id": id, "title": "New chat", "status": "running"}));
+            rows.push(json!({
+                "id": id,
+                "title": "New chat",
+                "status": "running",
+                "project_id": serde_json::Value::Null,
+            }));
         }
     }
     Json(json!(rows))
@@ -365,6 +392,165 @@ async fn branch_session(
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
+
+/// The longest project name the store will take.
+///
+/// A sidebar heading, not a description. Long enough for a real name and
+/// short enough that a group heading stays one line.
+const MAX_PROJECT_NAME: usize = 80;
+
+/// Every project a person has made, oldest first.
+///
+/// In every build. A project is a row next to the session rows and has
+/// nothing to do with whether this binary can search or recall; a page that
+/// could not list projects without the `recall` feature would hide the
+/// sidebar grouping from every default build.
+async fn list_projects() -> impl IntoResponse {
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.projects() {
+        Ok(projects) => {
+            let rows: Vec<serde_json::Value> = projects
+                .into_iter()
+                .map(|p| json!({"id": p.id, "name": p.name, "created": p.created}))
+                .collect();
+            Json(json!({ "projects": rows })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProjectBody {
+    name: String,
+}
+
+/// Make a project.
+///
+/// The name is a person's own words and no model is asked for one, here or
+/// anywhere else in this feature. It is still cleaned on the one path to
+/// the column, the same way a title is: control characters and the
+/// bidirectional overrides go, runs of whitespace become one space, and the
+/// result has to be something. A name that survives none of that is a 400
+/// rather than a row nobody can read.
+async fn create_project_route(Json(body): Json<ProjectBody>) -> impl IntoResponse {
+    let name = crate::title::scrub(&body.name);
+    if name.is_empty() {
+        return (StatusCode::BAD_REQUEST, "a project needs a name").into_response();
+    }
+    if name.chars().count() > MAX_PROJECT_NAME {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("a project name is at most {MAX_PROJECT_NAME} characters"),
+        )
+            .into_response();
+    }
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let id = zorp_agent::new_session_id();
+    match store.create_project(&id, &name) {
+        Ok(created) => (
+            StatusCode::CREATED,
+            Json(json!({"id": id, "name": name, "created": created})),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Remove a project. **This deletes no conversation.** Everything filed
+/// under it is unfiled and stays exactly where it was.
+///
+/// With `recall`, every conversation that was in it is queued on the
+/// indexer, because the project id is part of an indexed conversation's
+/// fingerprint and the label would otherwise be stale until the next
+/// timed sweep.
+async fn delete_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let _ = &state;
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let affected: Vec<String> = store.sessions_in_project(&id).unwrap_or_default();
+    match store.delete_project(&id) {
+        Ok(true) => {
+            for session_id in affected {
+                requeue_recall(&state, session_id);
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "no such project").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetProjectBody {
+    /// The project to file this conversation under, or `null` to take it
+    /// out of the one it is in.
+    project_id: Option<String>,
+}
+
+/// File a conversation under a project, or take it out of one.
+///
+/// Nothing about the conversation changes: its messages, its `task`, its
+/// title, its branch and delete behaviour are all as they were. A busy
+/// session is refused with the same 409 and the same words `delete_session`
+/// and `branch_session` use, because the same thread is still writing to
+/// the row this would update.
+///
+/// A session that exists only in this process has no store row yet, so
+/// there is nothing to label and the answer is a 404. The sidebar does not
+/// offer the menu on such a row.
+async fn set_session_project(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<SetProjectBody>,
+) -> impl IntoResponse {
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+    let mut store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    match store.set_session_project(&id, body.project_id.as_deref()) {
+        Ok(zorp_agent::SetProject::Done) => {
+            requeue_recall(&state, id);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(zorp_agent::SetProject::NoSuchSession) => {
+            (StatusCode::NOT_FOUND, "no such session").into_response()
+        }
+        Ok(zorp_agent::SetProject::NoSuchProject) => {
+            (StatusCode::NOT_FOUND, "no such project").into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Tell the indexer this conversation's label moved, the same way a
+/// finished turn tells it the text moved.
+///
+/// Without this the index catches up on the next timed sweep, which is five
+/// minutes by default, and a search scoped to the project a conversation
+/// was just moved into would not find it.
+#[cfg(feature = "recall")]
+fn requeue_recall(state: &AppState, session_id: String) {
+    crate::turn::feed_recall(state.recall_indexer.clone(), session_id);
+}
+
+#[cfg(not(feature = "recall"))]
+fn requeue_recall(_state: &AppState, _session_id: String) {}
 
 /// A session's live state, adopting one the store knows about but this
 /// process has not seen.
@@ -1405,6 +1591,11 @@ struct RecallSearch {
     #[serde(default)]
     q: String,
     limit: Option<usize>,
+    /// Narrow the search to one project. Absent searches everything.
+    ///
+    /// An id nothing is filed under is not an error: it is a filter that
+    /// matches nothing, and the page never sends one it did not just list.
+    project: Option<String>,
 }
 
 #[cfg(not(feature = "recall"))]
@@ -1418,7 +1609,11 @@ async fn recall_search() -> impl IntoResponse {
 #[cfg(feature = "recall")]
 async fn recall_search(Query(params): Query<RecallSearch>) -> impl IntoResponse {
     let limit = params.limit.unwrap_or(crate::recall::DEFAULT_LIMIT);
-    match tokio::task::spawn_blocking(move || crate::recall::search(&params.q, limit)).await {
+    match tokio::task::spawn_blocking(move || {
+        crate::recall::search(&params.q, limit, params.project.as_deref())
+    })
+    .await
+    {
         Ok(Ok(hits)) => {
             let rows: Vec<serde_json::Value> = hits
                 .into_iter()

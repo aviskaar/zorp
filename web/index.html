@@ -84,6 +84,36 @@
         </button>
 
         <!--
+          A project is a name and a set of conversations filed under it. It
+          changes nothing about a conversation: the transcript, the title,
+          branching and deleting are all as they were. What it buys is a
+          sidebar you can fold, and a scope for the search box and for the
+          memory a turn reads.
+
+          The form is revealed by the button rather than always on the page,
+          because most of the time nobody is making a project and a sidebar
+          is short.
+        -->
+        <button class="new-project" id="new-project" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          Project
+        </button>
+        <form class="project-form" id="project-form" hidden>
+          <label class="sidebar-label" for="project-name">New project</label>
+          <input
+            class="project-input"
+            id="project-name"
+            type="text"
+            maxlength="80"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Kitchen rebuild"
+          />
+          <button class="project-create" id="project-create" type="submit">Create</button>
+          <p class="project-error" id="project-error" role="status"></p>
+        </form>
+
+        <!--
           Search what you already said, by meaning rather than by spelling.
           The vectors come from a model running on this machine and go into
           a file on this machine; nothing typed here is sent anywhere else,
@@ -103,6 +133,15 @@
             spellcheck="false"
             placeholder="What was I working on?"
           />
+          <!--
+            What to search. A project is its own context index, so this
+            narrows the search to one of them. Hidden until there is a
+            project to pick, since a select with one option is furniture.
+            The option labels are project names, put on the page from
+            script through `textContent`.
+          -->
+          <label class="visually-hidden" for="recall-project">Search within</label>
+          <select class="recall-project" id="recall-project" hidden></select>
           <div class="recall-foot">
             <!--
               role="status" so the count, and any refusal, is announced
@@ -115,7 +154,13 @@
         </div>
 
         <div class="sidebar-label">Sessions</div>
-        <ul class="session-list" id="session-list"></ul>
+        <!--
+          The scroller, not the list. With projects there is one list per
+          group plus one for everything unfiled, and they all scroll
+          together under this. Without a single project it holds exactly
+          one `ul.session-list`, which is what it always was.
+        -->
+        <div class="session-scroll" id="session-list"></div>
 
         <div class="sidebar-foot">
           <p>
