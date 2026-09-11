@@ -127,6 +127,10 @@ fn api_router(state: AppState) -> Router {
         .route("/api/sessions/:id/panel", post(start_panel))
         .route("/api/panel/lenses", get(list_lenses))
         .route("/api/capabilities", get(capabilities))
+        // Read-only, and in every build: a SKILL.md on disk has nothing to
+        // do with which features this binary was compiled with. There is no
+        // route that loads one; that is the agent's `skill` tool.
+        .route("/api/skills", get(list_skills))
         .route("/api/voice/status", get(crate::voice::status))
         .route("/api/voice/wait", post(crate::voice::wait))
         .route(
@@ -190,13 +194,101 @@ async fn health() -> Json<serde_json::Value> {
 async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
     let web_search = zorp_agent::web_search_availability(&turn::policy(state.own_port));
     let voice = crate::voice::status_value().await;
+    let installed = discover_skills(state.workspace_root().as_deref()).0.len();
     Json(json!({
         "web_search": {
             "available": web_search.available,
             "detail": web_search.detail,
         },
         "voice": voice,
+        // A count, not a list. The page draws a pill from it and asks
+        // `/api/skills` when somebody opens the pill, which keeps a
+        // capabilities call from carrying every description on the machine.
+        // `available` is whether the agent would register the tool at all,
+        // which is what an empty set decides: `register_skills` registers
+        // nothing for one.
+        "skills": {
+            "available": installed > 0,
+            "count": installed,
+        },
     }))
+}
+
+/// Everything discoverable from the workspace the browser has chosen.
+///
+/// The same scopes a turn uses, resolved through `zorp_skill` rather than
+/// re-derived here, so the list the page shows is the list the agent would
+/// register. A server with no workspace chosen still has `~/.claude/skills`
+/// and `ZORP_SKILLS_DIR`, and reports those.
+///
+/// Read-only, and it stays that way. Nothing here loads a skill, and there
+/// is no route that does: loading one is the agent's `skill` tool, gated
+/// exactly as it was, and a skill body is untrusted input that grants no
+/// tool and loosens no approval. See `docs/DECISIONS.md` (2026-08-18).
+fn discover_skills(workspace: Option<&std::path::Path>) -> (Vec<zorp_skill::Skill>, Vec<String>) {
+    let cwd = workspace
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    let scopes = zorp_skill::scope_dirs_from_env(&cwd);
+    let (registry, warnings) = zorp_skill::SkillRegistry::discover(&scopes);
+    (registry.iter().cloned().collect(), warnings)
+}
+
+/// Which scope a skill's `SKILL.md` came from, for the page to group by.
+///
+/// Derived from the path rather than recorded during discovery, because
+/// `zorp_skill` is deliberately ignorant of why anybody wants to know. The
+/// order matters and matches `scope_dirs`: the env directory wins, then the
+/// workspace, then the user's home.
+fn skill_scope(path: &std::path::Path, workspace: Option<&std::path::Path>) -> &'static str {
+    let under = |root: Option<std::path::PathBuf>| root.is_some_and(|root| path.starts_with(root));
+    let env_dir = std::env::var_os("ZORP_SKILLS_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty());
+    if under(env_dir) {
+        return "env";
+    }
+    if under(workspace.map(|w| w.join(".claude").join("skills"))) {
+        return "workspace";
+    }
+    if under(std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join(".claude")
+            .join("skills")
+    })) {
+        return "user";
+    }
+    "other"
+}
+
+/// Every skill this server can see, with where it came from.
+///
+/// In every build. Skills are local files and a `SKILL.md` on disk has
+/// nothing to do with which optional features this binary was compiled
+/// with.
+async fn list_skills(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let workspace = state.workspace_root();
+    let (skills, warnings) = discover_skills(workspace.as_deref());
+    let rows: Vec<serde_json::Value> = skills
+        .into_iter()
+        .map(|skill| {
+            json!({
+                // The directory name, never a string from inside the file.
+                "name": skill.name,
+                "description": skill.description,
+                "path": skill.path.display().to_string(),
+                "scope": skill_scope(&skill.path, workspace.as_deref()),
+                // What the frontmatter asked for, reported and never acted
+                // on, so the gap between what a skill wants and what it
+                // gets is visible rather than silent.
+                "declared_tools": skill.declared_tools,
+            })
+        })
+        .collect();
+    // A skill that could not be read or parsed is named here rather than
+    // swallowed. Somebody whose skill is missing needs to know why.
+    Json(json!({ "skills": rows, "warnings": warnings }))
 }
 
 async fn create_session(State(state): State<AppState>) -> Json<serde_json::Value> {

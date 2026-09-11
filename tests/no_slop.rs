@@ -44,9 +44,6 @@ const EXEMPT: &[&str] = &[
     "zorp-eval/evals",
 ];
 
-/// Never walked: build output, dependencies, and git's own storage.
-const SKIP_DIRS: &[&str] = &["target", "node_modules", ".git", "dist", "dist-site"];
-
 /// Extensions worth checking. A binary or a lockfile has no prose in it.
 const TEXT: &[&str] = &[
     "rs", "ts", "js", "md", "toml", "css", "html", "sh", "py", "yml", "yaml",
@@ -63,48 +60,46 @@ fn is_exempt(relative: &Path) -> bool {
         .any(|e| text == *e || text.starts_with(&format!("{e}/")))
 }
 
-fn walk(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path.is_dir() {
-            if SKIP_DIRS.contains(&name.as_ref()) {
-                continue;
-            }
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            if is_exempt(relative) {
-                continue;
-            }
-            walk(&path, root, out);
-            continue;
-        }
-        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-        if is_exempt(&relative) {
-            continue;
-        }
-        let checkable = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| TEXT.contains(&e))
-            || name == ".gitignore";
-        if checkable {
-            out.push(path);
-        }
-    }
+/// Every text file this repository tracks, minus the exempt ones.
+///
+/// Asking git rather than walking the directory, because the working tree
+/// holds things the repository does not: build output, dependencies, and
+/// whatever local tooling somebody has pointed at the checkout. One of
+/// those dropped a generated `.gitignore` with an em dash in it and turned
+/// this test red for a file that is not part of zorp. Tracked is the same
+/// question this test means to ask: text a person will read in the
+/// repository.
+fn tracked_text_files(root: &Path) -> Vec<PathBuf> {
+    let listed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z"])
+        .output()
+        .expect("git ls-files");
+    assert!(listed.status.success(), "git ls-files failed in {root:?}");
+    String::from_utf8_lossy(&listed.stdout)
+        .split('\0')
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .filter(|relative| !is_exempt(relative))
+        .filter(|relative| {
+            relative
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| TEXT.contains(&e))
+                || relative.file_name().is_some_and(|n| n == ".gitignore")
+        })
+        .map(|relative| root.join(relative))
+        .collect()
 }
 
 #[test]
 fn the_living_text_holds_no_em_or_en_dashes() {
     let root = repo_root();
-    let mut files = Vec::new();
-    walk(&root, &root, &mut files);
+    let files = tracked_text_files(&root);
     assert!(
         files.len() > 50,
-        "the walk found almost nothing, so it is not checking what it thinks it is"
+        "the listing found almost nothing, so it is not checking what it thinks it is"
     );
 
     let mut offences = Vec::new();

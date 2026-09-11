@@ -15,6 +15,7 @@ pub mod context_window;
 pub mod critique;
 #[cfg(feature = "research")]
 pub mod deliver;
+pub mod doctor;
 mod embed;
 #[cfg(feature = "ensemble")]
 pub mod ensemble;

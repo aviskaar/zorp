@@ -213,6 +213,32 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that. Skills are not capsules; the same entry says why both exist.
+  The repository ships two of its own under `.claude/skills/`,
+  `artifact-design` and `artifact-diagramming`, which say how to write the
+  `.html` and `.svg` files the browser's side pane renders. Both are pinned
+  by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
+  parsing takes its skill off every surface with only a warning to say so.
+  They both state the constraint that decides everything else about such a
+  file: the pane serves it under a bare `Content-Security-Policy: sandbox`,
+  so no script in it runs and nothing external loads, and a page written
+  against the opposite assumption renders as nothing.
+  Three surfaces now say what is installed, and all three only read.
+  `zorp --skills` lists them and `zorp --skill <name> <prompt>` puts one
+  skill's instructions in front of a prompt, with `/skills` and
+  `/skill <name>` doing the same in that binary's stdin loop; the body goes
+  in front of the user's words and never into the system prompt, because
+  the system slot is the one channel the harness speaks in.
+  `zorp-agent`'s chat REPL gains `/skills`, which prints the same index the
+  model is shown. And `zorp-web` answers `GET /api/skills` with names,
+  descriptions, paths and scopes, reports a count on
+  `GET /api/capabilities`, and draws a toolbar pill with a popover behind
+  it. **None of those loads a skill.** There is no route that does and
+  there must never be one: loading is the `skill` tool, called by the model
+  when the task matches, gated exactly as every other tool call is, and
+  `zorp-web/tests/skills.rs` has a test saying the routes do not exist. The
+  listing carries no skill body either, so a `SKILL.md` cannot reach the
+  page at all; the strings that do reach it are a file zorp did not write
+  and go on through `textContent` like model output.
 - `zorp-recall/` is zorp's own conversation search: a loopback guard, an
   embedder that talks to a local Ollama, and a SQLite vector index over the
   conversations in `zorp-agent`'s store. Like `zorp-search` and `zorp-skill`
@@ -570,6 +596,32 @@ resulting artifact, deliver it in the right form.
   prove that too. See
   `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
   any of it.
+- `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
+  do and whether it can reach anything: which features `cfg!` reports, the
+  resolved endpoint, provider and model, whether an API key is set, whether
+  the endpoint answered, where the state files are, and the registered
+  tools. `/doctor` in the chat REPL prints the same report from the same
+  function. Exit code is 0 when everything checked was fine and 1 otherwise,
+  so it works in a script. Two rules are not negotiable. **Nothing here
+  prints a secret**: a key is reported as set or not set, never its value,
+  never a prefix, never its length, and a test greps the whole report to
+  prove it, because this is the thing people paste into bug reports. And a
+  probe goes where the real path goes, the same resolved endpoint, because a
+  doctor that reached a URL the real feature would refuse would report
+  healthy on the one configuration that cannot work. It builds its own HTTP
+  agent rather than reusing `zorp::http_agent`, whose read timeout is 900
+  seconds because it is for answers a model is still writing: a diagnostic
+  that hangs for fifteen minutes is worse than one that says it could not
+  tell, so this one waits ten, the way `zorp-web`'s settings probes and
+  `zorp-search` each build and bound their own. A feature that is off is
+  reported and never counted as a failure, or every default build would exit
+  non-zero.
+- The terminal is line oriented and stays that way. No alternate screen, no
+  panes, no `ratatui`: a full screen mode would cost piping, scrollback,
+  selection and screen reader support, and every win it was supposed to buy
+  turned out to be better line output instead. A line editor is not a TUI
+  and is not ruled out. See `docs/DECISIONS.md` (2026-09-10) before
+  reaching for a layout.
 - `zorp-agent/src/context_window.rs` is the one place that decides how large
   the context window is, how full it is, and what to drop when it fills.
   Compaction there is two stages. Stage one is deterministic and always runs
