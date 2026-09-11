@@ -19,8 +19,6 @@
 //! `has_api_key: bool` and nothing else that could leak it.
 
 use serde::{Deserialize, Serialize};
-use std::io;
-use std::path::PathBuf;
 use zorp_agent::Provider;
 
 /// Hardcoded fallback base URL. Unchanged from `HttpModel::from_env`'s
@@ -29,11 +27,6 @@ use zorp_agent::Provider;
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// Hardcoded fallback model, same reasoning.
 pub const DEFAULT_MODEL: &str = "gpt-4o";
-
-/// Env var that overrides where the settings file lives. Real usage always
-/// resolves to `~/.config/zorp/web.toml`; this exists so tests can point it
-/// at a private temp file instead of touching the developer's real config.
-const CONFIG_PATH_VAR: &str = "ZORP_WEB_CONFIG";
 
 /// Where an effective field's value came from, so the UI can say "from
 /// ZORP_MODEL" instead of implying the user chose it.
@@ -52,28 +45,22 @@ fn provider_str(p: Provider) -> &'static str {
     }
 }
 
-/// The only shape ever written to the settings file. No `api_key` field
-/// exists here on purpose: there is nothing on this struct to accidentally
-/// serialize a secret through.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-pub struct PersistedSettings {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-    /// The directory the agent works in, as `PUT /api/workspace` last
-    /// stored it. Written to disk, unlike `api_key`, because it is a path
-    /// and not a secret: somebody reading this file learns where their own
-    /// work lives, which they already knew. Not persisting it would mean
-    /// choosing a directory again after every restart, and a workspace
-    /// nobody chose is exactly what this feature exists to stop.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<String>,
-}
+/// The only shape ever written to the settings file.
+///
+/// It lives in `zorp-agent` now, because the terminal reads the same file:
+/// setting zorp up was two jobs and is one. Re-exported under the name this
+/// crate has always used, so nothing that reads it had to move.
+///
+/// No `api_key` field exists on it, on purpose: there is nothing on the
+/// struct to accidentally serialize a secret through. `workspace` stays the
+/// browser's, and nothing in `zorp-agent` reads it, for the reason that
+/// module's documentation and `docs/DECISIONS.md` (2026-09-05) give.
+pub use zorp_agent::config::Saved as PersistedSettings;
+
+/// Where the settings live, and how they get there. One implementation, in
+/// `zorp-agent`, read and written by both surfaces. `config_path` keeps its
+/// name here because the routes that report it already say it.
+pub use zorp_agent::config::{load, path as config_path, save};
 
 /// Body of `PUT /api/settings`. Every field is optional: a PUT only changes
 /// the fields it names, leaving the rest of the stored state alone.
@@ -337,49 +324,6 @@ pub struct EffectiveModel {
     pub max_tokens: Option<u32>,
     pub api_key: Option<String>,
     pub configured: bool,
-}
-
-/// Where the persisted settings file lives. `ZORP_WEB_CONFIG` overrides it
-/// entirely; otherwise `$XDG_CONFIG_HOME/zorp/web.toml`, falling back to
-/// `$HOME/.config/zorp/web.toml`, and finally `.zorp-config/zorp/web.toml`
-/// if neither is set. Mirrors the `state_path` helper `zorp-agent` already
-/// uses for its own state files (`ZORP_STATE_DB`, `ZORP_TRUST_FILE`).
-pub fn config_path() -> PathBuf {
-    if let Some(p) = non_empty_env(CONFIG_PATH_VAR) {
-        return PathBuf::from(p);
-    }
-    let base = non_empty_env("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| non_empty_env("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".zorp-config"));
-    base.join("zorp").join("web.toml")
-}
-
-/// Read the persisted, non-secret settings, if the file exists and parses.
-/// A missing file is not an error: the feature is opt-in by nature of never
-/// having been saved yet. A corrupt file is logged and ignored rather than
-/// blocking startup over a config file, of all things.
-pub fn load() -> Option<PersistedSettings> {
-    let path = config_path();
-    let text = std::fs::read_to_string(&path).ok()?;
-    match toml::from_str(&text) {
-        Ok(settings) => Some(settings),
-        Err(e) => {
-            eprintln!("zorp-web: ignoring unreadable {}: {e}", path.display());
-            None
-        }
-    }
-}
-
-/// Write the non-secret settings, creating the parent directory if needed.
-pub fn save(settings: &PersistedSettings) -> io::Result<()> {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let text = toml::to_string_pretty(settings)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    std::fs::write(&path, text)
 }
 
 /// What listing or testing a model endpoint came back with. `error` is a
@@ -872,7 +816,7 @@ mod tests {
     fn the_workspace_round_trips_through_the_settings_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("web.toml");
-        std::env::set_var(CONFIG_PATH_VAR, &config);
+        std::env::set_var(zorp_agent::config::PATH_VAR, &config);
 
         let state = SettingsState {
             workspace: Some("/home/someone/research".to_string()),
@@ -884,7 +828,7 @@ mod tests {
         fresh.load_persisted(load().unwrap());
         assert_eq!(fresh.workspace.as_deref(), Some("/home/someone/research"));
 
-        std::env::remove_var(CONFIG_PATH_VAR);
+        std::env::remove_var(zorp_agent::config::PATH_VAR);
     }
 
     /// Precedence, in one test because the environment variable it sets is
