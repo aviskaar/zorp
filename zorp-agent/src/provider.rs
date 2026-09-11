@@ -13,6 +13,15 @@ pub enum Provider {
 }
 
 impl Provider {
+    /// The name this provider is written as, in a settings file and on a
+    /// page. The inverse of `FromStr`, so a value that goes out comes back.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Provider::OpenAiCompatible => "openai",
+            Provider::Anthropic => "anthropic",
+        }
+    }
+
     /// The path segment to append to `base_url` for this provider's completion endpoint.
     pub fn path_suffix(&self) -> &'static str {
         match self {

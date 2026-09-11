@@ -271,8 +271,21 @@ mod tests {
 
     /// The one rule this module cannot get wrong. A doctor report is the
     /// thing people paste into bug reports.
+    /// Held by both tests that touch `ZORP_API_KEY`.
+    ///
+    /// Cargo runs tests on parallel threads in one process, so an
+    /// environment variable is shared state between them. Without this the
+    /// other test's `set_var` lands between this one's `remove_var` and its
+    /// assertion, and the remote endpoint reports a key that is there: it
+    /// failed about one run in three on a loaded machine and almost never on
+    /// an idle one, which is the worst way for a test to be wrong. Poison is
+    /// stepped over rather than unwrapped, so a test that fails here reports
+    /// its own failure and not the other one's.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn the_api_key_is_never_in_the_output() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let key = "sk-do-not-print-me-0123456789";
         let previous = std::env::var("ZORP_API_KEY").ok();
         std::env::set_var("ZORP_API_KEY", key);
@@ -297,6 +310,7 @@ mod tests {
     /// and must not redden a scripted run on the default configuration.
     #[test]
     fn a_missing_key_is_only_a_fault_against_a_remote_endpoint() {
+        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var("ZORP_API_KEY").ok();
         std::env::remove_var("ZORP_API_KEY");
 
