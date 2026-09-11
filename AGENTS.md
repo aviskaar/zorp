@@ -213,6 +213,15 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that. Skills are not capsules; the same entry says why both exist.
+  The repository ships two of its own under `.claude/skills/`,
+  `artifact-design` and `artifact-diagramming`, which say how to write the
+  `.html` and `.svg` files the browser's side pane renders. Both are pinned
+  by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
+  parsing takes its skill off every surface with only a warning to say so.
+  They both state the constraint that decides everything else about such a
+  file: the pane serves it under a bare `Content-Security-Policy: sandbox`,
+  so no script in it runs and nothing external loads, and a page written
+  against the opposite assumption renders as nothing.
   Three surfaces now say what is installed, and all three only read.
   `zorp --skills` lists them and `zorp --skill <name> <prompt>` puts one
   skill's instructions in front of a prompt, with `/skills` and
