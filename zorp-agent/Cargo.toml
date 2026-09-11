@@ -30,6 +30,7 @@ base64 = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 zorp-mcp   = { path = "../zorp-mcp", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
+zorp-recall = { path = "../zorp-recall", optional = true }
 zorp-search = { path = "../zorp-search", optional = true }
 zorp-skill = { path = "../zorp-skill" }
 arboard    = { version = "3", optional = true }
@@ -60,6 +61,15 @@ mcp      = ["dep:zorp-mcp"]
 # egress path by side effect.
 search   = ["dep:zorp-search"]
 research = ["dep:zorp-track", "mcp"]
+# Search your own conversations, by meaning. Non-default and matching the
+# feature of the same name on `zorp-web`: without it there is no
+# `zorp-recall` anywhere in this crate's dependency tree.
+recall   = ["dep:zorp-recall"]
+# Reading that index into a live turn, which is a different risk from
+# reading it into a sidebar: one puts old text in front of a person, this
+# one puts it in front of a model. Turns on `recall`, the way `zorp-web`'s
+# feature of the same name does.
+memory   = ["recall"]
 # Opt-in vector store for validate's cited sources. Deliberately not
 # part of `research`: it drags in LanceDB's arrow stack at build time.
 library  = ["research", "zorp-track/library"]

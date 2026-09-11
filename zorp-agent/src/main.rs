@@ -68,6 +68,15 @@ struct Cli {
     /// Skip configured verification commands.
     #[arg(long, global = true)]
     no_verify: bool,
+    /// Look at earlier conversations before answering this one.
+    ///
+    /// Per message and off by default, the same as the browser's tick box
+    /// and for the same reason: it spends context and it puts text from
+    /// old conversations, tool results and fetched pages included, in front
+    /// of the model. A thing to choose each time, not a mode to leave on.
+    #[cfg(feature = "memory")]
+    #[arg(long, global = true)]
+    recall: bool,
     /// Select a named flavor profile.
     #[arg(long, global = true)]
     flavor: Option<String>,
@@ -174,6 +183,26 @@ enum Command {
     Diff,
     /// Scaffold a new flavor manifest at ./.zorp/flavors/<name>.toml.
     New { name: String },
+    /// Search your own conversations, by meaning rather than by spelling.
+    ///
+    /// The index is over the store both surfaces share, so this finds
+    /// conversations you had in the browser too. Every vector is made by a
+    /// model on this machine and nothing typed here is sent anywhere else.
+    #[cfg(feature = "recall")]
+    Recall {
+        /// What to look for. Omit with --index to only bring the index up
+        /// to date.
+        query: Vec<String>,
+        /// How many results.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only conversations filed under this project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Bring the index up to date first.
+        #[arg(long)]
+        index: bool,
+    },
     /// Review one piece of material with several reviewers at once.
     ///
     /// Each reads it from a different code-defined angle, none sees what
@@ -320,6 +349,13 @@ fn main() {
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
+        #[cfg(feature = "recall")]
+        Some(Command::Recall {
+            query,
+            limit,
+            project,
+            index,
+        }) => recall_command(&query.join(" "), limit, project.as_deref(), index),
         Some(Command::Panel {
             path,
             label,
@@ -374,11 +410,16 @@ fn main() {
                     )
                     .exit();
             }
+            #[cfg(feature = "memory")]
+            let use_recall = cli.recall;
+            #[cfg(not(feature = "memory"))]
+            let use_recall = false;
             run(
                 cli.task.join(" "),
                 &cli.images,
                 cli.yes,
                 cli.no_verify,
+                use_recall,
                 &overrides,
             );
         }
@@ -521,6 +562,208 @@ fn scaffold(name: &str) {
         std::process::exit(1);
     }
     println!("created {}", path.display());
+}
+
+/// One recall hit, as a line, plus the id under it.
+///
+/// The id goes on its own line rather than in a column, because it is what
+/// the next command takes and a column of ids is the thing people copy
+/// wrongly.
+#[cfg(feature = "recall")]
+fn recall_lines(
+    hits: &[zorp_recall::Hit],
+    names: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for hit in hits {
+        let name = names
+            .get(&hit.conversation_id)
+            .cloned()
+            .unwrap_or_else(|| hit.title.clone());
+        // The role is load bearing. An assistant line is a model's earlier
+        // output and is not a checked fact, and a list that drew the two
+        // the same way would be saying they are the same kind of thing.
+        let who = zorp_agent::recall::attribution(hit.role == "user");
+        out.push(name);
+        out.push(format!(
+            "  {}  message {}, written by {who}",
+            zorp_agent::sessions::short(&hit.conversation_id),
+            hit.seq
+        ));
+        out.push(format!("  {}", one_line(&hit.snippet)));
+        out.push(String::new());
+    }
+    out
+}
+
+/// A snippet on one line, with the invisible characters gone.
+///
+/// A stored message can be a pasted file or a page the agent fetched, so a
+/// bidirectional override in one would reorder every line drawn after it.
+#[cfg(feature = "recall")]
+fn one_line(text: &str) -> String {
+    let flat = zorp_agent::sessions::scrub(text);
+    if flat.chars().count() <= 160 {
+        return flat;
+    }
+    format!("{}...", flat.chars().take(157).collect::<String>())
+}
+
+/// `zorp-agent recall`.
+///
+/// A person reading their own history. The model gets nothing from this
+/// command: that is `--recall` on a turn, which is a different feature and
+/// a different risk.
+#[cfg(feature = "recall")]
+fn recall_command(query: &str, limit: Option<usize>, project: Option<&str>, index: bool) {
+    if index {
+        eprintln!("zorp-agent: bringing the index up to date...");
+        match zorp_agent::recall::reindex() {
+            Ok(report) => eprintln!(
+                "zorp-agent: indexed {}, skipped {}, removed {}",
+                report.indexed, report.skipped, report.removed
+            ),
+            Err(e) => {
+                // The error already names the missing local embedder and
+                // says nothing was sent anywhere, so it is passed through
+                // whole rather than summarized.
+                eprintln!("zorp-agent: {e}");
+                std::process::exit(1);
+            }
+        }
+        if query.trim().is_empty() {
+            return;
+        }
+    }
+    if query.trim().is_empty() {
+        eprintln!("zorp-agent: nothing to search for. Pass a query, or --index on its own.");
+        std::process::exit(2);
+    }
+
+    let store = open_store();
+    let wanted = match (project, &store) {
+        (None, _) => None,
+        (Some(wanted), Some(store)) => {
+            let known = store.projects().unwrap_or_default();
+            match known.iter().find(|p| p.id == wanted || p.name == wanted) {
+                Some(row) => Some(row.id.clone()),
+                None => {
+                    eprintln!("zorp-agent: no project matching '{wanted}'");
+                    std::process::exit(1);
+                }
+            }
+        }
+        (Some(_), None) => std::process::exit(1),
+    };
+
+    let hits = match zorp_agent::recall::search(
+        query,
+        limit.unwrap_or(zorp_agent::recall::DEFAULT_LIMIT),
+        wanted.as_deref(),
+    ) {
+        Ok(hits) => hits,
+        Err(e) => {
+            // A CLI that cannot reach the local embedder says so and
+            // searches nothing. It does not fall back to anything, and
+            // there is nothing to fall back to.
+            eprintln!("zorp-agent: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if hits.is_empty() {
+        println!("Nothing matched. `zorp-agent recall --index` brings the index up to date.");
+        return;
+    }
+
+    // The display title when something wrote one, and the verbatim first
+    // message otherwise, which is what the index carries as a title anyway.
+    let names: std::collections::HashMap<String, String> = store
+        .as_ref()
+        .and_then(|s| s.sessions().ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (row.id.clone(), zorp_agent::sessions::name(&row)))
+        .collect();
+
+    for line in recall_lines(&hits, &names) {
+        println!("{line}");
+    }
+    println!("Continue one with `zorp-agent resume <id>`.");
+}
+
+/// Queue this conversation on the index, the way a finished browser turn
+/// does, so working in the terminal keeps the index warm rather than
+/// leaving it to the next time somebody opens the browser.
+///
+/// On its own thread and best effort: a missing local embedder must not
+/// slow or fail a turn that already answered.
+#[cfg(feature = "recall")]
+fn feed_recall(session_id: &str) {
+    let session_id = session_id.to_string();
+    std::thread::spawn(move || {
+        let _ = zorp_agent::recall::feed_session(&session_id);
+    });
+}
+
+#[cfg(not(feature = "recall"))]
+fn feed_recall(_session_id: &str) {}
+
+/// Look up what earlier conversations said about this message, tell the
+/// person what came back, and hand the text to the run.
+///
+/// Everything about the result reaches the terminal first, including the
+/// case where nothing was found and the case where no local embedder
+/// answered. A recall nobody can see is a model that knows things for
+/// reasons nobody can check.
+///
+/// An assistant line is labelled as a model's earlier output, everywhere it
+/// surfaces, including here. It is a thing that was said, not a thing that
+/// was checked.
+#[cfg(feature = "memory")]
+fn recall_into_turn(use_recall: bool, message: &str, out: &mut dyn Renderer) -> Option<String> {
+    if !use_recall {
+        return None;
+    }
+    match zorp_agent::memory::recall_for(message, zorp_agent::memory::DEFAULT_PASSAGES, None) {
+        Err(e) => {
+            // Not an error card, and not a silent fall through either. The
+            // turn goes ahead without memory, because refusing to answer
+            // over a search index being down is the wrong trade, and the
+            // person is told in the library's own words, which already name
+            // the missing local embedder and say nothing was sent anywhere.
+            out.notice(&format!("memory was asked for and could not be used: {e}"));
+            None
+        }
+        Ok(found) => {
+            if found.citations.is_empty() {
+                out.notice("memory found nothing relevant in earlier conversations");
+                return None;
+            }
+            out.notice(&format!(
+                "recalled {} line{} from earlier conversations:",
+                found.citations.len(),
+                if found.citations.len() == 1 { "" } else { "s" }
+            ));
+            for citation in &found.citations {
+                // The same four provenance fields the model is shown, so
+                // what a person can inspect is what the model was given.
+                let author = zorp_agent::recall::attribution(citation.author == "you");
+                out.notice(&format!(
+                    "  {}  {}  message {}, written by {author}",
+                    zorp_agent::sessions::short(&citation.conversation_id),
+                    zorp_agent::sessions::scrub(&citation.title),
+                    citation.seq
+                ));
+            }
+            found.block
+        }
+    }
+}
+
+#[cfg(not(feature = "memory"))]
+fn recall_into_turn(_use_recall: bool, _message: &str, _out: &mut dyn Renderer) -> Option<String> {
+    None
 }
 
 /// The lenses somebody asked for, or all of them.
@@ -1525,6 +1768,7 @@ fn run(
     images: &[PathBuf],
     auto_approve: bool,
     no_verify: bool,
+    use_recall: bool,
     overrides: &Overrides,
 ) {
     let cancel = install_cancel();
@@ -1596,6 +1840,28 @@ fn run(
                 0,
             )));
         }
+    }
+
+    // Before the model is called, never after. A recall run afterwards would
+    // be a search for what the answer turned out to need, which is a
+    // different thing from what the question asked for, and the model would
+    // already have answered without it.
+    //
+    // The block goes on the end of the seed, which is what keeps it out of
+    // the store: `with_message_records` counts what it is handed as already
+    // persisted, so `sync` never offers it to the recorder. Persisted, it
+    // would be re-embedded and recalled next turn, which is the tail eating
+    // this whole design avoids.
+    let mut out = LineRenderer::new(std::io::stderr(), std::io::stderr().is_terminal());
+    if let Some(block) = recall_into_turn(use_recall, &task, &mut out) {
+        let mut records: Vec<zorp_agent::MessageRecord> = agent
+            .messages
+            .iter()
+            .cloned()
+            .map(zorp_agent::MessageRecord::from)
+            .collect();
+        records.push(zorp_agent::Message::user(block).into());
+        agent = agent.with_message_records(records);
     }
 
     if images.is_empty() {
@@ -2435,6 +2701,7 @@ const HELP: &str = "\
 /reasoning           show the active session reasoning mode
 /reasoning <mode>    set reasoning mode for future turns in this session
 /branch [n]          fork this conversation at answer n (default: the latest)
+/recall <query>      search your own conversations by meaning
 /panel [path]        review the last answer, or a file, with several reviewers at once
 /project             say which project this conversation is in
 /project <name>      file it under that project, or `none` to take it out
@@ -3204,6 +3471,44 @@ fn handle_chat_command(
                 }
             }
         }
+        ChatCommand::Recall(query) => {
+            // A person reading their own history. Nothing from this reaches
+            // the model: that is `--recall` on a turn, which is a different
+            // feature and a different risk.
+            #[cfg(feature = "recall")]
+            {
+                if query.trim().is_empty() {
+                    out.notice("usage: /recall <what you are looking for>");
+                } else {
+                    match zorp_agent::recall::search(
+                        &query,
+                        zorp_agent::recall::DEFAULT_LIMIT,
+                        None,
+                    ) {
+                        Err(e) => out.notice(&e.to_string()),
+                        Ok(hits) if hits.is_empty() => out.notice("nothing matched"),
+                        Ok(hits) => {
+                            let names = store
+                                .as_ref()
+                                .and_then(|s| s.sessions().ok())
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|row| (row.id.clone(), zorp_agent::sessions::name(&row)))
+                                .collect();
+                            out.notice(&recall_lines(&hits, &names).join("\n"));
+                        }
+                    }
+                }
+            }
+            #[cfg(not(feature = "recall"))]
+            {
+                let _ = query;
+                out.notice(
+                    "this zorp-agent was built without the recall feature, so there is \
+                     nothing to search",
+                );
+            }
+        }
         ChatCommand::Panel(path) => {
             // The last answer by default, because that is what a person in
             // a conversation means by "review this". A path reviews the
@@ -3362,6 +3667,7 @@ fn handle_chat_command(
             }
             if let Some(text) = prompt {
                 run_and_render(agent, &text, out);
+                feed_recall(session_id);
             }
         }
         ChatCommand::CreateCapsule { name, description } => {
