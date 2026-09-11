@@ -470,10 +470,14 @@ impl History {
             .iter()
             .map(|e| format!("{}\n", e.replace('\n', "\\n")))
             .collect();
-        // Best effort. A history file that could not be written is not a
-        // reason to stop somebody talking to the agent.
-        let _ = std::fs::write(&path, text);
-        let _ = restrict(&path);
+        // The same write the trust file gets: a temp file created owner
+        // only, then renamed over. Writing and then chmod-ing would leave
+        // everything somebody typed readable by anyone on the machine for
+        // the length of the write, and a crash partway would truncate the
+        // history rather than leave the previous one. Best effort even so:
+        // a history file that could not be written is not a reason to stop
+        // somebody talking to the agent.
+        let _ = crate::trust::atomic_write(&path, text.as_bytes());
     }
 
     /// The previous message, or `None` at the far end.
@@ -510,19 +514,6 @@ impl History {
             }
         }
     }
-}
-
-/// Owner-only, the way the trust file is. This records what somebody asked
-/// an agent about their own machine.
-#[cfg(unix)]
-fn restrict(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

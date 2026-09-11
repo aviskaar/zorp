@@ -2371,12 +2371,11 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                         )
                                     } {
                                         image_counter += 1;
-                                        segments.push(Segment::Image {
+                                        line.push_opaque(Segment::Image {
                                             data: png_buf,
                                             mime_type: "image/png".into(),
                                             index: image_counter,
                                         });
-                                        segments.push(Segment::Text(String::new()));
                                         used_clipboard = true;
                                     }
                                 }
