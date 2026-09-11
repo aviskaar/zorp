@@ -34,6 +34,9 @@ pub enum ChatCommand {
     /// on screen to click. A terminal does not, so the number is optional
     /// and defaults to the most recent.
     Branch(Option<usize>),
+    /// Search your own conversations. A person reading their own history;
+    /// the model gets nothing from this.
+    Recall(String),
     /// Review this conversation's last answer with the panel.
     ///
     /// With a path, reviews that file instead. A person types this, which
@@ -111,6 +114,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
                 _ => ChatCommand::Unknown("branch".to_string()),
             },
         },
+        "recall" => ChatCommand::Recall(remainder.to_string()),
         "panel" => ChatCommand::Panel((!remainder.is_empty()).then(|| remainder.to_string())),
         "project" => ChatCommand::Project((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,

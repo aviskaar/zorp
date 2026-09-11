@@ -25,11 +25,15 @@ mod identity;
 mod instructions;
 #[cfg(feature = "research")]
 pub mod investigate;
+#[cfg(feature = "memory")]
+pub mod memory;
 mod model;
 pub mod panel;
 mod policy;
 mod provider;
 mod reasoning;
+#[cfg(feature = "recall")]
+pub mod recall;
 mod recorder;
 mod render;
 mod sandbox;

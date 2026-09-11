@@ -275,6 +275,15 @@ jobs:
       - name: Test zorp-web (search, memory, voice)
         run: cargo test -p zorp-web --features search,memory,voice --locked
 
+      # The same two features on the terminal side, which is where the
+      # chunker, the fingerprint and the indexer actually live now. `memory`
+      # turns `recall` on, so this is one compile for both, the way the
+      # clippy step above is one compile for three. Without this step the
+      # whole lift was ungated: a default build does not compile a line of
+      # it, and `zorp-web`'s step compiles the shims rather than the code.
+      - name: Test zorp-agent (memory, and recall under it)
+        run: cargo test -p zorp-agent --features memory --locked
+
   research:
     # Full build of zorp-track and the research-feature surface of
     # zorp-agent. Runs nightly, and on pull requests that touch the
