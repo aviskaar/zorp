@@ -472,12 +472,6 @@ fn scaffold(name: &str) {
     println!("created {}", path.display());
 }
 
-/// The longest project name the store takes.
-///
-/// The same number the browser enforces. A sidebar heading, not a
-/// description.
-const MAX_PROJECT_NAME: usize = 80;
-
 /// The project somebody meant, by id, id prefix, or exact name.
 ///
 /// A name as well as an id because a person reading a listing has the name
@@ -556,8 +550,9 @@ fn projects(action: Option<ProjectAction>) {
                 eprintln!("zorp-agent: a project needs a name");
                 std::process::exit(2);
             }
-            if name.chars().count() > MAX_PROJECT_NAME {
-                eprintln!("zorp-agent: a project name is at most {MAX_PROJECT_NAME} characters");
+            let limit = zorp_agent::MAX_PROJECT_NAME;
+            if name.chars().count() > limit {
+                eprintln!("zorp-agent: a project name is at most {limit} characters");
                 std::process::exit(2);
             }
             let id = zorp_agent::new_session_id();
