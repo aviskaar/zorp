@@ -30,6 +30,24 @@ fn answering_endpoint() -> String {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut stream = stream;
+            // The request is read before the reply, and it is not optional.
+            // Closing a socket with unread bytes still in its receive queue
+            // sends a reset, and a reset discards whatever was already
+            // written, so a server that never reads the request answers
+            // correctly most of the time and hands the client a connection
+            // reset the rest of it. That is what made this file fail about
+            // one run in twenty five, on a different test each time.
+            let mut reader = std::io::BufReader::new(match stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => continue,
+            });
+            let mut line = String::new();
+            while std::io::BufRead::read_line(&mut reader, &mut line).unwrap_or(0) > 0 {
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                line.clear();
+            }
             let body = br#"{"data":[{"id":"demo"}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
