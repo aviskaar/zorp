@@ -15,6 +15,7 @@ pub mod context_window;
 pub mod critique;
 #[cfg(feature = "research")]
 pub mod deliver;
+pub mod doctor;
 mod embed;
 #[cfg(feature = "ensemble")]
 pub mod ensemble;
@@ -37,6 +38,7 @@ mod session;
 pub mod sessions;
 mod skill_tool;
 pub mod streaming;
+pub mod title;
 mod tools;
 mod trust;
 #[cfg(feature = "research")]

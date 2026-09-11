@@ -343,10 +343,17 @@ resulting artifact, deliver it in the right form.
   somebody set. A conversation in no project reads everything, as it always
   did. `sessions.task` is untouched by all of it. See
   `docs/DECISIONS.md` (2026-09-09).
-- `title` (`zorp-web/src/title.rs`) is the sidebar's session name: one
+- `title` (`zorp-agent/src/title.rs`) is a conversation's short name: one
   model call per conversation, made after the first turn has both a
   question and an answer, on by default and off with
-  `ZORP_SESSION_TITLES=0`. Three things are not negotiable. It writes to
+  `ZORP_SESSION_TITLES=0`. It is in `zorp-agent` because both surfaces
+  write the column. It used to be in `zorp-web`, which meant a conversation
+  started in the terminal never got a name, including later in the browser
+  sidebar, where it showed its raw first message forever. `zorp-web` keeps
+  only the part that resolves a model out of its saved settings and puts
+  the answer on the event stream, the same split `compaction.rs` uses, and
+  the project-name path reads the moved `scrub` so there is one set of
+  character rules rather than two that drift. Three things are not negotiable. It writes to
   `sessions.display_title` and never to `sessions.task`, because `task`
   is the verbatim first message and `recall::index_one` reads it into the
   search index while `memory::block` quotes that title into a later turn
@@ -579,6 +586,26 @@ resulting artifact, deliver it in the right form.
   prove that too. See
   `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
   any of it.
+- `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
+  do and whether it can reach anything: which features `cfg!` reports, the
+  resolved endpoint, provider and model, whether an API key is set, whether
+  the endpoint answered, where the state files are, and the registered
+  tools. `/doctor` in the chat REPL prints the same report from the same
+  function. Exit code is 0 when everything checked was fine and 1 otherwise,
+  so it works in a script. Two rules are not negotiable. **Nothing here
+  prints a secret**: a key is reported as set or not set, never its value,
+  never a prefix, never its length, and a test greps the whole report to
+  prove it, because this is the thing people paste into bug reports. And a
+  probe goes where the real path goes, the same resolved endpoint, because a
+  doctor that reached a URL the real feature would refuse would report
+  healthy on the one configuration that cannot work. It builds its own HTTP
+  agent rather than reusing `zorp::http_agent`, whose read timeout is 900
+  seconds because it is for answers a model is still writing: a diagnostic
+  that hangs for fifteen minutes is worse than one that says it could not
+  tell, so this one waits ten, the way `zorp-web`'s settings probes and
+  `zorp-search` each build and bound their own. A feature that is off is
+  reported and never counted as a failure, or every default build would exit
+  non-zero.
 - The terminal is line oriented and stays that way. No alternate screen, no
   panes, no `ratatui`: a full screen mode would cost piping, scrollback,
   selection and screen reader support, and every win it was supposed to buy
