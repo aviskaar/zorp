@@ -25,6 +25,7 @@ mod identity;
 mod instructions;
 #[cfg(feature = "research")]
 pub mod investigate;
+pub mod line_editor;
 #[cfg(feature = "memory")]
 pub mod memory;
 mod model;
@@ -58,7 +59,7 @@ pub use capsule::{
     default_user_capsules_dir, extract_fenced_block, is_reserved, project_capsules_dir, Capsule,
     CapsuleRegistry, CapsuleState,
 };
-pub use chat::{parse_command, ChatCommand, ReasoningCommand};
+pub use chat::{parse_command, ChatCommand, ReasoningCommand, COMMANDS as CHAT_COMMANDS};
 pub use context::seed as seed_context;
 pub use context_window::{
     compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, CompactionOutcome,

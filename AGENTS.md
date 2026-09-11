@@ -647,6 +647,21 @@ resulting artifact, deliver it in the right form.
   turned out to be better line output instead. A line editor is not a TUI
   and is not ruled out. See `docs/DECISIONS.md` (2026-09-10) before
   reaching for a layout.
+- The chat REPL's input line is `zorp-agent/src/line_editor.rs`: cursor
+  motion, word motion, Ctrl-A/E/W/U/K, Up and Down through a history that
+  survives a restart, Tab completion of slash commands and capsule names,
+  and a trailing backslash for a multi line message. Grown rather than
+  replaced with `reedline` or `rustyline`, because the buffer is not a
+  `String`: it is a run of `Segment`s so a bracketed paste can show as a
+  marker and a clipboard image can ride along, and both crates hand back a
+  `String` from their own event loop. The history file goes beside the
+  other state through `trust::state_path`, is capped, is owner-only, and
+  `ZORP_HISTORY=0` turns it off, because a record of what somebody asked an
+  agent about their own machine is a sensitive file to start writing
+  without saying so. Raw mode is still entered for the input line and left
+  around a turn, and a pipe still gets `chat_line_loop` with no editor at
+  all. `chat::COMMANDS` is what Tab offers and a test asserts every name in
+  it is one `parse_command` recognizes.
 - `recall` and `memory` are in `zorp-agent` now, behind non-default
   features of those names, and `zorp-web` re-exports them. They were in
   `zorp-web`, which meant the terminal could not search or recall its own

@@ -69,6 +69,32 @@ pub enum ChatCommand {
     Unknown(String),
 }
 
+/// Every slash command, for Tab completion.
+///
+/// Here rather than in `main.rs` so it sits beside the `match` in
+/// `parse_command` that recognizes them, which is the thing it has to stay
+/// in step with. A command completable but unrecognized, or the reverse,
+/// is the failure this placement is for.
+pub const COMMANDS: &[&str] = &[
+    "help",
+    "model",
+    "context",
+    "diff",
+    "status",
+    "undo",
+    "approve",
+    "deny",
+    "clear",
+    "exit",
+    "tools",
+    "reasoning",
+    "capsules",
+    "load",
+    "unload",
+    "capsule-create",
+    "branch",
+];
+
 /// Parse one line of REPL input. A leading `/` marks a command (case-insensitive,
 /// first word only); anything else, including an empty line, is `Say`.
 /// `capsule_names` is the set of currently discoverable capsule names, checked
@@ -194,6 +220,22 @@ mod tests {
             parse_command("/branch latest", &[]),
             ChatCommand::Unknown("branch".to_string())
         );
+    }
+
+    /// Every name Tab offers is a name `parse_command` recognizes.
+    ///
+    /// The failure this catches is a command that completes and then says
+    /// "unknown command", or one that exists and cannot be completed. Both
+    /// are the two lists drifting.
+    #[test]
+    fn every_completable_command_is_a_real_one() {
+        for name in COMMANDS {
+            let parsed = parse_command(&format!("/{name}"), &[]);
+            assert!(
+                !matches!(parsed, ChatCommand::Unknown(_)),
+                "/{name} completes and is not a command"
+            );
+        }
     }
 
     #[test]
