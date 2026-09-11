@@ -239,6 +239,55 @@ export interface ToolAvailability {
 export interface Capabilities {
   web_search: ToolAvailability;
   voice: VoiceStatus;
+  /** Absent from a server built before skills were reported. */
+  skills?: SkillAvailability;
+}
+
+/**
+ * How many skills this server can see.
+ *
+ * A count and not a list, so a capabilities call does not carry every
+ * description on the machine. The page draws a pill from it and asks
+ * `/api/skills` when somebody opens the pill.
+ */
+export interface SkillAvailability {
+  available: boolean;
+  count: number;
+}
+
+/**
+ * One installed skill, as `GET /api/skills` lists it.
+ *
+ * Name, description and where it came from. **Never the body.** A skill
+ * body is untrusted text that the agent hands to a model as a tool result;
+ * it has no business on a page, and the listing route does not send it.
+ *
+ * `declared_tools` is what the skill's frontmatter asked for. It is
+ * reported and never acted on, so the gap between what a skill wants and
+ * what it gets is visible rather than silent. Every string here reaches the
+ * page through `textContent`: a `SKILL.md` is a file zorp did not write.
+ */
+export interface SkillSummary {
+  name: string;
+  description: string;
+  path: string;
+  scope: "user" | "workspace" | "env" | "other";
+  declared_tools: string[];
+}
+
+export interface SkillListing {
+  skills: SkillSummary[];
+  /** A skill that could not be read or parsed, named rather than swallowed. */
+  warnings: string[];
+}
+
+/** Every skill this server can see. Read-only: there is no route that loads one. */
+export async function fetchSkills(): Promise<SkillListing> {
+  const body = await request<SkillListing>("GET", "/api/skills");
+  return {
+    skills: Array.isArray(body?.skills) ? body.skills : [],
+    warnings: Array.isArray(body?.warnings) ? body.warnings : [],
+  };
 }
 
 /** The server's observed local voice runtime state. */
