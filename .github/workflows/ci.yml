@@ -304,9 +304,11 @@ jobs:
     # A genuinely cold cache would pay both builds, and 45 was no longer
     # far enough above that to tell slow from stuck.
     #
-    # Raised again from 60 for the `library` step below, which is a fourth
-    # DuckDB build and the arrow tree on top of the three above. A cold run
-    # that got through everything but the last step measured 47 minutes.
+    # Raised again from 60 when the `library` step lived here too. That step
+    # has its own job now, so this is four DuckDB builds rather than five,
+    # but the number is left where it is: a cold run measured 47 minutes and
+    # the cost of a generous cap is nothing until something is actually
+    # stuck.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -389,27 +391,98 @@ jobs:
       - name: Test zorp-web (research feature)
         run: cargo test -p zorp-web --features research --locked
 
-      # The `library` feature: the LanceDB-backed store behind validate's
-      # cited sources. It is off by default on every crate that has it, so
-      # nothing else in this file compiles a line of it and it could rot
-      # with nothing going red.
-      #
-      # Nightly and on pushes to main, deliberately not on `research-pr`. It
-      # is the fourth DuckDB build in this job plus the whole arrow tree,
-      # which took the pull request path from about fourteen minutes to
-      # forty eight before it ran out of disk. Nothing is waiting on this
-      # job, so a day is a fine distance to catch rot in an opt-in feature
-      # from.
-      #
-      # zorp-track owns the feature and holds the one test behind it.
-      # zorp-agent's `library` surface is a single `#[cfg]` in validate
-      # calling that same API, and compiling it is a fifth DuckDB build and
-      # a second arrow tree in one target directory, which did not fit even
-      # with 17 GB freed. One call site is not worth a step that cannot
-      # finish, so it stays ungated, and the reason is runner disk rather
-      # than anything about the code.
+  research-library:
+    # The `library` feature, on a runner of its own.
+    #
+    # It used to be the last step of `research`, and on 2026-09-11 it
+    # stopped fitting: `ld` died with signal 7 part way through linking
+    # zorp-track's tests. A bus error from the linker is what a full disk
+    # looks like from inside `ld`, which mmaps its output file and then
+    # faults on the write, so it reads like a toolchain bug and is not one.
+    # That is the second time the research stack has gone red for disk
+    # wearing a different costume, after `ar` reporting "No space left on
+    # device" while linking libduckdb.a.
+    #
+    # A separate job is the fix rather than freeing more, because the
+    # problem is cumulative and freeing is not: `research` resolves four
+    # feature sets, each one gives `libduckdb-sys` a different metadata
+    # hash and so builds the bundled amalgamation again, and this feature
+    # adds LanceDB and the whole arrow tree on top of all four. Here it is
+    # one feature set in an empty target directory, which is the only
+    # version of this that does not creep back over the line as the
+    # dependency tree grows.
+    #
+    # Same trigger as `research`, nightly and on pushes to main, and
+    # deliberately not on `research-pr`: nothing waits on it, and a day is
+    # a fine distance to catch rot in a feature no default build compiles.
+    #
+    # zorp-track owns the feature and holds the one test behind it.
+    # zorp-agent's `library` surface is a single `#[cfg]` in validate
+    # calling that same API. Compiling it is a second DuckDB build and a
+    # second arrow tree, and one call site is not worth doubling this job,
+    # so it stays ungated for runner disk rather than for anything about
+    # the code.
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # One DuckDB build and the arrow tree from cold. The step measured
+    # about twenty one minutes inside `research` with everything else
+    # already built, and it pays for DuckDB itself here, so this is the
+    # same generous cap `research` carries for the same reason.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same reclaim `research` does, for the same reason and with the
+      # same caveats. One build fits in 87 GB today; it is here so that
+      # stays true rather than becoming the next thing to discover from a
+      # linker signal.
+      - name: Free disk for the bundled DuckDB and arrow builds
+        run: |
+          set -eu
+          df -h /
+          sudo rm -rf /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL \
+                      /usr/share/dotnet \
+                      /usr/share/swift \
+                      /opt/ghc
+          df -h /
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Its own `shared-key`, and not `research-stack`. This job resolves a
+      # feature set none of the others do, so it would write a cache entry
+      # under their key that none of them can use and that is large enough
+      # to push out one they can.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: research-library
+
+      - name: Install protoc
+        timeout-minutes: 5
+        run: |
+          set -eu
+          # Retried, for the reason the copy in `research` gives.
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y protobuf-compiler; then
+              exit 0
+            fi
+            echo "protoc install attempt $attempt failed, retrying" >&2
+            sleep 5
+          done
+          echo "could not install protoc after three attempts" >&2
+          exit 1
+
+      # Printed on both sides of the build that ran out, so the next person
+      # reading a red check here sees the headroom rather than inferring it
+      # from a signal number.
       - name: Test zorp-track (library feature)
-        run: cargo test -p zorp-track --features library --locked
+        run: |
+          set -eu
+          df -h /
+          cargo test -p zorp-track --features library --locked
+          df -h /
 
   research-pr:
     # Same coverage for pull requests, gated on paths so unrelated PRs
