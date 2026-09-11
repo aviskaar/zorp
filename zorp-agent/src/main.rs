@@ -366,15 +366,10 @@ fn extract_image_refs(text: &str, cwd: &Path) -> (String, Vec<(Vec<u8>, String)>
     (cleaned.to_string(), images)
 }
 
-enum Segment {
-    Text(String),
-    Paste(String),
-    Image {
-        data: Vec<u8>,
-        mime_type: String,
-        index: usize,
-    },
-}
+// One definition, in `line_editor`, because the editor moves a cursor
+// through these and `segments_to_parts` turns them into a message. Two
+// would drift.
+use zorp_agent::line_editor::Segment;
 
 fn segments_to_parts(segments: &[Segment], cwd: &Path) -> Vec<zorp_agent::ContentPart> {
     use zorp_agent::ContentPart;
@@ -1889,7 +1884,8 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         return;
     }
 
-    let mut segments = vec![Segment::Text(String::new())];
+    let mut line = zorp_agent::line_editor::Line::new();
+    let mut history = zorp_agent::line_editor::History::load();
     let mut image_counter: usize = 0;
     let mut redraw = true;
 
@@ -1906,21 +1902,50 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
 
     loop {
         if redraw {
-            let mut prompt = String::from("\r› ");
-            for seg in &segments {
-                match seg {
-                    Segment::Text(t) => prompt.push_str(t),
+            // The visible width of everything before the cursor, which is
+            // not the character offset once a paste is drawn as a marker.
+            let mut prompt = String::from("› ");
+            let mut before = 0usize;
+            let mut seen = 0usize;
+            for seg in line.segments() {
+                let (drawn, width) = match seg {
+                    Segment::Text(t) => (t.clone(), t.chars().count()),
                     Segment::Paste(s) => {
-                        prompt.push_str(&format!("[pasted +{} characters]", s.len()))
+                        let marker = format!("[pasted +{} characters]", s.chars().count());
+                        let width = marker.chars().count();
+                        (marker, width)
                     }
-                    Segment::Image { index, .. } => prompt.push_str(&format!("[Image {}]", index)),
+                    Segment::Image { index, .. } => {
+                        let marker = format!("[Image {index}]");
+                        let width = marker.chars().count();
+                        (marker, width)
+                    }
+                };
+                let occupies = match seg {
+                    Segment::Text(t) => t.chars().count(),
+                    _ => 1,
+                };
+                if seen + occupies <= line.cursor() {
+                    before += width;
+                } else if seen < line.cursor() {
+                    // Inside a text segment: only the part before the
+                    // cursor counts.
+                    before += line.cursor() - seen;
                 }
+                seen += occupies;
+                prompt.push_str(&drawn);
             }
             let _ = crossterm::execute!(
                 std::io::stdout(),
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)
             );
-            print!("{}", prompt);
+            print!("\r{}", prompt);
+            // Back to where the cursor is, so Left and Right land where a
+            // person can see them.
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::cursor::MoveToColumn((before + 2) as u16)
+            );
             let _ = std::io::stdout().flush();
             redraw = false;
         }
@@ -1948,13 +1973,28 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             break;
                         }
                         crossterm::event::KeyCode::Enter => {
+                            // A trailing backslash continues the line
+                            // rather than sending it. Shift-Enter is not
+                            // reported as distinct from Enter by most
+                            // terminals, so a backslash is what works
+                            // everywhere.
+                            if line.wants_continuation() {
+                                line.continue_line();
+                                println!("\r");
+                                redraw = true;
+                                continue;
+                            }
+                            if line.is_blank() {
+                                redraw = true;
+                                continue;
+                            }
                             println!("\r");
+                            history.remember(&line.flat());
                             // Convert segments to content parts
                             use zorp_agent::ContentPart;
-                            let parts = segments_to_parts(&segments, &cwd);
+                            let parts = segments_to_parts(line.segments(), &cwd);
 
-                            segments.clear();
-                            segments.push(Segment::Text(String::new()));
+                            line.clear();
                             image_counter = 0;
 
                             let _ = crossterm::execute!(
@@ -2022,30 +2062,120 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             redraw = true;
                         }
                         crossterm::event::KeyCode::Backspace => {
-                            let mut pop_segment = false;
-                            if let Some(last) = segments.last_mut() {
-                                match last {
-                                    Segment::Text(t) => {
-                                        if !t.is_empty() {
-                                            t.pop();
-                                        } else {
-                                            pop_segment = true;
-                                        }
-                                    }
-                                    Segment::Paste(_) => {
-                                        pop_segment = true;
-                                    }
-                                    Segment::Image { .. } => {
-                                        pop_segment = true;
+                            line.backspace();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Delete => {
+                            line.delete_forward();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Left
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            line.word_left();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Right
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
+                        {
+                            line.word_right();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Left => {
+                            line.left();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Right => {
+                            line.right();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Home => {
+                            line.home();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::End => {
+                            line.end();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Up => {
+                            if let Some(previous) = history.previous(&line.flat()) {
+                                line.set_text(&previous);
+                            }
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Down => {
+                            if let Some(next) = history.forward() {
+                                line.set_text(&next);
+                            }
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Tab => {
+                            let flat = line.flat();
+                            let names = capsules.registry().names();
+                            let candidates = zorp_agent::line_editor::complete(
+                                &flat,
+                                zorp_agent::CHAT_COMMANDS,
+                                &names,
+                            );
+                            match candidates.len() {
+                                0 => {}
+                                1 => {
+                                    line.set_text(&format!("{} ", candidates[0]));
+                                }
+                                _ => {
+                                    // Fill in as much as every candidate
+                                    // shares, then show the rest rather
+                                    // than guessing between them.
+                                    let shared =
+                                        zorp_agent::line_editor::common_prefix(&candidates);
+                                    if shared.chars().count() > flat.chars().count() {
+                                        line.set_text(&shared);
+                                    } else {
+                                        println!("\r");
+                                        println!("\r{}", candidates.join("  "));
                                     }
                                 }
                             }
-                            if pop_segment {
-                                segments.pop();
-                            }
-                            if segments.is_empty() {
-                                segments.push(Segment::Text(String::new()));
-                            }
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('a')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            line.home();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('e')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            line.end();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('w')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            line.delete_word_back();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('u')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            line.delete_to_start();
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('k')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            line.delete_to_end();
                             redraw = true;
                         }
                         #[cfg(feature = "clipboard")]
@@ -2087,20 +2217,12 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             }
                             if !used_clipboard {
                                 // Fall through to normal 'v' character
-                                if let Some(Segment::Text(t)) = segments.last_mut() {
-                                    t.push('v');
-                                } else {
-                                    segments.push(Segment::Text("v".to_string()));
-                                }
+                                line.insert('v');
                             }
                             redraw = true;
                         }
                         crossterm::event::KeyCode::Char(c) => {
-                            if let Some(Segment::Text(t)) = segments.last_mut() {
-                                t.push(c);
-                            } else {
-                                segments.push(Segment::Text(c.to_string()));
-                            }
+                            line.insert(c);
                             redraw = true;
                         }
                         _ => {}
@@ -2113,19 +2235,16 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                         if let Ok(data) = std::fs::read(path) {
                             image_counter += 1;
                             let mime_type = mime_from_extension(path);
-                            segments.push(Segment::Image {
+                            line.push_opaque(Segment::Image {
                                 data,
                                 mime_type,
                                 index: image_counter,
                             });
-                            segments.push(Segment::Text(String::new()));
                         } else {
-                            segments.push(Segment::Paste(s));
-                            segments.push(Segment::Text(String::new()));
+                            line.push_opaque(Segment::Paste(s));
                         }
                     } else {
-                        segments.push(Segment::Paste(s));
-                        segments.push(Segment::Text(String::new()));
+                        line.push_opaque(Segment::Paste(s));
                     }
                     redraw = true;
                 }
