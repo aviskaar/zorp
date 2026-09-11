@@ -37,6 +37,11 @@ pub enum ChatCommand {
     /// Search your own conversations. A person reading their own history;
     /// the model gets nothing from this.
     Recall(String),
+    /// Say which project this conversation is in, or file it in one.
+    ///
+    /// `/project` reports, `/project <name or id>` files, and
+    /// `/project none` takes it out.
+    Project(Option<String>),
     Capsules,
     /// List the skills this session can see.
     ///
@@ -105,6 +110,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
             },
         },
         "recall" => ChatCommand::Recall(remainder.to_string()),
+        "project" => ChatCommand::Project((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,
         "skills" => ChatCommand::Skills,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),

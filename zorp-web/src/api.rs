@@ -552,9 +552,7 @@ async fn branch_session(
 
 /// The longest project name the store will take.
 ///
-/// A sidebar heading, not a description. Long enough for a real name and
-/// short enough that a group heading stays one line.
-const MAX_PROJECT_NAME: usize = 80;
+use zorp_agent::MAX_PROJECT_NAME;
 
 /// Every project a person has made, oldest first.
 ///

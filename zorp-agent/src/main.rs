@@ -130,6 +130,14 @@ struct Overrides {
 }
 
 #[derive(Subcommand)]
+enum ProjectAction {
+    /// Make a project.
+    New { name: String },
+    /// Remove a project. **This deletes no conversation.**
+    Rm { id: String },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Start an interactive chat session.
     Chat,
@@ -148,6 +156,9 @@ enum Command {
         /// Show every conversation, however many there are.
         #[arg(long)]
         all: bool,
+        /// Only conversations filed under this project, by id or name.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Revert the most recent recorded file change.
     Undo,
@@ -174,6 +185,14 @@ enum Command {
         /// Bring the index up to date first.
         #[arg(long)]
         index: bool,
+    },
+    /// Group conversations. A project is a label and nothing more.
+    ///
+    /// Nothing about a conversation changes when it joins one, and
+    /// removing a project deletes no conversation.
+    Projects {
+        #[command(subcommand)]
+        action: Option<ProjectAction>,
     },
     /// Say what this build can do and whether it can reach anything.
     ///
@@ -274,7 +293,11 @@ fn main() {
     match cli.command {
         Some(Command::Chat) => chat(cli.yes, cli.no_verify, &overrides),
         Some(Command::Resume { id }) => resume(id.as_deref(), cli.yes, cli.no_verify, &overrides),
-        Some(Command::Sessions { limit, all }) => list_sessions(limit, all),
+        Some(Command::Sessions {
+            limit,
+            all,
+            project,
+        }) => list_sessions(limit, all, project.as_deref()),
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
@@ -285,6 +308,7 @@ fn main() {
             project,
             index,
         }) => recall_command(&query.join(" "), limit, project.as_deref(), index),
+        Some(Command::Projects { action }) => projects(action),
         Some(Command::Doctor) => doctor(&overrides),
         Some(Command::Rm { id, yes, force }) => remove_session(&id, yes || cli.yes, force),
         Some(Command::Branch { id, answer, force }) => branch_session(&id, answer, force),
@@ -689,6 +713,133 @@ fn recall_into_turn(use_recall: bool, message: &str, out: &mut dyn Renderer) -> 
 #[cfg(not(feature = "memory"))]
 fn recall_into_turn(_use_recall: bool, _message: &str, _out: &mut dyn Renderer) -> Option<String> {
     None
+}
+
+/// The project somebody meant, by id, id prefix, or exact name.
+///
+/// A name as well as an id because a person reading a listing has the name
+/// in front of them and would otherwise have to go and copy an id. An id
+/// wins over a name, and an exact name wins over a prefix, so nothing here
+/// can be shadowed by a project somebody later names after an id.
+fn resolve_project<'a>(
+    projects: &'a [zorp_agent::ProjectRow],
+    wanted: &str,
+) -> Option<&'a zorp_agent::ProjectRow> {
+    if let Some(row) = projects.iter().find(|p| p.id == wanted) {
+        return Some(row);
+    }
+    if let Some(row) = projects.iter().find(|p| p.name == wanted) {
+        return Some(row);
+    }
+    let prefixed: Vec<&zorp_agent::ProjectRow> = projects
+        .iter()
+        .filter(|p| p.id.starts_with(wanted))
+        .collect();
+    if prefixed.len() == 1 {
+        return Some(prefixed[0]);
+    }
+    // Case insensitive name, last, so `kitchen` finds `Kitchen rebuild`
+    // only when nothing more exact did.
+    let lowered = wanted.to_lowercase();
+    let named: Vec<&zorp_agent::ProjectRow> = projects
+        .iter()
+        .filter(|p| p.name.to_lowercase() == lowered)
+        .collect();
+    if named.len() == 1 {
+        return Some(named[0]);
+    }
+    None
+}
+
+/// `zorp-agent projects`.
+fn projects(action: Option<ProjectAction>) {
+    let mut store = match open_store() {
+        Some(s) => s,
+        None => std::process::exit(1),
+    };
+    match action {
+        None => {
+            let rows = store.projects().unwrap_or_default();
+            if rows.is_empty() {
+                println!("No projects yet. Run `zorp-agent projects new \"<name>\"` to make one.");
+                return;
+            }
+            let width = rows
+                .iter()
+                .map(|p| zorp_agent::sessions::short(&p.id).len())
+                .max()
+                .unwrap_or(8);
+            for row in rows {
+                let count = store
+                    .sessions_in_project(&row.id)
+                    .map(|ids| ids.len())
+                    .unwrap_or(0);
+                println!(
+                    "{:<width$}  {:>3}  {}",
+                    zorp_agent::sessions::short(&row.id),
+                    count,
+                    row.name
+                );
+            }
+        }
+        Some(ProjectAction::New { name }) => {
+            // The same rules the browser applies, from the same function,
+            // rather than a second copy: control characters and the
+            // bidirectional overrides go, whitespace runs collapse, and an
+            // empty result is a refusal. An override in a listing reorders
+            // every row drawn after it.
+            let name = zorp_agent::title::scrub(&name);
+            if name.is_empty() {
+                eprintln!("zorp-agent: a project needs a name");
+                std::process::exit(2);
+            }
+            let limit = zorp_agent::MAX_PROJECT_NAME;
+            if name.chars().count() > limit {
+                eprintln!("zorp-agent: a project name is at most {limit} characters");
+                std::process::exit(2);
+            }
+            let id = zorp_agent::new_session_id();
+            match store.create_project(&id, &name) {
+                Ok(_) => println!("{}  {name}", zorp_agent::sessions::short(&id)),
+                Err(e) => {
+                    eprintln!("zorp-agent: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(ProjectAction::Rm { id }) => {
+            let known = store.projects().unwrap_or_default();
+            let Some(row) = resolve_project(&known, &id) else {
+                eprintln!("zorp-agent: no project matching '{id}'");
+                std::process::exit(1);
+            };
+            let (row_id, row_name) = (row.id.clone(), row.name.clone());
+            let count = store
+                .sessions_in_project(&row_id)
+                .map(|ids| ids.len())
+                .unwrap_or(0);
+            match store.delete_project(&row_id) {
+                Ok(true) => {
+                    // Said out loud, because it is the thing a person is
+                    // afraid of and it is the thing that does not happen.
+                    println!("removed the project '{row_name}'");
+                    println!(
+                        "{count} conversation{} {} kept and no longer filed under it.",
+                        if count == 1 { "" } else { "s" },
+                        if count == 1 { "was" } else { "were" }
+                    );
+                }
+                Ok(false) => {
+                    eprintln!("zorp-agent: no project matching '{id}'");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("zorp-agent: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
 }
 
 /// Build the doctor's report, without printing it.
@@ -2130,6 +2281,8 @@ const HELP: &str = "\
 /reasoning <mode>    set reasoning mode for future turns in this session
 /branch [n]          fork this conversation at answer n (default: the latest)
 /recall <query>      search your own conversations by meaning
+/project             say which project this conversation is in
+/project <name>      file it under that project, or `none` to take it out
 /capsules            list available and loaded capsules
 /skills              list the skills the model can load
 /load <name>         load a capsule
@@ -2811,6 +2964,59 @@ fn handle_chat_command(
                 );
             }
         }
+        ChatCommand::Project(wanted) => {
+            // Against a fresh handle, because filing is a write and the
+            // REPL holds its store immutably.
+            match Store::open_default() {
+                Err(e) => out.notice(&format!("no session store: {e}")),
+                Ok(mut fresh) => {
+                    let known = fresh.projects().unwrap_or_default();
+                    match wanted.as_deref() {
+                        None => {
+                            let current = fresh.session_project(session_id).unwrap_or_default();
+                            match current.and_then(|id| {
+                                known.iter().find(|p| p.id == id).map(|p| p.name.clone())
+                            }) {
+                                Some(name) => out.notice(&format!("in project '{name}'")),
+                                None => out.notice(
+                                    "not in a project. /project <name> files it, and \
+                                     /projects lists them.",
+                                ),
+                            }
+                        }
+                        Some("none") | Some("off") => {
+                            match fresh.set_session_project(session_id, None) {
+                                Ok(zorp_agent::SetProject::Done) => {
+                                    out.notice("taken out of its project")
+                                }
+                                Ok(_) => out.notice("this conversation is not in the store yet"),
+                                Err(e) => out.notice(&format!("could not change it: {e}")),
+                            }
+                        }
+                        Some(wanted) => match resolve_project(&known, wanted) {
+                            None => out.notice(&format!(
+                                "no project matching '{wanted}'. /projects lists them."
+                            )),
+                            Some(row) => {
+                                let (id, name) = (row.id.clone(), row.name.clone());
+                                match fresh.set_session_project(session_id, Some(&id)) {
+                                    Ok(zorp_agent::SetProject::Done) => {
+                                        out.notice(&format!("filed under '{name}'"))
+                                    }
+                                    Ok(zorp_agent::SetProject::NoSuchSession) => {
+                                        out.notice("this conversation is not in the store yet")
+                                    }
+                                    Ok(zorp_agent::SetProject::NoSuchProject) => {
+                                        out.notice("that project is gone")
+                                    }
+                                    Err(e) => out.notice(&format!("could not file it: {e}")),
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }
         ChatCommand::Capsules => out.notice(&capsules.list_display()),
         ChatCommand::Skills => {
             // Read from disk now rather than from whatever was discovered
@@ -3077,24 +3283,52 @@ fn chat_undo(store: &Option<Store>, session_id: &str, cwd: &Path, out: &mut dyn 
 /// The store is shared with the browser, so this is one list and not the
 /// terminal's own. A conversation started in a sidebar is in here, and a
 /// conversation started here is in that sidebar.
-fn list_sessions(limit: Option<usize>, all: bool) {
+fn list_sessions(limit: Option<usize>, all: bool, project: Option<&str>) {
     let store = match open_store() {
         Some(s) => s,
         None => std::process::exit(1),
     };
-    let rows = match store.sessions() {
+    let known = store.projects().unwrap_or_default();
+    // A filter takes an id or a name, because a person reading a listing
+    // has the name in front of them and the id is the thing they would
+    // have to go and look up.
+    let wanted = match project {
+        None => None,
+        Some(wanted) => match resolve_project(&known, wanted) {
+            Some(row) => Some(row.id.clone()),
+            None => {
+                eprintln!("zorp-agent: no project matching '{wanted}'");
+                eprintln!("zorp-agent: run `zorp-agent projects` to see what there is");
+                std::process::exit(1);
+            }
+        },
+    };
+    let mut rows = match store.sessions() {
         Ok(rows) => rows,
         Err(e) => {
             eprintln!("zorp-agent: {e}");
             std::process::exit(1);
         }
     };
+    if let Some(wanted) = &wanted {
+        rows.retain(|row| row.project_id.as_deref() == Some(wanted.as_str()));
+    }
     if rows.is_empty() {
         // Not an error and not an empty screen. Somebody who has just
         // installed this needs to be told that is what they are looking at.
-        println!("No conversations yet. Run `zorp-agent chat` to start one.");
+        match project {
+            Some(wanted) => println!("No conversations in '{wanted}'."),
+            None => println!("No conversations yet. Run `zorp-agent chat` to start one."),
+        }
         return;
     }
+
+    // Which project each conversation is in, once, rather than a lookup
+    // per row.
+    let name_of: std::collections::HashMap<&str, &str> = known
+        .iter()
+        .map(|p| (p.id.as_str(), p.name.as_str()))
+        .collect();
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3108,7 +3342,19 @@ fn list_sessions(limit: Option<usize>, all: bool) {
             .min(rows.len())
     };
     for row in rows.iter().take(shown) {
-        println!("{}", zorp_agent::sessions::line(row, now));
+        let line = zorp_agent::sessions::line(row, now);
+        // The project a conversation is in, when it is in one and the
+        // listing is not already filtered to that project, where saying it
+        // on every row is noise.
+        match row
+            .project_id
+            .as_deref()
+            .filter(|_| wanted.is_none())
+            .and_then(|id| name_of.get(id))
+        {
+            Some(name) => println!("{line}  [{name}]"),
+            None => println!("{line}"),
+        }
     }
     if shown < rows.len() {
         println!("\n{} more. Pass --limit <n>, or --all.", rows.len() - shown);

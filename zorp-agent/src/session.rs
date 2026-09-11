@@ -123,6 +123,13 @@ pub struct SessionRow {
     pub project_id: Option<String>,
 }
 
+/// The longest project name the store takes.
+///
+/// Here rather than beside either caller, because both surfaces enforce it
+/// and a limit that is written down twice is a limit that disagrees with
+/// itself the day one of them moves. A sidebar heading, not a description.
+pub const MAX_PROJECT_NAME: usize = 80;
+
 /// A stored project's row. A name a person typed, and when they typed it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectRow {
