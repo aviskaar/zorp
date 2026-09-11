@@ -12,6 +12,75 @@ was believed at the time and not only what survived.
 
 ---
 
+## 2026-09-10: the artifact skills are written to the pane's sandbox, and say which limits are walls
+
+**Decision:** `.claude/skills/artifact-design` and
+`.claude/skills/artifact-diagramming` are the first skills zorp ships with
+itself, and they are written around one fact about the pane rather than
+around general web taste: `zorp-web` serves `.html` and `.svg` under a bare
+`Content-Security-Policy: sandbox`, so the document sits in a unique origin
+with scripting off. `artifacts.rs` gives `allow-scripts` to a PDF and to
+nothing else, because the browser's own PDF viewer is a scripted document.
+`only_the_formats_that_execute_are_sandboxed` already pins that set.
+
+That is why the issue's suggestion of pinned UMD builds from a CDN is not
+taken. Chart.js, D3 and Plotly are scripts, so a page built that way renders
+as an empty box and nothing says why. Drawing the chart as SVG by hand is
+the only option, which is what makes `artifact-diagramming` load-bearing
+rather than a nice-to-have.
+
+**A limit that is enforced and a limit that is a rule are said differently.**
+Scripts really do not run, and the skill says so flatly. External
+stylesheets, fonts and images are a different case: `sandbox` is a document
+directive and does not restrict which URLs a page may load, so ruling them
+out is a house rule and the skill says that too. Its reasons are the honest
+ones: the page is read with no network, it is copied out of the workspace,
+and a file a model wrote should not tell a third party that somebody opened
+it. A skill that dressed a preference up as a mechanism would be believed
+about the mechanism, and the next person to check would find the opposite.
+
+**Where they live is also what they cover.** They sit in this repository's
+own `.claude/skills`, so they are discoverable for work in this checkout.
+Somebody who wants them in another workspace copies them to
+`~/.claude/skills` or points `ZORP_SKILLS_DIR` at them; zorp has no built-in
+scope and this does not add one.
+
+---
+
+## 2026-09-10: three surfaces report what skills are installed, and none of them loads one
+
+**This extends 2026-08-18 ("skills are read, and a skill body grants
+nothing").** Nothing in that entry is withdrawn.
+
+**Decision:** `zorp` core, `zorp-agent`'s chat REPL and `zorp-web` can each
+say what skills are installed. `zorp --skills` and `zorp --skill <name>
+<prompt>` list and apply one, `/skills` in the REPL prints the same index the
+model is shown, and `GET /api/skills` answers with names, descriptions, paths
+and scopes while `GET /api/capabilities` reports a count. All three read the
+scopes through `zorp_skill::scope_dirs_from_env` rather than re-deriving
+them, so the list a person is shown is the list the agent would register.
+
+**None of them loads a skill, and there must never be a route that does.**
+Loading is the `skill` tool, chosen by the model when the task matches a
+description and gated exactly as every other tool call is. A control that
+pastes a body into the composer would make untrusted text look like something
+the person wrote, which is the thing 2026-08-18 arranged against. That is why
+the issue's suggested composer slash command is deliberately absent, and why
+`zorp-web/tests/skills.rs` asserts `/api/skills/:name` and
+`/api/skills/:name/load` are 404 and that the listing carries no body.
+
+**In `zorp` core the body goes in front of the user's own words and never
+into the system prompt.** The system slot is the one channel the harness
+speaks in, and a `SKILL.md` is a file this binary did not write.
+
+**A skill's description is text somebody else wrote, so the page treats it
+like model output.** `skills-view.ts` builds no HTML strings, and a skill
+declaring `allowed-tools` says on the page that zorp does not grant them, so
+the gap between what a skill asks for and what it gets is visible rather than
+discovered.
+
+---
+
 ## 2026-09-10: the CLI stays line oriented, and the wins a full screen was for are line oriented too
 
 **Decision:** `zorp-agent chat` stays a line oriented REPL. No alternate

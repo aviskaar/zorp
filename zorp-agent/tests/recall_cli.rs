@@ -166,15 +166,18 @@ fn an_empty_query_is_refused() {
 /// Built without the feature, the subcommand is simply not there, and the
 /// crate has no `zorp-recall` in its dependency tree. The second half is
 /// checked by `cargo tree` in CI; this is the observable half.
+///
+/// It asks the help rather than running `recall anything`, because there is
+/// no subcommand to be unrecognized: a word clap does not know is the start
+/// of a prompt, so that would send a turn to whatever endpoint the machine
+/// happens to have. Green on a developer running Ollama and red on a runner
+/// that is not, which is the wrong way round for a test about a feature
+/// nobody compiled in.
 #[cfg(not(feature = "recall"))]
 #[test]
 fn without_the_feature_there_is_no_recall_subcommand() {
-    let out = run(&["recall", "anything"], &[]);
-    assert!(!out.status.success());
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("unrecognized subcommand")
-            || String::from_utf8_lossy(&out.stderr).contains("unexpected argument"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let out = run(&["--help"], &[]);
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(!help.contains("\n  recall"), "{help}");
 }

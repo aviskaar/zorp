@@ -45,6 +45,9 @@ voice = ["dep:zorp-voice"]
 
 [dependencies]
 zorp-agent = { path = "../zorp-agent" }
+# Discovery and parsing only. `zorp-web` lists what is installed; loading a
+# skill into a turn is still the agent's `skill` tool and nothing here.
+zorp-skill = { path = "../zorp-skill" }
 zorp-recall = { path = "../zorp-recall", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
 zorp-voice = { path = "../zorp-voice", optional = true }

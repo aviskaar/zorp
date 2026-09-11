@@ -805,6 +805,25 @@ fn fingerprint(title: &str, project: Option<&str>, chunks: &[Chunk]) -> String {
 
 /// The configured endpoint, checked, for anything that wants to report it
 /// without building an embedder.
+/// How a recalled line is attributed to the person reading it.
+///
+/// One function, because two surfaces say this: the `recall` subcommand's
+/// listing and the notices a `--recall` turn prints. An assistant line is a
+/// model's earlier output and is labelled as such everywhere it surfaces,
+/// and the way a rule like that stops being true is two copies of the
+/// sentence where only one of them gets updated.
+///
+/// The caller passes the answer rather than the raw field, because the two
+/// call sites spell it differently: a hit carries a role of `user`, a
+/// citation carries an author of `you`.
+pub fn attribution(is_user: bool) -> &'static str {
+    if is_user {
+        "you"
+    } else {
+        "the assistant, a model's earlier answer"
+    }
+}
+
 pub fn configured_endpoint() -> Result<LoopbackUrl, zorp_recall::LoopbackError> {
     let raw = std::env::var(zorp_recall::EMBED_URL_VAR)
         .ok()
@@ -815,6 +834,14 @@ pub fn configured_endpoint() -> Result<LoopbackUrl, zorp_recall::LoopbackError> 
 
 #[cfg(test)]
 mod tests {
+    /// The rule in `CLAUDE.md`: an assistant line says it is a model's
+    /// earlier output, everywhere it surfaces. Both surfaces read this.
+    #[test]
+    fn an_assistant_line_says_it_came_from_a_model() {
+        assert_eq!(super::attribution(true), "you");
+        assert!(super::attribution(false).contains("a model's earlier answer"));
+    }
+
     use super::*;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

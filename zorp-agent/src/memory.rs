@@ -312,7 +312,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zorp_agent::{Policy, Preset, ToolCall};
+    use crate::{Policy, Preset, ToolCall};
 
     fn passage(role: &str, text: &str, score: f32) -> Passage {
         Passage {
@@ -483,7 +483,7 @@ mod tests {
             0.99,
         )]);
 
-        assert!(matches!(before, zorp_agent::Decision::Deny(_)));
+        assert!(matches!(before, crate::Decision::Deny(_)));
         assert_eq!(policy.decide(&call), before);
         // And the model is told so in the same message it reads the
         // payload in.
