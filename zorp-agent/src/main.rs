@@ -174,6 +174,28 @@ enum Command {
     Diff,
     /// Scaffold a new flavor manifest at ./.zorp/flavors/<name>.toml.
     New { name: String },
+    /// Review one piece of material with several reviewers at once.
+    ///
+    /// Each reads it from a different code-defined angle, none sees what
+    /// the others said, and the agreement between them is counted in code
+    /// afterwards. Reviewers get a read-only tool set and cannot change
+    /// what they are reviewing.
+    Panel {
+        /// The file to review. With none, reads stdin.
+        path: Option<PathBuf>,
+        /// A short name for the material, carried into the report.
+        #[arg(long)]
+        label: Option<String>,
+        /// Which lenses to run, by name. Repeatable. Defaults to all.
+        #[arg(long = "lens")]
+        lenses: Vec<String>,
+        /// List the lenses and exit.
+        #[arg(long)]
+        list_lenses: bool,
+        /// Print each reviewer's whole answer rather than a preview.
+        #[arg(long)]
+        full: bool,
+    },
     /// Show the effective configuration and where each value came from, or
     /// change what is saved.
     ///
@@ -298,6 +320,13 @@ fn main() {
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         Some(Command::New { name }) => scaffold(&name),
+        Some(Command::Panel {
+            path,
+            label,
+            lenses,
+            list_lenses,
+            full,
+        }) => panel_command(path, label, lenses, list_lenses, full, &overrides),
         Some(Command::Config { action }) => config(action, &overrides),
         Some(Command::Projects { action }) => projects(action),
         Some(Command::Doctor) => doctor(&overrides),
@@ -492,6 +521,189 @@ fn scaffold(name: &str) {
         std::process::exit(1);
     }
     println!("created {}", path.display());
+}
+
+/// The lenses somebody asked for, or all of them.
+///
+/// An unrecognized name falls back to the whole panel rather than to an
+/// empty one, because a panel of nobody is five confident answers about
+/// nothing that still cost five requests. The names that were not
+/// recognized are reported so a typo is visible.
+fn resolve_lenses(requested: &[String], out: &mut dyn Renderer) -> Vec<zorp_agent::Lens> {
+    let all = zorp_agent::default_lenses();
+    if requested.is_empty() {
+        return all;
+    }
+    let unknown: Vec<&String> = requested
+        .iter()
+        .filter(|r| !all.iter().any(|l| &l.name == *r))
+        .collect();
+    for name in &unknown {
+        out.notice(&format!("no lens called '{name}'"));
+    }
+    let chosen: Vec<zorp_agent::Lens> = all
+        .iter()
+        .filter(|l| requested.iter().any(|r| r == &l.name))
+        .cloned()
+        .collect();
+    if chosen.is_empty() {
+        out.notice("running the whole panel instead");
+        return all;
+    }
+    chosen
+}
+
+/// Tell the terminal which reviewers have started and finished.
+///
+/// A panel takes a while and its whole point is that several things are
+/// happening at once, so a caller that can only see the finished report has
+/// nothing to show for the first minute. Called from several reviewer
+/// threads, hence the mutex around the renderer.
+struct TerminalPanelObserver(std::sync::Mutex<Box<dyn Renderer>>);
+
+impl zorp_agent::PanelObserver for TerminalPanelObserver {
+    fn reviewer_started(&self, lens: &str) {
+        if let Ok(mut out) = self.0.lock() {
+            out.notice(&format!("  {lens}: reading"));
+        }
+    }
+
+    fn reviewer_finished(&self, verdict: &zorp_agent::ReviewerVerdict) {
+        if let Ok(mut out) = self.0.lock() {
+            out.notice(&format!(
+                "  {}: {} finding{}",
+                verdict.lens,
+                verdict.findings.len(),
+                if verdict.findings.len() == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    fn reviewer_failed(&self, lens: &str, why: &str) {
+        if let Ok(mut out) = self.0.lock() {
+            out.notice(&format!("  {lens}: failed, {why}"));
+        }
+    }
+}
+
+/// `zorp-agent panel`.
+///
+/// A person types this, which is the same bound the browser's button has:
+/// one launch, one panel, a fixed number of reviewers, none of which has a
+/// panel of its own. There is no tool that reaches this and there must
+/// never be one.
+fn panel_command(
+    path: Option<PathBuf>,
+    label: Option<String>,
+    lenses: Vec<String>,
+    list_lenses: bool,
+    full: bool,
+    overrides: &Overrides,
+) {
+    let color = std::io::stderr().is_terminal();
+    let mut out = LineRenderer::new(std::io::stderr(), color);
+
+    if list_lenses {
+        for lens in zorp_agent::default_lenses() {
+            println!("{}: {}", lens.name, lens.instruction);
+        }
+        return;
+    }
+
+    let (label, body) = match &path {
+        Some(path) => {
+            let body = std::fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("zorp-agent: cannot read {}: {e}", path.display());
+                std::process::exit(2);
+            });
+            (label.unwrap_or_else(|| path.display().to_string()), body)
+        }
+        None => {
+            let mut body = String::new();
+            use std::io::Read as _;
+            if std::io::stdin().read_to_string(&mut body).is_err() {
+                eprintln!("zorp-agent: could not read stdin");
+                std::process::exit(2);
+            }
+            (label.unwrap_or_else(|| "stdin".to_string()), body)
+        }
+    };
+
+    // Five reviewers asked to review nothing produce five confident answers
+    // about nothing, which costs five requests and reads exactly like a
+    // real panel.
+    if body.trim().is_empty() {
+        eprintln!("zorp-agent: nothing to review: the material is empty");
+        std::process::exit(2);
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let merged = user_flavor.merge(project_flavor);
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+    if model_name.is_empty() {
+        eprintln!("zorp-agent: no model set. Use --model, ZORP_MODEL, or a flavor.");
+        std::process::exit(2);
+    }
+    let model = HttpModel {
+        url: zorp_agent::join_url(&base_url, provider.path_suffix()),
+        api_key: std::env::var("ZORP_API_KEY").ok().filter(|k| !k.is_empty()),
+        model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
+    }
+    .try_with_env_reasoning_mode(None)
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}");
+        std::process::exit(2);
+    });
+
+    let config = zorp_agent::PanelConfig {
+        lenses: resolve_lenses(&lenses, &mut out),
+        ..zorp_agent::PanelConfig::default()
+    };
+    let target = zorp_agent::Target {
+        label: label.clone(),
+        body,
+    };
+    out.notice(&format!(
+        "panel on {label}: {} reviewers",
+        config.lenses.len()
+    ));
+
+    let cancel = install_cancel();
+    let observer = TerminalPanelObserver(std::sync::Mutex::new(Box::new(LineRenderer::new(
+        std::io::stderr(),
+        color,
+    ))));
+    // `AutoApprove` is not a loosening here. Reviewers get a read-only tool
+    // set and no tool in it is approval gated, so there is nothing for a
+    // human to approve and nothing for a prompt to park on. The allow list
+    // in `zorp_agent::panel` is what does the work, and the caller's own
+    // `--yes` never reaches a reviewer: this is a fixed value, not the
+    // approval mode this command was invoked with.
+    let report = zorp_agent::panel::run(
+        &model,
+        &target,
+        &config,
+        cwd,
+        cancel,
+        ApprovalMode::AutoApprove,
+        &observer,
+    );
+
+    for line in zorp_agent::panel::report_lines(&report, full) {
+        println!("{line}");
+    }
+    // A panel that could not finish is not a panel whose numbers mean what
+    // they look like, so it is worth an exit code too.
+    if !report.is_complete() {
+        std::process::exit(1);
+    }
 }
 
 /// `zorp-agent config`, and its three actions.
@@ -2223,6 +2435,7 @@ const HELP: &str = "\
 /reasoning           show the active session reasoning mode
 /reasoning <mode>    set reasoning mode for future turns in this session
 /branch [n]          fork this conversation at answer n (default: the latest)
+/panel [path]        review the last answer, or a file, with several reviewers at once
 /project             say which project this conversation is in
 /project <name>      file it under that project, or `none` to take it out
 /capsules            list available and loaded capsules
@@ -2988,6 +3201,48 @@ fn handle_chat_command(
                             }
                         }
                     }
+                }
+            }
+        }
+        ChatCommand::Panel(path) => {
+            // The last answer by default, because that is what a person in
+            // a conversation means by "review this". A path reviews the
+            // file instead.
+            let material = match &path {
+                Some(path) => std::fs::read_to_string(path)
+                    .map(|body| (path.clone(), body))
+                    .map_err(|e| format!("cannot read {path}: {e}")),
+                None => agent
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "assistant" && !m.text().trim().is_empty())
+                    .map(|m| ("the last answer".to_string(), m.text().into_owned()))
+                    .ok_or_else(|| "this conversation has no answer to review yet".to_string()),
+            };
+            match material {
+                Err(why) => out.notice(&why),
+                Ok((label, body)) => {
+                    let config = zorp_agent::PanelConfig::default();
+                    out.notice(&format!(
+                        "panel on {label}: {} reviewers",
+                        config.lenses.len()
+                    ));
+                    // A reviewer gets strictly less than the panel that
+                    // launched it: a read-only allow list, and never this
+                    // session's approval mode. `AutoApprove` is a fixed
+                    // value here and not the caller's, because there is
+                    // nothing approval gated in that tool set to approve.
+                    let report = zorp_agent::panel::run(
+                        agent.model().clone_box().as_ref(),
+                        &zorp_agent::Target { label, body },
+                        &config,
+                        cwd.to_path_buf(),
+                        cancel_token(),
+                        ApprovalMode::AutoApprove,
+                        &zorp_agent::SilentObserver,
+                    );
+                    out.notice(&zorp_agent::panel::report_lines(&report, false).join("\n"));
                 }
             }
         }

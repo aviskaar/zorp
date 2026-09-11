@@ -441,6 +441,13 @@ fn read_body(
             let since_last_byte = Instant::now();
             let read = match reader.read(&mut chunk) {
                 Ok(read) => read,
+                // A signal interrupted the read. POSIX says ask again, and
+                // `std` does that for `read_to_end` but not for a bare
+                // `read`, so left alone a stray signal on a loaded machine
+                // ends a healthy answer with "Interrupted system call".
+                // Round the loop rather than retrying in place, so a stop
+                // raised in the meantime is still seen between reads.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return delivery.failed(e, since_last_byte.elapsed()),
             };
             if read == 0 {
@@ -489,6 +496,9 @@ fn read_body(
         let since_last_byte = Instant::now();
         let read = match reader.read(&mut buf) {
             Ok(read) => read,
+            // The same interrupt, on the streaming path. See the buffered
+            // read above.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return delivery.failed(e, since_last_byte.elapsed()),
         };
         if read == 0 {
