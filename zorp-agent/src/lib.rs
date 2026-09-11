@@ -87,8 +87,8 @@ pub use model::{
     ModelCompletion, ToolCall,
 };
 pub use panel::{
-    default_lenses, reviewer_tools, Agreement, Lens, PanelConfig, PanelFinding, PanelObserver,
-    PanelReport, ReviewerVerdict, Target,
+    default_lenses, report_lines, reviewer_tools, Agreement, Lens, PanelConfig, PanelFinding,
+    PanelObserver, PanelReport, ReviewerFailure, ReviewerVerdict, SilentObserver, Target,
 };
 pub use policy::{Decision, Policy, Preset};
 pub use provider::Provider;

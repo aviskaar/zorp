@@ -37,6 +37,11 @@ pub enum ChatCommand {
     /// Search your own conversations. A person reading their own history;
     /// the model gets nothing from this.
     Recall(String),
+    /// Review this conversation's last answer with the panel.
+    ///
+    /// With a path, reviews that file instead. A person types this, which
+    /// is the same bound the browser's button has.
+    Panel(Option<String>),
     /// Say which project this conversation is in, or file it in one.
     ///
     /// `/project` reports, `/project <name or id>` files, and
@@ -110,6 +115,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
             },
         },
         "recall" => ChatCommand::Recall(remainder.to_string()),
+        "panel" => ChatCommand::Panel((!remainder.is_empty()).then(|| remainder.to_string())),
         "project" => ChatCommand::Project((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,
         "skills" => ChatCommand::Skills,
