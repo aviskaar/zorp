@@ -26,6 +26,8 @@ pub enum ChatCommand {
     Exit,
     Tools,
     Reasoning(ReasoningCommand),
+    /// The same report `zorp-agent doctor` prints.
+    Doctor,
     /// Fork the conversation you are in at one of its answers.
     ///
     /// The browser's button is per answer because the page has the answers
@@ -84,6 +86,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
         "tools" | "commands" => ChatCommand::Tools,
+        "doctor" => ChatCommand::Doctor,
         "branch" => match remainder {
             "" => ChatCommand::Branch(None),
             n => match n.parse::<usize>() {

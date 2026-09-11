@@ -573,6 +573,26 @@ resulting artifact, deliver it in the right form.
   surfaces already read. `workspace` is written there and is the browser's
   alone. The old `web.toml` is still read and never written. See
   `docs/DECISIONS.md` (2026-09-10).
+- `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
+  do and whether it can reach anything: which features `cfg!` reports, the
+  resolved endpoint, provider and model, whether an API key is set, whether
+  the endpoint answered, where the state files are, and the registered
+  tools. `/doctor` in the chat REPL prints the same report from the same
+  function. Exit code is 0 when everything checked was fine and 1 otherwise,
+  so it works in a script. Two rules are not negotiable. **Nothing here
+  prints a secret**: a key is reported as set or not set, never its value,
+  never a prefix, never its length, and a test greps the whole report to
+  prove it, because this is the thing people paste into bug reports. And a
+  probe goes where the real path goes, the same resolved endpoint, because a
+  doctor that reached a URL the real feature would refuse would report
+  healthy on the one configuration that cannot work. It builds its own HTTP
+  agent rather than reusing `zorp::http_agent`, whose read timeout is 900
+  seconds because it is for answers a model is still writing: a diagnostic
+  that hangs for fifteen minutes is worse than one that says it could not
+  tell, so this one waits ten, the way `zorp-web`'s settings probes and
+  `zorp-search` each build and bound their own. A feature that is off is
+  reported and never counted as a failure, or every default build would exit
+  non-zero.
 - The terminal is line oriented and stays that way. No alternate screen, no
   panes, no `ratatui`: a full screen mode would cost piping, scrollback,
   selection and screen reader support, and every win it was supposed to buy
