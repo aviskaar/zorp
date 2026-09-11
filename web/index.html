@@ -321,6 +321,34 @@
             <span id="search-indicator-text"></span>
           </div>
           <!--
+            How many skills this server can see. A button, unlike the search
+            pill beside it, because there is something to read behind it:
+            the names and descriptions of what is installed. It is still a
+            report and not a switch. Nothing here loads a skill; the agent's
+            `skill` tool does that when the task matches, gated exactly as
+            every other tool call is. The wording comes from
+            web/src/skills-view.ts.
+          -->
+          <div class="skills-indicator" id="skills-indicator" hidden>
+            <button
+              class="skills-btn"
+              id="skills-btn"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="skills-panel"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h11l5 5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" />
+                <path d="M15 5v5h5" />
+                <path d="M7 13h8M7 16h5" />
+              </svg>
+              <span>Skills</span>
+              <span class="skills-count" id="skills-count"></span>
+            </button>
+            <div class="skills-panel" id="skills-panel" role="dialog" aria-label="Installed skills" hidden></div>
+          </div>
+          <!--
             The approval mode, shown as state rather than as an action, the
             same way the model pill is. It is in the toolbar and not buried in
             settings because a session that has stopped asking has to say so

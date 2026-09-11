@@ -1317,14 +1317,18 @@ fn ensemble(instruction: &str, auto_approve: bool, no_verify: bool, overrides: &
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     // The roster names every model this subcommand ever uses, so the base
     // URL is all this needs from resolve_host_and_model's job. Calling it
-    // for that alone would call `pick` for a model name too, and an empty
-    // one against the default Ollama URL walks into an interactive model
+    // for that alone would resolve a model name too, and an empty one
+    // against the default Ollama URL walks into an interactive model
     // picker that blocks on stdin, a prompt --yes does not skip and whose
     // answer would be thrown away regardless.
-    let base_url = pick(
+    let base_url = pick_with(
         overrides.base_url.as_deref(),
         "ZORP_BASE_URL",
         merged.base_url.as_deref(),
+        zorp_agent::config::load()
+            .unwrap_or_default()
+            .base_url
+            .as_deref(),
         "http://localhost:11434/v1",
     );
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
@@ -2074,6 +2078,7 @@ const HELP: &str = "\
 /reasoning <mode>    set reasoning mode for future turns in this session
 /branch [n]          fork this conversation at answer n (default: the latest)
 /capsules            list available and loaded capsules
+/skills              list the skills the model can load
 /load <name>         load a capsule
 /unload <name>       unload a capsule
 /<capsule_name> [text]  load a capsule (if needed) and optionally send a prompt through it
@@ -2716,6 +2721,30 @@ fn handle_chat_command(
             }
         }
         ChatCommand::Capsules => out.notice(&capsules.list_display()),
+        ChatCommand::Skills => {
+            // Read from disk now rather than from whatever was discovered
+            // when the session started: a skill can be added to a directory
+            // while the REPL is sitting there, and the next turn would see
+            // it. Reporting a stale list would be worse than reporting
+            // none.
+            let scopes = zorp_skill::scope_dirs_from_env(cwd);
+            let (registry, warnings) = zorp_skill::SkillRegistry::discover(&scopes);
+            for warning in &warnings {
+                out.notice(warning);
+            }
+            if registry.is_empty() {
+                out.notice(
+                    "no skills found. Put a directory holding a SKILL.md under \
+                     ~/.claude/skills, under .claude/skills here, or wherever \
+                     ZORP_SKILLS_DIR points.",
+                );
+            } else {
+                // The same index the model is shown in the `skill` tool's
+                // description, so what a person reads here is what the
+                // model has to choose from.
+                out.notice(&registry.index());
+            }
+        }
         ChatCommand::LoadCapsule(name) => {
             if name.is_empty() {
                 out.notice("usage: /load <capsule_name>");
