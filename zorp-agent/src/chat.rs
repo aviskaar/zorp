@@ -26,6 +26,8 @@ pub enum ChatCommand {
     Exit,
     Tools,
     Reasoning(ReasoningCommand),
+    /// The same report `zorp-agent doctor` prints.
+    Doctor,
     /// Fork the conversation you are in at one of its answers.
     ///
     /// The browser's button is per answer because the page has the answers
@@ -38,6 +40,13 @@ pub enum ChatCommand {
     /// is the same bound the browser's button has.
     Panel(Option<String>),
     Capsules,
+    /// List the skills this session can see.
+    ///
+    /// A reader, not a loader. Loading a skill is the `skill` tool, which
+    /// the model calls when the task matches a description, gated exactly
+    /// as every other tool call is. A person typing this wants to know what
+    /// the model has to choose from.
+    Skills,
     LoadCapsule(String),
     UnloadCapsule(String),
     InvokeCapsule {
@@ -89,6 +98,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
         "tools" | "commands" => ChatCommand::Tools,
+        "doctor" => ChatCommand::Doctor,
         "branch" => match remainder {
             "" => ChatCommand::Branch(None),
             n => match n.parse::<usize>() {
@@ -98,6 +108,7 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         },
         "panel" => ChatCommand::Panel((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,
+        "skills" => ChatCommand::Skills,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),
         "capsule-create" => {
@@ -140,6 +151,18 @@ mod tests {
         assert_eq!(parse_command("/approve", &[]), ChatCommand::Approve);
         assert_eq!(parse_command("/tools", &[]), ChatCommand::Tools);
         assert_eq!(parse_command("/deny", &[]), ChatCommand::Deny);
+    }
+
+    /// A capsule cannot shadow it, the way no capsule can shadow any
+    /// built-in.
+    #[test]
+    fn skills_is_a_builtin_a_capsule_cannot_take() {
+        assert_eq!(parse_command("/skills", &[]), ChatCommand::Skills);
+        assert_eq!(parse_command("/SKILLS", &[]), ChatCommand::Skills);
+        assert_eq!(
+            parse_command("/skills", &["skills".to_string()]),
+            ChatCommand::Skills
+        );
     }
 
     /// The number is optional because a terminal cannot see the answers to
