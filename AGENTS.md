@@ -596,6 +596,19 @@ resulting artifact, deliver it in the right form.
   prove that too. See
   `docs/DECISIONS.md` (2026-08-23, 2026-09-04, 2026-09-05) before changing
   any of it.
+- One settings file, `zorp-agent/src/config.rs`, read and written by both
+  surfaces: provider, base URL, model and max tokens. `zorp-web` re-exports
+  it under the names it already used. `zorp-agent config` prints the
+  effective configuration and where each value came from, and
+  `zorp-agent config set` writes it, so configuring zorp never requires a
+  browser. The chain is flag, environment variable, flavor, saved file,
+  default: the file is the new step and it sits below the flavor so nothing
+  that used to win stops winning. **The API key is not in that file and
+  there is no field for it**, so there is nothing on the struct to
+  serialize a secret through; it stays in `ZORP_API_KEY`, which both
+  surfaces already read. `workspace` is written there and is the browser's
+  alone. The old `web.toml` is still read and never written. See
+  `docs/DECISIONS.md` (2026-09-10).
 - `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
   do and whether it can reach anything: which features `cfg!` reports, the
   resolved endpoint, provider and model, whether an API key is set, whether

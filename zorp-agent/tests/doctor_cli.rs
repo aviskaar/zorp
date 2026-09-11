@@ -75,6 +75,10 @@ struct Run {
     code: Option<i32>,
 }
 
+/// The config home is the temp directory too, and the two path variables
+/// are cleared. The saved settings file is a step in the resolution chain
+/// the doctor reports on, so without this a developer who has ever run
+/// `zorp-agent config set` is testing their own settings.
 fn doctor(base: &str, key: Option<&str>) -> Run {
     let dir = tempfile::tempdir().unwrap();
     let mut command = Command::new(bin());
@@ -84,6 +88,9 @@ fn doctor(base: &str, key: Option<&str>) -> Run {
         .env("ZORP_MODEL", "demo")
         .env("ZORP_STATE_DB", dir.path().join("s.db"))
         .env("ZORP_TRUST_FILE", dir.path().join("trust"))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("ZORP_CONFIG")
+        .env_remove("ZORP_WEB_CONFIG")
         .env_remove("ZORP_API_KEY");
     if let Some(key) = key {
         command.env("ZORP_API_KEY", key);
@@ -164,6 +171,9 @@ fn the_report_says_where_the_state_files_are() {
         .env("ZORP_MODEL", "demo")
         .env("ZORP_STATE_DB", &db)
         .env("ZORP_TRUST_FILE", dir.path().join("trust"))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("ZORP_CONFIG")
+        .env_remove("ZORP_WEB_CONFIG")
         .env_remove("ZORP_API_KEY")
         .output()
         .unwrap();
@@ -195,6 +205,9 @@ fn no_model_configured_is_a_fault() {
         .env("ZORP_MODEL", "")
         .env("ZORP_STATE_DB", dir.path().join("s.db"))
         .env("ZORP_TRUST_FILE", dir.path().join("trust"))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("ZORP_CONFIG")
+        .env_remove("ZORP_WEB_CONFIG")
         .env_remove("ZORP_API_KEY")
         .output()
         .unwrap();
