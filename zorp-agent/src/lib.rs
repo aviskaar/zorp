@@ -9,6 +9,7 @@ mod chat;
 #[cfg(feature = "research")]
 pub mod co_write;
 pub mod compaction;
+pub mod config;
 mod context;
 pub mod context_window;
 #[cfg(feature = "research")]
