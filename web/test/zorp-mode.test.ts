@@ -20,14 +20,42 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import type { InvestigateDoneEvent, Ledger } from "../src/api.ts";
-import { forecastLine, verdictLine, ZorpModeView } from "../src/zorp-mode.ts";
+import type { InvestigateDoneEvent, InvestigateProgressEvent, Ledger } from "../src/api.ts";
+import { forecastLine, phaseLine, verdictLine, ZorpModeView } from "../src/zorp-mode.ts";
 
 function page(): { view: ZorpModeView; transcript: HTMLElement; doc: Document } {
   const dom = new JSDOM("<!doctype html><div id='transcript'></div>");
   const doc = dom.window.document;
   const transcript = doc.getElementById("transcript") as HTMLElement;
   return { view: new ZorpModeView(doc, transcript), transcript, doc };
+}
+
+/** A page whose controls record what they were asked to do. */
+function controlled(): {
+  view: ZorpModeView;
+  transcript: HTMLElement;
+  doc: Document;
+  pressed: string[];
+} {
+  const dom = new JSDOM("<!doctype html><div id='transcript'></div>");
+  const doc = dom.window.document;
+  const transcript = doc.getElementById("transcript") as HTMLElement;
+  const pressed: string[] = [];
+  const view = new ZorpModeView(doc, transcript, {
+    stopAfter: () => pressed.push("stop-after"),
+    refresh: () => pressed.push("refresh"),
+  });
+  return { view, transcript, doc, pressed };
+}
+
+function progress(over: Partial<InvestigateProgressEvent> = {}): InvestigateProgressEvent {
+  return {
+    seq: 1,
+    type: "investigate_progress",
+    track_id: "2026-08-21-does-caching-help",
+    phase: "attempt-started",
+    ...over,
+  } as InvestigateProgressEvent;
 }
 
 function done(over: Partial<InvestigateDoneEvent> = {}): InvestigateDoneEvent {
@@ -48,6 +76,19 @@ function ledger(over: Partial<Ledger> = {}): Ledger {
     experiments: [],
     ...over,
   };
+}
+
+/** A ledger holding `n` attempts, for the live replace-not-stack case. */
+function ledgerWith(n: number): Ledger {
+  return ledger({
+    experiments: Array.from({ length: n }, (_, i) => ({
+      id: `exp-${i + 1}`,
+      status: "completed",
+      conditions: [],
+      expectations: [],
+      metrics: [],
+    })),
+  });
 }
 
 test("the closing frame opens a block naming the track", () => {
@@ -207,4 +248,101 @@ test("a ledger shown after the block closed still reaches the page", () => {
   view.close();
   view.showLedger(ledger({ present: true }));
   assert.equal(transcript.querySelectorAll(".card-zorp").length, 1);
+});
+
+/*
+ * A run in progress.
+ *
+ * The point of these frames is that a run is several whole agent runs back
+ * to back and used to draw nothing until the verdict. A person watching had
+ * no way to tell a long attempt from a hung one, and nothing to press.
+ */
+
+test("a progress frame opens the block before anything has finished", () => {
+  const { view, transcript } = page();
+  view.progress(progress({ phase: "attempt-started", attempt: 1, of: 3 }));
+  const block = transcript.querySelector(".card-zorp") as HTMLElement;
+  assert.ok(block, "the block has to exist while the run is going, not after it");
+  assert.equal(block.dataset.running, "true");
+  assert.match(block.textContent ?? "", /2026-08-21-does-caching-help/);
+});
+
+test("the attempts a run said it would make are all drawn, not just the ones that landed", () => {
+  const { view, transcript } = page();
+  view.progress(progress({ phase: "attempt-started", attempt: 1, of: 3 }));
+  const rows = transcript.querySelectorAll(".zorp-attempt");
+  assert.equal(rows.length, 3, "how many attempts there were is part of the claim");
+  assert.equal((rows[0] as HTMLElement).dataset.state, "running");
+  assert.equal((rows[1] as HTMLElement).dataset.state, "queued");
+});
+
+test("an attempt that finished is marked off and the next one takes over", () => {
+  const { view, transcript } = page();
+  view.progress(progress({ phase: "attempt-started", attempt: 1, of: 2 }));
+  view.progress(progress({ phase: "attempt-finished", attempt: 1, of: 2 }));
+  view.progress(progress({ phase: "attempt-started", attempt: 2, of: 2 }));
+  const rows = transcript.querySelectorAll(".zorp-attempt");
+  assert.equal((rows[0] as HTMLElement).dataset.state, "done");
+  assert.equal((rows[1] as HTMLElement).dataset.state, "running");
+});
+
+test("every phase says something a reader can act on", () => {
+  assert.match(phaseLine(progress({ phase: "prereg" })), /cannot be changed/);
+  assert.match(phaseLine(progress({ phase: "attempt-started", attempt: 2, of: 3 })), /2 of 3/);
+  assert.match(phaseLine(progress({ phase: "write-up" })), /Writing the track up/);
+  assert.match(phaseLine(progress({ phase: "critique" })), /Auditing the draft/);
+});
+
+test("a live ledger replaces the last one rather than stacking under it", () => {
+  const { view, transcript } = page();
+  view.progress(progress({ phase: "attempt-started", attempt: 1, of: 2 }));
+  view.progress(
+    progress({ phase: "attempt-finished", attempt: 1, of: 2, ledger: ledgerWith(1) }),
+  );
+  view.progress(
+    progress({ phase: "attempt-finished", attempt: 2, of: 2, ledger: ledgerWith(2) }),
+  );
+  assert.equal(
+    transcript.querySelectorAll(".zorp-ledger").length,
+    1,
+    "three stacked ledgers is three answers to one question",
+  );
+  assert.equal(transcript.querySelectorAll(".zorp-experiment").length, 2);
+});
+
+test("stopping after an attempt is offered while a run goes and gone once it ends", () => {
+  const { view, transcript, pressed } = controlled();
+  view.progress(progress({ phase: "attempt-started", attempt: 1, of: 3 }));
+  const stop = transcript.querySelector(".zorp-controls button") as HTMLButtonElement;
+  assert.match(stop.textContent ?? "", /Stop after this attempt/);
+  stop.dispatchEvent(new (transcript.ownerDocument.defaultView as any).MouseEvent("click"));
+  assert.deepEqual(pressed, ["stop-after"]);
+  assert.equal(stop.disabled, true, "there is no way to take it back");
+
+  view.done(done());
+  assert.equal(
+    transcript.querySelector(".zorp-control")?.textContent,
+    "Refresh ledger",
+    "nothing is left to stop once the run is over",
+  );
+});
+
+test("refreshing the ledger is hidden while a run holds the record open", () => {
+  const { view, transcript } = controlled();
+  view.progress(progress({ phase: "attempt-started", attempt: 1, of: 1 }));
+  const buttons = Array.from(
+    transcript.querySelectorAll<HTMLButtonElement>(".zorp-control"),
+  );
+  const refresh = buttons.find((b) => b.textContent === "Refresh ledger");
+  assert.ok(refresh, "the button exists");
+  assert.equal(refresh?.hidden, true, "the read would be refused while a run is going");
+});
+
+test("a run that ended stops calling itself running", () => {
+  const { view, transcript } = page();
+  view.progress(progress({ phase: "write-up" }));
+  view.done(done());
+  const block = transcript.querySelector(".card-zorp") as HTMLElement;
+  assert.equal(block.dataset.running, undefined);
+  assert.equal(transcript.querySelector(".zorp-phase"), null, "the run is not doing anything now");
 });

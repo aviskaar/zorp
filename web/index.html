@@ -577,6 +577,33 @@
             Hidden until the server says it can do this: it is off unless
             the server was built with the `memory` feature.
           -->
+          <!--
+            Ask at every research checkpoint instead of approving them all.
+
+            It starts unticked and stays where it is put for as long as the
+            page is open, which is the opposite of the memory box below and
+            deliberately so. Leaving that one on silently widens what a
+            model sees; leaving this one on only asks more questions, and
+            somebody who ticked it wants to supervise the session rather
+            than one press. It is sent with the run and saved nowhere.
+
+            Ticking it is a promise to be watching for the next few
+            minutes: a checkpoint parks the run until somebody answers, and
+            five minutes of silence ends the run rather than approving or
+            rejecting anything, because a rejection kills the track and
+            nobody answering is not the same fact as somebody saying no.
+
+            It is recorded either way. `checkpoint_mode` is one of the
+            conditions every attempt writes, so the ledger says whether a
+            person was in the loop for this attempt or not.
+
+            Hidden until the server says it can run an attempt at all.
+          -->
+          <label class="composer-checkpoints" id="composer-checkpoints" hidden>
+            <input id="ask-checkpoints" type="checkbox" />
+            <span>Ask me at each research checkpoint</span>
+          </label>
+
           <label class="composer-memory" id="composer-memory" hidden>
             <input id="use-memory" type="checkbox" />
             <span>Recall earlier conversations for this message</span>

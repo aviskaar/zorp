@@ -78,6 +78,72 @@ impl From<&crate::memory::Citation> for MemoryCitationFrame {
     }
 }
 
+/// One input an attempt was recorded as having run under.
+///
+/// The value is flattened to a string for display. The ledger view puts
+/// it on the page and does nothing else with it, so the type it was
+/// stored under buys the reader nothing here.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConditionFrame {
+    pub key: String,
+    pub value: String,
+}
+
+/// One forecast, as recorded before the attempt ran.
+///
+/// `assumptions` is missing on purpose. It is the one model-authored
+/// text column on this table, and the way to keep integrity rules 5 and
+/// 7 easy to check is for no read path to name it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExpectationFrame {
+    pub metric_key: String,
+    pub expected_value: f64,
+    pub interval_low: f64,
+    pub interval_high: f64,
+    pub confidence: f64,
+}
+
+/// One recorded outcome.
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricFrame {
+    pub key: String,
+    pub value: String,
+}
+
+/// One attempt, with what went in and what came out.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperimentFrame {
+    pub id: String,
+    pub status: String,
+    pub conditions: Vec<ConditionFrame>,
+    pub expectations: Vec<ExpectationFrame>,
+    pub metrics: Vec<MetricFrame>,
+}
+
+/// A track's whole recorded ledger, as the browser reads it back.
+///
+/// `present` is not cosmetic. An empty ledger is the honest state for a
+/// record nobody has fed, and a missing run record is a different fact,
+/// so the page must be able to tell them apart.
+///
+/// `forecasting` says whether the server would ask for a forecast on the
+/// next attempt, which is what decides whether `expectations` can ever
+/// be non-empty. It is read from the server's environment and reported,
+/// never set from here: forecasting costs a model call on every attempt
+/// and stays off unless the person running the server said otherwise.
+///
+/// Declared here rather than beside the reader that fills it in, for the
+/// reason `InvestigateDone` is: these travel on the event stream now, so
+/// the browser bundle has to know the shape whatever this crate was
+/// built with. The conversions that produce one stay behind `research`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LedgerFrame {
+    pub track_id: String,
+    pub present: bool,
+    pub forecasting: bool,
+    pub experiments: Vec<ExperimentFrame>,
+}
+
 /// One frame on the SSE stream.
 ///
 /// `seq` is monotonic per session so a browser that reconnects can send
@@ -292,6 +358,58 @@ pub enum EventKind {
         /// page that goes stale the moment `critique` revises the file.
         #[serde(skip_serializing_if = "Option::is_none")]
         artifact: Option<String>,
+    },
+    /// A Zorp mode run reached a new stage, and here is where it is.
+    ///
+    /// Sent from the run thread as it goes, so the page can draw a run in
+    /// progress instead of two minutes of nothing followed by a verdict.
+    /// It carries no prose: the phase is one of a fixed set of names this
+    /// crate chooses, and the sentence a reader sees is the page's own.
+    /// The model's own account of what it is doing already streams as
+    /// `Assistant` text underneath.
+    ///
+    /// `ledger` is present only on `attempt-finished`, and it is there
+    /// rather than fetched because of a lock. `read_ledger` opens the
+    /// project, the run thread is already holding that lock, and a second
+    /// open would deadlock; the run thread reads through the handle it
+    /// has and sends the answer out. `GET /api/investigate/ledger` is
+    /// still the reader for a run that is over.
+    ///
+    /// Declared whatever this crate was built with, for the same reason
+    /// `InvestigateDone` is: the browser bundle is one artifact.
+    InvestigateProgress {
+        track_id: String,
+        /// `prereg`, `attempt-started`, `attempt-finished`, `write-up`,
+        /// `critique`. A closed set, matched on by the page.
+        phase: String,
+        /// Which attempt this is, 1-based, and how many the run will make.
+        /// Absent on the phases that are not an attempt.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attempt: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        of: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ledger: Option<LedgerFrame>,
+    },
+    /// A research checkpoint is waiting on a person.
+    ///
+    /// The track-granularity twin of `ApprovalRequest`, and a different
+    /// question: that one asks whether a tool call may run, this one asks
+    /// whether a track stays alive. Answering no kills it, which is why
+    /// the two are separate frames and separate cards rather than one
+    /// widget wearing two labels.
+    ///
+    /// `prompt` is composed in `zorp-track` out of the recorded metric,
+    /// the pre-registered threshold and the attempt's own summary, so it
+    /// holds model-authored text and the page draws it through
+    /// `textContent` like any other.
+    CheckpointRequest {
+        id: String,
+        /// Which checkpoint this is: `investigate-prereg` before the first
+        /// attempt, `investigate` after each one, and whatever `co_write`
+        /// and `critique` name theirs.
+        kind: String,
+        prompt: String,
     },
     /// This turn was told to look at earlier conversations, and here is
     /// exactly what it found.

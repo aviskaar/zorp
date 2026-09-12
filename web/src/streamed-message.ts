@@ -85,6 +85,14 @@ export function endsStreamedMessage(type: ZorpEventType): boolean {
     // finished rather than continued underneath it.
     case "investigate_done":
       return true;
+    // A progress frame and a checkpoint are both reader visible blocks in
+    // the Zorp mode card, so a message streaming before one is finished
+    // rather than continued underneath it. A checkpoint especially: it
+    // parks the run waiting for an answer, and text that resumed under it
+    // afterwards would read as part of the same thought.
+    case "investigate_progress":
+    case "checkpoint_request":
+      return true;
     // Compaction is a reader visible block that lands between a message
     // and its answer, so anything streaming before it is finished rather
     // than continued underneath the marker.

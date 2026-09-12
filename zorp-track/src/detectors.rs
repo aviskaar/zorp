@@ -318,7 +318,7 @@ mod tests {
     /// exactly how many times a kind was approved and how many rejected.
     struct Fixed(bool);
     impl Decider for Fixed {
-        fn decide(&self, _prompt: &str) -> bool {
+        fn decide(&self, _kind: &str, _prompt: &str) -> bool {
             self.0
         }
     }

@@ -30,6 +30,92 @@ const TOOL_NAME_MAX_BYTES: usize = 40;
 #[cfg(test)]
 type SafetyChecker = Arc<dyn Fn(&str, &str) -> Verdict + Send + Sync>;
 
+/// A yes or no that a blocked thread is waiting on a browser for.
+///
+/// The park-and-resolve half of an approval, with no opinion about what is
+/// being approved. `WebApprover` arms one per tool call, and `investigate`'s
+/// checkpoint decider arms one per checkpoint. Same mechanism, different
+/// question, and they are deliberately not the same slot: a tool approval
+/// asks whether a call may run, a checkpoint asks whether a track stays
+/// alive, and an answer landing on the wrong one would kill a track because
+/// somebody declined a `run_command`.
+#[derive(Default)]
+pub struct Gate {
+    pending: Mutex<Option<Sender<bool>>>,
+    inbox: Mutex<Option<Receiver<bool>>>,
+    /// Whether the answer the parked thread got came from a person.
+    ///
+    /// A tool approval does not need this: no and nobody-answered both
+    /// mean the call does not run. A checkpoint does, because no kills the
+    /// track and nobody-answered must not. `abandon` is the other half of
+    /// it, and the only way a parked thread is released without this
+    /// going up.
+    answered: AtomicBool,
+}
+
+impl Gate {
+    pub fn new() -> Self {
+        Gate::default()
+    }
+
+    /// Install the channel this gate will be answered on.
+    ///
+    /// Before the question goes out, never after, so an answer that comes
+    /// straight back has somewhere to land.
+    pub fn arm(&self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        *self.pending.lock().unwrap() = Some(tx);
+        *self.inbox.lock().unwrap() = Some(rx);
+        self.answered.store(false, Ordering::SeqCst);
+    }
+
+    /// Park the calling thread until somebody answers or the timeout runs
+    /// out. A gate that was never armed is not a gate anybody can answer,
+    /// so it reads as a denial rather than waiting.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let rx = self.inbox.lock().unwrap().take();
+        match rx {
+            Some(rx) => rx.recv_timeout(timeout).unwrap_or(false),
+            None => false,
+        }
+    }
+
+    /// Answer whatever is parked. Returns false when nothing is, which is
+    /// what a stale click from a reloaded page looks like.
+    pub fn resolve(&self, allow: bool) -> bool {
+        let taken = self.pending.lock().unwrap().take();
+        match taken {
+            Some(tx) => {
+                if tx.send(allow).is_err() {
+                    return false;
+                }
+                self.answered.store(true, Ordering::SeqCst);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Release the parked thread without calling it an answer.
+    ///
+    /// What a stop looks like from here. The thread has to come back or
+    /// the run never ends, but nobody decided anything, and `answered`
+    /// stays down so the caller can tell the two apart.
+    pub fn abandon(&self) -> bool {
+        let taken = self.pending.lock().unwrap().take();
+        match taken {
+            Some(tx) => tx.send(false).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Whether the last release was a person's answer. False after a
+    /// timeout and after `abandon`.
+    pub fn answered(&self) -> bool {
+        self.answered.load(Ordering::SeqCst)
+    }
+}
+
 /// Parks the agent thread until the browser answers.
 ///
 /// `confirm` is called on the agent's blocking thread, so waiting here is
@@ -45,8 +131,7 @@ pub struct WebApprover {
     /// Shared with the renderer so approval requests interleave correctly
     /// with activity in one ordered stream.
     seq: Arc<Mutex<u64>>,
-    pending: Arc<Mutex<Option<Sender<bool>>>>,
-    inbox: Arc<Mutex<Option<Receiver<bool>>>>,
+    gate: Gate,
     timeout: Duration,
     /// The session's standing answer, owned by `SessionState` and shared with
     /// every turn's approver so it survives from one turn to the next and can
@@ -79,8 +164,7 @@ impl WebApprover {
         WebApprover {
             events,
             seq,
-            pending: Arc::new(Mutex::new(None)),
-            inbox: Arc::new(Mutex::new(None)),
+            gate: Gate::new(),
             timeout: APPROVAL_TIMEOUT,
             auto_approve,
             settings,
@@ -114,11 +198,7 @@ impl WebApprover {
     /// nothing is pending, which is what a stale click from the browser looks
     /// like.
     pub fn resolve(&self, allow: bool) -> bool {
-        let taken = self.pending.lock().unwrap().take();
-        match taken {
-            Some(tx) => tx.send(allow).is_ok(),
-            None => false,
-        }
+        self.gate.resolve(allow)
     }
 
     /// Put one line in the transcript saying what the standing yes just let
@@ -181,9 +261,7 @@ impl Approver for WebApprover {
             self.record_flagged(&call.name);
         }
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        *self.pending.lock().unwrap() = Some(tx);
-        *self.inbox.lock().unwrap() = Some(rx);
+        self.gate.arm();
 
         let id = format!("approval-{}", self.next_seq());
         let event = Event {
@@ -200,11 +278,7 @@ impl Approver for WebApprover {
             return false;
         }
 
-        let rx = self.inbox.lock().unwrap().take();
-        match rx {
-            Some(rx) => rx.recv_timeout(self.timeout).unwrap_or(false),
-            None => false,
-        }
+        self.gate.wait(self.timeout)
     }
 }
 
@@ -229,6 +303,57 @@ fn tool_label(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A gate somebody answered is an answer. A gate that timed out or was
+    /// abandoned is not, and the difference decides whether a checkpoint
+    /// writes a rejection that kills a track or writes nothing at all.
+    #[test]
+    fn only_a_real_answer_counts_as_one() {
+        let gate = Arc::new(Gate::new());
+        gate.arm();
+        assert!(!gate.answered(), "an armed gate has not been answered yet");
+
+        let waiting = Arc::clone(&gate);
+        let joined = std::thread::spawn(move || waiting.wait(Duration::from_secs(5)));
+        // Give the waiter a moment to take the receiver.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            gate.resolve(false),
+            "the gate was armed, so it takes an answer"
+        );
+        assert!(!joined.join().unwrap(), "a no is still a no");
+        assert!(gate.answered(), "somebody pressed a button");
+
+        gate.arm();
+        let waiting = Arc::clone(&gate);
+        let joined = std::thread::spawn(move || waiting.wait(Duration::from_secs(5)));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(gate.abandon(), "abandon releases the parked thread");
+        assert!(!joined.join().unwrap());
+        assert!(
+            !gate.answered(),
+            "a stop is not somebody saying no, and a checkpoint that read it as one would kill a track"
+        );
+    }
+
+    /// A gate nobody armed cannot be answered, and does not park a thread
+    /// that will never be released.
+    #[test]
+    fn an_unarmed_gate_is_a_denial_and_not_a_wait() {
+        let gate = Gate::new();
+        assert!(!gate.resolve(true), "nothing was waiting");
+        assert!(!gate.wait(Duration::from_millis(10)));
+        assert!(!gate.answered());
+    }
+
+    /// A timeout is not an answer either.
+    #[test]
+    fn a_timeout_is_not_an_answer() {
+        let gate = Gate::new();
+        gate.arm();
+        assert!(!gate.wait(Duration::from_millis(10)));
+        assert!(!gate.answered());
+    }
     use super::*;
     use crate::settings::SettingsState;
     use serde_json::json;

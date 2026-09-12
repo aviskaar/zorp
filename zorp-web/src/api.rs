@@ -143,6 +143,11 @@ fn api_router(state: AppState) -> Router {
         .route("/api/investigate/ledger", get(investigate_ledger))
         .route("/api/sessions/:id/events", get(stream_events))
         .route("/api/sessions/:id/approve", post(approve))
+        .route("/api/sessions/:id/checkpoint", post(resolve_checkpoint))
+        .route(
+            "/api/sessions/:id/investigate/stop-after",
+            post(stop_after_attempt),
+        )
         .route(
             "/api/sessions/:id/auto-approve",
             get(get_auto_approve).post(set_auto_approve),
@@ -778,6 +783,13 @@ struct InvestigateBody {
     kill_threshold: Option<f64>,
     #[serde(default)]
     threshold_direction: Option<String>,
+    /// Ask at every research checkpoint instead of approving them all.
+    ///
+    /// Defaults to off, so a client that does not know about it gets what
+    /// it always got. Per request and never saved: it is a promise to be
+    /// watching, not a preference.
+    #[serde(default)]
+    interactive_checkpoints: bool,
 }
 
 /// The question whose ledger to read.
@@ -964,6 +976,7 @@ async fn start_investigate(
         metric_name: body.metric_name,
         kill_threshold: body.kill_threshold,
         threshold_direction: body.threshold_direction,
+        interactive_checkpoints: body.interactive_checkpoints,
     };
     // Checked before the session is occupied. A request that cannot run
     // comes back as a refused request, not as an error frame on a stream
@@ -1040,6 +1053,20 @@ async fn investigate_ledger(
     let Some(root) = state.workspace_root() else {
         return (StatusCode::CONFLICT, crate::workspace::NO_WORKSPACE).into_response();
     };
+    // A running attempt holds the project's DuckDB lock and this read
+    // opens the project for itself, so doing it now would deadlock rather
+    // than return late. Refused with a sentence saying where the numbers
+    // are instead: a run in progress puts its own ledger on the event
+    // stream after every attempt, read on the thread that holds the lock.
+    if state.any_running() {
+        return (
+            StatusCode::CONFLICT,
+            "an investigation is running and holds the run record open. \
+             Its ledger is on the event stream after every attempt; this \
+             read is for a run that has finished.",
+        )
+            .into_response();
+    }
     match crate::investigate::read_ledger(&root, &params.question) {
         Ok(ledger) => Json(ledger).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1129,6 +1156,61 @@ async fn approve(
         // Nothing was waiting. A stale click from a reloaded page looks like
         // this, and it is not an error worth failing the request over.
         _ => (StatusCode::CONFLICT, "nothing is awaiting approval").into_response(),
+    }
+}
+
+/// Answer the research checkpoint a Zorp mode run is parked on.
+///
+/// Its own route rather than a flag on `approve`, because the two
+/// questions are not the same one. Declining a tool call means the call
+/// does not run. Declining a checkpoint kills the track, and an answer
+/// landing on the wrong gate would kill one because somebody said no to a
+/// `run_command`.
+///
+/// A person presses this. No tool reaches it, for the reason no tool
+/// starts the run: the answer is written into a pre-registered evidence
+/// record.
+async fn resolve_checkpoint(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ApproveBody>,
+) -> impl IntoResponse {
+    let Some(session) = state.get(&id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let gate = session.lock().unwrap().checkpoint.clone();
+    match gate {
+        Some(g) if g.resolve(body.allow) => StatusCode::OK.into_response(),
+        _ => (StatusCode::CONFLICT, "nothing is awaiting a checkpoint").into_response(),
+    }
+}
+
+/// End a Zorp mode run after the attempt that is running now.
+///
+/// Not a stop, and deliberately a separate control from one. A stop
+/// cancels the agent where it stands and the run produces no write-up;
+/// this lets the attempt finish and be recorded, skips the attempts that
+/// would have followed, and still writes the track up over what actually
+/// happened.
+///
+/// One way only. There is no route that clears the flag, because a run
+/// that was told to wind down and then told to carry on is a run whose
+/// attempt count nobody can state afterwards, and the attempt count is
+/// part of what the evidence record means.
+async fn stop_after_attempt(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(session) = state.get(&id) else {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    };
+    let flag = session.lock().unwrap().stop_after.clone();
+    match flag {
+        Some(f) => {
+            f.store(true, std::sync::atomic::Ordering::SeqCst);
+            StatusCode::OK.into_response()
+        }
+        None => (StatusCode::CONFLICT, "no investigation is running").into_response(),
     }
 }
 

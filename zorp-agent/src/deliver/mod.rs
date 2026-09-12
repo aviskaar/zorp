@@ -213,7 +213,7 @@ mod tests {
     }
 
     impl zorp_track::checkpoint::Decider for CapturingDecider {
-        fn decide(&self, prompt: &str) -> bool {
+        fn decide(&self, _kind: &str, prompt: &str) -> bool {
             *self.prompt.lock().unwrap() = Some(prompt.to_string());
             true
         }

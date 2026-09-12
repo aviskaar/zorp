@@ -1,4 +1,4 @@
-use crate::approval::WebApprover;
+use crate::approval::{Gate, WebApprover};
 use crate::event::Event;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,6 +42,27 @@ pub struct SessionState {
     /// is what makes it revocable while a turn is running and what carries it
     /// from one turn to the next in the same conversation.
     pub auto_approve: Arc<AtomicBool>,
+    /// The research checkpoint a Zorp mode run is parked on, when one is
+    /// asking.
+    ///
+    /// Separate from `approver` and not a second use of it. A tool
+    /// approval asks whether a call may run and a checkpoint asks whether
+    /// a track stays alive, so an answer landing on the wrong one would
+    /// kill a track because somebody declined a `run_command`.
+    ///
+    /// Installed per run by `spawn_investigate` and left behind when it
+    /// ends, the same way `approver` is: a stale gate has nothing armed,
+    /// so answering it does nothing.
+    pub checkpoint: Option<Arc<Gate>>,
+    /// Set by the browser to end a Zorp mode run cleanly after the attempt
+    /// that is currently going.
+    ///
+    /// Not a stop. A stop cancels the agent where it stands and the run
+    /// records whatever it had; this lets the attempt finish and be
+    /// recorded, skips the ones that would have followed, and still
+    /// produces the write-up. The two are different things a person wants
+    /// at different moments and one control cannot be both.
+    pub stop_after: Option<Arc<AtomicBool>>,
 }
 
 impl SessionState {
@@ -53,6 +74,8 @@ impl SessionState {
             cancel: None,
             seq: Arc::new(Mutex::new(0)),
             auto_approve: Arc::new(AtomicBool::new(false)),
+            checkpoint: None,
+            stop_after: None,
         }
     }
 
@@ -79,6 +102,15 @@ impl SessionState {
         }
         if let Some(approver) = &self.approver {
             approver.resolve(false);
+        }
+        // Released, not answered. A checkpoint that comes back as a
+        // rejection kills the track, and somebody pressing stop has not
+        // said no to the question the checkpoint asked. `Gate::abandon`
+        // wakes the parked thread and leaves `answered` down, which is
+        // what makes `record_checkpoint` error out instead of writing a
+        // decision nobody made.
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.abandon();
         }
         true
     }
@@ -201,7 +233,10 @@ impl AppState {
     /// Whether any session on this server has work in flight.
     ///
     /// `PUT /api/workspace` asks, because a running agent is working in the
-    /// directory that is about to be replaced.
+    /// directory that is about to be replaced. The ledger reader asks for a
+    /// different reason: it opens the project for itself and would deadlock
+    /// on the DuckDB lock a running attempt is holding. Neither question is
+    /// session-scoped, because neither the workspace nor that lock is.
     pub fn any_running(&self) -> bool {
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         sessions

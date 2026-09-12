@@ -2745,6 +2745,157 @@ button {
   color: var(--text-faint);
 }
 
+/*
+ * A run in progress: where it has got to, and the attempts ticking off.
+ *
+ * It replaces two minutes of blank card, so it is quiet on purpose. The
+ * only thing here that raises its voice is the attempt that is running.
+ */
+.zorp-live {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.zorp-phase {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+.zorp-attempts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.zorp-attempt {
+  padding: 3px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.zorp-attempt[data-state="running"] {
+  border-color: var(--accent, currentColor);
+  color: var(--text);
+}
+
+.zorp-attempt[data-state="done"] {
+  color: var(--text-soft);
+}
+
+.zorp-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.zorp-control {
+  padding: 4px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.zorp-control:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.zorp-control:disabled {
+  cursor: default;
+  color: var(--text-faint);
+}
+
+/*
+ * The checkpoint card. Deliberately not the approval card's colours: this
+ * one can kill a track, and the two should not be muscle memory for each
+ * other.
+ */
+.card-checkpoint {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 10px 0;
+}
+
+.checkpoint-kind {
+  margin-left: 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.checkpoint-stake {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+.checkpoint-prompt {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-sunken, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.checkpoint-buttons {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.checkpoint-buttons button {
+  padding: 5px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.checkpoint-buttons button:disabled {
+  cursor: default;
+  color: var(--text-faint);
+}
+
+.checkpoint-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.composer-checkpoints {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.composer-checkpoints[hidden] {
+  display: none;
+}
+
 .zorp-ledger {
   margin-top: 14px;
   padding-top: 12px;

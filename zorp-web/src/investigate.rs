@@ -57,14 +57,20 @@
 //! recorded rows, which is the same split `critique` and the detectors
 //! use.
 
-use crate::event::{Event, EventKind};
+use crate::approval::Gate;
+use crate::event::{
+    ConditionFrame, Event, EventKind, ExpectationFrame, ExperimentFrame, LedgerFrame, MetricFrame,
+};
 use crate::renderer::WebRenderer;
 use crate::state::{SessionState, SettingsHandle};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use zorp_agent::investigate::InvestigateError;
 use zorp_agent::{cancel_token, Agent, ApprovalMode, HttpModel};
-use zorp_track::checkpoint::CheckpointMode;
+use zorp_track::checkpoint::{CheckpointMode, Decider};
 use zorp_track::experiment::{ExperimentStatus, MetricValue};
 use zorp_track::prereg::ThresholdDirection;
 use zorp_track::Project;
@@ -81,6 +87,15 @@ pub struct InvestigateRequest {
     pub metric_name: Option<String>,
     pub kill_threshold: Option<f64>,
     pub threshold_direction: Option<String>,
+    /// Ask a person at every research checkpoint instead of approving
+    /// them all.
+    ///
+    /// Per run and never a saved setting, because it is a promise to be
+    /// watching for the next few minutes rather than a preference. It is
+    /// recorded either way: `checkpoint_mode` is one of the conditions
+    /// every attempt writes, and it will read `interactive` or
+    /// `auto-approve` in the ledger accordingly.
+    pub interactive_checkpoints: bool,
 }
 
 /// Why a request was refused before anything ran.
@@ -144,67 +159,6 @@ pub fn check_request(
         }
         _ => Err(RequestError::PartialPrereg),
     }
-}
-
-/// One input an attempt was recorded as having run under.
-///
-/// The value is flattened to a string for display. The ledger view puts
-/// it on the page and does nothing else with it, so the type it was
-/// stored under buys the reader nothing here.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ConditionFrame {
-    pub key: String,
-    pub value: String,
-}
-
-/// One forecast, as recorded before the attempt ran.
-///
-/// `assumptions` is missing on purpose. It is the one model-authored
-/// text column on this table, and the way to keep integrity rules 5 and
-/// 7 easy to check is for no read path to name it.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ExpectationFrame {
-    pub metric_key: String,
-    pub expected_value: f64,
-    pub interval_low: f64,
-    pub interval_high: f64,
-    pub confidence: f64,
-}
-
-/// One recorded outcome.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct MetricFrame {
-    pub key: String,
-    pub value: String,
-}
-
-/// A track's whole recorded ledger, as the browser reads it back.
-///
-/// `present` is not cosmetic. An empty ledger is the honest state for a
-/// record nobody has fed, and a missing run record is a different fact,
-/// so the page must be able to tell them apart.
-///
-/// `forecasting` says whether the server would ask for a forecast on the
-/// next attempt, which is what decides whether `expectations` can ever
-/// be non-empty. It is read from the server's environment and reported,
-/// never set from here: forecasting costs a model call on every attempt
-/// and stays off unless the person running the server said otherwise.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct LedgerFrame {
-    pub track_id: String,
-    pub present: bool,
-    pub forecasting: bool,
-    pub experiments: Vec<ExperimentFrame>,
-}
-
-/// One attempt, with what went in and what came out.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ExperimentFrame {
-    pub id: String,
-    pub status: String,
-    pub conditions: Vec<ConditionFrame>,
-    pub expectations: Vec<ExpectationFrame>,
-    pub metrics: Vec<MetricFrame>,
 }
 
 fn show(value: &MetricValue) -> String {
@@ -312,6 +266,103 @@ fn read_ledger_from(project: &Project, track_id: &str) -> Result<LedgerFrame, St
     })
 }
 
+/// How long a checkpoint waits for a person before giving up on one.
+///
+/// The same five minutes a tool approval waits, and it ends differently.
+/// A tool approval that nobody answers is a denial and the call does not
+/// run. A checkpoint that nobody answers is not a rejection, because a
+/// rejection kills the track, so this ends the run with an error and
+/// writes no decision at all. See `Gate::abandon` and the `answered`
+/// half of `zorp_track::checkpoint::Decider`.
+pub const CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A research checkpoint, asked in the browser.
+///
+/// The track-granularity twin of `crate::approval::WebApprover`, sharing
+/// its `Gate` and none of its meaning. That one asks whether a tool call
+/// may run; this asks whether a track stays alive, and the answer is
+/// written into the evidence record either way.
+///
+/// It is deliberately not reachable from a model. Nothing registers a
+/// tool that answers one of these, and the route that does is a person
+/// pressing a button, the same rule that says a person and never a model
+/// starts the run in the first place.
+struct WebDecider {
+    events: Sender<Event>,
+    seq: Arc<Mutex<u64>>,
+    gate: Arc<Gate>,
+    timeout: Duration,
+}
+
+impl Decider for WebDecider {
+    fn decide(&self, kind: &str, prompt: &str) -> bool {
+        self.gate.arm();
+        let id = format!("checkpoint-{}", next_seq(&self.seq));
+        let event = Event {
+            seq: next_seq(&self.seq),
+            kind: EventKind::CheckpointRequest {
+                id,
+                kind: kind.to_string(),
+                prompt: prompt.to_string(),
+            },
+        };
+        if self.events.send(event).is_err() {
+            // Nobody is listening, so nobody can answer. The gate was
+            // never resolved, so `answered` is still down and
+            // `record_checkpoint` will refuse rather than write a
+            // rejection for a question that was never asked.
+            return false;
+        }
+        self.gate.wait(self.timeout)
+    }
+
+    fn answered(&self) -> bool {
+        self.gate.answered()
+    }
+}
+
+fn next_seq(seq: &Arc<Mutex<u64>>) -> u64 {
+    let mut guard = seq.lock().unwrap();
+    let n = *guard;
+    *guard += 1;
+    n
+}
+
+/// Where the run has got to, sent as it gets there.
+///
+/// Held separately from the renderer because these are not the agent's
+/// output. The model's own account of what it is doing already streams
+/// as `Assistant` text; this is the run's own structure, which nothing
+/// in the transcript can tell you: which attempt of how many, and
+/// whether the thing taking two minutes is an attempt or the write-up.
+struct Progress {
+    events: Sender<Event>,
+    seq: Arc<Mutex<u64>>,
+    track_id: String,
+}
+
+impl Progress {
+    fn send(
+        &self,
+        phase: &str,
+        attempt: Option<usize>,
+        of: Option<usize>,
+        ledger: Option<LedgerFrame>,
+    ) {
+        let event = Event {
+            seq: next_seq(&self.seq),
+            kind: EventKind::InvestigateProgress {
+                track_id: self.track_id.clone(),
+                phase: phase.to_string(),
+                attempt,
+                of,
+                ledger,
+            },
+        };
+        let _ = self.events.send(event);
+    }
+}
+
 /// Run one attempt on a blocking thread, streaming as it goes.
 ///
 /// Mirrors `panel::spawn_panel`, which mirrors `turn::spawn_turn`: same
@@ -329,10 +380,18 @@ pub fn spawn_investigate(
 ) {
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
     let cancel = cancel_token();
+    // Installed before the run starts, so the two controls the page draws
+    // for it reach this run and not the last one. Left behind when it
+    // ends, the way `approver` is: a stale gate has nothing armed and a
+    // stale flag belongs to a loop that is no longer reading it.
+    let checkpoint = Arc::new(Gate::new());
+    let stop_after = Arc::new(AtomicBool::new(false));
     let seq = {
         let mut guard = session.lock().unwrap();
         guard.running = true;
         guard.cancel = Some(Arc::clone(&cancel));
+        guard.checkpoint = Some(Arc::clone(&checkpoint));
+        guard.stop_after = Some(Arc::clone(&stop_after));
         Arc::clone(&guard.seq)
     };
 
@@ -347,8 +406,46 @@ pub fn spawn_investigate(
         let mut renderer = WebRenderer::new(tx.clone());
         renderer.set_seq(Arc::clone(&seq));
         let track_id = zorp_track::id::track_id(&request.question);
-        let kinds = match run_attempt(&request, &settings, &workspace, &cancel, Box::new(renderer))
-        {
+        // There is no terminal behind a browser, so `CheckpointMode::terminal`
+        // refuses outright and the choice is made here instead. Interactive
+        // means the person who pressed the bolt said they would answer, and
+        // `WebDecider` asks them on the stream they are already watching.
+        // Auto-approve is the CLI's `--yes`, still the default and still
+        // chosen explicitly rather than fallen back to.
+        //
+        // Neither can skip the pre-registered kill threshold: a breach kills
+        // the track in `investigate::run` without consulting the checkpoint
+        // mode at all. What interactive adds is the human judgement call on
+        // top of that, which auto-approve leaves out, and the difference is
+        // recorded because `checkpoint_mode` is one of the conditions every
+        // attempt writes.
+        let checkpoint_mode = if request.interactive_checkpoints {
+            CheckpointMode::Interactive(Arc::new(WebDecider {
+                events: tx.clone(),
+                seq: Arc::clone(&seq),
+                gate: checkpoint,
+                timeout: CHECKPOINT_TIMEOUT,
+            }))
+        } else {
+            CheckpointMode::AutoApprove
+        };
+        let run = Run {
+            checkpoint_mode,
+            stop_after,
+            progress: Progress {
+                events: tx.clone(),
+                seq: Arc::clone(&seq),
+                track_id: track_id.clone(),
+            },
+        };
+        let kinds = match run_attempt(
+            &request,
+            &settings,
+            &workspace,
+            &cancel,
+            Box::new(renderer),
+            &run,
+        ) {
             Ok(done) => vec![done, EventKind::Done],
             Err(failure) => vec![
                 EventKind::InvestigateDone {
@@ -373,12 +470,23 @@ pub fn spawn_investigate(
     });
 }
 
+/// The per-run state `spawn_investigate` owns and `run_attempt` reads.
+///
+/// One struct rather than three more arguments, because all three are
+/// the same fact: this run, as opposed to whatever ran before it.
+struct Run {
+    checkpoint_mode: CheckpointMode,
+    stop_after: Arc<AtomicBool>,
+    progress: Progress,
+}
+
 fn run_attempt(
     request: &InvestigateRequest,
     settings: &SettingsHandle,
     workspace: &Path,
     cancel: &zorp_agent::CancelToken,
     renderer: Box<dyn zorp_agent::Renderer>,
+    run: &Run,
 ) -> Result<EventKind, AttemptFailure> {
     let direction = check_request(request).map_err(|e| e.message().to_string())?;
 
@@ -447,6 +555,7 @@ fn run_attempt(
             proposed.threshold_direction.as_str(),
             proposed.confidence * 100.0,
         ));
+        run.progress.send("prereg", None, None, None);
     }
 
     // No recorder and no seed. An attempt is not a chat turn: the record
@@ -459,12 +568,12 @@ fn run_attempt(
         steps,
         cwd.clone(),
         cancel.clone(),
-        // Checkpoints are auto-approved from the browser, so the tool
-        // gate is the only thing left that could park this run waiting
-        // for a person who is watching a page with no prompt on it.
-        // Auto-approve here matches that, and it is a loosening: see the
-        // note on `CheckpointMode::AutoApprove` below, and the decision
-        // entry for 2026-08-21.
+        // The tool gate, which is a different question from the research
+        // checkpoints below and stays auto-approved either way. A run
+        // that parked on every `run_command` would be unusable, and the
+        // thing worth a person's attention here is the checkpoint, which
+        // decides whether a track lives. See `docs/DECISIONS.md`
+        // (2026-08-21, 2026-09-12).
         ApprovalMode::AutoApprove,
     )
     .register_builtins_filtered(None)
@@ -491,18 +600,9 @@ fn run_attempt(
         (None, None) => None,
     };
 
-    // There is no terminal behind a browser, so the interactive
-    // checkpoint decider has nothing to read from and
-    // `CheckpointMode::terminal` refuses outright. Auto-approve is the
-    // CLI's `--yes`, chosen explicitly here rather than fallen back to.
-    // What it cannot do is skip the pre-registered kill threshold: a
-    // breach kills the track unconditionally in `investigate::run`,
-    // without consulting the checkpoint mode at all. So the commitment
-    // still holds from the browser; what is missing is the human
-    // judgement call on top of it. That gap is recorded, because
-    // `checkpoint_mode` is one of the conditions every attempt writes,
-    // and it will read `auto-approve` in the ledger below.
-    let checkpoint_mode = CheckpointMode::AutoApprove;
+    // Chosen in `spawn_investigate`, where the channel the browser is
+    // watching is in scope. See the note there.
+    let checkpoint_mode = &run.checkpoint_mode;
 
     // Where the transcript stands before any attempt, so each one can
     // start from here. See the loop below.
@@ -523,6 +623,8 @@ fn run_attempt(
         if wanted > 1 {
             agent.notice(&format!("Attempt {n} of {wanted}."));
         }
+        run.progress
+            .send("attempt-started", Some(n), Some(wanted), None);
 
         // The commitment goes in on the first attempt only. Afterwards
         // `investigate::run` reads the recorded trio for itself, and
@@ -536,7 +638,7 @@ fn run_attempt(
             &track_id,
             &request.question,
             params,
-            &checkpoint_mode,
+            checkpoint_mode,
         )
         .map_err(|e| AttemptFailure {
             // The one error the page acts on rather than only displays.
@@ -547,6 +649,17 @@ fn run_attempt(
             needs_prereg: matches!(e, InvestigateError::PreregRequired { .. }),
             message: describe(e),
         })?;
+
+        // Read here, on the thread that is holding the project's DuckDB
+        // lock, and sent out with the frame. `read_ledger` opens the
+        // project for itself and a second open would deadlock, which is
+        // why the browser cannot simply ask for this while a run is going.
+        // A read that fails is not worth ending an attempt over: the
+        // numbers are recorded either way and the closing read will show
+        // them.
+        let ledger = read_ledger_from(&project, &track_id).ok();
+        run.progress
+            .send("attempt-finished", Some(n), Some(wanted), ledger);
 
         // A breach killed the track, which is the pre-registered answer
         // to the question and not a failure to get one. Stop: further
@@ -565,16 +678,33 @@ fn run_attempt(
                 artifact: None,
             });
         }
+
+        // Asked to stop after the attempt that was running, rather than
+        // in the middle of it. The attempt above finished and is in the
+        // record, the ones that would have followed are skipped, and the
+        // write-up still runs over what did happen. That is the whole
+        // difference from a stop, which cancels the agent where it stands
+        // and produces nothing.
+        if run.stop_after.load(Ordering::SeqCst) && n < wanted {
+            agent.notice(&format!(
+                "Stopping after attempt {n} of {wanted}, as asked. The \
+                 attempts that ran are recorded and the write-up covers \
+                 those."
+            ));
+            break;
+        }
     }
 
     // The attempts are the evidence. This is the artifact.
+    run.progress.send("write-up", None, None, None);
     let artifact = write_up(
         &mut agent,
         &project,
         workspace,
         &track_id,
         &request.question,
-        &checkpoint_mode,
+        checkpoint_mode,
+        &run.progress,
     );
 
     Ok(EventKind::InvestigateDone {
@@ -634,6 +764,7 @@ fn write_up(
     track_id: &str,
     question: &str,
     checkpoint_mode: &CheckpointMode,
+    progress: &Progress,
 ) -> Option<String> {
     if let Err(e) = zorp_agent::co_write::run(agent, project, track_id, question, checkpoint_mode) {
         agent.notice(&format!("No write-up: {e}"));
@@ -644,6 +775,7 @@ fn write_up(
     // the draft evidence-backed rather than merely written: it inventories
     // the draft's claims and revises the ones the track's own record does
     // not support.
+    progress.send("critique", None, None, None);
     let rounds = std::env::var("ZORP_CRITIQUE_ROUNDS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -778,6 +910,7 @@ mod tests {
             metric_name: None,
             kill_threshold: None,
             threshold_direction: None,
+            interactive_checkpoints: false,
         }
     }
 

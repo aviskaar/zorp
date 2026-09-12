@@ -66,6 +66,7 @@ import { coerceCitations, renderMemoryNote } from "./memory-note";
 import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
 import { activityGroup as newActivityGroup, type ActivityGroup } from "./activity-group";
 import { approvalCard, type ApprovalOutcome } from "./approval-card";
+import { checkpointCard, type CheckpointOutcome } from "./checkpoint-card";
 import { linkFiles } from "./file-links";
 import {
   needsText,
@@ -104,6 +105,8 @@ import {
   startInvestigate,
   getInvestigateStatus,
   getLedger,
+  resolveCheckpoint,
+  stopAfterAttempt,
   stopTurn,
   streamEvents,
   testConnection,
@@ -166,6 +169,8 @@ interface Elements {
   recall: HTMLElement;
   composerMemory: HTMLElement;
   useMemory: HTMLInputElement;
+  composerCheckpoints: HTMLElement;
+  askCheckpoints: HTMLInputElement;
   recallInput: HTMLInputElement;
   recallStatus: HTMLElement;
   recallResults: HTMLElement;
@@ -300,7 +305,10 @@ const panelView = new PanelView(document, dom.transcript);
  * the panel's is: an attempt occupies the session exactly as a turn
  * does, so only one can be running.
  */
-const zorpView = new ZorpModeView(document, dom.transcript);
+const zorpView = new ZorpModeView(document, dom.transcript, {
+  stopAfter: () => void endAfterAttempt(),
+  refresh: () => void showZorpLedger(),
+});
 /**
  * The two places a workspace gets picked: the first-run flow's first step,
  * and the overlay behind the top bar pill.
@@ -376,6 +384,16 @@ let pendingTool: { name: string; node: HTMLElement } | null = null;
 let spinnerTimer: number | null = null;
 let spinnerFrame = 0;
 const pendingApprovals = new Map<string, PendingApproval>();
+/**
+ * The checkpoint card on screen, if one is waiting.
+ *
+ * At most one: the run is parked on it, so there is nothing else for it to
+ * be asking. Held separately from `pendingApprovals` because the two are
+ * different questions with different consequences, and settling one as the
+ * other would tell somebody they killed a track when they denied a shell
+ * command.
+ */
+let pendingCheckpoint: { settle(outcome: CheckpointOutcome): void } | null = null;
 const approvalMode: AutoApproveView = autoApproveView(document);
 const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
 const skills: SkillsView = skillsView(document);
@@ -550,6 +568,8 @@ function collectElements(): Elements {
     recall: byId("recall"),
     composerMemory: byId("composer-memory"),
     useMemory: byId<HTMLInputElement>("use-memory"),
+    composerCheckpoints: byId("composer-checkpoints"),
+    askCheckpoints: byId<HTMLInputElement>("ask-checkpoints"),
     recallInput: byId("recall-input"),
     recallStatus: byId("recall-status"),
     recallResults: byId("recall-results"),
@@ -1151,6 +1171,9 @@ async function refreshZorpStatus(): Promise<void> {
     // has the feature, for the reason the status line gives: a control
     // that 501s is worse than one that is not there.
     dom.zorpBolt.hidden = false;
+    // Same rule as the bolt: a control that cannot do anything is worse
+    // than one that is not there.
+    dom.composerCheckpoints.hidden = false;
     dom.zorpStatus.textContent = status.forecasting
       ? "Forecasting is on, so each attempt records an expectation before it runs."
       : "Forecasting is off, so no expectation is recorded and nothing can be scored for calibration. It is set where the server runs, not here.";
@@ -1225,7 +1248,7 @@ async function submitInvestigate(
       markActiveSession();
     }
     await ensureStream(sessionId);
-    await startInvestigate(sessionId, question, prereg);
+    await startInvestigate(sessionId, question, prereg, dom.askCheckpoints.checked);
   } catch (error) {
     setTurnRunning(false);
     zorpRunning = false;
@@ -1623,6 +1646,19 @@ function applyEvent(event: ZorpEvent): void {
       panelView.done(event);
       break;
 
+    case "investigate_progress":
+      // Grouping is for consecutive tool lines, and the Zorp block is not
+      // one, so the group is broken here or the next tool line would try
+      // to join a group this interrupted. Same reason the panel does it.
+      closeActivityGroup();
+      zorpView.progress(event);
+      break;
+
+    case "checkpoint_request":
+      closeActivityGroup();
+      appendCheckpoint(event.kind, event.prompt);
+      break;
+
     case "investigate_done":
       closeActivityGroup();
       zorpView.done(event);
@@ -1677,6 +1713,13 @@ function finishTurn(): void {
   // Settled with the reason, so a card left open by a stop does not claim it
   // timed out. The server denied it either way; what differs is who decided.
   expirePendingApprovals(turnStopped ? "stopped" : "expired");
+  // A checkpoint the run never got an answer for. Not a rejection: the
+  // server wrote no decision and the track is untouched, and saying
+  // "denied" here would report a kill that did not happen.
+  if (pendingCheckpoint) {
+    pendingCheckpoint.settle(turnStopped ? "stopped" : "abandoned");
+    pendingCheckpoint = null;
+  }
   turnStopped = false;
   void refreshSessions();
   // Forced past the poll interval: this is the last chance to notice what the
@@ -2098,6 +2141,66 @@ function appendApproval(id: string, tool: string, args: string): void {
   card.allowAll.addEventListener("click", () => void decideAll());
 
   pendingApprovals.set(id, { settle });
+}
+
+/**
+ * Ask the person whether this track stays alive.
+ *
+ * The run is parked on it. Nothing here presses a button, and five
+ * minutes with no answer ends the run with an error rather than a
+ * rejection, because nobody answering is not the same fact as somebody
+ * saying no: a rejection kills the track and gets written into the
+ * evidence record.
+ */
+function appendCheckpoint(kind: string, prompt: string): void {
+  closeActivityGroup();
+
+  const card = checkpointCard(document, kind, prompt, glyph("shield"));
+  dom.transcript.append(card.root);
+
+  const decide = async (allow: boolean): Promise<void> => {
+    if (!sessionId) {
+      return;
+    }
+    card.enable(false);
+    card.note("Sending your decision…");
+    try {
+      await resolveCheckpoint(sessionId, allow);
+      card.settle(allow ? "kept" : "killed");
+      pendingCheckpoint = null;
+    } catch (error) {
+      card.enable(true);
+      card.note(`Could not send the decision: ${describeError(error)}`);
+    }
+  };
+
+  card.keep.addEventListener("click", () => void decide(true));
+  card.kill.addEventListener("click", () => void decide(false));
+
+  pendingCheckpoint = { settle: (outcome) => card.settle(outcome) };
+  scrollToBottomIfFollowing(true);
+}
+
+/**
+ * Let the attempt that is running finish, and skip the ones after it.
+ *
+ * Not a stop, and the composer's stop is still there for that. This one
+ * keeps what has been measured: the attempt finishes and is recorded, the
+ * write-up still runs over what happened, and only the attempts that
+ * never started are lost. There is no way to take it back, because a run
+ * told to wind down and then told to carry on is a run whose attempt
+ * count nobody can state afterwards.
+ */
+async function endAfterAttempt(): Promise<void> {
+  if (!sessionId) {
+    return;
+  }
+  try {
+    await stopAfterAttempt(sessionId);
+  } catch (error) {
+    appendError(describeError(error));
+    scrollToBottomIfFollowing(true);
+  }
 }
 
 /** Settle every card still on screen when a turn ends. */
