@@ -66,7 +66,7 @@ impl Model for StubModel {
 
 struct RejectAll;
 impl zorp_track::checkpoint::Decider for RejectAll {
-    fn decide(&self, _prompt: &str) -> bool {
+    fn decide(&self, _kind: &str, _prompt: &str) -> bool {
         false
     }
 }

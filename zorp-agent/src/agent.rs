@@ -4095,6 +4095,36 @@ mod tests {
         }
     }
 
+    /// Nothing a model can call answers a research checkpoint or winds a
+    /// run down.
+    ///
+    /// The sharper half of "a person launches a run, never a model". A
+    /// checkpoint decides whether a track lives, and the answer is
+    /// written into the evidence record, so a model that could answer one
+    /// could approve its own attempts and then be read against the record
+    /// it approved. Winding a run down is milder and goes the same way: a
+    /// model that could choose how many attempts ran could choose the
+    /// number that suited the answer it already had.
+    #[test]
+    fn no_tool_answers_a_checkpoint_or_ends_a_run() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "checkpoint",
+            "approve_checkpoint",
+            "resolve_checkpoint",
+            "decide_checkpoint",
+            "investigate",
+            "stop_after_attempt",
+            "kill_track",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// The ensemble's reviewer gets the read tools plus a shell and nothing
     /// that launches a run, a review or a subagent, and nothing that
     /// writes. Code launches every run. Same shape as the panel test above.

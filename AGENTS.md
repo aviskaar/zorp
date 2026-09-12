@@ -165,17 +165,40 @@ resulting artifact, deliver it in the right form.
   `POST /api/sessions/:id/investigate` on the existing event stream, and
   occupies the session exactly as a turn does. The routes are registered
   whatever the feature says and answer 501 without it, so the page can
-  say why the button is off. Two rules are not negotiable. A run is
+  say why the button is off. A run reports where it has got to while it
+  runs, as `investigate_progress` frames carrying a phase from a closed
+  set (`prereg`, `attempt-started`, `attempt-finished`, `write-up`,
+  `critique`), the attempt number and the count. The frames carry no
+  prose: the sentence a reader sees is chosen in `web/src/zorp-mode.ts`.
+  The ledger rides along on `attempt-finished` rather than being
+  fetched, because `read_ledger` opens the project and the run thread is
+  holding that DuckDB lock; `GET /api/investigate/ledger` answers 409
+  while any session is running and says where the numbers are instead.
+  Two rules are not negotiable. A run is
   launched by a person and never by a model, because an attempt writes
-  to a pre-registered evidence record; there is no tool that starts one
-  and both `agent.rs` and `zorp-web` have tests saying so. And the
+  to a pre-registered evidence record; there is no tool that starts one,
+  none that answers a checkpoint, none that ends a run, and both
+  `agent.rs` and `zorp-web` have tests saying so. And the
   ledger reader names no model-authored text column, so
   `expectations.assumptions` is not in what it returns. Checkpoints are
-  auto-approved from the browser because there is no terminal to ask,
-  and the pre-registered kill threshold is still enforced in code
-  regardless. Forecasting is reported by `GET /api/investigate/status`
+  auto-approved from the browser by default, and a person can tick
+  "Ask me at each research checkpoint" to answer them instead, per run
+  and never saved: `checkpoint_mode` is one of the conditions every
+  attempt writes, so the ledger says which it was. Nobody answering is
+  not somebody saying no. A rejection kills the track and is written
+  into the record, so a closed browser or a pressed stop must not come
+  back as one: `Decider::answered` defaults to true and
+  `record_checkpoint` refuses with `CheckpointBlocked` before writing
+  anything when it is false, and `Gate::abandon` is what a stop uses.
+  `POST /api/sessions/:id/investigate/stop-after` winds a run down
+  rather than cancelling it, letting the running attempt finish and be
+  recorded and still writing the track up; it is one way only, because a
+  run told to wind down and then told to carry on is a run whose attempt
+  count nobody can state afterwards. The pre-registered kill threshold is
+  still enforced in code regardless of any of it.
+  Forecasting is reported by `GET /api/investigate/status`
   and can never be set from the browser. See `docs/DECISIONS.md`
-  (2026-08-21) before changing any of that.
+  (2026-08-21, 2026-09-12) before changing any of that.
 - `critique` (`zorp-agent/src/critique/`) is a gate on co-write's
   artifact, not a fifth capability. It audits `draft.md` against the
   track's own evidence record and revises what the record does not

@@ -16,12 +16,36 @@ fn now_millis() -> i64 {
 /// zorp-agent's `Approver` trait, at track granularity instead of
 /// per-tool-call.
 pub trait Decider: Send + Sync {
-    fn decide(&self, prompt: &str) -> bool;
+    /// `kind` is the checkpoint's name, the same string
+    /// `Store::record_checkpoint` files the row under, so a decider that
+    /// draws a prompt somewhere other than a terminal can say which
+    /// checkpoint it is showing. Declining `investigate-prereg` kills a
+    /// track before any attempt has run and declining `investigate` kills
+    /// one that has evidence in it, and a surface that renders both the
+    /// same way is hiding the difference.
+    fn decide(&self, kind: &str, prompt: &str) -> bool;
+
+    /// Whether the answer `decide` just gave came from a person.
+    ///
+    /// A decider that can be left unattended needs a way to say "nobody
+    /// answered", because for a checkpoint that is not the same fact as
+    /// "somebody said no". Saying no kills the track. A browser that was
+    /// closed, or a run somebody stopped, has not said no about anything,
+    /// and recording a rejection for it would put a killed track in the
+    /// evidence record with a decision nobody made attached to it.
+    ///
+    /// Defaults to true, so the terminal decider and every existing
+    /// implementation keep the behaviour they had: a read error there is
+    /// still a no, which is what it has always meant at a prompt somebody
+    /// is sitting in front of.
+    fn answered(&self) -> bool {
+        true
+    }
 }
 
 pub struct TerminalDecider;
 impl Decider for TerminalDecider {
-    fn decide(&self, prompt: &str) -> bool {
+    fn decide(&self, _kind: &str, prompt: &str) -> bool {
         eprint!("{prompt} [y/N] ");
         if io::stderr().flush().is_err() {
             return false;
@@ -57,9 +81,17 @@ impl CheckpointMode {
         }
     }
 
-    fn decide(&self, prompt: &str) -> bool {
+    fn decide(&self, kind: &str, prompt: &str) -> bool {
         match self {
-            CheckpointMode::Interactive(d) => d.decide(prompt),
+            CheckpointMode::Interactive(d) => d.decide(kind, prompt),
+            CheckpointMode::AutoApprove => true,
+        }
+    }
+
+    fn answered(&self) -> bool {
+        match self {
+            CheckpointMode::Interactive(d) => d.answered(),
+            // A standing yes is an answer somebody gave in advance.
             CheckpointMode::AutoApprove => true,
         }
     }
@@ -78,7 +110,19 @@ impl Store {
         mode: &CheckpointMode,
         prompt: &str,
     ) -> Result<bool, TrackError> {
-        let approved = mode.decide(prompt);
+        let approved = mode.decide(kind, prompt);
+        // Nobody answered. Nothing is written and the caller gets an
+        // error, rather than a rejection row that would kill the track on
+        // a decision that was never made. This is the same rule
+        // `CheckpointMode::terminal` applies when it refuses to build an
+        // interactive mode with no terminal behind it: a checkpoint has no
+        // safe default, so the absence of an answer is an error and never a
+        // quiet no.
+        if !mode.answered() {
+            return Err(TrackError::CheckpointBlocked {
+                kind: kind.to_string(),
+            });
+        }
         let id = format!(
             "{track_id}-{kind}-{}-{}",
             now_millis(),
@@ -172,7 +216,7 @@ mod tests {
         calls: AtomicUsize,
     }
     impl Decider for Stub {
-        fn decide(&self, _prompt: &str) -> bool {
+        fn decide(&self, _kind: &str, _prompt: &str) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.answer
         }
@@ -180,7 +224,7 @@ mod tests {
 
     #[test]
     fn auto_approve_always_decides_true() {
-        assert!(CheckpointMode::AutoApprove.decide("proceed?"));
+        assert!(CheckpointMode::AutoApprove.decide("test", "proceed?"));
     }
 
     #[test]
@@ -189,12 +233,12 @@ mod tests {
             answer: true,
             calls: AtomicUsize::new(0),
         }));
-        assert!(approve.decide("proceed?"));
+        assert!(approve.decide("test", "proceed?"));
         let reject = CheckpointMode::Interactive(Arc::new(Stub {
             answer: false,
             calls: AtomicUsize::new(0),
         }));
-        assert!(!reject.decide("proceed?"));
+        assert!(!reject.decide("test", "proceed?"));
     }
 
     #[test]
@@ -235,6 +279,109 @@ mod tests {
             .unwrap();
         assert_eq!(status, "approved");
         assert_eq!(prompt, "is this novel?");
+    }
+
+    /// A decider that comes back without an answer, which is what a
+    /// browser that was closed or a run somebody stopped looks like.
+    struct Unanswered;
+    impl Decider for Unanswered {
+        fn decide(&self, _kind: &str, _prompt: &str) -> bool {
+            false
+        }
+        fn answered(&self) -> bool {
+            false
+        }
+    }
+
+    /// Nobody answering is not somebody saying no.
+    ///
+    /// A rejection kills the track and is written into the evidence
+    /// record. A run that ended before the question was answered has
+    /// decided nothing, so nothing is written and the caller gets an
+    /// error instead. Without this, closing a browser mid-run would kill
+    /// a track and leave a decision nobody made attached to it.
+    #[test]
+    fn an_unanswered_checkpoint_writes_nothing_and_errors() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let mode = CheckpointMode::Interactive(Arc::new(Unanswered));
+
+        let result = store.record_checkpoint("t1", "investigate", &mode, "keep this alive?");
+        assert!(
+            matches!(result, Err(TrackError::CheckpointBlocked { .. })),
+            "an unanswered checkpoint is an error, not a quiet no"
+        );
+
+        let rows: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE track_id = ?",
+                duckdb::params!["t1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "no decision was made, so none is recorded");
+        assert_eq!(
+            store.get_track("t1").unwrap().status,
+            crate::track::TrackStatus::Active,
+            "the track is untouched"
+        );
+    }
+
+    /// A decider that answers no is still a no, and still kills.
+    ///
+    /// The other half of the test above. The point of `answered` is to
+    /// separate two cases, and a change that made every refusal look
+    /// unanswered would pass the first test and break the feature.
+    #[test]
+    fn a_real_no_is_still_recorded_as_a_rejection() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        let mode = CheckpointMode::Interactive(Arc::new(Stub {
+            answer: false,
+            calls: AtomicUsize::new(0),
+        }));
+
+        let approved = store
+            .record_checkpoint("t1", "investigate", &mode, "keep this alive?")
+            .unwrap();
+        assert!(!approved);
+        let status: String = store
+            .conn
+            .query_row(
+                "SELECT status FROM checkpoints WHERE track_id = ?",
+                duckdb::params!["t1"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "rejected");
+    }
+
+    /// The kind reaches the decider, because a surface that is not a
+    /// terminal has to say which checkpoint it is showing: declining
+    /// before the first attempt and declining after three are different
+    /// losses.
+    #[test]
+    fn the_decider_is_told_which_checkpoint_it_is_answering() {
+        use std::sync::Mutex;
+        struct Recorder(Mutex<Vec<String>>);
+        impl Decider for Recorder {
+            fn decide(&self, kind: &str, _prompt: &str) -> bool {
+                self.0.lock().unwrap().push(kind.to_string());
+                true
+            }
+        }
+        let seen = Arc::new(Recorder(Mutex::new(Vec::new())));
+        let mode = CheckpointMode::Interactive(seen.clone());
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("zorp.duckdb")).unwrap();
+        store.create_track("t1", "hyp").unwrap();
+        store
+            .record_checkpoint("t1", "investigate-prereg", &mode, "commit this?")
+            .unwrap();
+        assert_eq!(seen.0.lock().unwrap().as_slice(), ["investigate-prereg"]);
     }
 
     #[test]

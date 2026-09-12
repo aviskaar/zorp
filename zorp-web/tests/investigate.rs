@@ -209,6 +209,132 @@ async fn several_attempts_all_land_in_the_ledger() {
     }
 }
 
+/// A run says where it has got to while it is going.
+///
+/// The whole point of the progress frames. A run is several whole agent
+/// runs back to back, and it used to put nothing structured on the
+/// stream until the verdict, so a page had no way to tell a long attempt
+/// from a hung one. The phases are a closed set the page matches on, so
+/// this checks the names and not a sentence.
+#[tokio::test]
+async fn a_run_reports_every_phase_it_passes_through() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    let answer = attempt_response(42.0);
+    configure(dir.path(), vec![&answer, &answer, &answer]);
+    std::env::set_var("ZORP_BOLT_ATTEMPTS", "2");
+
+    let addr = spawn().await;
+    let id = new_session(addr).await;
+    let events = EventStream::connect(addr, &id);
+
+    let (status, body) = start_investigate(
+        addr,
+        &id,
+        r#"{"question":"does caching help phases","metric_name":"latency_ms",
+            "kill_threshold":100.0,"threshold_direction":"lower-is-better"}"#,
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+
+    let events = on_stream(events, |s| {
+        assert!(
+            s.wait_for("\"type\":\"investigate_done\"", PATIENCE),
+            "the attempts never closed: {}",
+            s.text()
+        )
+    })
+    .await;
+    let text = events.text();
+
+    for phase in ["attempt-started", "attempt-finished", "write-up"] {
+        assert!(
+            text.contains(&format!("\"phase\":\"{phase}\"")),
+            "no {phase} frame: {text}"
+        );
+    }
+    assert!(
+        text.contains("\"attempt\":2") && text.contains("\"of\":2"),
+        "a phase frame has to say which attempt of how many: {text}"
+    );
+    // The ledger rides along on `attempt-finished` because a running
+    // attempt holds the run record open and the read endpoint would
+    // deadlock on it.
+    assert!(
+        text.contains("\"ledger\":{"),
+        "a finished attempt carries what it recorded: {text}"
+    );
+}
+
+/// The ledger endpoint refuses while a run holds the record open.
+///
+/// Not politeness. `read_ledger` opens the project for itself and a
+/// running attempt is holding that lock, so the read would deadlock
+/// rather than come back late. The numbers are on the event stream
+/// instead, and the refusal says so.
+#[tokio::test]
+async fn the_ledger_read_is_refused_while_a_run_holds_the_record() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    // A model that never answers, so the run is still going when the read
+    // arrives.
+    configure(dir.path(), vec![]);
+    std::env::set_var("ZORP_BASE_URL", mock_hang());
+
+    let addr = spawn().await;
+    let id = new_session(addr).await;
+
+    let (status, body) = start_investigate(
+        addr,
+        &id,
+        r#"{"question":"a question nobody answers","metric_name":"latency_ms",
+            "kill_threshold":100.0,"threshold_direction":"lower-is-better"}"#,
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+
+    let question = urlencoding("a question nobody answers");
+    let (status, body) = blocking_get(format!(
+        "http://{addr}/api/investigate/ledger?question={question}"
+    ))
+    .await;
+    assert_eq!(status, 409, "{body}");
+    assert!(
+        body.contains("event stream"),
+        "the refusal has to say where the numbers are: {body}"
+    );
+}
+
+/// Answering a checkpoint nobody asked for is not an error worth failing
+/// a request over, and it is not a silent success either.
+#[tokio::test]
+async fn a_checkpoint_answer_with_nothing_waiting_is_a_conflict() {
+    let addr = spawn().await;
+    let id = new_session(addr).await;
+    let url = format!("http://{addr}/api/sessions/{id}/checkpoint");
+    let (status, body) = tokio::task::spawn_blocking(move || post(&url, r#"{"allow":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(status, 409, "{body}");
+}
+
+/// Winding a run down when none is running is the same kind of stale
+/// click, and gets the same answer.
+#[tokio::test]
+async fn stopping_after_an_attempt_with_no_run_is_a_conflict() {
+    let addr = spawn().await;
+    let id = new_session(addr).await;
+    let url = format!("http://{addr}/api/sessions/{id}/investigate/stop-after");
+    let (status, body) = tokio::task::spawn_blocking(move || post(&url, "{}"))
+        .await
+        .unwrap();
+    assert_eq!(status, 409, "{body}");
+}
+
 /// The feature end to end. One attempt runs, the closing frame says the
 /// track survived it, and the ledger reads back what the attempt ran
 /// under.

@@ -46,7 +46,7 @@ impl Model for StubModel {
 
 struct Rejecting;
 impl zorp_track::checkpoint::Decider for Rejecting {
-    fn decide(&self, _prompt: &str) -> bool {
+    fn decide(&self, _kind: &str, _prompt: &str) -> bool {
         false
     }
 }
@@ -55,7 +55,7 @@ struct RejectSecondCall {
     calls: AtomicUsize,
 }
 impl zorp_track::checkpoint::Decider for RejectSecondCall {
-    fn decide(&self, _prompt: &str) -> bool {
+    fn decide(&self, _kind: &str, _prompt: &str) -> bool {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         n == 0 // first call (prereg checkpoint): approve; second call (post-attempt checkpoint): reject
     }

@@ -681,6 +681,59 @@ export interface InvestigateDoneEvent {
   artifact?: string;
 }
 
+/**
+ * A Zorp mode run reached a new stage.
+ *
+ * Sent as the run goes, so the page can draw a run in progress instead
+ * of two minutes of nothing followed by a verdict. It carries no prose:
+ * `phase` is one of a fixed set of names the server chooses and the
+ * sentence a reader sees is this page's own. What the model says it is
+ * doing already streams as `assistant` text underneath.
+ *
+ * `ledger` rides along on `attempt-finished` rather than being fetched,
+ * and that is not an optimisation. `getLedger` opens the run record, a
+ * running attempt is holding that lock, and asking for it mid-run would
+ * deadlock; the server reads it on the thread that holds the lock and
+ * sends the answer. `getLedger` is for a run that has finished, and it
+ * answers 409 while one is going.
+ */
+export interface InvestigateProgressEvent {
+  seq: number;
+  type: "investigate_progress";
+  track_id: string;
+  phase: "prereg" | "attempt-started" | "attempt-finished" | "write-up" | "critique";
+  attempt?: number;
+  of?: number;
+  ledger?: Ledger;
+}
+
+/**
+ * A research checkpoint is waiting on a person.
+ *
+ * The track-granularity twin of `approval_request`, and a different
+ * question with a different consequence. Declining a tool call means the
+ * call does not run. Declining a checkpoint kills the track, which is why
+ * this is its own frame, answered on its own route, and drawn as its own
+ * card rather than reusing the approval one with a different label.
+ *
+ * `prompt` is composed by `zorp-track` out of the recorded metric, the
+ * pre-registered threshold and the attempt's own summary, so it holds
+ * model-authored text and goes on the page through `textContent`.
+ */
+export interface CheckpointRequestEvent {
+  seq: number;
+  type: "checkpoint_request";
+  id: string;
+  /**
+   * `investigate-prereg` before the first attempt, `investigate` after
+   * each one, and whatever `co_write` and `critique` name theirs. The
+   * page says which, because declining the first kills a track that has
+   * no evidence in it yet and declining the second kills one that does.
+   */
+  kind: string;
+  prompt: string;
+}
+
 export type ZorpEvent =
   | WorkingEvent
   | WorkingDoneEvent
@@ -703,6 +756,8 @@ export type ZorpEvent =
   | ReviewerFinishedEvent
   | ReviewerFailedEvent
   | PanelDoneEvent
+  | InvestigateProgressEvent
+  | CheckpointRequestEvent
   | InvestigateDoneEvent
   | DoneEvent;
 
@@ -1210,6 +1265,7 @@ export async function startInvestigate(
   id: string,
   question: string,
   prereg: Preregistration | null,
+  interactiveCheckpoints = false,
 ): Promise<void> {
   try {
     await request<void>("POST", `/api/sessions/${segment(id)}/investigate`, {
@@ -1217,10 +1273,47 @@ export async function startInvestigate(
       metric_name: prereg?.metric_name ?? null,
       kill_threshold: prereg?.kill_threshold ?? null,
       threshold_direction: prereg?.threshold_direction ?? null,
+      interactive_checkpoints: interactiveCheckpoints,
     });
   } catch (error) {
     throw startFailure(error);
   }
+}
+
+/**
+ * Answer the research checkpoint a run is parked on.
+ *
+ * Its own route and not a flag on `approve`, because the two questions
+ * are not the same one and an answer landing on the wrong gate would
+ * kill a track because somebody declined a `run_command`.
+ *
+ * A 409 means nothing was waiting, which is what a stale click from a
+ * reloaded page looks like.
+ */
+export async function resolveCheckpoint(
+  sessionId: string,
+  allow: boolean,
+): Promise<void> {
+  await request<void>("POST", `/api/sessions/${segment(sessionId)}/checkpoint`, { allow });
+}
+
+/**
+ * End a Zorp mode run after the attempt that is running now.
+ *
+ * Not a stop. A stop cancels the agent where it stands and the run
+ * produces no write-up; this lets the attempt finish and be recorded,
+ * skips the attempts that would have followed, and still writes the
+ * track up over what actually happened.
+ *
+ * One way only. There is no call that clears it, because a run told to
+ * wind down and then told to carry on is a run whose attempt count
+ * nobody can state afterwards.
+ */
+export async function stopAfterAttempt(sessionId: string): Promise<void> {
+  await request<void>(
+    "POST",
+    `/api/sessions/${segment(sessionId)}/investigate/stop-after`,
+  );
 }
 
 /** One input an attempt was recorded as having run under. */
@@ -1567,6 +1660,8 @@ const EVENT_TYPES_BY_NAME: Record<ZorpEventType, true> = {
   reviewer_failed: true,
   panel_done: true,
   investigate_done: true,
+  investigate_progress: true,
+  checkpoint_request: true,
   done: true,
 };
 
