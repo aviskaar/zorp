@@ -743,7 +743,12 @@ resulting artifact, deliver it in the right form.
   assemble an HTML string: everything it puts on the page goes through
   `textContent`, because the text it is rendering came from a model that
   has been reading tool results and web pages. Reach for a markdown
-  library and you have reached for `innerHTML`. `web/src/onboarding.ts`
+  library and you have reached for `innerHTML`. Inline math is the one
+  notation it accepts without implementing: `math` swaps a fixed table of
+  LaTeX commands for the characters they mean, produces text nodes only,
+  and leaves anything it does not recognise literal. A `$` followed by a
+  digit never opens a span, which is what keeps a sentence about money
+  safe, and that guard has a test. `web/src/onboarding.ts`
   is the first-run flow and the third path under the same rule: a model id
   and a model name come off a provider's listing, so they land through
   `textContent` too. That flow is a client for the settings endpoints and

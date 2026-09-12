@@ -254,3 +254,122 @@ test("a horizontal rule renders", () => {
   const host = render("above\n\n---\n\nbelow");
   assert.equal(host.querySelectorAll("hr").length, 1);
 });
+
+/**
+ * Inline math.
+ *
+ * The happy path is one test. The rest are the hazards, because the way
+ * this feature fails is not "an arrow did not render", it is "a sentence
+ * about money got eaten", and that is strictly worse than the literal
+ * source it replaced.
+ */
+
+test("a LaTeX arrow renders as an arrow", () => {
+  const host = render("showing the flow from Problem $\\rightarrow$ Solution");
+  assert.equal(host.querySelector("p")?.textContent, "showing the flow from Problem → Solution");
+});
+
+test("several arrows in one sentence all render", () => {
+  const host = render("Problem $\\rightarrow$ Solution $\\rightarrow$ Feature Deep Dive");
+  assert.equal(
+    host.querySelector("p")?.textContent,
+    "Problem → Solution → Feature Deep Dive",
+  );
+});
+
+test("dollar amounts in prose are left alone", () => {
+  const host = render("it costs $5 to build and $10 to run");
+  assert.equal(host.querySelector("p")?.textContent, "it costs $5 to build and $10 to run");
+});
+
+/**
+ * The nastiest false positive available: money on both sides of a real
+ * LaTeX command. The opening guard is what saves it, since a `$` followed
+ * by a digit never opens a span.
+ */
+test("a dollar amount is still safe when a real command shares the sentence", () => {
+  const host = render("it costs $5 and scales by \\times$10 a year");
+  assert.equal(
+    host.querySelector("p")?.textContent,
+    "it costs $5 and scales by \\times$10 a year",
+  );
+});
+
+test("a code span containing LaTeX survives verbatim", () => {
+  const host = render("write it as `$\\rightarrow$` in the source");
+  assert.equal(host.querySelector("code.inline-code")?.textContent, "$\\rightarrow$");
+  assert.equal(host.querySelector("p")?.textContent, "write it as $\\rightarrow$ in the source");
+});
+
+test("a fenced code block containing LaTeX survives verbatim", () => {
+  const host = render("```\nA $\\rightarrow$ B\n```");
+  assert.ok(host.querySelector("pre")?.textContent?.includes("$\\rightarrow$"));
+});
+
+test("an unknown command is left exactly as it was", () => {
+  const host = render("this is $\\foobar$ and nothing else");
+  assert.equal(host.querySelector("p")?.textContent, "this is $\\foobar$ and nothing else");
+});
+
+/**
+ * One unknown command must not spoil a known one later in the same line.
+ * The scan resumes just after the `$` it rejected rather than after the
+ * whole candidate span.
+ */
+test("an unknown command does not stop a later known one from rendering", () => {
+  const host = render("$\\foobar$ then $\\to$ next");
+  assert.equal(host.querySelector("p")?.textContent, "$\\foobar$ then → next");
+});
+
+test("a span mixing text and a known command renders the command only", () => {
+  const host = render("so $A \\rightarrow B$ holds");
+  assert.equal(host.querySelector("p")?.textContent, "so A → B holds");
+});
+
+test("an unmatched dollar is left alone", () => {
+  const host = render("the price is $ and the command is \\rightarrow");
+  assert.equal(
+    host.querySelector("p")?.textContent,
+    "the price is $ and the command is \\rightarrow",
+  );
+});
+
+test("greek and operators come through", () => {
+  const host = render("$\\alpha \\le \\beta$ and $\\Omega \\ne \\emptyset$");
+  assert.equal(host.querySelector("p")?.textContent, "α ≤ β and Ω ≠ ∅");
+});
+
+/**
+ * The assertion that pins "text nodes only". A math span must not create an
+ * element of any kind, because the moment it does, this file has started
+ * building markup out of model output.
+ */
+test("math creates no element beyond what the markdown already made", () => {
+  const host = render("a $\\rightarrow$ b");
+  const para = host.querySelector("p");
+  assert.equal(para?.querySelectorAll("*").length, 0);
+  assert.equal(para?.childNodes.length, 1);
+  assert.equal(para?.childNodes[0].nodeType, dom.window.Node.TEXT_NODE);
+});
+
+/**
+ * The substitution happens where text nodes are made, which is after links
+ * have been split off, so a URL can never be rewritten by it.
+ */
+test("a link's URL is never touched by math substitution", () => {
+  const host = render("see [docs](https://example.com/a$\\to$b) now");
+  assert.equal(
+    host.querySelector("a")?.getAttribute("href"),
+    "https://example.com/a$\\to$b",
+  );
+});
+
+test("math inside bold still renders inside the bold", () => {
+  const host = render("**A $\\rightarrow$ B**");
+  assert.equal(host.querySelector("strong")?.textContent, "A → B");
+});
+
+test("a heading carrying math renders it", () => {
+  const host = render("## Problem $\\rightarrow$ Solution");
+  assert.equal(host.querySelector("h2")?.textContent, "Problem → Solution");
+});
