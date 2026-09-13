@@ -43,4 +43,6 @@ docs/paper/zorp-paper.tex
 
 # Desktop Tauri build outputs
 zorp-desktop/target
+zorp-desktop/gen
+
 
