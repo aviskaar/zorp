@@ -200,6 +200,9 @@ jobs:
             zorp-web          # then open http://127.0.0.1:7777
             ```
 
+            For macOS users, a standalone native desktop app (`Zorp.dmg`) is
+            also attached to this release.
+
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
             behind the `research` feature and require building from source.
