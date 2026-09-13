@@ -1,0 +1,88 @@
+name: Desktop Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach DMG to (e.g. v0.5.0)"
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "Publish and upload DMG to GitHub Release"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac-dmg:
+    name: Build macOS Universal DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Check Release Version
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ -n "${{ inputs.tag }}" ]; then
+            sh scripts/check-release-version.sh "$tag"
+          else
+            echo "Not a tag push or explicit release tag; skipping version check"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2.0.0" --locked
+
+      - name: Build Web UI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build DMG
+        run: |
+          cargo tauri build --target universal-apple-darwin --manifest-path zorp-desktop/Cargo.toml
+
+      - name: Checksum DMG
+        run: |
+          cd zorp-desktop/target/universal-apple-darwin/release/bundle/dmg
+          shasum -a 256 *.dmg > Zorp.dmg.sha256
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zorp-desktop-mac-dmg
+          path: zorp-desktop/target/universal-apple-darwin/release/bundle/dmg/*
+
+      - name: Attach to GitHub Release
+        if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          for i in 1 2 3 4 5; do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              break
+            fi
+            echo "Release $tag not found, attempting create (attempt $i)..."
+            if gh release create "$tag" --generate-notes; then
+              break
+            fi
+            sleep 5
+          done
+          gh release upload "$tag" zorp-desktop/target/universal-apple-darwin/release/bundle/dmg/*.dmg* --clobber

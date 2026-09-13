@@ -1,0 +1,22 @@
+[package]
+name = "zorp-desktop"
+version = "0.4.1"
+edition = "2021"
+description = "Native macOS desktop application for zorp"
+license = "MIT"
+
+[dependencies]
+zorp-web = { path = "../zorp-web" }
+zorp-agent = { path = "../zorp-agent" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+url = "2"
+serde_json = "1"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[workspace]
+

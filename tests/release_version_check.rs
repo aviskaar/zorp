@@ -209,3 +209,53 @@ fn erbga_may_pin_its_own_version() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn desktop_manifest_drift_fails_release() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"zorp\"\nversion.workspace = true\n\n[workspace]\nmembers = [\".\"]\nexclude = [\"zorp-desktop\"]\n\n[workspace.package]\nversion = \"0.4.1\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Dockerfile"),
+        "FROM debian:12-slim\nARG VERSION=v0.4.1\n",
+    )
+    .unwrap();
+
+    let desktop_dir = root.join("zorp-desktop");
+    fs::create_dir_all(&desktop_dir).unwrap();
+    fs::write(
+        desktop_dir.join("Cargo.toml"),
+        "[package]\nname = \"zorp-desktop\"\nversion = \"0.3.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        desktop_dir.join("tauri.conf.json"),
+        "{\"version\": \"0.4.1\"}",
+    )
+    .unwrap();
+
+    let out = Command::new("sh")
+        .arg(script())
+        .arg("v0.4.1")
+        .arg(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "disagreeing desktop version must fail"
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        all.contains("zorp-desktop"),
+        "error message must name zorp-desktop: {all}"
+    );
+}

@@ -641,3 +641,43 @@ jobs:
         if: steps.filter.outputs.research == 'true'
         run: cargo test -p zorp-web --features research --locked
 
+  desktop:
+    name: Desktop App (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check path filter
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            changed=$(git diff --name-only "origin/${{ github.base_ref }}" HEAD)
+            if printf '%s\n' "$changed" | grep -qE '^(zorp-desktop/|zorp-web/|web/|Cargo\.toml$|Cargo\.lock$)'; then
+              echo "run_desktop=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_desktop=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "run_desktop=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Rust
+        if: steps.filter.outputs.run_desktop == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Node
+        if: steps.filter.outputs.run_desktop == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build Web UI
+        if: steps.filter.outputs.run_desktop == 'true'
+        run: |
+          cd web
+          npm ci
+          npm run build
+      - name: Check and test zorp-desktop
+        if: steps.filter.outputs.run_desktop == 'true'
+        run: |
+          cargo check --manifest-path zorp-desktop/Cargo.toml
+          cargo test --manifest-path zorp-desktop/Cargo.toml
+
+

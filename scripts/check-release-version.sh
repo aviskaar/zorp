@@ -125,4 +125,28 @@ else
     done
 fi
 
+# Check excluded product packages that manage their own manifests: zorp-desktop
+desktop_cargo="$dir/zorp-desktop/Cargo.toml"
+desktop_tauri="$dir/zorp-desktop/tauri.conf.json"
+
+if [ -f "$desktop_cargo" ]; then
+    desktop_cargo_version="v$(sed -n 's/^version = "\(.*\)"$/\1/p' "$desktop_cargo" | head -n 1)"
+    if [ "$tag" != "$desktop_cargo_version" ]; then
+        echo "zorp-desktop/Cargo.toml: version is '${desktop_cargo_version#v}' but this release is '$tag'" >&2
+        fail=1
+    else
+        echo "zorp-desktop/Cargo.toml: version matches $tag"
+    fi
+fi
+
+if [ -f "$desktop_tauri" ]; then
+    desktop_tauri_version="v$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$desktop_tauri" | head -n 1)"
+    if [ "$tag" != "$desktop_tauri_version" ]; then
+        echo "zorp-desktop/tauri.conf.json: version is '${desktop_tauri_version#v}' but this release is '$tag'" >&2
+        fail=1
+    else
+        echo "zorp-desktop/tauri.conf.json: version matches $tag"
+    fi
+fi
+
 exit $fail

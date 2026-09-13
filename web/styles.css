@@ -4147,3 +4147,19 @@ button {
   border: 0;
   background: var(--bg);
 }
+
+/* ---------------------------------------------------------------- desktop app chrome */
+
+/* Native macOS desktop app styling (injected via Tauri initialization script) */
+html.desktop {
+  --desktop-traffic-lights-spacing: 34px;
+}
+
+html.desktop .sidebar {
+  padding-top: calc(14px + var(--desktop-traffic-lights-spacing));
+}
+
+html.desktop .app[data-sidebar="collapsed"] .topbar {
+  padding-left: calc(18px + 72px);
+}
+

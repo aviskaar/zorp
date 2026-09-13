@@ -171,6 +171,21 @@ Prebuilt binaries carry the default feature set. The four research
 capabilities are behind the `research` feature and still need a source
 build, because `zorp-track` bundles DuckDB.
 
+### Mac App (Zorp.app)
+
+A native macOS application packaged as a universal `.dmg` on GitHub releases. It runs the local `zorp-web` server in-process via Tauri v2 and opens the chat UI in its own native window with inset traffic lights, single-instance enforcement, and automatic login shell `PATH` repair.
+
+Download `Zorp_<version>_universal.dmg` from the GitHub Release, open it, and drag `Zorp.app` to `/Applications`.
+
+Because release binaries are ad-hoc signed, macOS Gatekeeper requires one approval on first launch:
+- Right-click (or Control-click) `Zorp.app` in `/Applications` and choose **Open**, then click **Open** in the confirmation dialog.
+- Or clear the quarantine attribute from your terminal:
+  ```bash
+  xattr -d com.apple.quarantine /Applications/Zorp.app
+  ```
+
+`Zorp.app` shares conversation history and settings with the CLI under `~/.config/zorp` and `~/.local/share/zorp/conversations.db`.
+
 Or try it without installing anything:
 
 ```bash

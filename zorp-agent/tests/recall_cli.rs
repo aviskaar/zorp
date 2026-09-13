@@ -47,7 +47,10 @@ fn there_is_one_chunker_and_one_fingerprint() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if path.is_dir() {
-                if !matches!(name.as_ref(), "target" | ".git" | "node_modules") {
+                if !name.starts_with('.')
+                    && !name.starts_with("wt-")
+                    && !matches!(name.as_ref(), "target" | "node_modules")
+                {
                     stack.push(path);
                 }
                 continue;
