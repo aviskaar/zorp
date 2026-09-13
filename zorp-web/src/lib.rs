@@ -94,7 +94,9 @@ pub fn find_ui(explicit: Option<PathBuf>, additional_candidates: &[PathBuf]) -> 
         }
     }
     candidates.push(PathBuf::from("web"));
-    candidates.into_iter().find(|c| c.join("index.html").is_file())
+    candidates
+        .into_iter()
+        .find(|c| c.join("index.html").is_file())
 }
 
 pub async fn serve(options: ServeOptions) -> Result<Running, ServeError> {
@@ -154,4 +156,3 @@ pub async fn serve(options: ServeOptions) -> Result<Running, ServeError> {
 
     Ok(Running { addr, handle })
 }
-

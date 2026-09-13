@@ -245,12 +245,17 @@ fn desktop_manifest_drift_fails_release() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "disagreeing desktop version must fail");
+    assert!(
+        !out.status.success(),
+        "disagreeing desktop version must fail"
+    );
     let all = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(all.contains("zorp-desktop"), "error message must name zorp-desktop: {all}");
+    assert!(
+        all.contains("zorp-desktop"),
+        "error message must name zorp-desktop: {all}"
+    );
 }
-

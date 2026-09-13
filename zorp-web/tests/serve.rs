@@ -26,6 +26,6 @@ fn find_ui_checks_additional_candidates_first() {
     std::fs::create_dir_all(&custom_ui).unwrap();
     std::fs::write(custom_ui.join("index.html"), "<html></html>").unwrap();
 
-    let found = find_ui(None, &[custom_ui.clone()]);
+    let found = find_ui(None, std::slice::from_ref(&custom_ui));
     assert_eq!(found, Some(custom_ui));
 }
