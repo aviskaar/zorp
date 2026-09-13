@@ -20,7 +20,13 @@
  * a jsdom document and read back what actually landed.
  */
 
-import type { SkillAvailability, SkillListing, SkillSummary } from "./api.ts";
+import type {
+  ActiveSkill,
+  ActiveSkillListing,
+  SkillAvailability,
+  SkillListing,
+  SkillSummary,
+} from "./api.ts";
 
 /** The word on the pill. The count goes beside it. */
 export const SKILLS_LABEL = "Skills";
@@ -97,6 +103,92 @@ function textNode(doc: Document, tag: string, className: string, value: string):
 }
 
 /**
+ * What each presence means, in a sentence a reader can act on.
+ *
+ * The words are the server's; these are the explanations. "Elided" is the
+ * one that has to be unambiguous, because it is the state the activity line
+ * cannot show and the reason this listing exists.
+ */
+export const PRESENCE_NOTES: Record<ActiveSkill["presence"], string> = {
+  present: "in the context now",
+  elided: "loaded, then dropped by compaction. The model can no longer read it",
+  dropped: "no longer in the request. The exchange it belonged to was dropped",
+  unrecorded: "its result was never recorded, so nothing was sent",
+};
+
+/**
+ * The skills whose instructions are in this conversation, above the ones
+ * that are merely installed.
+ *
+ * Both lists have to be here and they have to be labelled differently. A
+ * panel that showed only what was loaded would reproduce the bug it exists
+ * to fix, since "loaded" and "still in the window" stop being the same
+ * thing the moment a conversation is long enough to compact.
+ */
+function renderActiveSection(
+  doc: Document,
+  panel: HTMLElement,
+  listing: ActiveSkillListing,
+): void {
+  panel.append(textNode(doc, "div", "skills-section", "in this conversation"));
+
+  if (!listing.loaded) {
+    panel.append(
+      textNode(
+        doc,
+        "p",
+        "skills-empty",
+        "No skill has been loaded in this conversation. The agent loads one when a task matches its description.",
+      ),
+    );
+    return;
+  }
+
+  panel.append(
+    textNode(
+      doc,
+      "p",
+      "skills-note",
+      `${listing.active} of ${listing.loaded} still in the context. ` +
+        "Instructions arrive as a tool result, and compaction takes the oldest of those first.",
+    ),
+  );
+
+  const list = el(doc, "ul", "skills-list");
+  for (const skill of listing.skills) {
+    const item = el(doc, "li", `skills-item skills-${skill.presence}`);
+    item.append(
+      textNode(doc, "span", "skills-name", skill.name),
+      textNode(doc, "span", "skills-presence", PRESENCE_NOTES[skill.presence]),
+    );
+    // Skill bodies are among the largest things in a window, so what one is
+    // costing is worth a line. Only when it is actually costing something.
+    if (skill.active && skill.bytes_in_window > 0) {
+      item.append(
+        textNode(
+          doc,
+          "span",
+          "skills-bytes",
+          `${skill.bytes_in_window.toLocaleString()} bytes`,
+        ),
+      );
+    }
+    if (skill.loads > 1) {
+      item.append(textNode(doc, "span", "skills-loads", `loaded ${skill.loads} times`));
+    }
+    if (!skill.scope) {
+      // The interesting case. Its instructions may still be in the window
+      // while the file they came from is gone.
+      item.append(
+        textNode(doc, "span", "skills-declared", "no longer installed"),
+      );
+    }
+    list.append(item);
+  }
+  panel.append(list);
+}
+
+/**
  * Fill the popover from a listing.
  *
  * Grouped by scope, in the order the scopes are searched, so a reader can
@@ -105,15 +197,27 @@ function textNode(doc: Document, tag: string, className: string, value: string):
  * warnings says that too, because a skill that failed to parse is the
  * case a person most needs to hear about.
  */
-export function renderSkillsPanel(doc: Document, panel: HTMLElement, listing: SkillListing): void {
+export function renderSkillsPanel(
+  doc: Document,
+  panel: HTMLElement,
+  listing: SkillListing,
+  active?: ActiveSkillListing | null,
+): void {
   panel.replaceChildren();
 
+  // What is in the conversation goes first, because it is the question a
+  // person opening this has. What is on disk is the reference underneath it.
+  if (active) {
+    renderActiveSection(doc, panel, active);
+  }
+
+  panel.append(textNode(doc, "div", "skills-section", "installed"));
   panel.append(
     textNode(
       doc,
       "p",
       "skills-note",
-      "Installed skills. The agent loads one when the task matches its description. " +
+      "The agent loads one when the task matches its description. " +
         "A skill adds guidance only: it grants no tool, widens no approval, and bypasses no denylist entry.",
     ),
   );

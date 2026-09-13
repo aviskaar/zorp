@@ -906,6 +906,24 @@ button {
   color: var(--text-faint);
 }
 
+/* A section heading, which is a different thing from a scope heading: one
+   says where a skill came from, the other says whether it is in the
+   conversation at all. */
+.skills-section {
+  margin: 14px 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+
+.skills-section:first-child {
+  margin-top: 0;
+}
+
 .skills-list {
   list-style: none;
   margin: 0;
@@ -942,6 +960,36 @@ button {
 .skills-declared {
   font-size: 11px;
   color: var(--text-faint);
+}
+
+/* What became of a skill's instructions in this conversation. The mark down
+   the left edge is what makes "loaded" and "still in the window" tell apart
+   at a glance, which is the whole point of the section. */
+.skills-presence,
+.skills-bytes,
+.skills-loads {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.skills-item.skills-present {
+  border-left: 2px solid var(--accent, var(--text));
+  padding-left: 8px;
+}
+
+.skills-item.skills-elided,
+.skills-item.skills-dropped,
+.skills-item.skills-unrecorded {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+
+/* Gone is gone, and the name should read that way rather than sitting at
+   the same weight as one that is live. */
+.skills-item.skills-elided .skills-name,
+.skills-item.skills-dropped .skills-name,
+.skills-item.skills-unrecorded .skills-name {
+  color: var(--text-dim);
 }
 
 .skills-warning {

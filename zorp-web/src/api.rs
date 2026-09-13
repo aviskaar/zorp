@@ -131,6 +131,12 @@ fn api_router(state: AppState) -> Router {
         // do with which features this binary was compiled with. There is no
         // route that loads one; that is the agent's `skill` tool.
         .route("/api/skills", get(list_skills))
+        // Which skills are in one conversation's context, as opposed to
+        // which are installed. Read-only like the listing above, and for
+        // the same reason: it reports, it does not load. The answer is
+        // computed from the transcript a turn would send, so it can say
+        // that a skill loaded twenty turns ago is no longer in the window.
+        .route("/api/sessions/:id/skills/active", get(active_skills))
         .route("/api/voice/status", get(crate::voice::status))
         .route("/api/voice/wait", post(crate::voice::wait))
         .route(
@@ -265,6 +271,97 @@ fn skill_scope(path: &std::path::Path, workspace: Option<&std::path::Path>) -> &
         return "user";
     }
     "other"
+}
+
+/// Which skills' instructions are in the context of one conversation.
+///
+/// `/api/skills` answers "what is installed". This answers "what is loaded,
+/// right now, in this session", and the two diverge the moment a
+/// conversation is long enough to compact. A skill body is a tool result
+/// body, `plan_seed` elides and drops those oldest-first, and the activity
+/// line is drawn from the store rather than from the window. So the line
+/// keeps showing a load whose instructions left the request long ago.
+///
+/// **The answer is the plan a turn would use, not a guess about it.** This
+/// calls `seed_transcript` with the same system prompt and the same budget
+/// `start_turn` does, then reads what came back. If the two ever disagree,
+/// the plan is right and this is wrong, which is the correct direction for
+/// a report to fail in.
+///
+/// Read-only, and the only route that touches a skill stays the one that
+/// does not exist: loading is the agent's `skill` tool. Nothing here
+/// re-injects a body in order to describe it, and nothing is written.
+///
+/// `scope` is joined from the installed listing, because where a skill came
+/// from is a fact about the disk rather than about the transcript. A skill
+/// that was loaded and has since been uninstalled keeps its row with a null
+/// scope rather than vanishing, since instructions from a file that is no
+/// longer on disk are exactly the kind of thing this route exists to show.
+async fn active_skills(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let workspace = state.workspace_root();
+    let answered = tokio::task::spawn_blocking(move || {
+        let store = zorp_agent::Store::open_default().map_err(|e| e.to_string())?;
+        if store.session_status(&id).ok().flatten().is_none() {
+            return Err("no such session".to_string());
+        }
+        let stored = store.load_message_records(&id).map_err(|e| e.to_string())?;
+        let latest = store.latest_compaction(&id).unwrap_or_default();
+        let system = match &workspace {
+            Some(root) => crate::turn::turn_prompt(root),
+            None => crate::turn::system_prompt().to_string(),
+        };
+        let budget = zorp_agent::ContextBudget::from_env();
+        let plan = zorp_agent::plan_seed(stored.clone(), &system, &budget, latest.as_ref());
+        let rows = zorp_agent::active_skills(&stored, &plan.records);
+
+        // Where each skill came from, for a page that groups by scope. A
+        // name with no entry here is one that is no longer installed.
+        let installed = discover_skills(workspace.as_deref()).0;
+        let scope_of = |name: &str| -> Option<&'static str> {
+            installed
+                .iter()
+                .find(|skill| skill.name == name)
+                .map(|skill| skill_scope(&skill.path, workspace.as_deref()))
+        };
+
+        let skills: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                json!({
+                    // Read out of the header zorp itself writes onto a
+                    // loaded body, so this is the registry's name for the
+                    // skill and never a string the model chose.
+                    "name": row.name,
+                    "scope": scope_of(&row.name),
+                    "presence": row.presence.as_str(),
+                    "active": row.presence.is_active(),
+                    "seq": row.seq,
+                    "loads": row.loads,
+                    "bytes_in_window": row.bytes_in_window,
+                })
+            })
+            .collect();
+        let active = rows.iter().filter(|r| r.presence.is_active()).count();
+        Ok::<_, String>(json!({
+            "skills": skills,
+            "loaded": rows.len(),
+            "active": active,
+        }))
+    })
+    .await;
+
+    match answered {
+        Ok(Ok(body)) => Json(body).into_response(),
+        Ok(Err(reason)) if reason == "no such session" => {
+            (StatusCode::NOT_FOUND, reason).into_response()
+        }
+        Ok(Err(reason)) => (StatusCode::INTERNAL_SERVER_ERROR, reason).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "listing active skills crashed".to_string(),
+        )
+            .into_response(),
+    }
 }
 
 /// Every skill this server can see, with where it came from.

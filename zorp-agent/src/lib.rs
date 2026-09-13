@@ -1,6 +1,7 @@
 //! zorp-agent: a research agent built on the tiny zorp core.
 //! Milestone 1 (walking skeleton): normalized model turns + a bare agent loop.
 
+pub mod active_skills;
 mod agent;
 mod approval;
 mod blocks;
@@ -51,6 +52,7 @@ mod trust;
 pub mod validate;
 mod verify;
 
+pub use active_skills::{active_skills, ActiveSkill, Presence};
 pub use agent::{
     web_search_availability, Agent, Outcome, RunRecorder, Summarizer, ToolAvailability,
 };
