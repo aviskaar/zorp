@@ -6743,7 +6743,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zorp"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "ureq",
@@ -6752,7 +6752,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-agent"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -6776,7 +6776,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-desktop"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "tauri",
@@ -6791,11 +6791,11 @@ dependencies = [
 
 [[package]]
 name = "zorp-skill"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "zorp-web"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-stream",
  "axum",
