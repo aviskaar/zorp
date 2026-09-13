@@ -56,7 +56,8 @@ jobs:
 
       - name: Build DMG
         run: |
-          cargo tauri build --target universal-apple-darwin --manifest-path zorp-desktop/Cargo.toml
+          cd zorp-desktop
+          cargo tauri build --target universal-apple-darwin
 
       - name: Checksum DMG
         run: |
