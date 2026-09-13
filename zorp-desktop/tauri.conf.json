@@ -42,8 +42,8 @@
     "resources": [
       "../web/index.html",
       "../web/styles.css",
-      "../web/dist/**",
-      "../web/fonts/**"
+      "../web/dist/*",
+      "../web/fonts/*"
     ],
     "macOS": {
       "frameworks": [],
