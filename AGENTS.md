@@ -25,6 +25,17 @@ resulting artifact, deliver it in the right form.
   code. Read `docs/UPSTREAM_QUECTO_README.md` before assuming behavior;
   it documents the original design intent under the old `quecto-*` names
   (mentally substitute `zorp-*`).
+- `zorp-desktop/` is zorp's native Mac desktop app: `Zorp.app`, bundled into
+  a universal `.dmg` using Tauri v2. It links `zorp-web` and `zorp-agent` as
+  path dependencies and runs the server in-process on a background Tokio
+  runtime, binding loopback port 7777 (falling back to ephemeral port 0 if
+  occupied). It is deliberately excluded from the Cargo workspace
+  (`exclude = ["zorp-desktop"]` in root `Cargo.toml`) with its own
+  `Cargo.lock` so desktop GUI dependencies (`wry`, `tao`, `objc2`) do not
+  slow down Linux CI or break `cargo test --workspace`. Native chrome uses
+  overlay title bars with inset traffic lights, window state persistence, and
+  an automatic login shell `PATH` repair at launch. See `docs/DECISIONS.md`
+  (2026-09-12).
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
   records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
   built, not inherited. The four capabilities (validate, investigate,
