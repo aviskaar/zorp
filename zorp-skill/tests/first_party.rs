@@ -30,10 +30,25 @@ fn discovered() -> zorp_skill::SkillRegistry {
     registry
 }
 
+const FIRST_PARTY: &[&str] = &["artifact-design", "artifact-diagramming"];
+
+fn first_party_skills() -> Vec<zorp_skill::Skill> {
+    let registry = discovered();
+    FIRST_PARTY
+        .iter()
+        .map(|name| {
+            registry
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is missing"))
+                .clone()
+        })
+        .collect()
+}
+
 #[test]
 fn the_first_party_skills_are_discoverable() {
     let registry = discovered();
-    for name in ["artifact-design", "artifact-diagramming"] {
+    for name in FIRST_PARTY {
         assert!(
             registry.get(name).is_some(),
             "{name} is missing: found {:?}",
@@ -47,7 +62,7 @@ fn the_first_party_skills_are_discoverable() {
 /// about. One that does not is a skill that never gets chosen.
 #[test]
 fn every_first_party_description_says_when_to_use_it() {
-    for skill in discovered().iter() {
+    for skill in first_party_skills() {
         let description = skill.description.to_lowercase();
         assert!(
             description.contains("use ") || description.contains("when "),
@@ -62,7 +77,7 @@ fn every_first_party_description_says_when_to_use_it() {
 /// disagrees with it is a skill somebody will try to load by the wrong one.
 #[test]
 fn declared_names_agree_with_their_directories() {
-    for skill in discovered().iter() {
+    for skill in first_party_skills() {
         if let Some(declared) = &skill.declared_name {
             assert_eq!(
                 declared, &skill.name,
@@ -79,7 +94,7 @@ fn declared_names_agree_with_their_directories() {
 /// skills would be confusing rather than merely ignored.
 #[test]
 fn no_first_party_skill_asks_for_tools() {
-    for skill in discovered().iter() {
+    for skill in first_party_skills() {
         assert!(
             skill.declared_tools.is_empty(),
             "{} declares allowed-tools, which zorp parses and ignores: {:?}",
