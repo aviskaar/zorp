@@ -14,6 +14,13 @@
  * `docs/superpowers/specs/2026-08-17-artifact-pane-design.md`. Raw HTML is
  * deliberately not supported and renders as visible text, which is both the
  * safe direction and the honest one.
+ *
+ * Inline math is the one place this renderer accepts a notation it does not
+ * really implement. Models write `$\rightarrow$` out of habit and the page
+ * showed the source, so `math` at the bottom of this file swaps a short list
+ * of LaTeX commands for the characters they mean. It is a lookup table, it
+ * produces text nodes, and anything it does not recognise stays literal. It
+ * is not a step towards typesetting and should not become one.
  */
 
 /** Schemes a link is allowed to have. Anything else renders as plain text. */
@@ -372,7 +379,7 @@ function renderLinks(target: HTMLElement, text: string): void {
     // not an image. It belongs to the text, not to the link.
     const lead = rest.slice(0, match.index) + before;
     if (lead) {
-      target.append(document.createTextNode(lead));
+      target.append(document.createTextNode(math(lead)));
     }
     if (isSafeHref(href)) {
       const anchor = document.createElement("a");
@@ -386,13 +393,16 @@ function renderLinks(target: HTMLElement, text: string): void {
     } else {
       // Not silently dropped. A link the renderer will not make clickable
       // still shows its text and its URL, so nothing disappears. `before` is
-      // already on the page, so only the link part is repeated here.
+      // already on the page, so only the link part is repeated here. Shown
+      // exactly as written, math substitution included, because the point of
+      // this branch is to put the source in front of a reader who needs to
+      // see what the link actually was.
       target.append(document.createTextNode(whole.slice(before.length)));
     }
     rest = rest.slice(match.index + whole.length);
   }
   if (rest) {
-    target.append(document.createTextNode(rest));
+    target.append(document.createTextNode(math(rest)));
   }
 }
 
@@ -403,4 +413,176 @@ function isSafeHref(href: string): boolean {
     return true;
   }
   return SAFE_SCHEMES.some((scheme) => lowered.startsWith(scheme));
+}
+
+/**
+ * LaTeX commands a model reaches for out of habit, and the character each
+ * one means.
+ *
+ * This is a lookup table and not a TeX engine, and it has to stay one. The
+ * renderer's whole reason for being hand written is that it builds DOM
+ * nodes and never an HTML string, so KaTeX, MathJax and every other math
+ * renderer are out: they are string builders, and pulling one in to draw an
+ * arrow would trade a cosmetic problem for an injection surface on the one
+ * path that renders text a model produced after reading tool results and
+ * web pages. A table produces text nodes, which is the only thing this file
+ * is allowed to produce.
+ *
+ * A command that is not in here is left exactly as it is today, which is
+ * literal text. That is what keeps this a strict improvement: the worst
+ * case is the current behaviour.
+ */
+const MATH_COMMANDS: Record<string, string> = {
+  // The ones that prompted this: arrows, which turn up in any answer
+  // describing a flow from one thing to another.
+  rightarrow: "→",
+  to: "→",
+  leftarrow: "←",
+  gets: "←",
+  leftrightarrow: "↔",
+  Rightarrow: "⇒",
+  Leftarrow: "⇐",
+  Leftrightarrow: "⇔",
+  mapsto: "↦",
+  uparrow: "↑",
+  downarrow: "↓",
+  // Relations and operators.
+  times: "×",
+  div: "÷",
+  pm: "±",
+  mp: "∓",
+  cdot: "·",
+  le: "≤",
+  leq: "≤",
+  ge: "≥",
+  geq: "≥",
+  ne: "≠",
+  neq: "≠",
+  approx: "≈",
+  equiv: "≡",
+  propto: "∝",
+  infty: "∞",
+  sum: "∑",
+  prod: "∏",
+  sqrt: "√",
+  partial: "∂",
+  // Sets and logic.
+  in: "∈",
+  notin: "∉",
+  subset: "⊂",
+  subseteq: "⊆",
+  cup: "∪",
+  cap: "∩",
+  emptyset: "∅",
+  forall: "∀",
+  exists: "∃",
+  neg: "¬",
+  land: "∧",
+  lor: "∨",
+  // Greek, lower case then upper, since a model writing about a rate or an
+  // angle reaches for these as readily as for an arrow.
+  alpha: "α",
+  beta: "β",
+  gamma: "γ",
+  delta: "δ",
+  epsilon: "ε",
+  varepsilon: "ε",
+  zeta: "ζ",
+  eta: "η",
+  theta: "θ",
+  iota: "ι",
+  kappa: "κ",
+  lambda: "λ",
+  mu: "μ",
+  nu: "ν",
+  xi: "ξ",
+  pi: "π",
+  rho: "ρ",
+  sigma: "σ",
+  tau: "τ",
+  upsilon: "υ",
+  phi: "φ",
+  varphi: "φ",
+  chi: "χ",
+  psi: "ψ",
+  omega: "ω",
+  Gamma: "Γ",
+  Delta: "Δ",
+  Theta: "Θ",
+  Lambda: "Λ",
+  Xi: "Ξ",
+  Pi: "Π",
+  Sigma: "Σ",
+  Phi: "Φ",
+  Psi: "Ψ",
+  Omega: "Ω",
+};
+
+/**
+ * An inline math span: a `$`, something, a `$`, on one line.
+ *
+ * The three guards in the pattern are the whole design, because the failure
+ * this has to avoid is not "an arrow did not render". It is "a sentence
+ * about money got eaten", which is strictly worse than today.
+ *
+ * - The opening `$` may not be followed by a digit or whitespace, so
+ *   `it costs $5 to build and $10 to run` never opens a span. This is the
+ *   guard that matters: currency is the common case and a model writing
+ *   about prices must be safe here.
+ * - The closing `$` may not be preceded by whitespace.
+ * - Neither may there be a newline or another `$` inside.
+ *
+ * Two more conditions cannot be expressed in a pattern and are checked in
+ * `math`: the span has to contain at least one backslash command, and every
+ * command in it has to be one this file knows. So `$\foobar$` stays
+ * literal, which is what the issue asks for and is also the honest answer:
+ * a table that does not know a command should not pretend to.
+ */
+const MATH = /\$(?![\d\s])([^$\n]*[^$\s\n])\$/;
+
+/** True if every `\command` in `body` is one the table knows, and there is one. */
+function everyCommandIsKnown(body: string): boolean {
+  const commands = body.match(/\\[a-zA-Z]+/g);
+  if (!commands) {
+    return false;
+  }
+  return commands.every((command) => command.slice(1) in MATH_COMMANDS);
+}
+
+/**
+ * Replace the math spans in a run of plain text, leaving everything else
+ * byte for byte as it was.
+ *
+ * Called only where a text node is about to be made, which is what keeps a
+ * code span out of reach: by the time text gets here `renderSpans` has
+ * already taken every backtick span out and rendered it separately, so
+ * `` `$\rightarrow$` `` is never offered to this function at all. A link's
+ * URL is out of reach for the same reason, since `renderLinks` has already
+ * split the link off.
+ */
+export function math(text: string): string {
+  let rest = text;
+  let out = "";
+  for (;;) {
+    const match = rest.match(MATH);
+    if (!match || match.index === undefined) {
+      break;
+    }
+    const [whole, body] = match;
+    out += rest.slice(0, match.index);
+    // Not math after all. The `$` is consumed into the output as the literal
+    // it is, and the scan continues after it rather than after the whole
+    // match, so a later `$` on the line still gets its chance to open a span.
+    if (!everyCommandIsKnown(body)) {
+      out += "$";
+      rest = rest.slice(match.index + 1);
+      continue;
+    }
+    out += body.replace(
+      /\\([a-zA-Z]+)/g,
+      (_command, name: string) => MATH_COMMANDS[name],
+    );
+    rest = rest.slice(match.index + whole.length);
+  }
+  return out + rest;
 }
