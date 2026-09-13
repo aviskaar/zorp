@@ -4,7 +4,7 @@ mod env;
 mod server;
 
 use std::path::PathBuf;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{LogicalPosition, Manager, TitleBarStyle, WebviewUrl, WebviewWindowBuilder};
 
 fn main() {
     env::repair_path();
@@ -38,6 +38,10 @@ fn main() {
                 .title("Zorp")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 600.0)
+                .resizable(true)
+                .title_bar_style(TitleBarStyle::Overlay)
+                .hidden_title(true)
+                .traffic_light_position(LogicalPosition::new(16.0, 18.0))
                 .initialization_script(init_script)
                 .build()?;
 

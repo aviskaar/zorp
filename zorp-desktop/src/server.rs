@@ -39,9 +39,12 @@ pub fn start_background_server(
         rt.block_on(async move {
             let mut additional_candidates = Vec::new();
             if let Some(ref res) = bundle_resource_dir {
+                additional_candidates.push(res.join("_up_").join("web"));
                 additional_candidates.push(res.join("web"));
                 additional_candidates.push(res.clone());
             }
+            additional_candidates.push(PathBuf::from("../web"));
+            additional_candidates.push(PathBuf::from("web"));
 
             let options = ServeOptions {
                 bind: "127.0.0.1".to_string(),
