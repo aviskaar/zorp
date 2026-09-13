@@ -255,9 +255,12 @@ resulting artifact, deliver it in the right form.
   a turn, never from anything a model wrote, and a load is recognised by
   the header `Skill::instructions` puts on a body rather than by the name
   in the call. Both routes are read-only and neither sends a body.
-  The repository ships two of its own under `.claude/skills/`,
-  `artifact-design` and `artifact-diagramming`, which say how to write the
-  `.html` and `.svg` files the browser's side pane renders. Both are pinned
+  The repository ships three of its own under `.claude/skills/`.
+  `artifact-design` and `artifact-diagramming` say how to write the
+  `.html` and `.svg` files the browser's side pane renders, and
+  `landing-page` says how to write a page that leaves the pane and goes on
+  a real server, including the authoring rules that make a later move to
+  JSX mechanical rather than a rewrite. Both are pinned
   by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
   parsing takes its skill off every surface with only a warning to say so.
   They both state the constraint that decides everything else about such a
