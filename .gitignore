@@ -40,3 +40,7 @@ docs/paper/zorp-paper.tex
 # Per-run scratch from local agent jobs (transcripts, workspaces, artifacts).
 # Written into the repo root by the harness when jobs are driven by hand.
 /jobs/
+
+# Desktop Tauri build outputs
+zorp-desktop/target
+
