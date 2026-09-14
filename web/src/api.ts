@@ -50,6 +50,8 @@ export interface SessionSummary {
    * text a person typed and reaches the page through `textContent`.
    */
   project_id?: string | null;
+  /** The agent profile this conversation runs under, or `null` for default. */
+  agent?: string | null;
   /**
    * When the server last wrote this conversation, in epoch milliseconds.
    *
@@ -114,6 +116,7 @@ export interface CompactionRecord {
 export interface SessionTranscript {
   messages: Message[];
   compactions: CompactionRecord[];
+  agent?: string | null;
 }
 
 /**
@@ -1867,3 +1870,132 @@ export async function recallSearch(
   );
   return body?.hits;
 }
+
+/* ------------------------------------------------------------------ */
+/* MCP servers                                                         */
+/* ------------------------------------------------------------------ */
+
+export interface McpServerSummary {
+  name: string;
+  transport: string;
+  command?: string[];
+  args?: string[];
+  url?: string;
+  env_keys: string[];
+  header_keys: string[];
+  trust: string;
+  timeout_secs?: number;
+  loaded: boolean;
+}
+
+export interface McpListing {
+  servers: McpServerSummary[];
+  loads_servers: boolean;
+  why: string;
+  sources: string[];
+  warning: string | null;
+}
+
+export async function fetchMcp(): Promise<McpListing> {
+  return request<McpListing>("GET", "/api/mcp");
+}
+
+/* ------------------------------------------------------------------ */
+/* state on disk and data reset                                        */
+/* ------------------------------------------------------------------ */
+
+export interface DataFile {
+  label: string;
+  what: string;
+  path: string;
+  env_var: string;
+  exists: boolean;
+  bytes: number | null;
+}
+
+export interface DataState {
+  files: DataFile[];
+  reset_note: string;
+}
+
+export async function fetchDataState(): Promise<DataState> {
+  return request<DataState>("GET", "/api/data");
+}
+
+export async function clearAllSessions(): Promise<{ deleted_sessions: number }> {
+  return request<{ deleted_sessions: number }>("DELETE", "/api/sessions");
+}
+
+export async function deleteRecallIndex(): Promise<{ removed: string[] }> {
+  return request<{ removed: string[] }>("DELETE", "/api/recall/index");
+}
+
+export async function resetSettings(): Promise<{ removed: string[]; settings: Settings; note: string }> {
+  return request<{ removed: string[]; settings: Settings; note: string }>("DELETE", "/api/settings");
+}
+
+/* ------------------------------------------------------------------ */
+/* doctor                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface DoctorCheck {
+  health: "ok" | "bad" | "off" | "note";
+  label: string;
+  detail: string;
+}
+
+export interface DoctorReport {
+  version: string;
+  healthy: boolean;
+  base_url: string;
+  checks: DoctorCheck[];
+}
+
+export async function fetchDoctor(probe = false): Promise<DoctorReport> {
+  return request<DoctorReport>("GET", probe ? "/api/doctor?probe=1" : "/api/doctor");
+}
+
+/* ------------------------------------------------------------------ */
+/* agents                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface AgentSummary {
+  name: string;
+  scope: "user" | "workspace";
+  description: string | null;
+  model: string | null;
+  tools: string[] | null;
+  approval_preset: string | null;
+  wants_privilege: boolean;
+  privilege_summary: string[];
+  trusted: boolean;
+  fully_applied: boolean;
+  broken: string | null;
+}
+
+export interface AgentListing {
+  agents: AgentSummary[];
+  default: string;
+}
+
+export interface AgentDetail extends AgentSummary {
+  system_prompt: string | null;
+  path: string;
+}
+
+export async function fetchAgents(): Promise<AgentListing> {
+  return request<AgentListing>("GET", "/api/agents");
+}
+
+export async function fetchAgent(scope: string, name: string): Promise<AgentDetail> {
+  return request<AgentDetail>("GET", `/api/agents/${segment(scope)}/${segment(name)}`);
+}
+
+export async function trustAgent(scope: string, name: string): Promise<{ trusted: boolean; hash: string }> {
+  return request<{ trusted: boolean; hash: string }>("POST", `/api/agents/${segment(scope)}/${segment(name)}/trust`, {});
+}
+
+export async function setSessionAgent(id: string, agent: string | null): Promise<void> {
+  return request<void>("PUT", `/api/sessions/${segment(id)}/agent`, { agent });
+}
+
