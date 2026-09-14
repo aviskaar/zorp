@@ -194,6 +194,13 @@ pub const RESET_LEAVES_THE_KEY: &str =
 pub fn reset_settings() -> std::io::Result<Cleared> {
     let mut cleared = Cleared::default();
     remove(&crate::config::path(), &mut cleared.removed)?;
+    // The old `web.toml`, which `config::load` still reads when the current
+    // file is absent. Removing only the current one is a reset that does
+    // not reset: on the next read the pre-rename settings come back, and
+    // the surface that said it had cleared them shows them again.
+    if let Some(legacy) = crate::config::legacy_path() {
+        remove(&legacy, &mut cleared.removed)?;
+    }
     remove(
         &crate::trust::TrustStore::default_path(),
         &mut cleared.removed,
@@ -329,6 +336,42 @@ mod tests {
         assert_eq!(cleared.removed.len(), 2, "{cleared:?}");
         assert!(sessions.exists(), "reset deleted the conversations");
         assert!(history.exists(), "reset deleted the input history");
+    }
+
+    /// Reset has to take the file an older zorp wrote, or it does not reset.
+    ///
+    /// `config::load` reads `web.toml` when `zorp.toml` is absent, which is
+    /// what stops a pre-rename setup breaking on upgrade. Removing only the
+    /// current file therefore leaves the old settings live: the next read
+    /// finds them, and the surface that said it had cleared them shows them
+    /// again with no way to tell why.
+    #[test]
+    fn reset_takes_the_pre_rename_settings_file_too() {
+        let _lock = lock();
+        let guard = Guard::new();
+        // `legacy_path` is inferred only when no explicit path is set, so
+        // the inferred config directory is what this has to exercise.
+        std::env::remove_var("ZORP_CONFIG");
+        std::env::remove_var("ZORP_WEB_CONFIG");
+        let previous = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", guard.dir.path());
+
+        let legacy = crate::config::legacy_path().expect("inferred, so there is one");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "model = \"from-web-toml\"\n").unwrap();
+
+        let cleared = reset_settings();
+
+        match previous {
+            Some(p) => std::env::set_var("XDG_CONFIG_HOME", p),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        cleared.unwrap();
+
+        assert!(
+            !legacy.exists(),
+            "the old settings survived a reset and would be read again"
+        );
     }
 
     /// Said out loud, because the alternative is a person clicking reset and

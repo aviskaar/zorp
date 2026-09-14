@@ -196,20 +196,43 @@ pub fn feature_check() -> Check {
 }
 
 /// The key line. Reports set or not set and nothing else, ever.
+///
+/// The environment is the only place this surface can look, which is right
+/// for the terminal and wrong for the browser: a key typed into the
+/// settings pane is held in the server's settings state and never in this
+/// process's environment. See `api_key_check_from` for the caller that has
+/// one.
 pub fn api_key_check(base_url: &str) -> Check {
-    if api_key_set() {
-        return Check::note("api key", "ZORP_API_KEY is set");
+    api_key_check_from(base_url, api_key_set().then_some("ZORP_API_KEY"))
+}
+
+/// The same line for a caller that knows of a key this process's
+/// environment cannot see.
+///
+/// `zorp-web` holds a browser-configured key in its settings state, so
+/// reading only `ZORP_API_KEY` made the settings pane report "not set" and
+/// the whole report unhealthy on the one configuration a person had just
+/// finished entering there. That is worse than no check, because it sends
+/// somebody to fix a thing that is not broken.
+///
+/// `source` is where the key came from and never the key. It is a label
+/// chosen in code at the call site, so there is no path by which a secret
+/// reaches this argument, and reporting set or not set is still the whole
+/// contract.
+pub fn api_key_check_from(base_url: &str, source: Option<&str>) -> Check {
+    if let Some(source) = source {
+        return Check::note("api key", format!("{source} is set"));
     }
     // A local endpoint does not want one, so its absence is not a fault.
     if is_local(base_url) {
         Check::note(
             "api key",
-            "ZORP_API_KEY is not set, which is right for a local endpoint",
+            "no api key is set, which is right for a local endpoint",
         )
     } else {
         Check::bad(
             "api key",
-            format!("ZORP_API_KEY is not set, and {base_url} is not a local endpoint"),
+            format!("no api key is set, and {base_url} is not a local endpoint"),
         )
     }
 }

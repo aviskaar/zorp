@@ -246,17 +246,7 @@ resulting artifact, deliver it in the right form.
   no tool, loosen no approval, and bypass no denylist entry, and
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
-  that.
-- `zorp-agent/src/state.rs` is the one list of what zorp keeps on this
-  machine: the conversation store, the search index, the input history,
-  the trust file and the settings file. It is what `zorp-agent data`,
-  `GET /api/data` and the browser's three clearing actions all read, so
-  the two surfaces cannot disagree about what a reset means. Nothing in it
-  touches a workspace file and there is no code path that can. Resetting
-  settings cannot unset `ZORP_API_KEY`, because a process does not own the
-  environment it was started in, and `RESET_LEAVES_THE_KEY` says so to
-  whoever is about to click. No tool reaches any of it; see
-  `no_tool_clears_state_or_resets_settings`. Skills are not capsules; the same entry says why both exist.
+  that. Skills are not capsules; the same entry says why both exist.
   `/api/skills` says what is installed and
   `/api/sessions/:id/skills/active` says whose instructions are in one
   conversation's context, which stop being the same answer as soon as a
@@ -297,6 +287,16 @@ resulting artifact, deliver it in the right form.
   listing carries no skill body either, so a `SKILL.md` cannot reach the
   page at all; the strings that do reach it are a file zorp did not write
   and go on through `textContent` like model output.
+- `zorp-agent/src/state.rs` is the one list of what zorp keeps on this
+  machine: the conversation store, the search index, the input history,
+  the trust file and the settings file. It is what `zorp-agent data`,
+  `GET /api/data` and the browser's three clearing actions all read, so
+  the two surfaces cannot disagree about what a reset means. Nothing in it
+  touches a workspace file and there is no code path that can. Resetting
+  settings cannot unset `ZORP_API_KEY`, because a process does not own the
+  environment it was started in, and `RESET_LEAVES_THE_KEY` says so to
+  whoever is about to click. No tool reaches any of it; see
+  `no_tool_clears_state_or_resets_settings`.
 - `zorp-recall/` is zorp's own conversation search: a loopback guard, an
   embedder that talks to a local Ollama, and a SQLite vector index over the
   conversations in `zorp-agent`'s store. Like `zorp-search` and `zorp-skill`

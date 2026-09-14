@@ -112,13 +112,41 @@ struct McpConfigToml {
     servers: Vec<ServerConfig>,
 }
 
+/// A TOML parse failure said without quoting the file back.
+///
+/// `toml::de::Error`'s `Display` renders the offending source line
+/// verbatim under a caret. This file holds `headers` and `env`, which is
+/// where a `Bearer` token or an API key lives, so a malformed line right
+/// there puts the secret into an error string that a caller will log, show
+/// in a settings pane, or paste into a bug report. `ServerConfig::redacted`
+/// keeps secrets out of the success path and would be pointless if the
+/// failure path handed them out.
+///
+/// The line and column are what makes the message useful and neither is
+/// secret, so both are kept and only the quoted body is dropped. The span
+/// is a byte offset into the same text, so the position is counted here
+/// rather than read off the rendering.
+fn parse_error(source: &str, e: &toml::de::Error) -> String {
+    let Some(span) = e.span() else {
+        return e.message().to_string();
+    };
+    let start = span.start.min(source.len());
+    let line = source[..start].matches('\n').count() + 1;
+    let column = source[..start]
+        .rfind('\n')
+        .map_or(start, |nl| start - nl - 1)
+        + 1;
+    format!("line {line}, column {column}: {}", e.message())
+}
+
 impl McpConfig {
     pub fn empty() -> Self {
         McpConfig { servers: vec![] }
     }
 
     pub fn from_toml_str(s: &str) -> Result<Self, McpError> {
-        let t: McpConfigToml = toml::from_str(s).map_err(|e| McpError::Config(e.to_string()))?;
+        let t: McpConfigToml =
+            toml::from_str(s).map_err(|e| McpError::Config(parse_error(s, &e)))?;
         Ok(McpConfig { servers: t.servers })
     }
 
@@ -272,6 +300,46 @@ mod redaction_tests {
 
     /// The useful half is kept. Knowing a server wants `GITHUB_TOKEN` tells
     /// somebody what to set without telling anybody what it is.
+    /// A malformed line in this file is a line that may hold a token.
+    ///
+    /// `toml`'s own error renders the offending source line verbatim, so
+    /// the failure path was handing out exactly what `redacted` keeps off
+    /// the success path. The position survives because it is what makes
+    /// the message worth printing and it is not a secret.
+    #[test]
+    fn a_parse_failure_does_not_quote_the_file_back() {
+        let malformed = "[[servers]]\nname = \"gh\"\ncommand = \"x\"\n\
+                         headers = { Authorization = \"Bearer ghp_REALSECRET\", }\n";
+        let err = McpConfig::from_toml_str(malformed)
+            .expect_err("that is not valid toml")
+            .to_string();
+
+        assert!(!err.contains("ghp_REALSECRET"), "{err}");
+        assert!(!err.contains("Bearer"), "{err}");
+        assert!(!err.contains("Authorization"), "{err}");
+        assert!(
+            err.contains("line 4"),
+            "the position is the useful half: {err}"
+        );
+    }
+
+    /// The same for the environment variable, whose whole value is one
+    /// line of JSON holding the same fields.
+    #[test]
+    fn an_env_parse_failure_does_not_quote_the_value_back() {
+        let key = "ZORP_MCP_TEST_LEAK";
+        std::env::set_var(
+            key,
+            r#"[{"name":"gh","headers":{"Authorization":"Bearer ghp_REALSECRET"},}]"#,
+        );
+        let err = McpConfig::from_env_var(key)
+            .expect_err("that is not valid json")
+            .to_string();
+        std::env::remove_var(key);
+
+        assert!(!err.contains("ghp_REALSECRET"), "{err}");
+    }
+
     #[test]
     fn the_key_names_are_kept_because_they_are_what_helps() {
         let summary = server_with_secrets().redacted();

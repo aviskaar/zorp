@@ -574,8 +574,35 @@ fn mcp_servers(
 /// there for an explicit one.
 #[derive(serde::Deserialize, Default)]
 struct DoctorQuery {
+    /// Read as a string rather than a `bool` on purpose.
+    ///
+    /// A `bool` here is `serde_urlencoded`'s bool, which accepts `true` and
+    /// `false` and nothing else, so `?probe=1` answers 400. That is the
+    /// spelling this route's own "not checked" line tells a reader to use,
+    /// and the one in `docs/DECISIONS.md`, so the documented way to ask for
+    /// a probe was the one way that could not work. It is also how a person
+    /// writes a flag by hand.
     #[serde(default)]
-    probe: bool,
+    probe: Option<String>,
+}
+
+impl DoctorQuery {
+    /// Whether the caller asked for a probe.
+    ///
+    /// `?probe` with no value is a set flag, which is what a bare query key
+    /// means everywhere else. Anything that reads as off is off, and an
+    /// unrecognised value is on, because a caller who wrote the parameter
+    /// at all wanted the probe and a silent "no" would report an endpoint
+    /// as unchecked while looking like it had been checked.
+    fn wants_probe(&self) -> bool {
+        match self.probe.as_deref() {
+            None => false,
+            Some(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+        }
+    }
 }
 
 async fn doctor_route(
@@ -587,7 +614,7 @@ async fn doctor_route(
     let resolved = state.settings.lock().unwrap().resolve();
     let workspace = state.workspace_root();
     let own_port = state.own_port;
-    let probe = query.probe;
+    let probe = query.wants_probe();
     // Read from the settings state directly, since `resolve` deliberately
     // has no field that could carry it. A probe that authenticated
     // differently from a real turn would be testing the wrong request.
@@ -611,9 +638,22 @@ async fn doctor_route(
                 .checks
                 .push(Check::note("model", resolved.model.clone()));
         }
+        // The key this server would actually send, which is the settings
+        // one when a person typed it into the pane and `ZORP_API_KEY`
+        // otherwise. Reading only the environment reported "not set" and
+        // an unhealthy report on exactly the configuration somebody had
+        // just finished entering here. The label says which, and is a
+        // string chosen here rather than anything out of the key.
+        let source = if api_key.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+            Some("an api key configured in settings")
+        } else if doctor::api_key_set() {
+            Some("ZORP_API_KEY")
+        } else {
+            None
+        };
         report
             .checks
-            .push(doctor::api_key_check(&resolved.base_url));
+            .push(doctor::api_key_check_from(&resolved.base_url, source));
 
         // The same probe `POST /api/settings/test` makes, so the two cannot
         // disagree about whether the endpoint answers. Only when asked:

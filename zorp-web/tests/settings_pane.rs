@@ -40,6 +40,43 @@ async fn get(url: String) -> serde_json::Value {
     serde_json::from_str(&body).unwrap()
 }
 
+async fn put(url: String, body: &'static str) -> (u16, String) {
+    tokio::task::spawn_blocking(move || {
+        match ureq::put(&url)
+            .set("content-type", "application/json")
+            .send_string(body)
+        {
+            Ok(response) => {
+                let status = response.status();
+                (status, response.into_string().unwrap_or_default())
+            }
+            Err(ureq::Error::Status(code, response)) => {
+                (code, response.into_string().unwrap_or_default())
+            }
+            Err(e) => panic!("{e}"),
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// The status as well as the body, for a route whose failure mode is a
+/// status code with nothing in it.
+async fn get_status(url: String) -> (u16, String) {
+    tokio::task::spawn_blocking(move || match ureq::get(&url).call() {
+        Ok(response) => {
+            let status = response.status();
+            (status, response.into_string().unwrap_or_default())
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            (code, response.into_string().unwrap_or_default())
+        }
+        Err(e) => panic!("{e}"),
+    })
+    .await
+    .unwrap()
+}
+
 async fn delete(url: String) -> (u16, String) {
     tokio::task::spawn_blocking(move || match ureq::delete(&url).call() {
         Ok(response) => {
@@ -329,6 +366,91 @@ async fn the_doctor_report_never_carries_the_api_key() {
     assert!(!text.contains("0123456789"), "{text}");
     // Set or not set, which is the whole contract.
     assert!(text.contains("api key"), "{text}");
+}
+
+/// `?probe=1` is the spelling this route's own "not checked" line tells a
+/// reader to use, and the one in `docs/DECISIONS.md`.
+///
+/// It used to answer 400, because a `bool` field is `serde_urlencoded`'s
+/// bool and that accepts `true` and `false` and nothing else. So the
+/// documented way to ask for a probe was the one way that could not work,
+/// and the failure was a status code with no body saying which parameter
+/// it disliked.
+#[tokio::test]
+async fn the_probe_flag_accepts_the_spelling_the_docs_and_the_report_use() {
+    let _env = ENV.lock().await;
+    let fx = fixture().await;
+
+    for query in ["?probe=1", "?probe=true", "?probe"] {
+        let (status, _) = get_status(fx.url(&format!("/api/doctor{query}"))).await;
+        assert_eq!(status, 200, "GET /api/doctor{query} was refused");
+    }
+
+    // And an unprobed report still says it did not probe rather than
+    // guessing, which is the behaviour the opt in exists for.
+    let body = get(fx.url("/api/doctor")).await;
+    let endpoint = body["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["label"] == "endpoint reachable");
+    if let Some(check) = endpoint {
+        assert!(
+            check["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not checked"),
+            "{check}"
+        );
+    }
+}
+
+/// A key typed into the settings pane is a key that is set.
+///
+/// The check read `ZORP_API_KEY` and nothing else, so the pane somebody had
+/// just finished configuring reported "not set" against a remote endpoint
+/// and the whole report came back unhealthy. The report is the surface that
+/// tells a person whether their configuration works, so a false negative
+/// there sends them to fix something that is not broken.
+#[tokio::test]
+async fn a_key_configured_in_the_browser_reads_as_set() {
+    let _env = ENV.lock().await;
+    let previous = std::env::var("ZORP_API_KEY").ok();
+    std::env::remove_var("ZORP_API_KEY");
+    let fx = fixture().await;
+
+    let (status, _) = put(
+        fx.url("/api/settings"),
+        r#"{"base_url":"https://api.openai.com/v1","model":"m","api_key":"sk-TYPED-IN-THE-PANE"}"#,
+    )
+    .await;
+    assert_eq!(status, 200, "the settings write was refused");
+
+    let body = get(fx.url("/api/doctor")).await;
+    let text = body.to_string();
+    if let Some(p) = previous {
+        std::env::set_var("ZORP_API_KEY", p);
+    }
+
+    let key_check = body["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["label"] == "api key")
+        .expect("the report has an api key line")
+        .clone();
+
+    assert_ne!(key_check["health"], "bad", "{key_check}");
+    assert!(
+        key_check["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("is set"),
+        "{key_check}"
+    );
+    // And still nothing of the key itself, which is the older rule.
+    assert!(!text.contains("TYPED-IN-THE-PANE"), "{text}");
+    assert!(!text.contains("sk-"), "{text}");
 }
 
 #[tokio::test]
