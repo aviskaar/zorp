@@ -1137,6 +1137,7 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
                     "title": title,
                     "status": s.status,
                     "project_id": s.project_id,
+                    "agent": s.agent,
                     // Only a stored session has one, which is how the page
                     // tells a conversation it can file from one that exists
                     // only in this process and has no row to write to yet.
@@ -1152,6 +1153,7 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
                 "title": "New chat",
                 "status": "running",
                 "project_id": serde_json::Value::Null,
+                "agent": serde_json::Value::Null,
             }));
         }
     }
@@ -1177,7 +1179,9 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
         Ok(messages) => {
             let (rows, seqs) = transcript_with_seqs(&messages);
             let compactions = compaction_rows(&store, &id, &seqs);
-            Json(json!({"messages": rows, "compactions": compactions})).into_response()
+            let agent = store.session_agent(&id).ok().flatten();
+            Json(json!({"messages": rows, "compactions": compactions, "agent": agent}))
+                .into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
