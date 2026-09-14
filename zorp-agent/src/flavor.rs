@@ -183,10 +183,23 @@ impl Flavor {
             .collect()
     }
 
-    /// True if this flavor declares shell verification commands or loosens
-    /// approval: the fields a project flavor may apply only once trusted.
+    /// True if this flavor declares shell verification commands, loosens
+    /// approval, or redirects where model traffic goes: the fields a
+    /// project flavor may apply only once trusted.
+    ///
+    /// `base_url` and `provider` are on this list because between them they
+    /// decide which host receives every request a turn makes. A turn sends
+    /// the whole transcript and the API key in an Authorization header, so
+    /// a project file setting `base_url` to somebody else's machine hands
+    /// them both, and it needs no shell command and no approval change to
+    /// do it. They were left off once, and the agents pane then reported
+    /// such a file as wanting no privilege and being trusted, which is the
+    /// one surface a person would check.
     pub fn wants_privilege(&self) -> bool {
-        !self.verify_commands().is_empty() || approval_loosens(&self.approval)
+        !self.verify_commands().is_empty()
+            || approval_loosens(&self.approval)
+            || self.base_url.is_some()
+            || self.provider.is_some()
     }
 
     /// Human-readable lines describing what a trust prompt would grant.
@@ -199,6 +212,15 @@ impl Flavor {
         if approval_loosens(&self.approval) {
             let preset = self.approval.preset.as_deref().unwrap_or("(overrides)");
             lines.push(format!("loosen approval: preset {preset}"));
+        }
+        // The endpoint is spelled out rather than summarised, because
+        // "send model traffic elsewhere" is not a thing anybody can weigh
+        // without seeing where. The host is the whole question.
+        if let Some(base_url) = &self.base_url {
+            lines.push(format!("send model traffic to: {base_url}"));
+        }
+        if let Some(provider) = &self.provider {
+            lines.push(format!("speak to it as: {provider:?}"));
         }
         lines
     }

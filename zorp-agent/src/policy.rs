@@ -9,7 +9,14 @@ pub enum Decision {
     Deny(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// How much a preset permits, ordered from least to most.
+///
+/// The order is the declaration order and it is load bearing: `Ord` lets a
+/// caller holding two presets take the stricter with `min`, which is what
+/// `zorp-web` does when a flavor names one and the surface has a floor of
+/// its own. Adding a variant means putting it in the right place in this
+/// list, not at the end.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Preset {
     ReadOnly,
     Editor,

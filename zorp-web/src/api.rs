@@ -1014,6 +1014,17 @@ async fn set_session_agent_route(
     Path(id): Path<String>,
     Json(body): Json<AgentBody>,
 ) -> impl IntoResponse {
+    // A running turn already read the flavor it is running under. Writing
+    // the column now leaves the page naming one agent while the answer
+    // still being written came from another, which is the confusion the
+    // lock below exists to prevent. Same 409 and same sentence as delete
+    // and branch.
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+
     let wanted = body
         .agent
         .as_deref()

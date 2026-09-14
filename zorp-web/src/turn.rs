@@ -212,6 +212,29 @@ pub fn scoped_prompt(prompt: &str, workspace: &std::path::Path) -> String {
 /// stand the approval gate down and make every later call unreviewed. An
 /// agent cannot turn that off, because an agent is a file that may have
 /// arrived by `git clone`.
+/// What this surface will run under, given what an agent asked for.
+///
+/// The browser's floor is `ReadOnly`: every edit and every command is
+/// `Ask`, and `WebApprover` puts a card in front of a person. Where the two
+/// disagree the stricter wins, which `min` over `Preset` is what makes true
+/// rather than a comment.
+///
+/// It used to substitute the agent's preset outright, which is a loosening
+/// and not a negotiation. A flavor naming `editor` or `full` turned those
+/// `Ask` decisions into `Allow`, and `Decision::Allow` runs the tool
+/// without consulting the approver at all. So the agent card said a person
+/// would be asked, and nobody saw a prompt. An agent picked in one
+/// conversation must not widen what this surface asks about.
+///
+/// A name that does not parse falls to the floor rather than being ignored,
+/// because a typo in a preset is not a reason to run looser.
+fn effective_preset(asked: Option<&str>) -> zorp_agent::Preset {
+    const FLOOR: zorp_agent::Preset = zorp_agent::Preset::ReadOnly;
+    asked
+        .and_then(zorp_agent::Preset::parse)
+        .map_or(FLOOR, |asked| asked.min(FLOOR))
+}
+
 fn policy_from_preset(preset: zorp_agent::Preset, own_port: Option<u16>) -> zorp_agent::Policy {
     let policy = zorp_agent::Policy::from_preset(preset);
     match own_port {
@@ -768,19 +791,20 @@ fn run_agent(
     .register_builtins_filtered(flavor.as_ref().and_then(|f| f.tools.enabled.as_deref()))
     .with_renderer(renderer);
 
-    // Where the agent's approval section and the toolbar toggle disagree,
-    // the stricter wins. An agent picked to be read-only must not be
-    // loosened by a toggle somebody left on in another conversation, and a
-    // toggle is not a reason to tighten an agent either: the policy below
-    // is the floor and `WebApprover` still asks for anything it allows.
-    let policy = match flavor.as_ref().and_then(|f| f.approval.preset.as_deref()) {
-        Some(preset) => match zorp_agent::Preset::parse(preset) {
-            Some(preset) => policy_from_preset(preset, own_port),
-            None => policy(own_port),
-        },
-        None => policy(own_port),
-    };
-    agent = agent.with_policy(policy);
+    // Where the agent's approval section and this surface's own floor
+    // disagree, the stricter wins, and `min` over `Preset` is what makes
+    // that true rather than a comment.
+    //
+    // It used to substitute the flavor's preset outright, which is a
+    // loosening and not a negotiation: the browser's floor is `ReadOnly`,
+    // where every edit and every command is `Ask`, and a flavor naming
+    // `editor` or `full` turned those into `Allow`. `Decision::Allow` runs
+    // the tool without consulting the approver at all, so the card that
+    // said a person would be asked was wrong, and nobody saw a prompt.
+    // An agent picked in one conversation must not be able to widen what
+    // this surface asks about.
+    let preset = effective_preset(flavor.as_ref().and_then(|f| f.approval.preset.as_deref()));
+    agent = agent.with_policy(policy_from_preset(preset, own_port));
 
     // Stage two, for the window filling mid-run. Attached whether or not the
     // window is known: an unknown window fires nothing, and `/compact` needs
@@ -823,6 +847,57 @@ fn run_agent(
 
 #[cfg(test)]
 mod tests {
+    use zorp_agent::{Decision, Preset};
+
+    /// An agent cannot widen what the browser asks about.
+    ///
+    /// The browser's floor is `ReadOnly`, so `editor` and `full` are
+    /// loosenings and lose. This used to take the agent's preset as given,
+    /// and since `Decision::Allow` skips the approver entirely, a turn under
+    /// such an agent edited files and ran commands with no card shown, while
+    /// the agent card said approval applied.
+    #[test]
+    fn an_agent_preset_cannot_loosen_what_this_surface_asks_about() {
+        for asked in [None, Some("read-only"), Some("editor"), Some("full")] {
+            assert_eq!(
+                effective_preset(asked),
+                Preset::ReadOnly,
+                "{asked:?} changed the floor"
+            );
+        }
+
+        // And that really is Ask on both, which is what the approver needs
+        // in order to be consulted at all. Asked through `decide`, because
+        // that is the function the run loop calls.
+        let policy = policy_from_preset(effective_preset(Some("full")), None);
+        let call = |name: &str| zorp_agent::ToolCall {
+            id: "1".into(),
+            name: name.into(),
+            arguments: serde_json::json!({"path":"a.txt","content":"x","command":"ls"}),
+        };
+        assert_eq!(policy.decide(&call("write_file")), Decision::Ask);
+        assert_eq!(policy.decide(&call("run_command")), Decision::Ask);
+    }
+
+    /// A preset nobody can parse is a typo, and a typo is not a reason to
+    /// run looser than the floor.
+    #[test]
+    fn an_unparseable_preset_falls_to_the_floor() {
+        assert_eq!(effective_preset(Some("ful")), Preset::ReadOnly);
+        assert_eq!(effective_preset(Some("")), Preset::ReadOnly);
+    }
+
+    /// The floor is what `GET /api/capabilities` reports, and the two are
+    /// read from different call sites. An agentless turn has to land on the
+    /// same policy, or the page describes a turn that does not happen.
+    #[test]
+    fn an_agentless_turn_matches_what_capabilities_reports() {
+        assert_eq!(
+            policy_from_preset(effective_preset(None), None),
+            policy(None)
+        );
+    }
+
     use super::*;
     use zorp_agent::{Message, ToolCall};
 
