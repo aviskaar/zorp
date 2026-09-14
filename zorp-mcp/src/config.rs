@@ -34,6 +34,73 @@ pub struct ServerConfig {
     pub timeout_secs: Option<u64>,
 }
 
+/// One server as it may be shown outside this process.
+///
+/// The whole point of the type is the two maps that are not on it. `env`
+/// and `headers` are where a token goes, and a listing that carried their
+/// values would put a credential on a web page because somebody wanted to
+/// see which servers were configured.
+///
+/// Key names are kept, because they are the useful half: seeing that a
+/// server wants `GITHUB_TOKEN` tells a person what to set without telling
+/// anybody what it is.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ServerSummary {
+    pub name: String,
+    pub transport: TransportKind,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    /// The names of the environment variables this server is given. Never
+    /// their values.
+    pub env_keys: Vec<String>,
+    /// The names of the headers this server is sent. Never their values.
+    pub header_keys: Vec<String>,
+    pub trust: TrustLevel,
+    pub timeout_secs: Option<u64>,
+}
+
+impl ServerConfig {
+    /// This server with every secret-bearing value left behind.
+    ///
+    /// **The destructuring is the guarantee and must stay exhaustive.**
+    /// Adding a field to `ServerConfig` makes this function stop compiling,
+    /// which forces a decision about whether the new field may be shown.
+    /// A version of this that read fields through `self.` would silently
+    /// omit a new one, and the failure mode of a redaction that silently
+    /// omits is that somebody adds `token: String` and nothing notices.
+    pub fn redacted(&self) -> ServerSummary {
+        let ServerConfig {
+            name,
+            transport,
+            command,
+            args,
+            env,
+            url,
+            headers,
+            trust,
+            timeout_secs,
+        } = self;
+        // Sorted, so a listing does not reorder itself between two reads of
+        // the same file for want of a stable hash map iteration order.
+        let mut env_keys: Vec<String> = env.keys().cloned().collect();
+        env_keys.sort();
+        let mut header_keys: Vec<String> = headers.keys().cloned().collect();
+        header_keys.sort();
+        ServerSummary {
+            name: name.clone(),
+            transport: transport.clone(),
+            command: command.clone(),
+            args: args.clone(),
+            url: url.clone(),
+            env_keys,
+            header_keys,
+            trust: trust.clone(),
+            timeout_secs: *timeout_secs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct McpConfig {
     pub servers: Vec<ServerConfig>,
@@ -167,5 +234,81 @@ timeout_secs = 60
         let merged = McpConfig::merged(file, env, McpConfig::empty());
         assert_eq!(merged.servers.len(), 1);
         assert_eq!(merged.servers[0].command.as_deref(), Some("uvx"));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    fn server_with_secrets() -> ServerConfig {
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), "ghp_REALSECRET".to_string());
+        env.insert("API_KEY".to_string(), "sk-REALSECRET".to_string());
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer REALSECRET".to_string());
+        ServerConfig {
+            name: "github".to_string(),
+            transport: TransportKind::StreamableHttp,
+            command: None,
+            args: vec![],
+            env,
+            url: Some("https://api.example.com/mcp".to_string()),
+            headers,
+            trust: TrustLevel::Sandbox,
+            timeout_secs: Some(30),
+        }
+    }
+
+    /// The one that matters. A value from either map reaching the summary
+    /// is a credential on a web page.
+    #[test]
+    fn no_env_or_header_value_survives_redaction() {
+        let summary = serde_json::to_string(&server_with_secrets().redacted()).unwrap();
+        assert!(!summary.contains("REALSECRET"), "{summary}");
+        assert!(!summary.contains("ghp_"), "{summary}");
+        assert!(!summary.contains("Bearer"), "{summary}");
+    }
+
+    /// The useful half is kept. Knowing a server wants `GITHUB_TOKEN` tells
+    /// somebody what to set without telling anybody what it is.
+    #[test]
+    fn the_key_names_are_kept_because_they_are_what_helps() {
+        let summary = server_with_secrets().redacted();
+        assert_eq!(summary.env_keys, vec!["API_KEY", "GITHUB_TOKEN"]);
+        assert_eq!(summary.header_keys, vec!["Authorization"]);
+        assert_eq!(summary.name, "github");
+        assert_eq!(summary.url.as_deref(), Some("https://api.example.com/mcp"));
+    }
+
+    /// A listing that reordered itself between two reads of the same file
+    /// would look like the configuration had changed.
+    #[test]
+    fn key_names_come_back_in_a_stable_order() {
+        let server = server_with_secrets();
+        assert_eq!(server.redacted().env_keys, server.redacted().env_keys);
+    }
+
+    /// A command and its arguments are shown, because that is what somebody
+    /// checking a configured server needs to see. A secret passed as an
+    /// argument is a mistake this cannot fix and must not pretend to: the
+    /// place for one is `env`, and the listing shows the command so that
+    /// mistake is visible rather than hidden.
+    #[test]
+    fn a_stdio_command_and_its_arguments_are_shown() {
+        let server = ServerConfig {
+            name: "fs".to_string(),
+            transport: TransportKind::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "server-filesystem".to_string()],
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            trust: TrustLevel::Sandbox,
+            timeout_secs: None,
+        };
+        let summary = server.redacted();
+        assert_eq!(summary.command.as_deref(), Some("npx"));
+        assert_eq!(summary.args.len(), 2);
     }
 }
