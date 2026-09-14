@@ -1180,7 +1180,8 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
             let (rows, seqs) = transcript_with_seqs(&messages);
             let compactions = compaction_rows(&store, &id, &seqs);
             let agent = store.session_agent(&id).ok().flatten();
-            Json(json!({"messages": rows, "compactions": compactions, "agent": agent})).into_response()
+            Json(json!({"messages": rows, "compactions": compactions, "agent": agent}))
+                .into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
