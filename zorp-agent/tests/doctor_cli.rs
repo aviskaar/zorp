@@ -216,3 +216,51 @@ fn no_model_configured_is_a_fault() {
     assert_eq!(out.status.code(), Some(1), "{text}");
     assert!(text.contains("bad model"), "{text}");
 }
+
+/// A report asks nothing.
+///
+/// With no model set and an Ollama-shaped endpoint, `resolve_host_and_model`
+/// used to print a numbered list and `Select a model (1-N):` and then block
+/// on `read_line`, from every caller including this one. So
+/// `zorp-agent doctor` on a machine with no model configured printed a
+/// question into the middle of its own report, and a scripted run blocked on
+/// a prompt with nothing there to answer it.
+///
+/// The endpoint here is deliberately the one the picker triggers on. The
+/// test is that the report comes back with the model reported as unset,
+/// rather than the report being preceded by a question.
+#[test]
+fn doctor_never_offers_to_pick_a_model_for_you() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(bin())
+        .arg("doctor")
+        // The literal string the picker keys on, so this exercises the
+        // branch rather than avoiding it.
+        .env("ZORP_BASE_URL", "http://localhost:11434/v1")
+        .env_remove("ZORP_MODEL")
+        .env("ZORP_STATE_DB", dir.path().join("s.db"))
+        .env("ZORP_TRUST_FILE", dir.path().join("trust"))
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env_remove("ZORP_CONFIG")
+        .env_remove("ZORP_WEB_CONFIG")
+        .env_remove("ZORP_API_KEY")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !all.contains("Select a model"),
+        "doctor asked a question: {all}"
+    );
+    assert!(
+        !all.contains("No model specified"),
+        "doctor offered a picker: {all}"
+    );
+    // And it still says the thing it exists to say.
+    assert!(all.contains("no model set"), "{all}");
+}

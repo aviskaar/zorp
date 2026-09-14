@@ -1249,7 +1249,7 @@ fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (user_flavor, project_flavor) = resolve_flavor(overrides);
     let merged = user_flavor.merge(project_flavor);
-    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let (base_url, model_name) = resolve_host_and_model_quietly(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_default();
 
     report.checks.push(Check::note(
@@ -1675,7 +1675,32 @@ struct OllamaModel {
     name: String,
 }
 
+/// Resolve the endpoint and the model, offering to pick one when there is
+/// no model and Ollama has some.
+///
+/// The picker is why this takes `may_prompt`. It used to fire from every
+/// caller, including `doctor` and `config`, which are both commands whose
+/// whole job is to report what is configured. Running `zorp-agent doctor`
+/// on a machine with no model set printed a numbered list and
+/// `Select a model (1-1):` into the middle of the report, and did it even
+/// with stdin closed, so a scripted `doctor` blocked on a question nothing
+/// was there to answer. A report says "no model set"; it does not ask you
+/// to fix it first.
 fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, String) {
+    resolve_host_and_model_with(overrides, merged, true)
+}
+
+/// The same resolution with nothing interactive in it, for the commands
+/// that report rather than run.
+fn resolve_host_and_model_quietly(overrides: &Overrides, merged: &Flavor) -> (String, String) {
+    resolve_host_and_model_with(overrides, merged, false)
+}
+
+fn resolve_host_and_model_with(
+    overrides: &Overrides,
+    merged: &Flavor,
+    may_prompt: bool,
+) -> (String, String) {
     // Read once for both, rather than once per setting.
     let saved = zorp_agent::config::load().unwrap_or_default();
     let base_url = pick_with(
@@ -1693,7 +1718,14 @@ fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, St
         "",
     );
 
-    if model_name.is_empty() && base_url.contains("localhost:11434") {
+    // A prompt nobody can answer is a hang, so the picker needs a terminal
+    // as well as a caller that wants it. Without one the model stays unset
+    // and whoever asked is told so.
+    if may_prompt
+        && std::io::stdin().is_terminal()
+        && model_name.is_empty()
+        && base_url.contains("localhost:11434")
+    {
         let tags_url = base_url.replace("/v1", "/api/tags");
         // Plain GET, so it cannot go through `zorp_raw`, which only knows
         // how to POST a JSON body. It goes through the shared agent anyway:
@@ -3567,7 +3599,7 @@ fn handle_chat_command(
                                 Some(name) => out.notice(&format!("in project '{name}'")),
                                 None => out.notice(
                                     "not in a project. /project <name> files it, and \
-                                     /projects lists them.",
+                                     `zorp-agent projects` lists them.",
                                 ),
                             }
                         }
