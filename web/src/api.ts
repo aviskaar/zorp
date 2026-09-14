@@ -290,6 +290,71 @@ export async function fetchSkills(): Promise<SkillListing> {
   };
 }
 
+/**
+ * What became of one skill's instructions in a conversation's context.
+ *
+ * The distinction that matters is `present` against the rest. A skill body
+ * is a tool result body, and compaction elides and drops those oldest
+ * first, so a skill loaded twenty turns ago may have left the request long
+ * ago while the activity line still shows the call that loaded it.
+ *
+ * - `present`: the instructions are in the request being sent.
+ * - `elided`: the call is there, the body was replaced by a marker.
+ * - `dropped`: the call is not in the request at all.
+ * - `unrecorded`: the result was never written, so a synthetic one stands in.
+ */
+export type SkillPresence = "present" | "elided" | "dropped" | "unrecorded";
+
+/**
+ * One skill that was loaded in this conversation, and where it stands now.
+ *
+ * `name` is read out of the header zorp writes onto a loaded body, so it is
+ * the registry's name for the skill and never a string the model chose. It
+ * still reaches the page through `textContent`, like every other name here.
+ *
+ * `scope` is null when the skill is no longer installed. That row is kept
+ * rather than dropped, because instructions from a file that is no longer
+ * on disk are exactly what this listing is for.
+ */
+export interface ActiveSkill {
+  name: string;
+  scope: SkillSummary["scope"] | null;
+  presence: SkillPresence;
+  active: boolean;
+  /** The sequence number of the call that loaded it. */
+  seq: number;
+  /** How many times this skill was loaded in the conversation. */
+  loads: number;
+  /** Bytes this body occupies in the request. Zero unless present. */
+  bytes_in_window: number;
+}
+
+export interface ActiveSkillListing {
+  skills: ActiveSkill[];
+  /** How many skills were loaded at any point. */
+  loaded: number;
+  /** How many still have their instructions in the request. */
+  active: number;
+}
+
+/**
+ * Which skills are in one conversation's context.
+ *
+ * Read-only, like `fetchSkills`. There is no route that loads a skill and
+ * this is not one: loading is the agent's `skill` tool.
+ */
+export async function fetchActiveSkills(sessionId: string): Promise<ActiveSkillListing> {
+  const body = await request<ActiveSkillListing>(
+    "GET",
+    `/api/sessions/${encodeURIComponent(sessionId)}/skills/active`,
+  );
+  return {
+    skills: Array.isArray(body?.skills) ? body.skills : [],
+    loaded: typeof body?.loaded === "number" ? body.loaded : 0,
+    active: typeof body?.active === "number" ? body.active : 0,
+  };
+}
+
 /** The server's observed local voice runtime state. */
 export interface VoiceStatus {
   available: boolean;

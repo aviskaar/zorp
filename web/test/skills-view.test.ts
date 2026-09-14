@@ -25,7 +25,7 @@ import {
   skillsView,
   type SkillsView,
 } from "../src/skills-view.ts";
-import type { SkillListing, SkillSummary } from "../src/api.ts";
+import type { ActiveSkill, ActiveSkillListing, SkillListing, SkillSummary } from "../src/api.ts";
 
 const MARKUP = `
 <!doctype html><body>
@@ -233,4 +233,165 @@ test("redrawing the panel replaces it rather than appending to it", () => {
   renderSkillsPanel(doc, view.panel, listing());
 
   assert.equal(view.panel.querySelectorAll(".skills-item").length, 1);
+});
+
+/* ------------------------------------------------------------------ */
+/* what is in the conversation, as opposed to what is installed        */
+/* ------------------------------------------------------------------ */
+
+function active(over: Partial<ActiveSkill> = {}): ActiveSkill {
+  return {
+    name: "landing-page",
+    scope: "workspace",
+    presence: "present",
+    active: true,
+    seq: 4,
+    loads: 1,
+    bytes_in_window: 1832,
+    ...over,
+  };
+}
+
+function live(over: Partial<ActiveSkillListing> = {}): ActiveSkillListing {
+  const skills = over.skills ?? [active()];
+  return {
+    skills,
+    loaded: skills.length,
+    active: skills.filter((s) => s.active).length,
+    ...over,
+  };
+}
+
+/**
+ * The distinction the whole feature is for. A panel that could not tell
+ * these apart would reproduce the bug it exists to fix, since the activity
+ * line already shows that both were loaded.
+ */
+test("a skill still in the window and one compaction took do not read the same", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    listing(),
+    live({
+      skills: [
+        active({ name: "here", presence: "present", active: true }),
+        active({ name: "gone", presence: "elided", active: false, bytes_in_window: 0 }),
+      ],
+    }),
+  );
+
+  const items = [...view.panel.querySelectorAll(".skills-item")];
+  const here = items.find((i) => i.textContent?.includes("here"))!;
+  const gone = items.find((i) => i.textContent?.includes("gone"))!;
+
+  assert.ok(here.classList.contains("skills-present"));
+  assert.ok(gone.classList.contains("skills-elided"));
+  assert.match(here.textContent!, /in the context now/);
+  assert.match(gone.textContent!, /no longer read it/);
+});
+
+test("the count says how many of the loaded ones are still live", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    listing(),
+    live({
+      skills: [
+        active({ name: "a", presence: "present", active: true }),
+        active({ name: "b", presence: "dropped", active: false }),
+        active({ name: "c", presence: "dropped", active: false }),
+      ],
+    }),
+  );
+
+  assert.match(view.panel.textContent!, /1 of 3 still in the context/);
+});
+
+test("a conversation that loaded nothing says so rather than showing an empty list", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, listing(), live({ skills: [], loaded: 0, active: 0 }));
+
+  assert.match(view.panel.textContent!, /No skill has been loaded/);
+});
+
+/**
+ * The interesting row. Instructions from a file that is no longer on disk
+ * are exactly what a person needs to be able to see, so the row is kept and
+ * labelled rather than dropped for want of a scope.
+ */
+test("a skill that has since been uninstalled keeps its row and says so", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, listing(), live({ skills: [active({ scope: null })] }));
+
+  assert.match(view.panel.textContent!, /no longer installed/);
+});
+
+test("what a present body is costing is shown, and a gone one has no cost to show", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    listing(),
+    live({
+      skills: [
+        active({ name: "here", bytes_in_window: 1832 }),
+        active({ name: "gone", presence: "elided", active: false, bytes_in_window: 0 }),
+      ],
+    }),
+  );
+
+  const items = [...view.panel.querySelectorAll(".skills-item")];
+  assert.match(items.find((i) => i.textContent?.includes("here"))!.textContent!, /1,832 bytes/);
+  assert.doesNotMatch(items.find((i) => i.textContent?.includes("gone"))!.textContent!, /bytes/);
+});
+
+test("a repeated load is visible rather than silently collapsed", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, listing(), live({ skills: [active({ loads: 3 })] }));
+
+  assert.match(view.panel.textContent!, /loaded 3 times/);
+});
+
+/**
+ * A name comes out of a header zorp wrote, but it still lands as text. The
+ * rest of this file exists for the same reason and this section is not an
+ * exception to it.
+ */
+test("nothing in the active section becomes markup", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    listing(),
+    live({ skills: [active({ name: "<img src=x onerror=alert(1)>" })] }),
+  );
+
+  assert.equal(view.panel.querySelectorAll("img").length, 0);
+  assert.ok(view.panel.textContent!.includes("<img src=x onerror=alert(1)>"));
+});
+
+/** Still a report. The new section adds no control either. */
+test("the active section offers no way to load or unload a skill", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, listing(), live());
+
+  assert.equal(view.panel.querySelectorAll("button").length, 0);
+  assert.equal(view.panel.querySelectorAll("input").length, 0);
+  assert.equal(view.panel.querySelectorAll("a").length, 0);
+});
+
+/**
+ * An older server has no such route and a page with no session has no
+ * conversation to ask about. Both have to leave the installed listing
+ * standing, because half a panel beats none.
+ */
+test("with no active listing the panel is exactly what it was before", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, listing(), null);
+
+  assert.doesNotMatch(view.panel.textContent!, /in this conversation/);
+  assert.equal(view.panel.querySelectorAll(".skills-item").length, 1);
+  assert.match(view.panel.textContent!, /grants no tool/);
 });

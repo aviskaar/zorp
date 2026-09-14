@@ -247,6 +247,14 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that. Skills are not capsules; the same entry says why both exist.
+  `/api/skills` says what is installed and
+  `/api/sessions/:id/skills/active` says whose instructions are in one
+  conversation's context, which stop being the same answer as soon as a
+  conversation is long enough to compact. The second is computed by
+  `zorp-agent/src/active_skills.rs` from the plan `seed_transcript` hands
+  a turn, never from anything a model wrote, and a load is recognised by
+  the header `Skill::instructions` puts on a body rather than by the name
+  in the call. Both routes are read-only and neither sends a body.
   The repository ships two of its own under `.claude/skills/`,
   `artifact-design` and `artifact-diagramming`, which say how to write the
   `.html` and `.svg` files the browser's side pane renders. Both are pinned

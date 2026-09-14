@@ -82,6 +82,7 @@ import {
   approve,
   getAutoApprove,
   setAutoApprove,
+  fetchActiveSkills,
   fetchSkills,
   getCapabilities,
   branchSession,
@@ -115,6 +116,7 @@ import {
   readArtifact,
   waitForVoiceModel,
   transcribeVoice,
+  type ActiveSkillListing,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -2806,7 +2808,21 @@ function wireSkills(): void {
     }
     void (async () => {
       try {
-        renderSkillsPanel(document, skills.panel, await fetchSkills());
+        // Two calls, and the second one is allowed to fail on its own. The
+        // installed listing is the part that always has an answer; what is
+        // live in a conversation needs a conversation, and an older server
+        // has no such route at all. A page that lost the whole panel to
+        // that would be worse than one that shows the half it has.
+        const installed = await fetchSkills();
+        let live: ActiveSkillListing | null = null;
+        if (sessionId) {
+          try {
+            live = await fetchActiveSkills(sessionId);
+          } catch {
+            live = null;
+          }
+        }
+        renderSkillsPanel(document, skills.panel, installed, live);
       } catch (error) {
         // The server's own words. A page that said "could not list skills"
         // would be hiding the reason it already has.
