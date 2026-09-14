@@ -30,7 +30,7 @@ fn discovered() -> zorp_skill::SkillRegistry {
     registry
 }
 
-const FIRST_PARTY: &[&str] = &["artifact-design", "artifact-diagramming"];
+const FIRST_PARTY: &[&str] = &["artifact-design", "artifact-diagramming", "landing-page"];
 
 fn first_party_skills() -> Vec<zorp_skill::Skill> {
     let registry = discovered();
@@ -105,13 +105,13 @@ fn no_first_party_skill_asks_for_tools() {
 }
 
 /// The pane serves `.html` and `.svg` under a bare `sandbox` CSP, so
-/// scripts do not run and nothing external loads. Both artifact skills have
-/// to say so, because a page written against the opposite assumption
-/// renders as nothing and says nothing about why.
+/// scripts do not run. Every skill that writes into the pane has to say
+/// so, because a page written against the opposite assumption renders as
+/// nothing and says nothing about why.
 #[test]
 fn the_artifact_skills_say_that_scripts_do_not_run() {
     let registry = discovered();
-    for name in ["artifact-design", "artifact-diagramming"] {
+    for name in FIRST_PARTY {
         let body = registry.get(name).expect("present").body.to_lowercase();
         assert!(
             body.contains("script"),
@@ -122,4 +122,72 @@ fn the_artifact_skills_say_that_scripts_do_not_run() {
             "{name} does not say scripts do not run"
         );
     }
+}
+
+/// A bare `sandbox` does not block an external font, stylesheet or image.
+///
+/// It stops scripts and form submission. It does not stop a `<link>` to a
+/// font service or an `<img>` from a CDN, so a skill that tells a writer
+/// the header will keep those out has told them a page is private when it
+/// is not: it previews correctly in the pane while reporting every opener
+/// to a third party. Keeping them out is a rule the skills state and
+/// nothing enforces, and saying which is which is the whole value of
+/// saying it at all. This pins the wording against drifting back.
+#[test]
+fn no_skill_claims_the_sandbox_blocks_external_loads() {
+    let registry = discovered();
+    for name in FIRST_PARTY {
+        let body = registry.get(name).expect("present").body.to_lowercase();
+        for claim in [
+            "nothing external loads",
+            "does not load the cdn",
+            "blocks external",
+            "no external requests are made",
+        ] {
+            assert!(
+                !body.contains(claim),
+                "{name} says {claim:?}, which a bare sandbox does not do"
+            );
+        }
+    }
+}
+
+/// The obvious way to preview JSX is a transpiler from a CDN in a
+/// `<script type="text/babel">` block, and in this pane it renders nothing
+/// and says nothing about why. A skill that talks about JSX at all has to
+/// name that trap, or the first thing anybody tries is the thing that does
+/// not work.
+#[test]
+fn the_landing_skill_names_the_babel_in_the_page_trap() {
+    let body = discovered()
+        .get("landing-page")
+        .expect("present")
+        .body
+        .to_lowercase();
+    assert!(body.contains("text/babel"), "the trap is not named");
+    assert!(
+        body.contains("jsx"),
+        "the path to components is not covered"
+    );
+}
+
+/// A landing page is a deliverable that goes on a real server, where
+/// scripts run. Saying only "scripts do not run" would be wrong about the
+/// shipped page and would talk somebody out of writing a correct one, so
+/// the skill has to separate the preview from the page.
+#[test]
+fn the_landing_skill_separates_the_preview_from_the_shipped_page() {
+    let body = discovered()
+        .get("landing-page")
+        .expect("present")
+        .body
+        .to_lowercase();
+    assert!(
+        body.contains("preview"),
+        "the skill never mentions the preview"
+    );
+    assert!(
+        body.contains("real server") || body.contains("real browser"),
+        "the skill does not say the shipped page is different"
+    );
 }
