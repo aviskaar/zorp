@@ -39,11 +39,10 @@ async fn spawn() -> SocketAddr {
 /// `ureq` blocks and the server is on this runtime, so every call goes
 /// through `spawn_blocking` the way `tests/skills.rs` does.
 async fn get(url: String) -> serde_json::Value {
-    let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&url).call().unwrap().into_string().unwrap()
-    })
-    .await
-    .unwrap();
+    let body =
+        tokio::task::spawn_blocking(move || ureq::get(&url).call().unwrap().into_string().unwrap())
+            .await
+            .unwrap();
     serde_json::from_str(&body).unwrap()
 }
 
@@ -108,7 +107,11 @@ impl Fixture {
         self.dir.path().join("sessions.db")
     }
     fn write_user(&self, name: &str, body: &str) {
-        self.write(self.dir.path().join("home/.config/zorp/flavors"), name, body);
+        self.write(
+            self.dir.path().join("home/.config/zorp/flavors"),
+            name,
+            body,
+        );
     }
     fn write_workspace(&self, name: &str, body: &str) {
         self.write(self.dir.path().join("work/.zorp/flavors"), name, body);
@@ -253,7 +256,10 @@ async fn editing_a_trusted_agent_makes_it_untrusted_again() {
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(get(fx.url("/api/agents")).await["agents"][0]["trusted"], true);
+    assert_eq!(
+        get(fx.url("/api/agents")).await["agents"][0]["trusted"],
+        true
+    );
 
     fx.write_workspace(
         "builder",
@@ -282,7 +288,10 @@ async fn trusting_a_user_agent_is_refused_rather_than_pretended() {
     )
     .await;
     assert_eq!(status, 400, "{body}");
-    assert_eq!(get(fx.url("/api/agents")).await["agents"][0]["trusted"], true);
+    assert_eq!(
+        get(fx.url("/api/agents")).await["agents"][0]["trusted"],
+        true
+    );
 }
 
 #[tokio::test]
@@ -418,5 +427,8 @@ async fn a_name_or_description_carrying_an_override_is_scrubbed() {
 
     let body = get(fx.url("/api/agents")).await.to_string();
     assert!(!body.contains('\u{202E}'), "an override survived: {body}");
-    assert!(!body.contains('\u{0007}'), "a control character survived: {body}");
+    assert!(
+        !body.contains('\u{0007}'),
+        "a control character survived: {body}"
+    );
 }

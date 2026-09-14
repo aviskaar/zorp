@@ -586,7 +586,9 @@ fn run_agent(
         .ok()
         .and_then(|store| store.session_agent(session_id).ok().flatten());
     let profile = chosen.as_deref().map(|name| {
-        let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
         zorp_agent::agents::gated(&home, &workspace, name)
     });
     // Said on the stream rather than swallowed. An agent picked for its
@@ -763,11 +765,7 @@ fn run_agent(
     // what this build has and cannot add a tool it lacks, so an agent
     // asking for `web_search` in a build without the `search` feature gets
     // a build without web search rather than an error.
-    .register_builtins_filtered(
-        flavor
-            .as_ref()
-            .and_then(|f| f.tools.enabled.as_deref()),
-    )
+    .register_builtins_filtered(flavor.as_ref().and_then(|f| f.tools.enabled.as_deref()))
     .with_renderer(renderer);
 
     // Where the agent's approval section and the toolbar toggle disagree,
@@ -944,7 +942,10 @@ mod tests {
         assert!(theirs.contains("scratch/"), "{theirs}");
 
         // And with no agent it is exactly what it was.
-        assert_eq!(turn_prompt(workspace), scoped_prompt(system_prompt(), workspace));
+        assert_eq!(
+            turn_prompt(workspace),
+            scoped_prompt(system_prompt(), workspace)
+        );
     }
 
     /// The prompt reaches the model through the seed and never enters

@@ -481,8 +481,7 @@ async fn set_session_agent_route(
         let name = name.clone();
         let known = tokio::task::spawn_blocking(move || {
             zorp_agent::agents::get(&home, &cwd, zorp_agent::Scope::User, &name).is_some()
-                || zorp_agent::agents::get(&home, &cwd, zorp_agent::Scope::Project, &name)
-                    .is_some()
+                || zorp_agent::agents::get(&home, &cwd, zorp_agent::Scope::Project, &name).is_some()
         })
         .await
         .unwrap_or(false);

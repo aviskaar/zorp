@@ -1302,7 +1302,10 @@ CREATE TABLE file_changes (
             store.set_session_agent("s1", Some("reviewer")).unwrap(),
             SetAgent::Done
         );
-        assert_eq!(store.session_agent("s1").unwrap().as_deref(), Some("reviewer"));
+        assert_eq!(
+            store.session_agent("s1").unwrap().as_deref(),
+            Some("reviewer")
+        );
         assert_eq!(
             store.sessions().unwrap()[0].agent.as_deref(),
             Some("reviewer")
@@ -1321,9 +1324,7 @@ CREATE TABLE file_changes (
         let mut store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
         store.record_message("s1", 0, &Message::user("hi")).unwrap();
-        store
-            .set_session_agent("s1", Some("reviewer"))
-            .unwrap();
+        store.set_session_agent("s1", Some("reviewer")).unwrap();
 
         store
             .record_message("s1", 1, &Message::assistant("here you go"))
@@ -1375,9 +1376,7 @@ CREATE TABLE file_changes (
         let mut store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
         store.record_message("s1", 0, &Message::user("hi")).unwrap();
-        store
-            .set_session_agent("s1", Some("reviewer"))
-            .unwrap();
+        store.set_session_agent("s1", Some("reviewer")).unwrap();
         store
             .record_message("s1", 1, &Message::assistant("an answer"))
             .unwrap();

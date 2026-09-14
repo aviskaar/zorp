@@ -110,7 +110,9 @@ pub fn agent_path(home: &Path, cwd: &Path, scope: Scope, name: &str) -> Option<P
 /// the whole gate rests on.
 pub fn project_hash(home: &Path, cwd: &Path, name: &str) -> Option<String> {
     let path = agent_path(home, cwd, Scope::Project, name)?;
-    std::fs::read_to_string(path).ok().map(|raw| content_hash(&raw))
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|raw| content_hash(&raw))
 }
 
 fn read_one(home: &Path, cwd: &Path, scope: Scope, path: &Path, trust: &TrustStore) -> Agent {
@@ -213,8 +215,8 @@ pub fn get(home: &Path, cwd: &Path, scope: Scope, name: &str) -> Option<Agent> {
 /// hash and the agent is untrusted again without anybody having to remember
 /// to revoke it.
 pub fn trust_project_agent(home: &Path, cwd: &Path, name: &str) -> Result<String, String> {
-    let hash = project_hash(home, cwd, name)
-        .ok_or_else(|| format!("no project agent named '{name}'"))?;
+    let hash =
+        project_hash(home, cwd, name).ok_or_else(|| format!("no project agent named '{name}'"))?;
     let mut store = TrustStore::open();
     store
         .trust(&hash)
@@ -243,8 +245,8 @@ pub fn gated(home: &Path, cwd: &Path, name: &str) -> (Flavor, bool) {
         // restriction somebody asked for.
         return (user.merge(project), false);
     }
-    let trusted = project_hash(home, cwd, name)
-        .is_some_and(|hash| TrustStore::open().is_trusted(&hash));
+    let trusted =
+        project_hash(home, cwd, name).is_some_and(|hash| TrustStore::open().is_trusted(&hash));
     if trusted {
         (user.merge(project), false)
     } else {
@@ -366,10 +368,16 @@ preset = "full"
         let agents = world.agents();
         assert_eq!(agents.len(), 1);
         assert!(agents[0].wants_privilege);
-        assert!(!agents[0].trusted, "a new project agent must not be trusted");
+        assert!(
+            !agents[0].trusted,
+            "a new project agent must not be trusted"
+        );
         assert!(!agents[0].fully_applied());
         assert!(
-            agents[0].privilege_summary.iter().any(|l| l.contains("cargo test")),
+            agents[0]
+                .privilege_summary
+                .iter()
+                .any(|l| l.contains("cargo test")),
             "{:?}",
             agents[0].privilege_summary
         );
