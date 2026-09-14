@@ -33,11 +33,10 @@ async fn spawn() -> SocketAddr {
 /// gets answered, so every call goes through `spawn_blocking`, the same as
 /// `tests/skills.rs`.
 async fn get(url: String) -> serde_json::Value {
-    let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&url).call().unwrap().into_string().unwrap()
-    })
-    .await
-    .unwrap();
+    let body =
+        tokio::task::spawn_blocking(move || ureq::get(&url).call().unwrap().into_string().unwrap())
+            .await
+            .unwrap();
     serde_json::from_str(&body).unwrap()
 }
 
@@ -117,10 +116,7 @@ async fn the_data_listing_names_every_file_and_the_variable_that_moves_it() {
     let files = body["files"].as_array().unwrap();
     assert_eq!(files.len(), 5, "{body}");
 
-    let index = files
-        .iter()
-        .find(|f| f["label"] == "search index")
-        .unwrap();
+    let index = files.iter().find(|f| f["label"] == "search index").unwrap();
     assert_eq!(index["exists"], true);
     assert_eq!(index["bytes"], 11);
     assert_eq!(index["env_var"], "ZORP_RECALL_DB");
@@ -136,7 +132,10 @@ async fn the_data_listing_names_every_file_and_the_variable_that_moves_it() {
 
     // The sentence about the key is in front of whoever is about to reset.
     assert!(
-        body["reset_note"].as_str().unwrap().contains("ZORP_API_KEY"),
+        body["reset_note"]
+            .as_str()
+            .unwrap()
+            .contains("ZORP_API_KEY"),
         "{body}"
     );
 }
@@ -183,7 +182,11 @@ async fn resetting_settings_takes_the_settings_and_nothing_else() {
         "reset reached into the workspace"
     );
     let store = Store::open_at(&fx.path("sessions.db")).unwrap();
-    assert_eq!(store.sessions().unwrap().len(), 1, "reset took a conversation");
+    assert_eq!(
+        store.sessions().unwrap().len(),
+        1,
+        "reset took a conversation"
+    );
 
     // And it says what it could not do, rather than implying the key is gone.
     let answered: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -281,10 +284,7 @@ async fn the_mcp_listing_says_this_build_loads_none_of_them() {
         "{body}"
     );
     // And where it looked, so an empty list is explicable.
-    assert!(
-        body["sources"].as_array().unwrap().len() >= 2,
-        "{body}"
-    );
+    assert!(body["sources"].as_array().unwrap().len() >= 2, "{body}");
 }
 
 /// A server that silently vanishes is a tool that silently stops existing,
@@ -343,8 +343,18 @@ async fn the_doctor_report_says_what_the_build_has_and_where_its_state_is() {
         .iter()
         .map(|c| c["label"].as_str().unwrap())
         .collect();
-    for expected in ["features", "endpoint", "model", "api key", "conversations", "workspace"] {
-        assert!(labels.contains(&expected), "{expected} missing from {labels:?}");
+    for expected in [
+        "features",
+        "endpoint",
+        "model",
+        "api key",
+        "conversations",
+        "workspace",
+    ] {
+        assert!(
+            labels.contains(&expected),
+            "{expected} missing from {labels:?}"
+        );
     }
     assert!(!body["version"].as_str().unwrap().is_empty(), "{body}");
 }

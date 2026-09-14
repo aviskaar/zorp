@@ -300,13 +300,7 @@ fn skill_scope(path: &std::path::Path, workspace: Option<&std::path::Path>) -> &
 /// they will read the two as different problems.
 fn refuse_while_running(state: &AppState) -> Option<axum::response::Response> {
     if state.any_running() {
-        return Some(
-            (
-                StatusCode::CONFLICT,
-                "a turn is running on this session",
-            )
-                .into_response(),
-        );
+        return Some((StatusCode::CONFLICT, "a turn is running on this session").into_response());
     }
     None
 }
@@ -480,7 +474,12 @@ async fn list_mcp(State(state): State<AppState>) -> Json<serde_json::Value> {
     let workspace = state.workspace_root();
     let (servers, warning) = tokio::task::spawn_blocking(move || mcp_servers(workspace.as_deref()))
         .await
-        .unwrap_or_else(|_| (Vec::new(), Some("reading the MCP configuration crashed".into())));
+        .unwrap_or_else(|_| {
+            (
+                Vec::new(),
+                Some("reading the MCP configuration crashed".into()),
+            )
+        });
 
     let rows: Vec<serde_json::Value> = servers
         .iter()
@@ -543,10 +542,12 @@ fn mcp_servers(
     }
     match zorp_mcp::McpConfig::from_env() {
         Ok(env) => config.merge_from(env),
-        Err(e) => warning = Some(match warning {
-            Some(first) => format!("{first}; {e}"),
-            None => e.to_string(),
-        }),
+        Err(e) => {
+            warning = Some(match warning {
+                Some(first) => format!("{first}; {e}"),
+                None => e.to_string(),
+            })
+        }
     }
     (config.servers, warning)
 }
@@ -605,9 +606,13 @@ async fn doctor_route(
                 "no model set. Choose one in settings, or set ZORP_MODEL.",
             ));
         } else {
-            report.checks.push(Check::note("model", resolved.model.clone()));
+            report
+                .checks
+                .push(Check::note("model", resolved.model.clone()));
         }
-        report.checks.push(doctor::api_key_check(&resolved.base_url));
+        report
+            .checks
+            .push(doctor::api_key_check(&resolved.base_url));
 
         // The same probe `POST /api/settings/test` makes, so the two cannot
         // disagree about whether the endpoint answers. Only when asked:
@@ -632,10 +637,9 @@ async fn doctor_route(
         });
 
         for file in zorp_agent::state::files() {
-            report.checks.push(Check::note(
-                file.label,
-                file.path.display().to_string(),
-            ));
+            report
+                .checks
+                .push(Check::note(file.label, file.path.display().to_string()));
         }
         report.checks.push(Check::note(
             "workspace",

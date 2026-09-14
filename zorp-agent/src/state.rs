@@ -194,7 +194,10 @@ pub const RESET_LEAVES_THE_KEY: &str =
 pub fn reset_settings() -> std::io::Result<Cleared> {
     let mut cleared = Cleared::default();
     remove(&crate::config::path(), &mut cleared.removed)?;
-    remove(&crate::trust::TrustStore::default_path(), &mut cleared.removed)?;
+    remove(
+        &crate::trust::TrustStore::default_path(),
+        &mut cleared.removed,
+    )?;
     Ok(cleared)
 }
 
@@ -261,7 +264,10 @@ mod tests {
         }
         let conversations = files.iter().find(|f| f.label == "conversations").unwrap();
         assert!(conversations.exists());
-        assert_eq!(conversations.bytes, Some("not really a database".len() as u64));
+        assert_eq!(
+            conversations.bytes,
+            Some("not really a database".len() as u64)
+        );
         assert_eq!(conversations.env_var, Some("ZORP_STATE_DB"));
     }
 
