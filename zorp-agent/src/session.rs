@@ -799,6 +799,41 @@ impl Store {
         Ok(deleted > 0)
     }
 
+    /// Every conversation, every project label, and everything recorded
+    /// under them, in one transaction.
+    ///
+    /// One statement per table rather than a loop over `delete_session`, so
+    /// this either happens or does not. Clearing halfway leaves a store
+    /// whose sessions are gone and whose messages are not, which is not a
+    /// state anything else here knows how to read.
+    ///
+    /// **A running conversation is the caller's problem, not this
+    /// function's.** The refusal belongs at the surface, where the live
+    /// session map is, and both surfaces already give a 409 in the same
+    /// words for `delete_session`. A store method that consulted a status
+    /// column would be checking the wrong thing: `status` is what was
+    /// written last, and a process killed mid turn leaves `running` behind
+    /// forever.
+    ///
+    /// Projects go too. A project is a name for a group of conversations,
+    /// and keeping the labels after the conversations they named would
+    /// leave a sidebar of empty headings.
+    ///
+    /// Nothing outside this database is touched. Not the search index,
+    /// which is derived and has its own call, and above all not a file in
+    /// anybody's workspace.
+    pub fn delete_all(&mut self) -> Result<usize, BoxErr> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM messages", [])?;
+        tx.execute("DELETE FROM file_changes", [])?;
+        tx.execute("DELETE FROM message_images", [])?;
+        tx.execute("DELETE FROM compactions", [])?;
+        let sessions = tx.execute("DELETE FROM sessions", [])?;
+        tx.execute("DELETE FROM projects", [])?;
+        tx.commit()?;
+        Ok(sessions)
+    }
+
     /// Copy a conversation up to and including its `answer`th answer into a
     /// new session `to`, so a person can carry on from that point on another
     /// path while the original stays as it was.
@@ -1193,6 +1228,30 @@ CREATE TABLE file_changes (
         assert_eq!(loaded[2].tool_calls[0].name, "read_file");
         assert_eq!(loaded[2].tool_calls[0].arguments, json!({"path": "a.rs"}));
         assert_eq!(loaded[3].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn delete_all_takes_every_conversation_and_every_project_label() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_project("p1", "research").unwrap();
+        for id in ["s1", "s2"] {
+            store.create_session(id, "task", "/repo", "m").unwrap();
+            store.record_message(id, 0, &Message::user("hi")).unwrap();
+            store.set_session_project(id, Some("p1")).unwrap();
+        }
+
+        assert_eq!(store.delete_all().unwrap(), 2);
+        assert!(store.sessions().unwrap().is_empty());
+        assert!(store.projects().unwrap().is_empty());
+        assert_eq!(store.message_count("s1").unwrap(), 0);
+        assert!(store.session_status("s1").unwrap().is_none());
+    }
+
+    /// Clearing an empty store is not an error and reports honestly.
+    #[test]
+    fn delete_all_on_an_empty_store_removes_nothing_and_says_so() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert_eq!(store.delete_all().unwrap(), 0);
     }
 
     #[test]

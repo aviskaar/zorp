@@ -248,6 +248,35 @@ enum Command {
     /// usable in a script and safe to paste into a bug report: no key, no
     /// token and no manifest contents are printed.
     Doctor,
+    /// Say what zorp keeps on this machine, and clear part of it.
+    ///
+    /// With no flag it lists the files and their sizes and changes nothing.
+    /// Every flag that deletes asks first unless --yes is passed, the way
+    /// `rm` does, because none of this is recoverable.
+    ///
+    /// Nothing here touches a workspace file. The directory the agent works
+    /// in belongs to the person and no flag reaches into it.
+    Data {
+        /// Delete every conversation and every project label.
+        #[arg(long)]
+        clear_conversations: bool,
+        /// Delete the conversation search index. It rebuilds from the
+        /// conversations, so this costs a sweep and nothing else.
+        #[arg(long)]
+        clear_index: bool,
+        /// Remove the settings file and the trust file.
+        ///
+        /// It cannot unset ZORP_API_KEY: a process does not own the
+        /// environment it was started in.
+        #[arg(long)]
+        reset_settings: bool,
+        /// All three of the above, in that order.
+        #[arg(long)]
+        reset_everything: bool,
+        /// Do not ask.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Delete a conversation and everything recorded under it.
     ///
     /// Takes a unique id prefix. This removes messages and recorded file
@@ -366,6 +395,18 @@ fn main() {
         Some(Command::Config { action }) => config(action, &overrides),
         Some(Command::Projects { action }) => projects(action),
         Some(Command::Doctor) => doctor(&overrides),
+        Some(Command::Data {
+            clear_conversations,
+            clear_index,
+            reset_settings,
+            reset_everything,
+            yes,
+        }) => data(
+            clear_conversations || reset_everything,
+            clear_index || reset_everything,
+            reset_settings || reset_everything,
+            yes,
+        ),
         Some(Command::Rm { id, yes, force }) => remove_session(&id, yes || cli.yes, force),
         Some(Command::Branch { id, answer, force }) => branch_session(&id, answer, force),
         #[cfg(feature = "research")]
@@ -946,6 +987,127 @@ fn panel_command(
     // they look like, so it is worth an exit code too.
     if !report.is_complete() {
         std::process::exit(1);
+    }
+}
+
+/// `zorp-agent data`: what zorp keeps here, and how to get rid of it.
+///
+/// The listing is the default and the deletions are opt in, because the
+/// first question is almost always "what is it holding" rather than "delete
+/// it". `--reset-everything` is the other three in order rather than a
+/// fourth operation, so there is one implementation of each thing that can
+/// be deleted and no fourth path that forgets one of them.
+///
+/// Every deletion asks. Nothing here is recoverable, and the browser's
+/// version of the same three actions is behind a typed confirmation for the
+/// same reason.
+fn data(clear_conversations: bool, clear_index: bool, reset_settings: bool, yes: bool) {
+    use zorp_agent::state;
+
+    let deleting = clear_conversations || clear_index || reset_settings;
+    if !deleting {
+        print_data();
+        return;
+    }
+
+    let mut what = Vec::new();
+    if clear_conversations {
+        what.push("every conversation and every project label");
+    }
+    if clear_index {
+        what.push("the conversation search index");
+    }
+    if reset_settings {
+        what.push("the settings file and the trust file");
+    }
+    if !yes && !confirm(&format!("Delete {}?", what.join(", "))) {
+        println!("nothing was deleted");
+        return;
+    }
+
+    // In this order on purpose. The index is derived from the
+    // conversations, so clearing conversations first and the index second
+    // never leaves embeddings of conversations that are gone.
+    if clear_conversations {
+        match zorp_agent::Store::open_default().and_then(|mut store| store.delete_all()) {
+            Ok(count) => println!("deleted {count} conversation(s)"),
+            Err(e) => {
+                eprintln!("zorp-agent: could not clear conversations: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if clear_index {
+        match state::delete_search_index() {
+            Ok(cleared) if cleared.is_empty() => println!("no search index to delete"),
+            Ok(cleared) => println!("deleted the search index ({} file(s))", cleared.removed.len()),
+            Err(e) => {
+                eprintln!("zorp-agent: could not delete the search index: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if reset_settings {
+        match state::reset_settings() {
+            Ok(cleared) if cleared.is_empty() => println!("nothing was saved to reset"),
+            Ok(cleared) => {
+                for path in &cleared.removed {
+                    println!("removed {}", path.display());
+                }
+            }
+            Err(e) => {
+                eprintln!("zorp-agent: could not reset settings: {e}");
+                std::process::exit(1);
+            }
+        }
+        // Said every time, because somebody resetting settings is usually
+        // trying to get rid of a credential and this is the one that
+        // survives.
+        println!("{}", state::RESET_LEAVES_THE_KEY);
+    }
+}
+
+/// The files and what is in them. Sizes, because the search index is
+/// usually the large one and nothing said so before.
+fn print_data() {
+    let files = zorp_agent::state::files();
+    let width = files
+        .iter()
+        .map(|f| f.label.chars().count())
+        .max()
+        .unwrap_or(0);
+    for file in &files {
+        let size = match file.bytes {
+            Some(bytes) => human_bytes(bytes),
+            None => "not created".to_string(),
+        };
+        println!(
+            "{:<width$}  {:>10}  {}",
+            file.label,
+            size,
+            file.path.display(),
+            width = width
+        );
+    }
+    println!();
+    for file in &files {
+        println!("{}: {}", file.label, file.what);
+    }
+}
+
+/// A size a person reads rather than counts digits in.
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
     }
 }
 

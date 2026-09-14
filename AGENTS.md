@@ -246,7 +246,17 @@ resulting artifact, deliver it in the right form.
   no tool, loosen no approval, and bypass no denylist entry, and
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
-  that. Skills are not capsules; the same entry says why both exist.
+  that.
+- `zorp-agent/src/state.rs` is the one list of what zorp keeps on this
+  machine: the conversation store, the search index, the input history,
+  the trust file and the settings file. It is what `zorp-agent data`,
+  `GET /api/data` and the browser's three clearing actions all read, so
+  the two surfaces cannot disagree about what a reset means. Nothing in it
+  touches a workspace file and there is no code path that can. Resetting
+  settings cannot unset `ZORP_API_KEY`, because a process does not own the
+  environment it was started in, and `RESET_LEAVES_THE_KEY` says so to
+  whoever is about to click. No tool reaches any of it; see
+  `no_tool_clears_state_or_resets_settings`. Skills are not capsules; the same entry says why both exist.
   The repository ships two of its own under `.claude/skills/`,
   `artifact-design` and `artifact-diagramming`, which say how to write the
   `.html` and `.svg` files the browser's side pane renders. Both are pinned
