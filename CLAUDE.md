@@ -287,6 +287,28 @@ resulting artifact, deliver it in the right form.
   listing carries no skill body either, so a `SKILL.md` cannot reach the
   page at all; the strings that do reach it are a file zorp did not write
   and go on through `textContent` like model output.
+- An agent is a flavor with a description, not a new format.
+  `zorp-agent/src/agents.rs` reads the same two `flavors/` directories
+  `--flavor` reads, `sessions.agent` holds the name a person picked, and
+  the scope is resolved at turn time so the two surfaces merge layers
+  identically. It is locked once a conversation has answered; branching is
+  how you change it, and a branch carries the agent. Setting it while a
+  turn is running gets the same 409 delete and branch give, because the
+  turn has already read the flavor it is running under. A workspace agent
+  that wants privilege applies those fields only once somebody has trusted
+  its content hash, and editing the file revokes that on its own, because
+  the model can write into `<workspace>/.zorp/flavors/`. Three parts of
+  that are load bearing. Privilege is every field that widens what a run
+  can do or moves where it sends traffic: verify commands, a looser
+  approval preset, a base URL, a provider. The hash covers the whole
+  merged project layer, `<cwd>/.zorp/flavor.toml` as well as
+  `<cwd>/.zorp/flavors/<name>.toml`, or a file written beside a trusted
+  one rides in under a hash that still matches. And a preset narrows what
+  a surface asks about and never loosens it, because `Decision::Allow`
+  skips the approver entirely, so the browser takes the stricter of its
+  own floor and what the flavor asked for. No tool picks an agent or
+  trusts one; see `no_tool_picks_an_agent_or_trusts_one`. See
+  `docs/DECISIONS.md` (2026-09-13).
 - `zorp-agent/src/state.rs` is the one list of what zorp keeps on this
   machine: the conversation store, the search index, the input history,
   the trust file and the settings file. It is what `zorp-agent data`,

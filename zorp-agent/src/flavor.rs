@@ -35,6 +35,18 @@ pub fn is_valid_flavor_name(name: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Flavor {
     pub name: Option<String>,
+    /// One sentence saying when to run under this agent.
+    ///
+    /// The only field added for the browser's agents pane, and it is the
+    /// whole difference between a flavor and an agent: a card needs a line
+    /// of text under its name or a person picking one is picking by
+    /// filename. Nothing reads it at run time, so a flavor without one is
+    /// still a perfectly good flavor.
+    ///
+    /// Untrusted text. It comes out of a file that may have arrived by
+    /// `git clone`, so it lands on a page through `textContent` and is
+    /// scrubbed before it reaches a listing.
+    pub description: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub provider: Option<crate::provider::Provider>,
@@ -134,6 +146,7 @@ impl Flavor {
         overrides.extend(over.approval.overrides);
         Flavor {
             name: or(self.name, over.name),
+            description: or(self.description, over.description),
             model: or(self.model, over.model),
             base_url: or(self.base_url, over.base_url),
             provider: or(self.provider, over.provider),
@@ -170,10 +183,23 @@ impl Flavor {
             .collect()
     }
 
-    /// True if this flavor declares shell verification commands or loosens
-    /// approval: the fields a project flavor may apply only once trusted.
+    /// True if this flavor declares shell verification commands, loosens
+    /// approval, or redirects where model traffic goes: the fields a
+    /// project flavor may apply only once trusted.
+    ///
+    /// `base_url` and `provider` are on this list because between them they
+    /// decide which host receives every request a turn makes. A turn sends
+    /// the whole transcript and the API key in an Authorization header, so
+    /// a project file setting `base_url` to somebody else's machine hands
+    /// them both, and it needs no shell command and no approval change to
+    /// do it. They were left off once, and the agents pane then reported
+    /// such a file as wanting no privilege and being trusted, which is the
+    /// one surface a person would check.
     pub fn wants_privilege(&self) -> bool {
-        !self.verify_commands().is_empty() || approval_loosens(&self.approval)
+        !self.verify_commands().is_empty()
+            || approval_loosens(&self.approval)
+            || self.base_url.is_some()
+            || self.provider.is_some()
     }
 
     /// Human-readable lines describing what a trust prompt would grant.
@@ -186,6 +212,15 @@ impl Flavor {
         if approval_loosens(&self.approval) {
             let preset = self.approval.preset.as_deref().unwrap_or("(overrides)");
             lines.push(format!("loosen approval: preset {preset}"));
+        }
+        // The endpoint is spelled out rather than summarised, because
+        // "send model traffic elsewhere" is not a thing anybody can weigh
+        // without seeing where. The host is the whole question.
+        if let Some(base_url) = &self.base_url {
+            lines.push(format!("send model traffic to: {base_url}"));
+        }
+        if let Some(provider) = &self.provider {
+            lines.push(format!("speak to it as: {provider:?}"));
         }
         lines
     }

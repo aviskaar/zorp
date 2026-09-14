@@ -560,6 +560,17 @@ async fn deleting_a_running_session_is_refused() {
         .await,
         409
     );
+    // And so is choosing the agent: the turn already read the flavor it is
+    // running under, so a write now would name one agent on the page while
+    // another wrote the answer.
+    assert_eq!(
+        put_status(
+            format!("http://{addr}/api/sessions/{id}/agent"),
+            r#"{"agent":"reviewer"}"#,
+        )
+        .await,
+        409
+    );
     assert_eq!(
         get_status(format!("http://{addr}/api/sessions/{id}")).await,
         200,

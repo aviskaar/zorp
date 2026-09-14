@@ -131,6 +131,16 @@ fn api_router(state: AppState) -> Router {
         // route that loads one; that is the agent's `skill` tool.
         .route("/api/sessions/:id/skills/active", get(active_skills))
         .route("/api/skills", get(list_skills))
+        // Agents: the flavors a person can pick a conversation to run
+        // under. An agent is a flavor with a description, not a new
+        // format, so these read the same files `--flavor` reads.
+        .route("/api/agents", get(list_agents))
+        .route("/api/agents/:scope/:name", get(get_agent))
+        .route("/api/agents/:scope/:name/trust", post(trust_agent))
+        .route(
+            "/api/sessions/:id/agent",
+            axum::routing::put(set_session_agent_route),
+        )
         .route("/api/voice/status", get(crate::voice::status))
         .route("/api/voice/wait", post(crate::voice::wait))
         .route(
@@ -812,6 +822,258 @@ async fn active_skills(State(state): State<AppState>, Path(id): Path<String>) ->
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "listing active skills crashed".to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Where the flavor layers live, for a browser that has no cwd of its own.
+///
+/// The workspace is the project scope, exactly as the directory the CLI was
+/// started in is. A server with no workspace chosen still has user scope,
+/// which is why this hands back a path rather than refusing.
+fn agent_scopes(state: &AppState) -> (std::path::PathBuf, std::path::PathBuf) {
+    let home = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    let cwd = state
+        .workspace_root()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    (home, cwd)
+}
+
+fn scope_from(raw: &str) -> Option<zorp_agent::Scope> {
+    match raw {
+        "user" => Some(zorp_agent::Scope::User),
+        "workspace" | "project" => Some(zorp_agent::Scope::Project),
+        _ => None,
+    }
+}
+
+fn scope_name(scope: zorp_agent::Scope) -> &'static str {
+    match scope {
+        zorp_agent::Scope::User => "user",
+        // "workspace" on this surface, because that is the word the browser
+        // uses for the directory everywhere else. The CLI calls the same
+        // thing project scope because it is the directory you are standing
+        // in.
+        zorp_agent::Scope::Project => "workspace",
+    }
+}
+
+/// One agent as a row, without its system prompt.
+///
+/// The prompt is not here on purpose: it can be long, it is untrusted text
+/// out of a file that may have arrived by `git clone`, and a listing is not
+/// where somebody reads one. `GET /api/agents/:scope/:name` has it for the
+/// detail view.
+///
+/// The name is scrubbed with `title::scrub` before it leaves. A name is
+/// untrusted text and a bidirectional override inside one reorders every
+/// row after it on the page, which is how one agent impersonates another in
+/// a list somebody is picking from.
+fn agent_row(agent: &zorp_agent::agents::Agent) -> serde_json::Value {
+    json!({
+        "name": zorp_agent::sessions::scrub(&agent.name),
+        "scope": scope_name(agent.scope),
+        "description": agent.description.as_deref().map(zorp_agent::sessions::scrub),
+        "model": agent.model,
+        "tools": agent.tools,
+        "approval_preset": agent.approval_preset,
+        "wants_privilege": agent.wants_privilege,
+        "privilege_summary": agent.privilege_summary,
+        "trusted": agent.trusted,
+        "fully_applied": agent.fully_applied(),
+        // Named rather than dropped. An agent that silently vanishes is a
+        // run that silently loses its restrictions.
+        "broken": agent.broken,
+    })
+}
+
+/// Every agent this server can see, at both scopes.
+///
+/// Read-only. Creating and editing are separate routes and are not in this
+/// change; nothing here writes a file.
+async fn list_agents(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let (home, cwd) = agent_scopes(&state);
+    let agents = tokio::task::spawn_blocking(move || zorp_agent::agents::discover(&home, &cwd))
+        .await
+        .unwrap_or_default();
+
+    Json(json!({
+        "agents": agents.iter().map(agent_row).collect::<Vec<_>>(),
+        // The card that means no flavor at all, which is what every
+        // conversation has today. Named here rather than invented by the
+        // page, so both surfaces agree on what the default is called.
+        "default": zorp_agent::agents::DEFAULT_AGENT,
+    }))
+}
+
+/// One agent, with its system prompt.
+///
+/// The prompt is the one field a person most needs to read before picking
+/// an agent, and the one field most likely to contain an instruction
+/// somebody would rather you did not notice. It lands on the page through
+/// `textContent` like everything else.
+async fn get_agent(
+    State(state): State<AppState>,
+    Path((scope, name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let Some(scope) = scope_from(&scope) else {
+        return (StatusCode::NOT_FOUND, "no such scope").into_response();
+    };
+    let (home, cwd) = agent_scopes(&state);
+    let found = tokio::task::spawn_blocking(move || {
+        let agent = zorp_agent::agents::get(&home, &cwd, scope, &name)?;
+        // Read separately rather than kept on `Agent`, so a listing of
+        // fifty agents does not carry fifty prompts.
+        let prompt = zorp_agent::Flavor::load(&agent.path)
+            .ok()
+            .flatten()
+            .and_then(|f| f.system_prompt);
+        Some((agent, prompt))
+    })
+    .await
+    .ok()
+    .flatten();
+
+    match found {
+        Some((agent, prompt)) => {
+            let mut row = agent_row(&agent);
+            row["system_prompt"] = json!(prompt);
+            row["path"] = json!(agent.path.display().to_string());
+            Json(row).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "no such agent").into_response(),
+    }
+}
+
+/// Record a workspace agent's current content hash as trusted.
+///
+/// **This is the only thing that turns a workspace agent's command-bearing
+/// fields on, and it is a person's click.** The model can write a file into
+/// `<workspace>/.zorp/flavors/` with `write_file`, which is exactly why the
+/// gate exists, and `agent.rs` has a test saying no tool can call this.
+///
+/// User scope is refused rather than silently accepted. A user agent is
+/// already trusted because the person put the file there, so a route that
+/// pretended to trust one would be offering a button that does nothing.
+///
+/// Trust is by content hash, so this trusts exactly the file that was read.
+/// Editing it afterwards produces a different hash and the agent goes back
+/// to untrusted on its own.
+async fn trust_agent(
+    State(state): State<AppState>,
+    Path((scope, name)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let Some(scope) = scope_from(&scope) else {
+        return (StatusCode::NOT_FOUND, "no such scope").into_response();
+    };
+    if scope == zorp_agent::Scope::User {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a user agent is already trusted: you put the file there",
+        )
+            .into_response();
+    }
+    let (home, cwd) = agent_scopes(&state);
+    let done = tokio::task::spawn_blocking(move || {
+        zorp_agent::agents::trust_project_agent(&home, &cwd, &name)
+    })
+    .await;
+
+    match done {
+        Ok(Ok(hash)) => Json(json!({ "trusted": true, "hash": hash })).into_response(),
+        Ok(Err(reason)) => (StatusCode::NOT_FOUND, reason).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "recording the trust decision crashed".to_string(),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AgentBody {
+    /// The agent's name, or null for the default.
+    agent: Option<String>,
+}
+
+/// Choose the agent a conversation runs under.
+///
+/// **A person, never a model.** No tool sets this; `agent.rs` names the
+/// route in `no_tool_picks_an_agent_or_trusts_one`.
+///
+/// Locked once the conversation has an answer, which the store enforces
+/// rather than this handler, so the CLI gets the same rule. A 409 rather
+/// than a 400, because it is a conflict with the state of the resource and
+/// the answer is to branch, which is the same shape as the refusal a
+/// running turn gives.
+async fn set_session_agent_route(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<AgentBody>,
+) -> impl IntoResponse {
+    // A running turn already read the flavor it is running under. Writing
+    // the column now leaves the page naming one agent while the answer
+    // still being written came from another, which is the confusion the
+    // lock below exists to prevent. Same 409 and same sentence as delete
+    // and branch.
+    if let Some(session) = state.get(&id) {
+        if session.lock().unwrap().running {
+            return (StatusCode::CONFLICT, "a turn is running on this session").into_response();
+        }
+    }
+
+    let wanted = body
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        // The default card is "no flavor at all", so picking it clears the
+        // column rather than storing a name nothing would resolve.
+        .filter(|n| *n != zorp_agent::agents::DEFAULT_AGENT)
+        .map(str::to_string);
+
+    // A name that resolves to no file would be a conversation that silently
+    // runs as default while the top bar says otherwise.
+    if let Some(name) = &wanted {
+        let (home, cwd) = agent_scopes(&state);
+        let name = name.clone();
+        let known = tokio::task::spawn_blocking(move || {
+            zorp_agent::agents::get(&home, &cwd, zorp_agent::Scope::User, &name).is_some()
+                || zorp_agent::agents::get(&home, &cwd, zorp_agent::Scope::Project, &name).is_some()
+        })
+        .await
+        .unwrap_or(false);
+        if !known {
+            return (StatusCode::NOT_FOUND, "no such agent").into_response();
+        }
+    }
+
+    let set = tokio::task::spawn_blocking(move || {
+        let mut store = zorp_agent::Store::open_default().map_err(|e| e.to_string())?;
+        store
+            .set_session_agent(&id, wanted.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await;
+
+    match set {
+        Ok(Ok(zorp_agent::SetAgent::Done)) => Json(json!({ "ok": true })).into_response(),
+        Ok(Ok(zorp_agent::SetAgent::NoSuchSession)) => {
+            (StatusCode::NOT_FOUND, "no such session").into_response()
+        }
+        Ok(Ok(zorp_agent::SetAgent::Locked)) => (
+            StatusCode::CONFLICT,
+            "this conversation has already answered, so its agent is fixed. Branch it to \
+             carry on under a different one.",
+        )
+            .into_response(),
+        Ok(Err(reason)) => (StatusCode::INTERNAL_SERVER_ERROR, reason).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "setting the agent crashed".to_string(),
         )
             .into_response(),
     }

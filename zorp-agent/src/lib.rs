@@ -3,6 +3,7 @@
 
 pub mod active_skills;
 mod agent;
+pub mod agents;
 mod approval;
 mod blocks;
 mod capsule;
@@ -106,8 +107,8 @@ pub use render::{
 };
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
 pub use session::{
-    new_session_id, render_change_summary, Compaction, ProjectRow, SessionRow, SetProject, Store,
-    MAX_PROJECT_NAME,
+    new_session_id, render_change_summary, Compaction, ProjectRow, SessionRow, SetAgent,
+    SetProject, Store, MAX_PROJECT_NAME,
 };
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
