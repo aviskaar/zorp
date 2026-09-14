@@ -98,6 +98,49 @@ ledger reader still names no model-authored text column.
 
 ---
 
+## 2026-09-14: settings is a pane, not two modals, and the model form moved rather than being rewritten
+
+**Decision:** `web/index.html` has one `settings-pane` `aside` holding six
+sections. `settings-overlay` and `workspace-overlay` are gone. The model
+form and the workspace picker moved into it with every element id intact,
+so `wireSettings` and `WorkspacePicker` drive them unchanged.
+
+**A pane rather than a dialog, because of what it holds.** A modal is for
+one decision. This holds six sections, and a person reads it, scrolls it,
+and comes back to it while they work. The same `aside` shape and the same
+resizer as the artifact pane, so there is no new layout machinery.
+
+**Moved, not rewritten.** The model form is the riskiest markup in the app:
+it writes through `PUT /api/settings`, `onboarding.ts` is a second client
+of the same endpoints, and the API key field has rules that took a decision
+entry of their own. Re-authoring it inside a new pane would have been a
+rewrite of the one form nobody wants to debug. Lifting the `<form>` with its
+ids intact meant the diff is where the markup sits and nowhere else.
+
+**Onboarding kept its overlay.** `onboard-overlay` still uses the
+`.settings-overlay` class for its styling and is still a modal, because it
+genuinely is one decision at a time on first run. Deleting the class would
+have taken it with the two panes.
+
+**The two panes share one column.** Opening settings over a document would
+leave the conversation a sliver between two panes, so settings takes the
+column and the artifact pane comes back when settings closes.
+
+**Every destructive action is behind a typed word, not a click.** Clearing
+conversations, deleting the index and resetting settings are all
+unrecoverable, and a button that fires on the first click is one somebody
+hits while reading the sentence that would have stopped them. The button is
+disabled until the word matches exactly and relocks after it fires, so a
+second deletion is a second decision. "Reset everything" is the browser
+calling the other three in order, not a fourth endpoint, so there is one
+implementation of each thing that can be deleted.
+
+**Auto-approve stays in the toolbar.** It is per session state and belongs
+beside the composer, where the thing it loosens happens. Named in the pane's
+own comment so nobody re-derives the decision and moves it in.
+
+---
+
 ## 2026-09-13: one list of what zorp keeps, and the browser gets doctor without the wait
 
 **Decision:** `zorp-agent/src/state.rs` is the one place that knows which

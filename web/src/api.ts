@@ -290,6 +290,139 @@ export async function fetchSkills(): Promise<SkillListing> {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* the settings pane                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One MCP server, as `GET /api/mcp` reports it.
+ *
+ * **There is no `env` and no `headers` here, only their key names.** Those
+ * maps are where a token goes, and the server never sends their values. The
+ * redaction lives on `ServerConfig` in `zorp-mcp`, beside the type it
+ * protects.
+ *
+ * `loaded` is false in every build today, because `zorp-web` has no `mcp`
+ * feature. The field exists so it can stop being always false without this
+ * shape changing.
+ */
+export interface McpServer {
+  name: string;
+  transport: string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  env_keys: string[];
+  header_keys: string[];
+  trust: string;
+  timeout_secs: number | null;
+  loaded: boolean;
+}
+
+export interface McpListing {
+  servers: McpServer[];
+  /** Whether this build loads any of them. False, today. */
+  loads_servers: boolean;
+  /** Why, in the server's words. Shown when `loads_servers` is false. */
+  why: string;
+  /** Where it looked, so an empty list is explicable. */
+  sources: string[];
+  /** A configuration file that did not parse, named rather than swallowed. */
+  warning: string | null;
+}
+
+/**
+ * One file zorp keeps on this machine.
+ *
+ * `bytes` is null when the file is not there. Absent and empty are
+ * different answers and a listing that conflated them would send somebody
+ * looking for a file that was never written.
+ */
+export interface StateFile {
+  label: string;
+  what: string;
+  path: string;
+  env_var: string | null;
+  exists: boolean;
+  bytes: number | null;
+}
+
+export interface DataListing {
+  files: StateFile[];
+  /**
+   * That resetting settings cannot unset `ZORP_API_KEY`, because a process
+   * does not own the environment it was started in. Shown before the
+   * buttons, not after.
+   */
+  reset_note: string;
+}
+
+/** One line of the doctor report. */
+export interface DoctorCheck {
+  health: "ok" | "bad" | "off" | "note";
+  label: string;
+  detail: string;
+}
+
+export interface DoctorReport {
+  version: string;
+  healthy: boolean;
+  base_url: string;
+  checks: DoctorCheck[];
+}
+
+/** Configured MCP servers. Never a value from `env` or `headers`. */
+export async function fetchMcp(): Promise<McpListing> {
+  const body = await request<McpListing>("GET", "/api/mcp");
+  return {
+    servers: Array.isArray(body?.servers) ? body.servers : [],
+    loads_servers: Boolean(body?.loads_servers),
+    why: typeof body?.why === "string" ? body.why : "",
+    sources: Array.isArray(body?.sources) ? body.sources : [],
+    warning: typeof body?.warning === "string" ? body.warning : null,
+  };
+}
+
+/** What zorp keeps on this machine. Read only. */
+export async function fetchData(): Promise<DataListing> {
+  const body = await request<DataListing>("GET", "/api/data");
+  return {
+    files: Array.isArray(body?.files) ? body.files : [],
+    reset_note: typeof body?.reset_note === "string" ? body.reset_note : "",
+  };
+}
+
+/**
+ * What this build can do.
+ *
+ * `probe` asks the server to call the endpoint, which can take up to thirty
+ * seconds, so it is off unless somebody asked for it.
+ */
+export async function fetchDoctor(probe = false): Promise<DoctorReport> {
+  const body = await request<DoctorReport>("GET", `/api/doctor${probe ? "?probe=true" : ""}`);
+  return {
+    version: typeof body?.version === "string" ? body.version : "",
+    healthy: Boolean(body?.healthy),
+    base_url: typeof body?.base_url === "string" ? body.base_url : "",
+    checks: Array.isArray(body?.checks) ? body.checks : [],
+  };
+}
+
+/** Every conversation and every project label. Refused while a turn runs. */
+export async function clearConversations(): Promise<void> {
+  await request("DELETE", "/api/sessions");
+}
+
+/** The conversation search index. Rebuilt by the next sweep. */
+export async function deleteSearchIndex(): Promise<void> {
+  await request("DELETE", "/api/recall/index");
+}
+
+/** The settings file and the trust file. Never a conversation, never a workspace file. */
+export async function resetSettings(): Promise<void> {
+  await request("DELETE", "/api/settings");
+}
+
 /** The server's observed local voice runtime state. */
 export interface VoiceStatus {
   available: boolean;

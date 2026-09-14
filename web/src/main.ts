@@ -26,6 +26,13 @@ import {
   skillsView,
   type SkillsView,
 } from "./skills-view";
+import {
+  renderDataSection,
+  renderDoctorSection,
+  renderMcpSection,
+  renderSkillsSection,
+  type DataAction,
+} from "./settings-pane";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -82,8 +89,14 @@ import {
   approve,
   getAutoApprove,
   setAutoApprove,
+  clearConversations,
+  deleteSearchIndex,
+  fetchData,
+  fetchDoctor,
+  fetchMcp,
   fetchSkills,
   getCapabilities,
+  resetSettings,
   branchSession,
   compactSession,
   createProject,
@@ -187,8 +200,6 @@ interface Elements {
   modelBtnLabel: HTMLElement;
   workspaceBtn: HTMLButtonElement;
   workspaceBtnLabel: HTMLElement;
-  workspaceOverlay: HTMLElement;
-  workspaceClose: HTMLButtonElement;
   workspacePicker: HTMLElement;
   status: HTMLElement;
   statusText: HTMLElement;
@@ -223,7 +234,13 @@ interface Elements {
   zorpThreshold: HTMLInputElement;
   zorpDirection: HTMLSelectElement;
   zorpRun: HTMLButtonElement;
-  settingsOverlay: HTMLElement;
+  /** The settings pane, which replaced the model and workspace modals. */
+  settingsPane: HTMLElement;
+  settingsPaneBody: HTMLElement;
+  settingsSkills: HTMLElement;
+  settingsMcp: HTMLElement;
+  settingsData: HTMLElement;
+  settingsBuild: HTMLElement;
   settingsClose: HTMLButtonElement;
   settingsForm: HTMLFormElement;
   settingsPreset: HTMLSelectElement;
@@ -327,7 +344,8 @@ const onboardWorkspacePicker = new WorkspacePicker(
 );
 const workspacePicker = new WorkspacePicker(document, dom.workspacePicker, (saved) => {
   applyWorkspace(saved);
-  closeWorkspacePicker();
+  // Nothing to close: the picker is a section of the pane now, so choosing
+  // a directory leaves you looking at the directory you chose.
 });
 const voiceInput = createVoiceInput(
   {
@@ -586,8 +604,6 @@ function collectElements(): Elements {
     modelBtnLabel: byId("model-btn-label"),
     workspaceBtn: byId<HTMLButtonElement>("workspace-btn"),
     workspaceBtnLabel: byId("workspace-btn-label"),
-    workspaceOverlay: byId("workspace-overlay"),
-    workspaceClose: byId<HTMLButtonElement>("workspace-close"),
     workspacePicker: byId("workspace-picker"),
     status: byId("status"),
     statusText: byId("status-text"),
@@ -622,7 +638,12 @@ function collectElements(): Elements {
     voicePreview: byId("voice-preview"),
     voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
-    settingsOverlay: byId("settings-overlay"),
+    settingsPane: byId("settings-pane"),
+    settingsPaneBody: byId("settings-pane-body"),
+    settingsSkills: byId("settings-skills"),
+    settingsMcp: byId("settings-mcp"),
+    settingsData: byId("settings-data"),
+    settingsBuild: byId("settings-build"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),
     settingsForm: byId<HTMLFormElement>("settings-form"),
     settingsPreset: byId<HTMLSelectElement>("settings-preset"),
@@ -806,18 +827,14 @@ function wireScroller(): void {
 }
 
 function wireSettings(): void {
-  dom.modelBtn.addEventListener("click", () => void openSettings());
-  dom.composerWarningSettings.addEventListener("click", () => void openSettings());
+  dom.modelBtn.addEventListener("click", () => void openSettings("model"));
+  dom.composerWarningSettings.addEventListener("click", () => void openSettings("model"));
   dom.settingsClose.addEventListener("click", closeSettings);
-  dom.settingsOverlay.addEventListener("click", (event) => {
-    // Only a click on the backdrop itself closes it; clicks inside the
-    // panel bubble up from far more useful targets than "close the dialog".
-    if (event.target === dom.settingsOverlay) {
-      closeSettings();
-    }
-  });
+  // No backdrop to click now that this is a pane rather than a dialog. A
+  // pane is a place you leave open while you work, so Escape closes it and
+  // nothing else does.
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !dom.settingsOverlay.hidden) {
+    if (event.key === "Escape" && !dom.settingsPane.hidden) {
       closeSettings();
     }
   });
@@ -832,23 +849,14 @@ function wireSettings(): void {
 }
 
 /**
- * The workspace pill and the overlay behind it.
+ * The workspace pill.
  *
- * Buttons only, like the settings wiring above. Nothing here starts a turn.
+ * The picker lives in the settings pane now, so this opens the pane at the
+ * workspace section rather than a modal of its own. Buttons only, like the
+ * settings wiring above. Nothing here starts a turn.
  */
 function wireWorkspace(): void {
-  dom.workspaceBtn.addEventListener("click", () => void openWorkspacePicker());
-  dom.workspaceClose.addEventListener("click", closeWorkspacePicker);
-  dom.workspaceOverlay.addEventListener("click", (event) => {
-    if (event.target === dom.workspaceOverlay) {
-      closeWorkspacePicker();
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !dom.workspaceOverlay.hidden) {
-      closeWorkspacePicker();
-    }
-  });
+  dom.workspaceBtn.addEventListener("click", () => void openSettings("workspace"));
 }
 
 /**
@@ -2707,15 +2715,140 @@ const SETTINGS_ENV_VARS: Record<string, string> = {
   max_tokens: "ZORP_MAX_TOKENS",
 };
 
-async function openSettings(): Promise<void> {
-  dom.settingsOverlay.hidden = false;
+/** Which section a pill opens the pane at. */
+type SettingsSection = "model" | "workspace" | "skills" | "mcp" | "data" | "build";
+
+/**
+ * Open the settings pane, scrolled to the section that was asked for.
+ *
+ * The model form is loaded every time, because it is the one section whose
+ * contents can be changed from somewhere else (onboarding writes through
+ * the same endpoints). The four report sections are fetched here rather
+ * than on connect: a listing carries every skill description and every MCP
+ * server on the machine, and most sessions never open this.
+ */
+async function openSettings(section: SettingsSection = "model"): Promise<void> {
+  // The two panes share one column. Opening settings over a document would
+  // otherwise leave the conversation a sliver between them.
+  if (!dom.artifacts.hidden) {
+    artifactsWereOpen = true;
+    closeArtifacts();
+  }
+  dom.settingsPane.hidden = false;
+  dom.app.dataset.settings = "open";
+  describeHandles();
+  dom.modelBtn.setAttribute("aria-expanded", "true");
+  dom.workspaceBtn.setAttribute("aria-expanded", "true");
   setSettingsResult("", null);
   await loadSettingsIntoForm();
   void refreshModelOptions();
+  if (section === "workspace") {
+    await workspacePicker.open("");
+  }
+  void refreshSettingsSections();
+  scrollToSection(section);
 }
 
+function scrollToSection(section: SettingsSection): void {
+  const target = document.getElementById(`settings-section-${section}`);
+  target?.scrollIntoView({ block: "start" });
+}
+
+/** Whether a document was in the pane when settings took the column. */
+let artifactsWereOpen = false;
+
 function closeSettings(): void {
-  dom.settingsOverlay.hidden = true;
+  dom.settingsPane.hidden = true;
+  delete dom.app.dataset.settings;
+  describeHandles();
+  if (artifactsWereOpen) {
+    artifactsWereOpen = false;
+    showArtifactsPane();
+  }
+  dom.modelBtn.setAttribute("aria-expanded", "false");
+  dom.workspaceBtn.setAttribute("aria-expanded", "false");
+  // The picker writes through PUT /api/workspace, so the pill has to catch
+  // up with whatever it did while the pane was open.
+  void refreshWorkspace();
+}
+
+/**
+ * Draw the four report sections.
+ *
+ * Each one is allowed to fail on its own. An older server has no
+ * `/api/mcp`, `/api/data` or `/api/doctor` at all, and a pane that lost the
+ * model form to that would be worse than one showing the half it has.
+ */
+async function refreshSettingsSections(): Promise<void> {
+  await Promise.allSettled([
+    (async () => {
+      renderSkillsSection(document, dom.settingsSkills, await fetchSkills());
+    })(),
+    (async () => {
+      renderMcpSection(document, dom.settingsMcp, await fetchMcp());
+    })(),
+    (async () => {
+      renderDataSection(document, dom.settingsData, await fetchData(), runDataAction);
+    })(),
+    (async () => {
+      renderDoctorSection(document, dom.settingsBuild, await fetchDoctor(), () => {
+        void probeEndpoint();
+      });
+    })(),
+  ]);
+}
+
+/**
+ * Run one of the three clearing actions, after somebody typed the word.
+ *
+ * "Reset everything" is the other three in order rather than a fourth
+ * endpoint, so there is one implementation of each thing that can be
+ * deleted and no fourth path that forgets one. Conversations go first: the
+ * search index is built from them, so clearing conversations and then the
+ * index never leaves embeddings of conversations that are gone.
+ *
+ * A 409 here is a running turn, and it says so in the server's own words.
+ */
+async function runDataAction(action: DataAction): Promise<void> {
+  const steps: Array<() => Promise<void>> = [];
+  if (action.key === "conversations" || action.key === "everything") {
+    steps.push(clearConversations);
+  }
+  if (action.key === "index" || action.key === "everything") {
+    steps.push(deleteSearchIndex);
+  }
+  if (action.key === "settings" || action.key === "everything") {
+    steps.push(resetSettings);
+  }
+  try {
+    for (const step of steps) {
+      await step();
+    }
+    setSettingsResult(`${action.label}: done.`, "ok");
+  } catch (error) {
+    setSettingsResult(describeError(error), "fail");
+    return;
+  }
+  // Everything on the page that could now be stale.
+  await Promise.allSettled([refreshSessions(), refreshSettingsBadge(), refreshWorkspace()]);
+  void refreshSettingsSections();
+}
+
+/**
+ * Ask the server to call the endpoint and redraw the build section.
+ *
+ * A button rather than part of the listing, because the probe waits up to
+ * thirty seconds and a pane that hangs when it opens is worse than one that
+ * says it has not checked.
+ */
+async function probeEndpoint(): Promise<void> {
+  try {
+    renderDoctorSection(document, dom.settingsBuild, await fetchDoctor(true), () => {
+      void probeEndpoint();
+    });
+  } catch (error) {
+    setSettingsResult(describeError(error), "fail");
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2750,14 +2883,17 @@ function applyWorkspace(workspace: Workspace | null): void {
   }
 }
 
+/**
+ * Open the pane at the workspace section, with the reason somebody needs
+ * one.
+ *
+ * Kept as its own function because a turn that cannot start for want of a
+ * workspace calls it with a reason, which the picker shows above the list.
+ */
 async function openWorkspacePicker(reason = ""): Promise<void> {
-  dom.workspaceOverlay.hidden = false;
+  await openSettings("workspace");
   await workspacePicker.open(reason);
-}
-
-function closeWorkspacePicker(): void {
-  dom.workspaceOverlay.hidden = true;
-  void refreshWorkspace();
+  scrollToSection("workspace");
 }
 
 /**

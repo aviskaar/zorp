@@ -247,6 +247,16 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that.
+- Settings is one right-hand pane, `settings-pane` in `web/index.html`,
+  holding model, workspace, skills, MCP, data and this build. It replaced
+  the model and workspace modals, whose markup moved into it with element
+  ids intact so `wireSettings` and `WorkspacePicker` were not touched.
+  Onboarding is still a modal and still uses the `.settings-overlay` class,
+  so do not delete that class. The three clearing actions are behind a
+  typed confirmation rather than a click, and "reset everything" is the
+  browser calling the other three in order rather than a fourth endpoint.
+  Auto-approve deliberately stays in the toolbar. See `docs/DECISIONS.md`
+  (2026-09-14).
 - `zorp-agent/src/state.rs` is the one list of what zorp keeps on this
   machine: the conversation store, the search index, the input history,
   the trust file and the settings file. It is what `zorp-agent data`,

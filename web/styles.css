@@ -78,6 +78,7 @@
      Both of these are overwritten with a plain pixel value the moment
      somebody drags a handle; see web/src/layout.ts for the limits. */
   --artifacts-w: clamp(320px, 42vw, 760px);
+  --settings-w: clamp(340px, 34vw, 620px);
   --radius: 12px;
 }
 
@@ -3747,6 +3748,104 @@ button {
 
 .md-table tr:last-child td {
   border-bottom: 0;
+}
+
+/* -------------------------------------------------------- settings pane */
+
+/* The same `aside` shape and the same resizer as the artifact pane. The two
+   never share the row: opening settings while a document is in the pane
+   would leave the conversation a sliver, so `openSettings` takes the
+   column and the artifact pane goes back when settings closes. */
+.app[data-settings="open"] {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--settings-w);
+}
+
+.settings-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  /* Load bearing, the same way it is on `.artifacts`: a grid item defaults
+     to `min-height: auto` and refuses to shrink below its content, so a
+     long report would stretch the row and drag the conversation with it. */
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  background: var(--bg-sidebar);
+}
+
+/* Spelled out because `display: flex` above beats the user agent's
+   `[hidden] { display: none }`, the same trap the artifact pane hit. */
+.settings-pane[hidden] {
+  display: none;
+}
+
+.settings-pane-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 14px 32px;
+}
+
+.settings-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-section:last-child {
+  border-bottom: 0;
+}
+
+.settings-section-title {
+  margin: 0 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* Everything under here deletes something, so it reads as a different kind
+   of control from the rest of the pane. */
+.settings-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.settings-danger-row {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.settings-confirm {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A doctor check reads down the left edge, so a fault is findable without
+   reading every line. */
+.skills-item.doctor-bad {
+  border-left: 2px solid var(--warn, #d9534f);
+  padding-left: 8px;
+}
+
+.skills-item.doctor-ok {
+  border-left: 2px solid var(--accent, var(--text));
+  padding-left: 8px;
+}
+
+.skills-item.doctor-off,
+.skills-item.doctor-note {
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
 }
 
 /* ------------------------------------------------------- artifact pane */
