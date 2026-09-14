@@ -105,9 +105,9 @@ fn no_first_party_skill_asks_for_tools() {
 }
 
 /// The pane serves `.html` and `.svg` under a bare `sandbox` CSP, so
-/// scripts do not run and nothing external loads. Every skill that writes
-/// into the pane has to say so, because a page written against the
-/// opposite assumption renders as nothing and says nothing about why.
+/// scripts do not run. Every skill that writes into the pane has to say
+/// so, because a page written against the opposite assumption renders as
+/// nothing and says nothing about why.
 #[test]
 fn the_artifact_skills_say_that_scripts_do_not_run() {
     let registry = discovered();
@@ -121,6 +121,34 @@ fn the_artifact_skills_say_that_scripts_do_not_run() {
             body.contains("do not run") || body.contains("does not run"),
             "{name} does not say scripts do not run"
         );
+    }
+}
+
+/// A bare `sandbox` does not block an external font, stylesheet or image.
+///
+/// It stops scripts and form submission. It does not stop a `<link>` to a
+/// font service or an `<img>` from a CDN, so a skill that tells a writer
+/// the header will keep those out has told them a page is private when it
+/// is not: it previews correctly in the pane while reporting every opener
+/// to a third party. Keeping them out is a rule the skills state and
+/// nothing enforces, and saying which is which is the whole value of
+/// saying it at all. This pins the wording against drifting back.
+#[test]
+fn no_skill_claims_the_sandbox_blocks_external_loads() {
+    let registry = discovered();
+    for name in FIRST_PARTY {
+        let body = registry.get(name).expect("present").body.to_lowercase();
+        for claim in [
+            "nothing external loads",
+            "does not load the cdn",
+            "blocks external",
+            "no external requests are made",
+        ] {
+            assert!(
+                !body.contains(claim),
+                "{name} says {claim:?}, which a bare sandbox does not do"
+            );
+        }
     }
 }
 

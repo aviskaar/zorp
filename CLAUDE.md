@@ -260,13 +260,16 @@ resulting artifact, deliver it in the right form.
   `.html` and `.svg` files the browser's side pane renders, and
   `landing-page` says how to write a page that leaves the pane and goes on
   a real server, including the authoring rules that make a later move to
-  JSX mechanical rather than a rewrite. Both are pinned
+  JSX mechanical rather than a rewrite. All three are pinned
   by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
   parsing takes its skill off every surface with only a warning to say so.
-  They both state the constraint that decides everything else about such a
+  All three state the constraint that decides everything else about such a
   file: the pane serves it under a bare `Content-Security-Policy: sandbox`,
-  so no script in it runs and nothing external loads, and a page written
-  against the opposite assumption renders as nothing.
+  so no script in it runs and a page written against the opposite assumption
+  renders as nothing. That header does not block an external font, stylesheet
+  or image, so keeping those out is a rule the three skills state and nothing
+  enforces, and a page that loads them previews fine while telling a third
+  party who opened it.
   Three surfaces now say what is installed, and all three only read.
   `zorp --skills` lists them and `zorp --skill <name> <prompt>` puts one
   skill's instructions in front of a prompt, with `/skills` and

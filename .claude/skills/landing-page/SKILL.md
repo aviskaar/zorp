@@ -39,10 +39,12 @@ So in the pane:
 - **A `<script>` does not run.** Not inline, not from a CDN, not
   `type="module"`, not `type="text/babel"`. Nothing reports the failure. A
   page whose content is assembled by JavaScript previews as a blank page.
-- **Nothing external loads.** No web fonts, no CDN stylesheet, no remote
-  image. Treat that as a rule for the file and not just for the preview: a
-  page that pulls its fonts from a third party is a page that tells that
-  third party who opened it.
+- **Nothing external, by rule rather than by the header.** No web fonts, no
+  CDN stylesheet, no remote image. A bare `sandbox` stops scripts and form
+  submission and does not stop those loads, so nothing enforces this and the
+  page will look right in the pane while doing it. Keep it anyway, for the
+  shipped page rather than for the preview: a page that pulls its fonts from
+  a third party is a page that tells that third party who opened it.
 
 None of this is true of the shipped page. Once the file is on a real server
 and opened in a real browser, scripts run normally. So the honest way to
@@ -188,9 +190,10 @@ to zero if you write the single file with it in mind.
 
 **Do not try to preview JSX in the pane.** Shipping a
 `<script type="text/babel">` block with a transpiler from a CDN is the
-obvious idea and it does not work here: the sandbox does not run scripts and
-does not load the CDN, so the page renders as nothing and says nothing about
-why. Write plain HTML, and convert when there is a real build.
+obvious idea and it does not work here: the sandbox does not run scripts, so
+the block never executes and the page renders as nothing with nothing to say
+why. The CDN request itself may well succeed, which is why the blank page is
+the only symptom. Write plain HTML, and convert when there is a real build.
 
 What makes the conversion mechanical:
 
