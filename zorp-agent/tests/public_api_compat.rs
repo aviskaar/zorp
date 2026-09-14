@@ -42,8 +42,15 @@ fn legacy_public_struct_literals_still_compile_and_work() {
     // reads stay public.
     let mut transcript_message = Message::assistant("legacy response");
     transcript_message.content = vec![ContentPart::Text("legacy response".into())];
+    // Every field spelled out on purpose. This is what catches a field
+    // added to `Flavor`, which is a breaking change for anybody building
+    // one with a struct literal, and `description` arriving for the agents
+    // pane is exactly the case it caught. Do not reach for
+    // `..Default::default()` here: it would make this compile forever and
+    // stop the test doing the one thing it is for.
     let flavor = Flavor {
         name: Some("legacy".into()),
+        description: None,
         model: Some("legacy-model".into()),
         base_url: None,
         provider: None,

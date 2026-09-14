@@ -121,6 +121,8 @@ pub struct SessionRow {
     /// recall index so a search or a memory recall can be scoped to one
     /// project, and it is a person's word, never a model's.
     pub project_id: Option<String>,
+    /// The agent this conversation runs under, or `None` for the default.
+    pub agent: Option<String>,
 }
 
 /// The longest project name the store takes.
@@ -151,6 +153,19 @@ pub enum SetProject {
     Done,
     NoSuchSession,
     NoSuchProject,
+}
+
+/// What happened to a request to set a conversation's agent.
+///
+/// `Locked` is the interesting one and is the whole reason this is not a
+/// plain UPDATE. See `Store::set_session_agent`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetAgent {
+    Done,
+    NoSuchSession,
+    /// The conversation already has an answer in it, so its agent is fixed.
+    /// Branch it to carry on under a different one.
+    Locked,
 }
 
 /// One recorded compaction: a model-written summary standing in for a run
@@ -359,6 +374,14 @@ fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
         // clause is not enforced anyway, and `set_session_project` checks
         // the project exists before it writes.
         ("project_id", "TEXT"),
+        // Which agent this conversation runs under, or NULL for the
+        // default. The name only: the scope is resolved at turn time
+        // through `layer_paths` the way the CLI does, so a user agent and
+        // a workspace agent of the same name merge the way they do on the
+        // CLI rather than the way a stored scope froze them. Added only
+        // here, following `project_id`, so an older database picks it up
+        // on the next open exactly as a fresh one does.
+        ("agent", "TEXT"),
     ];
 
     for (column, sql_type) in COLUMNS {
@@ -675,7 +698,7 @@ impl Store {
     /// one, and #195 replaced two of the same pattern for the same reason.
     pub fn session(&self, id: &str) -> Result<Option<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+            "SELECT id, task, repo, model, status, display_title, updated, project_id, agent \
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query([id])?;
@@ -689,6 +712,7 @@ impl Store {
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
                 project_id: row.get(7)?,
+                agent: row.get(8)?,
             })),
             None => Ok(None),
         }
@@ -783,6 +807,77 @@ impl Store {
         } else {
             SetProject::NoSuchSession
         })
+    }
+
+    /// Choose the agent a conversation runs under, before it has run.
+    ///
+    /// **Locked once there is an answer, and branching is how you change
+    /// it.** An agent carries the system prompt, the tool allow-list and
+    /// the approval preset for a whole conversation. A transcript whose
+    /// first half ran under one and whose second half ran under another is
+    /// one nobody can read back honestly: the record would show a model
+    /// refusing to write a file on turn two and writing one on turn five,
+    /// with nothing in between to explain it. The alternative, a marker
+    /// frame saying "now running as X", is more code to produce a worse
+    /// record, and `branch_session` already does the right thing and copies
+    /// the agent with the row.
+    ///
+    /// An answer is an assistant message with text, the same test `branch_session`
+    /// and the replay endpoint apply, so "has an answer" means the same
+    /// thing everywhere. A conversation that has only called tools has not
+    /// answered and is still free to change.
+    ///
+    /// The name is stored and the scope is not. A user agent and a
+    /// workspace agent of the same name merge at turn time the way they do
+    /// on the CLI, which a stored scope would freeze.
+    pub fn set_session_agent(
+        &mut self,
+        session_id: &str,
+        agent: Option<&str>,
+    ) -> Result<SetAgent, BoxErr> {
+        if self.session_status(session_id)?.is_none() {
+            return Ok(SetAgent::NoSuchSession);
+        }
+        if self.has_answer(session_id)? {
+            return Ok(SetAgent::Locked);
+        }
+        self.conn.execute(
+            "UPDATE sessions SET agent = ?2, updated = ?3 WHERE id = ?1",
+            (session_id, agent, now()),
+        )?;
+        Ok(SetAgent::Done)
+    }
+
+    /// Whether this conversation has produced an answer yet.
+    ///
+    /// An assistant message with non-empty text, which is what the browser
+    /// draws as a message and what `branch_session` counts. A turn that only
+    /// called a tool has no text and is not an answer.
+    pub fn has_answer(&self, session_id: &str) -> Result<bool, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT content FROM messages \
+             WHERE session_id = ?1 AND role = 'assistant' ORDER BY seq ASC",
+        )?;
+        let mut rows = stmt.query([session_id])?;
+        while let Some(row) = rows.next()? {
+            let content: String = row.get(0)?;
+            if !content.trim().is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The agent a conversation runs under, or `None`.
+    pub fn session_agent(&self, session_id: &str) -> Result<Option<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT agent FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query([session_id])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get(0)?),
+            None => Ok(None),
+        }
     }
 
     /// Remove a conversation and everything recorded under it. Returns
@@ -885,8 +980,8 @@ impl Store {
             return Ok(false);
         };
         let inserted = tx.execute(
-            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, project_id, created, updated) \
-             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, project_id, ?3, ?3 \
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, project_id, agent, created, updated) \
+             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, project_id, agent, ?3, ?3 \
              FROM sessions WHERE id = ?1",
             (from, to, now()),
         )?;
@@ -948,7 +1043,7 @@ impl Store {
 
     pub fn latest_session(&self) -> Result<Option<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+            "SELECT id, task, repo, model, status, display_title, updated, project_id, agent \
              FROM sessions ORDER BY updated DESC, created DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([])?;
@@ -962,6 +1057,7 @@ impl Store {
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
                 project_id: row.get(7)?,
+                agent: row.get(8)?,
             }))
         } else {
             Ok(None)
@@ -988,7 +1084,7 @@ impl Store {
     /// sidebar needs.
     pub fn sessions(&self) -> Result<Vec<SessionRow>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, task, repo, model, status, display_title, updated, project_id \
+            "SELECT id, task, repo, model, status, display_title, updated, project_id, agent \
              FROM sessions ORDER BY rowid DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1001,6 +1097,7 @@ impl Store {
                 display_title: row.get(5)?,
                 updated: row.get(6)?,
                 project_id: row.get(7)?,
+                agent: row.get(8)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1252,6 +1349,102 @@ CREATE TABLE file_changes (
     fn delete_all_on_an_empty_store_removes_nothing_and_says_so() {
         let mut store = Store::open_in_memory().unwrap();
         assert_eq!(store.delete_all().unwrap(), 0);
+    }
+
+    #[test]
+    fn an_agent_can_be_chosen_before_a_conversation_has_answered() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        assert_eq!(store.session_agent("s1").unwrap(), None);
+
+        assert_eq!(
+            store.set_session_agent("s1", Some("reviewer")).unwrap(),
+            SetAgent::Done
+        );
+        assert_eq!(
+            store.session_agent("s1").unwrap().as_deref(),
+            Some("reviewer")
+        );
+        assert_eq!(
+            store.sessions().unwrap()[0].agent.as_deref(),
+            Some("reviewer")
+        );
+
+        // Still free to change, and to clear.
+        assert_eq!(store.set_session_agent("s1", None).unwrap(), SetAgent::Done);
+        assert_eq!(store.session_agent("s1").unwrap(), None);
+    }
+
+    /// The lock. A transcript whose first half ran under one system prompt
+    /// and tool set and whose second half ran under another is one nobody
+    /// can read back honestly.
+    #[test]
+    fn an_agent_is_locked_once_the_conversation_has_an_answer() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store.record_message("s1", 0, &Message::user("hi")).unwrap();
+        store.set_session_agent("s1", Some("reviewer")).unwrap();
+
+        store
+            .record_message("s1", 1, &Message::assistant("here you go"))
+            .unwrap();
+
+        assert_eq!(
+            store.set_session_agent("s1", Some("builder")).unwrap(),
+            SetAgent::Locked
+        );
+        assert_eq!(
+            store.session_agent("s1").unwrap().as_deref(),
+            Some("reviewer"),
+            "a locked conversation changed agent anyway"
+        );
+    }
+
+    /// A turn that only called a tool has not answered. Locking there would
+    /// mean a conversation whose first turn was a file read could never
+    /// have its agent set.
+    #[test]
+    fn a_turn_that_only_called_a_tool_does_not_lock_the_agent() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store.record_message("s1", 0, &Message::user("hi")).unwrap();
+        store.record_message("s1", 1, &assistant_call()).unwrap();
+        store
+            .record_message("s1", 2, &Message::tool_result("c1", "file body"))
+            .unwrap();
+
+        assert_eq!(
+            store.set_session_agent("s1", Some("reviewer")).unwrap(),
+            SetAgent::Done
+        );
+    }
+
+    #[test]
+    fn setting_an_agent_on_a_conversation_that_is_not_there_says_so() {
+        let mut store = Store::open_in_memory().unwrap();
+        assert_eq!(
+            store.set_session_agent("nope", Some("reviewer")).unwrap(),
+            SetAgent::NoSuchSession
+        );
+    }
+
+    /// Branching is how a person changes agent, so the branch has to carry
+    /// the agent or the answer to "locked, branch it" is a lie.
+    #[test]
+    fn a_branch_keeps_the_agent_the_conversation_was_running_under() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store.record_message("s1", 0, &Message::user("hi")).unwrap();
+        store.set_session_agent("s1", Some("reviewer")).unwrap();
+        store
+            .record_message("s1", 1, &Message::assistant("an answer"))
+            .unwrap();
+
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+        assert_eq!(
+            store.session_agent("s2").unwrap().as_deref(),
+            Some("reviewer")
+        );
     }
 
     #[test]

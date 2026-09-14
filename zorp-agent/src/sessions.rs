@@ -202,6 +202,7 @@ mod tests {
             display_title: title.map(str::to_string),
             updated,
             project_id: None,
+            agent: None,
         }
     }
 

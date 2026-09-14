@@ -246,6 +246,7 @@ resulting artifact, deliver it in the right form.
   no tool, loosen no approval, and bypass no denylist entry, and
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
+<<<<<<< HEAD
   that. Skills are not capsules; the same entry says why both exist.
   `/api/skills` says what is installed and
   `/api/sessions/:id/skills/active` says whose instructions are in one
@@ -261,6 +262,24 @@ resulting artifact, deliver it in the right form.
   `landing-page` says how to write a page that leaves the pane and goes on
   a real server, including the authoring rules that make a later move to
   JSX mechanical rather than a rewrite. All three are pinned
+=======
+  that.
+- An agent is a flavor with a description, not a new format.
+  `zorp-agent/src/agents.rs` reads the same two `flavors/` directories
+  `--flavor` reads, `sessions.agent` holds the name a person picked, and
+  the scope is resolved at turn time so the two surfaces merge layers
+  identically. It is locked once a conversation has answered; branching is
+  how you change it, and a branch carries the agent. A workspace agent that
+  wants shell commands or a looser approval preset applies those fields
+  only once somebody has trusted its content hash, and editing the file
+  revokes that on its own, because the model can write into
+  `<workspace>/.zorp/flavors/`. No tool picks an agent or trusts one; see
+  `no_tool_picks_an_agent_or_trusts_one`. See `docs/DECISIONS.md`
+  (2026-09-13). Skills are not capsules; the same entry says why both exist.
+  The repository ships two of its own under `.claude/skills/`,
+  `artifact-design` and `artifact-diagramming`, which say how to write the
+  `.html` and `.svg` files the browser's side pane renders. Both are pinned
+>>>>>>> 0cc7de0 (Agents: discovery, trust, and the per conversation column)
   by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
   parsing takes its skill off every surface with only a warning to say so.
   All three state the constraint that decides everything else about such a
