@@ -4125,6 +4125,42 @@ mod tests {
         }
     }
 
+    /// Clearing data is a person's decision every time.
+    ///
+    /// `zorp_agent::state` can delete the conversation store, the search
+    /// index, the settings file and the trust file, and `Store::delete_all`
+    /// empties every table in one transaction. None of that is reachable
+    /// from a turn: no tool is registered for any of it, and the browser
+    /// routes that call them are behind a typed confirmation a person
+    /// types. Same shape as the checkpoint test above, and the same reason.
+    ///
+    /// The `write_file` tool can of course write a file, and that is not
+    /// what this is about: a model that wrote over `sessions.db` would be
+    /// doing something visible in a diff and refused by approval. What must
+    /// not exist is a tool whose purpose is to clear state, because that is
+    /// one call away from a model tidying up after itself.
+    #[test]
+    fn no_tool_clears_state_or_resets_settings() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "clear_conversations",
+            "delete_all_sessions",
+            "delete_sessions",
+            "reset_settings",
+            "delete_search_index",
+            "delete_recall_index",
+            "clear_state",
+            "write_settings",
+            "write_mcp_config",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// The ensemble's reviewer gets the read tools plus a shell and nothing
     /// that launches a run, a review or a subagent, and nothing that
     /// writes. Code launches every run. Same shape as the panel test above.

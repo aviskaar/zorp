@@ -278,6 +278,16 @@ impl AppState {
 
     /// Drop a session's live state. Called after it is deleted from the
     /// store, so a reopened id does not resurrect a stale backlog.
+    /// Forget every live session.
+    ///
+    /// Beside `remove`, for the one caller that clears the whole store.
+    /// Leaving the map populated would leave the sidebar drawing rows for
+    /// conversations the store no longer has, and the next event poll
+    /// holding an index into a backlog nobody can reach.
+    pub fn forget_all(&self) {
+        self.sessions.lock().unwrap().clear();
+    }
+
     pub fn remove(&self, id: &str) -> Option<Arc<Mutex<SessionState>>> {
         self.sessions.lock().unwrap().remove(id)
     }

@@ -105,7 +105,6 @@ fn api_router(state: AppState) -> Router {
 
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/sessions", post(create_session).get(list_sessions))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/branch", post(branch_session))
         .route("/api/sessions/:id/compact", post(compact_session))
@@ -130,13 +129,8 @@ fn api_router(state: AppState) -> Router {
         // Read-only, and in every build: a SKILL.md on disk has nothing to
         // do with which features this binary was compiled with. There is no
         // route that loads one; that is the agent's `skill` tool.
-        .route("/api/skills", get(list_skills))
-        // Which skills are in one conversation's context, as opposed to
-        // which are installed. Read-only like the listing above, and for
-        // the same reason: it reports, it does not load. The answer is
-        // computed from the transcript a turn would send, so it can say
-        // that a skill loaded twenty turns ago is no longer in the window.
         .route("/api/sessions/:id/skills/active", get(active_skills))
+        .route("/api/skills", get(list_skills))
         .route("/api/voice/status", get(crate::voice::status))
         .route("/api/voice/wait", post(crate::voice::wait))
         .route(
@@ -158,7 +152,29 @@ fn api_router(state: AppState) -> Router {
             "/api/sessions/:id/auto-approve",
             get(get_auto_approve).post(set_auto_approve),
         )
-        .route("/api/settings", get(get_settings).put(put_settings))
+        .route(
+            "/api/settings",
+            get(get_settings)
+                .put(put_settings)
+                .delete(reset_settings_route),
+        )
+        // What this build can do and whether it can reach anything, which
+        // the terminal has had as `zorp-agent doctor` and the browser has
+        // not. Read-only, and it carries no secret: see `no_secret` below.
+        .route("/api/doctor", get(doctor_route))
+        // Configured MCP servers, with every secret-bearing value left on
+        // the server. See `zorp_mcp::ServerConfig::redacted`.
+        .route("/api/mcp", get(list_mcp))
+        // What zorp keeps on this machine, and the two ways to clear part
+        // of it that are not already routes. Clearing conversations is a
+        // DELETE on the collection, beside the DELETE on one of them.
+        .route("/api/data", get(list_data))
+        .route(
+            "/api/sessions",
+            post(create_session)
+                .get(list_sessions)
+                .delete(delete_all_sessions),
+        )
         .route("/api/settings/models", get(list_models).post(list_models))
         .route("/api/settings/test", post(test_connection))
         .route("/api/workspace", get(get_workspace).put(put_workspace))
@@ -169,7 +185,10 @@ fn api_router(state: AppState) -> Router {
         // server without the `recall` feature answers "off, and here is
         // why" rather than a 404 the page has to interpret.
         .route("/api/recall/status", get(recall_status))
-        .route("/api/recall/index", post(recall_index))
+        .route(
+            "/api/recall/index",
+            post(recall_index).delete(delete_recall_index),
+        )
         .route("/api/recall/search", get(recall_search))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -271,6 +290,440 @@ fn skill_scope(path: &std::path::Path, workspace: Option<&std::path::Path>) -> &
         return "user";
     }
     "other"
+}
+
+/// A 409 in the same words `delete_session` gives, when anything is in
+/// flight.
+///
+/// Every destructive action here asks. Clearing the store under a turn that
+/// is writing to it is how a half row appears, and the refusal has to be
+/// the same sentence a person has already seen for one conversation, or
+/// they will read the two as different problems.
+fn refuse_while_running(state: &AppState) -> Option<axum::response::Response> {
+    if state.any_running() {
+        return Some((StatusCode::CONFLICT, "a turn is running on this session").into_response());
+    }
+    None
+}
+
+/// What zorp keeps on this machine.
+///
+/// Read-only. A path is not a secret, and a person who cannot see where
+/// their conversations are kept cannot back them up, move them, or delete
+/// them. `ZORP_STATE_DB` and `XDG_STATE_HOME` mean somebody can easily be
+/// looking at a different database than they think, which is why the
+/// variable that moves each file is named beside it.
+///
+/// The list is `zorp_agent::state::files()`, the same one
+/// `zorp-agent doctor` and `zorp-agent data` read, so the two surfaces
+/// cannot drift about what zorp holds.
+async fn list_data(State(_state): State<AppState>) -> Json<serde_json::Value> {
+    let files: Vec<serde_json::Value> = tokio::task::spawn_blocking(zorp_agent::state::files)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|file| {
+            json!({
+                "label": file.label,
+                "what": file.what,
+                "path": file.path.display().to_string(),
+                "env_var": file.env_var,
+                "exists": file.exists(),
+                "bytes": file.bytes,
+            })
+        })
+        .collect();
+    Json(json!({
+        "files": files,
+        // Put in front of whoever is about to click reset, because the
+        // alternative is believing the key is gone when the environment
+        // still holds it.
+        "reset_note": zorp_agent::state::RESET_LEAVES_THE_KEY,
+    }))
+}
+
+/// Every conversation and every project label, gone.
+///
+/// A DELETE on the collection, beside the DELETE on one of them, so the two
+/// read as the same operation at two scales. It refuses while a turn is
+/// running for the same reason and in the same words.
+///
+/// The in-memory session map is cleared too. Leaving it would leave the
+/// sidebar drawing rows for conversations the store no longer has, and the
+/// next event poll reading an index into a backlog nobody can reach.
+///
+/// **No tool can call this.** `zorp-agent/src/agent.rs` has a test naming
+/// it, in the shape of `no_tool_answers_a_checkpoint_or_ends_a_run`.
+async fn delete_all_sessions(State(state): State<AppState>) -> impl IntoResponse {
+    if let Some(busy) = refuse_while_running(&state) {
+        return busy;
+    }
+    let cleared = tokio::task::spawn_blocking(move || {
+        let mut store = zorp_agent::Store::open_default().map_err(|e| e.to_string())?;
+        store.delete_all().map_err(|e| e.to_string())
+    })
+    .await;
+
+    match cleared {
+        Ok(Ok(sessions)) => {
+            state.forget_all();
+            Json(json!({ "deleted_sessions": sessions })).into_response()
+        }
+        Ok(Err(reason)) => (StatusCode::INTERNAL_SERVER_ERROR, reason).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "clearing conversations crashed".to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Delete the conversation search index.
+///
+/// The safe one of the three. The index is derived from the conversations,
+/// so `POST /api/recall/index` rebuilds it and nothing is lost that cannot
+/// be recomputed. It is a button because the file can get large, and
+/// because somebody who has just cleared their conversations should not be
+/// left holding embeddings of them.
+///
+/// In every build, like the other three recall routes: a server without the
+/// feature still has the file if it was ever built with it, and answering
+/// 404 would tell somebody they hold nothing while a database sits beside
+/// the session store.
+async fn delete_recall_index(State(state): State<AppState>) -> impl IntoResponse {
+    if let Some(busy) = refuse_while_running(&state) {
+        return busy;
+    }
+    match tokio::task::spawn_blocking(zorp_agent::state::delete_search_index).await {
+        Ok(Ok(cleared)) => Json(json!({
+            "removed": cleared
+                .removed
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "deleting the search index crashed".to_string(),
+        )
+            .into_response(),
+    }
+}
+
+/// Put the settings back to what the environment alone would give.
+///
+/// Removes `zorp.toml` and the trust file, then puts `SettingsState` back
+/// to `seeded_from_env`. Not the conversations, not the input history, and
+/// above all not a file in anybody's workspace.
+///
+/// **It cannot unset `ZORP_API_KEY` and the response says so.** A process
+/// does not own the environment it was started in, so a key exported in the
+/// shell that launched the server survives this. Reporting otherwise would
+/// be the worst kind of wrong here, since somebody would believe a
+/// credential was gone.
+async fn reset_settings_route(State(state): State<AppState>) -> impl IntoResponse {
+    if let Some(busy) = refuse_while_running(&state) {
+        return busy;
+    }
+    let cleared = tokio::task::spawn_blocking(zorp_agent::state::reset_settings).await;
+    let removed = match cleared {
+        Ok(Ok(cleared)) => cleared.removed,
+        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "resetting settings crashed".to_string(),
+            )
+                .into_response()
+        }
+    };
+    // Back to what a freshly started server has. The key comes back with it
+    // if the environment still holds one, which is the honest outcome and
+    // is what the note explains.
+    let resolved = {
+        let mut settings = state.settings.lock().unwrap();
+        *settings = crate::settings::SettingsState::seeded_from_env();
+        settings.resolve()
+    };
+    Json(json!({
+        "removed": removed.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "settings": resolved,
+        "note": zorp_agent::state::RESET_LEAVES_THE_KEY,
+    }))
+    .into_response()
+}
+
+/// Configured MCP servers, with no value that could be a credential.
+///
+/// Two facts this has to state plainly rather than imply.
+///
+/// **`zorp-web` loads no MCP servers.** The `mcp` feature is on
+/// `zorp-agent` and this binary does not forward it, so a browser turn gets
+/// no MCP tools whatever this file lists. `loaded` is therefore false on
+/// every row, and `loads_servers` says so once at the top. A listing that
+/// showed configured servers without saying that would read as "these are
+/// working", which is the opposite of true.
+///
+/// **`env` and `headers` values never leave this process.** Those maps are
+/// where a token goes, and the listing carries their key names only. The
+/// redaction lives on `ServerConfig` in `zorp-mcp`, beside the type it
+/// protects, with an exhaustive destructuring so a new field cannot be
+/// silently omitted from it.
+async fn list_mcp(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let workspace = state.workspace_root();
+    let (servers, warning) = tokio::task::spawn_blocking(move || mcp_servers(workspace.as_deref()))
+        .await
+        .unwrap_or_else(|_| {
+            (
+                Vec::new(),
+                Some("reading the MCP configuration crashed".into()),
+            )
+        });
+
+    let rows: Vec<serde_json::Value> = servers
+        .iter()
+        .map(|server| {
+            let summary = server.redacted();
+            json!({
+                "name": summary.name,
+                "transport": summary.transport,
+                "command": summary.command,
+                "args": summary.args,
+                "url": summary.url,
+                "env_keys": summary.env_keys,
+                "header_keys": summary.header_keys,
+                "trust": summary.trust,
+                "timeout_secs": summary.timeout_secs,
+                // Always false in this build, and the field exists so it can
+                // stop being always false without the page changing shape.
+                "loaded": false,
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "servers": rows,
+        "loads_servers": false,
+        "why": "zorp-web has no mcp feature, so a browser turn gets no MCP tools. \
+                These are what the terminal would load in this workspace.",
+        "sources": mcp_sources(state.workspace_root().as_deref()),
+        "warning": warning,
+    }))
+}
+
+/// Where an MCP configuration is read from, for a page that has to explain
+/// an empty list.
+fn mcp_sources(workspace: Option<&std::path::Path>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(root) = workspace {
+        out.push(root.join(".zorp").join("mcp.toml").display().to_string());
+    }
+    out.push("ZORP_MCP_SERVERS".to_string());
+    out
+}
+
+/// The servers the terminal would load in this workspace.
+///
+/// The same two sources `zorp-agent` reads, in the same order, so this
+/// cannot describe a configuration nothing would use. A file that does not
+/// parse is a warning rather than an empty list, because a server that
+/// silently vanishes is a tool that silently stops existing.
+fn mcp_servers(
+    workspace: Option<&std::path::Path>,
+) -> (Vec<zorp_mcp::ServerConfig>, Option<String>) {
+    let mut config = zorp_mcp::McpConfig::empty();
+    let mut warning = None;
+    if let Some(root) = workspace {
+        match zorp_mcp::McpConfig::from_file(&root.join(".zorp").join("mcp.toml")) {
+            Ok(file) => config.merge_from(file),
+            Err(e) => warning = Some(e.to_string()),
+        }
+    }
+    match zorp_mcp::McpConfig::from_env() {
+        Ok(env) => config.merge_from(env),
+        Err(e) => {
+            warning = Some(match warning {
+                Some(first) => format!("{first}; {e}"),
+                None => e.to_string(),
+            })
+        }
+    }
+    (config.servers, warning)
+}
+
+/// What this build can do and whether it can reach anything.
+///
+/// `zorp-agent doctor` over HTTP, built from the same `doctor::` pieces
+/// with this server's settings rather than the CLI's flavor resolution. The
+/// checks come back as structured rows rather than as the CLI's formatted
+/// lines, since a page wants to group and colour them.
+///
+/// **No secret is in it, ever.** The key is reported set or not set, which
+/// is `doctor::api_key_check`'s whole contract, and a test greps the
+/// serialized body for the key it planted.
+///
+/// **The probe is opt in, which is the one place this differs from the
+/// CLI.** `zorp-agent doctor` calls the endpoint because somebody ran a
+/// command and expects it to take a moment. This is opened by clicking a
+/// pill, and `probe_completion` waits up to thirty seconds on the read, so
+/// probing by default would mean a settings pane that hangs on a slow or
+/// unreachable endpoint. Without `?probe=1` the row says it was not
+/// checked rather than guessing, and `POST /api/settings/test` is still
+/// there for an explicit one.
+#[derive(serde::Deserialize, Default)]
+struct DoctorQuery {
+    /// Read as a string rather than a `bool` on purpose.
+    ///
+    /// A `bool` here is `serde_urlencoded`'s bool, which accepts `true` and
+    /// `false` and nothing else, so `?probe=1` answers 400. That is the
+    /// spelling this route's own "not checked" line tells a reader to use,
+    /// and the one in `docs/DECISIONS.md`, so the documented way to ask for
+    /// a probe was the one way that could not work. It is also how a person
+    /// writes a flag by hand.
+    #[serde(default)]
+    probe: Option<String>,
+}
+
+impl DoctorQuery {
+    /// Whether the caller asked for a probe.
+    ///
+    /// `?probe` with no value is a set flag, which is what a bare query key
+    /// means everywhere else. Anything that reads as off is off, and an
+    /// unrecognised value is on, because a caller who wrote the parameter
+    /// at all wanted the probe and a silent "no" would report an endpoint
+    /// as unchecked while looking like it had been checked.
+    fn wants_probe(&self) -> bool {
+        match self.probe.as_deref() {
+            None => false,
+            Some(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+        }
+    }
+}
+
+async fn doctor_route(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<DoctorQuery>,
+) -> Json<serde_json::Value> {
+    use zorp_agent::doctor::{self, Check, Report};
+
+    let resolved = state.settings.lock().unwrap().resolve();
+    let workspace = state.workspace_root();
+    let own_port = state.own_port;
+    let probe = query.wants_probe();
+    // Read from the settings state directly, since `resolve` deliberately
+    // has no field that could carry it. A probe that authenticated
+    // differently from a real turn would be testing the wrong request.
+    let api_key = state.settings.lock().unwrap().api_key.clone();
+
+    let base_url = resolved.base_url.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        let mut report = Report::default();
+        report.checks.push(doctor::feature_check());
+        report.checks.push(Check::note(
+            "endpoint",
+            format!("{} ({:?})", resolved.base_url, resolved.provider),
+        ));
+        if resolved.model.is_empty() {
+            report.checks.push(Check::bad(
+                "model",
+                "no model set. Choose one in settings, or set ZORP_MODEL.",
+            ));
+        } else {
+            report
+                .checks
+                .push(Check::note("model", resolved.model.clone()));
+        }
+        // The key this server would actually send, which is the settings
+        // one when a person typed it into the pane and `ZORP_API_KEY`
+        // otherwise. Reading only the environment reported "not set" and
+        // an unhealthy report on exactly the configuration somebody had
+        // just finished entering here. The label says which, and is a
+        // string chosen here rather than anything out of the key.
+        let source = if api_key.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+            Some("an api key configured in settings")
+        } else if doctor::api_key_set() {
+            Some("ZORP_API_KEY")
+        } else {
+            None
+        };
+        report
+            .checks
+            .push(doctor::api_key_check_from(&resolved.base_url, source));
+
+        // The same probe `POST /api/settings/test` makes, so the two cannot
+        // disagree about whether the endpoint answers. Only when asked:
+        // see the note above about a pane that hangs.
+        report.checks.push(if probe {
+            match crate::settings::probe_completion(
+                &resolved.base_url,
+                resolved.provider,
+                &resolved.model,
+                api_key.as_deref(),
+            ) {
+                Ok(()) => Check::ok("endpoint reachable", "answered a one token request"),
+                Err(reason) => Check::bad("endpoint reachable", reason),
+            }
+        } else {
+            // Not a fault. Nothing was checked, and saying "not checked" is
+            // the only honest thing a report can say about it.
+            Check::note(
+                "endpoint reachable",
+                "not checked. Add ?probe=1, or use Test connection.",
+            )
+        });
+
+        for file in zorp_agent::state::files() {
+            report
+                .checks
+                .push(Check::note(file.label, file.path.display().to_string()));
+        }
+        report.checks.push(Check::note(
+            "workspace",
+            workspace
+                .map(|w| w.display().to_string())
+                .unwrap_or_else(|| "not chosen".to_string()),
+        ));
+
+        let policy = crate::turn::policy(own_port);
+        let search = zorp_agent::web_search_availability(&policy);
+        report.checks.push(if search.available {
+            Check::ok("web_search", search.detail)
+        } else {
+            Check::off("web_search", search.detail)
+        });
+        let installed = discover_skills(None).0.len();
+        report
+            .checks
+            .push(Check::note("skills", format!("{installed} installed")));
+        report
+    })
+    .await
+    .unwrap_or_default();
+
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "healthy": report.healthy(),
+        "base_url": base_url,
+        "checks": report
+            .checks
+            .iter()
+            .map(|c| json!({
+                "health": match c.health {
+                    doctor::Health::Ok => "ok",
+                    doctor::Health::Bad => "bad",
+                    doctor::Health::Off => "off",
+                    doctor::Health::Note => "note",
+                },
+                "label": c.label,
+                "detail": c.detail,
+            }))
+            .collect::<Vec<_>>(),
+    }))
 }
 
 /// Which skills' instructions are in the context of one conversation.

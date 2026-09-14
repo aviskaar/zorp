@@ -48,6 +48,10 @@ zorp-agent = { path = "../zorp-agent" }
 # Discovery and parsing only. `zorp-web` lists what is installed; loading a
 # skill into a turn is still the agent's `skill` tool and nothing here.
 zorp-skill = { path = "../zorp-skill" }
+# Config parsing only, and unconditionally: the settings pane lists the
+# servers a terminal turn would load even though this binary loads none,
+# and `ServerConfig::redacted` is what keeps a token out of that listing.
+zorp-mcp = { path = "../zorp-mcp" }
 zorp-recall = { path = "../zorp-recall", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
 zorp-voice = { path = "../zorp-voice", optional = true }

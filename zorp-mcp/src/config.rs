@@ -34,6 +34,73 @@ pub struct ServerConfig {
     pub timeout_secs: Option<u64>,
 }
 
+/// One server as it may be shown outside this process.
+///
+/// The whole point of the type is the two maps that are not on it. `env`
+/// and `headers` are where a token goes, and a listing that carried their
+/// values would put a credential on a web page because somebody wanted to
+/// see which servers were configured.
+///
+/// Key names are kept, because they are the useful half: seeing that a
+/// server wants `GITHUB_TOKEN` tells a person what to set without telling
+/// anybody what it is.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ServerSummary {
+    pub name: String,
+    pub transport: TransportKind,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    /// The names of the environment variables this server is given. Never
+    /// their values.
+    pub env_keys: Vec<String>,
+    /// The names of the headers this server is sent. Never their values.
+    pub header_keys: Vec<String>,
+    pub trust: TrustLevel,
+    pub timeout_secs: Option<u64>,
+}
+
+impl ServerConfig {
+    /// This server with every secret-bearing value left behind.
+    ///
+    /// **The destructuring is the guarantee and must stay exhaustive.**
+    /// Adding a field to `ServerConfig` makes this function stop compiling,
+    /// which forces a decision about whether the new field may be shown.
+    /// A version of this that read fields through `self.` would silently
+    /// omit a new one, and the failure mode of a redaction that silently
+    /// omits is that somebody adds `token: String` and nothing notices.
+    pub fn redacted(&self) -> ServerSummary {
+        let ServerConfig {
+            name,
+            transport,
+            command,
+            args,
+            env,
+            url,
+            headers,
+            trust,
+            timeout_secs,
+        } = self;
+        // Sorted, so a listing does not reorder itself between two reads of
+        // the same file for want of a stable hash map iteration order.
+        let mut env_keys: Vec<String> = env.keys().cloned().collect();
+        env_keys.sort();
+        let mut header_keys: Vec<String> = headers.keys().cloned().collect();
+        header_keys.sort();
+        ServerSummary {
+            name: name.clone(),
+            transport: transport.clone(),
+            command: command.clone(),
+            args: args.clone(),
+            url: url.clone(),
+            env_keys,
+            header_keys,
+            trust: trust.clone(),
+            timeout_secs: *timeout_secs,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct McpConfig {
     pub servers: Vec<ServerConfig>,
@@ -45,13 +112,41 @@ struct McpConfigToml {
     servers: Vec<ServerConfig>,
 }
 
+/// A TOML parse failure said without quoting the file back.
+///
+/// `toml::de::Error`'s `Display` renders the offending source line
+/// verbatim under a caret. This file holds `headers` and `env`, which is
+/// where a `Bearer` token or an API key lives, so a malformed line right
+/// there puts the secret into an error string that a caller will log, show
+/// in a settings pane, or paste into a bug report. `ServerConfig::redacted`
+/// keeps secrets out of the success path and would be pointless if the
+/// failure path handed them out.
+///
+/// The line and column are what makes the message useful and neither is
+/// secret, so both are kept and only the quoted body is dropped. The span
+/// is a byte offset into the same text, so the position is counted here
+/// rather than read off the rendering.
+fn parse_error(source: &str, e: &toml::de::Error) -> String {
+    let Some(span) = e.span() else {
+        return e.message().to_string();
+    };
+    let start = span.start.min(source.len());
+    let line = source[..start].matches('\n').count() + 1;
+    let column = source[..start]
+        .rfind('\n')
+        .map_or(start, |nl| start - nl - 1)
+        + 1;
+    format!("line {line}, column {column}: {}", e.message())
+}
+
 impl McpConfig {
     pub fn empty() -> Self {
         McpConfig { servers: vec![] }
     }
 
     pub fn from_toml_str(s: &str) -> Result<Self, McpError> {
-        let t: McpConfigToml = toml::from_str(s).map_err(|e| McpError::Config(e.to_string()))?;
+        let t: McpConfigToml =
+            toml::from_str(s).map_err(|e| McpError::Config(parse_error(s, &e)))?;
         Ok(McpConfig { servers: t.servers })
     }
 
@@ -167,5 +262,121 @@ timeout_secs = 60
         let merged = McpConfig::merged(file, env, McpConfig::empty());
         assert_eq!(merged.servers.len(), 1);
         assert_eq!(merged.servers[0].command.as_deref(), Some("uvx"));
+    }
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    fn server_with_secrets() -> ServerConfig {
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), "ghp_REALSECRET".to_string());
+        env.insert("API_KEY".to_string(), "sk-REALSECRET".to_string());
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer REALSECRET".to_string());
+        ServerConfig {
+            name: "github".to_string(),
+            transport: TransportKind::StreamableHttp,
+            command: None,
+            args: vec![],
+            env,
+            url: Some("https://api.example.com/mcp".to_string()),
+            headers,
+            trust: TrustLevel::Sandbox,
+            timeout_secs: Some(30),
+        }
+    }
+
+    /// The one that matters. A value from either map reaching the summary
+    /// is a credential on a web page.
+    #[test]
+    fn no_env_or_header_value_survives_redaction() {
+        let summary = serde_json::to_string(&server_with_secrets().redacted()).unwrap();
+        assert!(!summary.contains("REALSECRET"), "{summary}");
+        assert!(!summary.contains("ghp_"), "{summary}");
+        assert!(!summary.contains("Bearer"), "{summary}");
+    }
+
+    /// The useful half is kept. Knowing a server wants `GITHUB_TOKEN` tells
+    /// somebody what to set without telling anybody what it is.
+    /// A malformed line in this file is a line that may hold a token.
+    ///
+    /// `toml`'s own error renders the offending source line verbatim, so
+    /// the failure path was handing out exactly what `redacted` keeps off
+    /// the success path. The position survives because it is what makes
+    /// the message worth printing and it is not a secret.
+    #[test]
+    fn a_parse_failure_does_not_quote_the_file_back() {
+        let malformed = "[[servers]]\nname = \"gh\"\ncommand = \"x\"\n\
+                         headers = { Authorization = \"Bearer ghp_REALSECRET\", }\n";
+        let err = McpConfig::from_toml_str(malformed)
+            .expect_err("that is not valid toml")
+            .to_string();
+
+        assert!(!err.contains("ghp_REALSECRET"), "{err}");
+        assert!(!err.contains("Bearer"), "{err}");
+        assert!(!err.contains("Authorization"), "{err}");
+        assert!(
+            err.contains("line 4"),
+            "the position is the useful half: {err}"
+        );
+    }
+
+    /// The same for the environment variable, whose whole value is one
+    /// line of JSON holding the same fields.
+    #[test]
+    fn an_env_parse_failure_does_not_quote_the_value_back() {
+        let key = "ZORP_MCP_TEST_LEAK";
+        std::env::set_var(
+            key,
+            r#"[{"name":"gh","headers":{"Authorization":"Bearer ghp_REALSECRET"},}]"#,
+        );
+        let err = McpConfig::from_env_var(key)
+            .expect_err("that is not valid json")
+            .to_string();
+        std::env::remove_var(key);
+
+        assert!(!err.contains("ghp_REALSECRET"), "{err}");
+    }
+
+    #[test]
+    fn the_key_names_are_kept_because_they_are_what_helps() {
+        let summary = server_with_secrets().redacted();
+        assert_eq!(summary.env_keys, vec!["API_KEY", "GITHUB_TOKEN"]);
+        assert_eq!(summary.header_keys, vec!["Authorization"]);
+        assert_eq!(summary.name, "github");
+        assert_eq!(summary.url.as_deref(), Some("https://api.example.com/mcp"));
+    }
+
+    /// A listing that reordered itself between two reads of the same file
+    /// would look like the configuration had changed.
+    #[test]
+    fn key_names_come_back_in_a_stable_order() {
+        let server = server_with_secrets();
+        assert_eq!(server.redacted().env_keys, server.redacted().env_keys);
+    }
+
+    /// A command and its arguments are shown, because that is what somebody
+    /// checking a configured server needs to see. A secret passed as an
+    /// argument is a mistake this cannot fix and must not pretend to: the
+    /// place for one is `env`, and the listing shows the command so that
+    /// mistake is visible rather than hidden.
+    #[test]
+    fn a_stdio_command_and_its_arguments_are_shown() {
+        let server = ServerConfig {
+            name: "fs".to_string(),
+            transport: TransportKind::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "server-filesystem".to_string()],
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            trust: TrustLevel::Sandbox,
+            timeout_secs: None,
+        };
+        let summary = server.redacted();
+        assert_eq!(summary.command.as_deref(), Some("npx"));
+        assert_eq!(summary.args.len(), 2);
     }
 }

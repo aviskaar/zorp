@@ -95,7 +95,7 @@ pub fn path() -> PathBuf {
 /// `web.toml`. Somebody who configured zorp before that happened should not
 /// have to do it again, so the old name is still read. It is never written,
 /// so the first `config set` after upgrading moves them onto the new one.
-fn legacy_path() -> Option<PathBuf> {
+pub fn legacy_path() -> Option<PathBuf> {
     if non_empty_env(PATH_VAR).is_some() || non_empty_env(LEGACY_PATH_VAR).is_some() {
         // An explicit path is an explicit path. Nothing is inferred beside it.
         return None;
