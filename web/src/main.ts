@@ -26,6 +26,7 @@ import {
   skillsView,
   type SkillsView,
 } from "./skills-view";
+import { renderAgents } from "./agents-view";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -82,8 +83,11 @@ import {
   approve,
   getAutoApprove,
   setAutoApprove,
+  fetchAgents,
   fetchSkills,
   getCapabilities,
+  setSessionAgent,
+  trustAgent,
   branchSession,
   compactSession,
   createProject,
@@ -115,6 +119,7 @@ import {
   readArtifact,
   waitForVoiceModel,
   transcribeVoice,
+  type Agent,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -223,6 +228,12 @@ interface Elements {
   zorpThreshold: HTMLInputElement;
   zorpDirection: HTMLSelectElement;
   zorpRun: HTMLButtonElement;
+  agentBtn: HTMLButtonElement;
+  agentBtnLabel: HTMLElement;
+  agentsPane: HTMLElement;
+  agentsList: HTMLElement;
+  agentsResult: HTMLElement;
+  agentsClose: HTMLButtonElement;
   settingsOverlay: HTMLElement;
   settingsClose: HTMLButtonElement;
   settingsForm: HTMLFormElement;
@@ -442,6 +453,7 @@ function start(): void {
   wireLayout();
   wireSidebar();
   wireSkills();
+  wireAgents();
   wireRecall();
   wireScroller();
   wireSettings();
@@ -622,6 +634,12 @@ function collectElements(): Elements {
     voicePreview: byId("voice-preview"),
     voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
+    agentBtn: byId<HTMLButtonElement>("agent-btn"),
+    agentBtnLabel: byId("agent-btn-label"),
+    agentsPane: byId("agents-pane"),
+    agentsList: byId("agents-list"),
+    agentsResult: byId("agents-result"),
+    agentsClose: byId<HTMLButtonElement>("agents-close"),
     settingsOverlay: byId("settings-overlay"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),
     settingsForm: byId<HTMLFormElement>("settings-form"),
@@ -1037,6 +1055,7 @@ async function sendMessage(message: string): Promise<void> {
   try {
     if (!sessionId) {
       sessionId = await newSession();
+      await applyPendingAgent();
       setTitle("New chat");
       await refreshSessions();
       markActiveSession();
@@ -1243,6 +1262,7 @@ async function submitInvestigate(
   try {
     if (!sessionId) {
       sessionId = await newSession();
+      await applyPendingAgent();
       setTitle("Zorp mode");
       await refreshSessions();
       markActiveSession();
@@ -1318,6 +1338,7 @@ async function submitPanel(): Promise<void> {
   try {
     if (!sessionId) {
       sessionId = await newSession();
+      await applyPendingAgent();
       setTitle("Review panel");
       await refreshSessions();
       markActiveSession();
@@ -2593,6 +2614,12 @@ async function openSession(session: SessionSummary): Promise<void> {
     if (sessionId !== session.id) {
       return;
     }
+    // Which agent this conversation runs under, and whether it is fixed.
+    // Read from the store rather than counted here, so the pane cannot
+    // offer a choice the server would refuse.
+    currentAgent = transcript.agent ?? null;
+    agentLocked = Boolean(transcript.agent_locked);
+    paintAgentPill();
     if (!transcript.messages.length) {
       showEmptyState();
     } else {
@@ -2650,6 +2677,11 @@ function startNewChat(): void {
   resetTranscript();
   rememberSessionInUrl(null);
   sessionId = null;
+  // A new conversation starts as zorp and is free to change, whatever the
+  // one before it was running as.
+  currentAgent = null;
+  agentLocked = false;
+  paintAgentPill();
   setTitle("New chat");
   markActiveSession();
   // A new chat asks again. Standing approvals down is something you do to a
@@ -2791,6 +2823,150 @@ async function refreshCapabilities(): Promise<void> {
  * Fetched each time it is opened rather than cached, because a skill can be
  * added to a directory while the page is sitting there.
  */
+/* ------------------------------------------------------------------ */
+/* agents                                                              */
+/*                                                                      */
+/* Which named profile this conversation runs under. A person picks it, */
+/* a person trusts a workspace one, and no tool can do either.          */
+/* ------------------------------------------------------------------ */
+
+/** The agent this conversation runs under, or null for the default. */
+let currentAgent: string | null = null;
+/** Whether it has answered, which fixes the agent. */
+let agentLocked = false;
+
+function wireAgents(): void {
+  dom.agentBtn.addEventListener("click", () => void toggleAgents());
+  dom.agentsClose.addEventListener("click", closeAgents);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.agentsPane.hidden) {
+      closeAgents();
+    }
+  });
+}
+
+async function toggleAgents(): Promise<void> {
+  if (dom.agentsPane.hidden) {
+    await openAgents();
+  } else {
+    closeAgents();
+  }
+}
+
+/**
+ * Open the pane and draw the cards.
+ *
+ * Fetched each time rather than cached, because a `.toml` can be added or
+ * edited while the page is sitting there, and editing one revokes its
+ * trust. A cached listing would show a trusted badge on a file that has
+ * since changed, which is the one thing this pane must never do.
+ */
+async function openAgents(): Promise<void> {
+  dom.agentsPane.hidden = false;
+  dom.app.dataset.agents = "open";
+  dom.agentBtn.setAttribute("aria-expanded", "true");
+  describeHandles();
+  setAgentsResult("");
+  await refreshAgents();
+}
+
+function closeAgents(): void {
+  dom.agentsPane.hidden = true;
+  delete dom.app.dataset.agents;
+  dom.agentBtn.setAttribute("aria-expanded", "false");
+  describeHandles();
+}
+
+function setAgentsResult(text: string): void {
+  dom.agentsResult.textContent = text;
+}
+
+async function refreshAgents(): Promise<void> {
+  try {
+    const listing = await fetchAgents();
+    renderAgents(document, dom.agentsList, listing, currentAgent, agentLocked, {
+      onPick: (name) => void pickAgent(name),
+      onTrust: (agent) => void trustThisAgent(agent),
+    });
+    paintAgentPill(listing.default);
+  } catch (error) {
+    setAgentsResult(describeError(error));
+  }
+}
+
+/** The pill says what this conversation is running as. */
+function paintAgentPill(fallback = "zorp"): void {
+  dom.agentBtnLabel.textContent = currentAgent ?? fallback;
+  dom.agentBtn.title = currentAgent
+    ? `This conversation runs under the ${currentAgent} agent`
+    : "This conversation runs as zorp, with every tool this build has";
+}
+
+/**
+ * Choose the agent, for this conversation, before it has answered.
+ *
+ * A 409 is the lock, and the server's own sentence says to branch. Shown
+ * rather than swallowed: somebody who cannot change it needs to know why
+ * and what to do instead.
+ */
+async function pickAgent(name: string | null): Promise<void> {
+  if (!sessionId) {
+    // Nothing to set it on yet. The first message creates the session, and
+    // `applyPendingAgent` writes the choice the moment it exists.
+    currentAgent = name;
+    paintAgentPill();
+    await refreshAgents();
+    return;
+  }
+  try {
+    await setSessionAgent(sessionId, name);
+    currentAgent = name;
+    paintAgentPill();
+    setAgentsResult(name ? `Running under ${name}.` : "Running as zorp.");
+  } catch (error) {
+    setAgentsResult(describeError(error));
+  }
+  await refreshAgents();
+}
+
+/**
+ * Write an agent chosen before the conversation existed.
+ *
+ * Picking one on a brand new chat has no row to write to, so the choice is
+ * held on the page until the first message creates the session. Silent on
+ * failure: the turn is already in flight by then and a banner about the
+ * agent would land on top of the answer. The pane says what it is running
+ * as next time it is opened.
+ */
+async function applyPendingAgent(): Promise<void> {
+  if (!sessionId || !currentAgent) {
+    return;
+  }
+  try {
+    await setSessionAgent(sessionId, currentAgent);
+  } catch {
+    currentAgent = null;
+    paintAgentPill();
+  }
+}
+
+/**
+ * Trust a workspace agent's current content hash.
+ *
+ * The only thing that turns its command-bearing fields on, and it is this
+ * click. The listing is redrawn afterwards rather than the card being
+ * patched, so what is on screen is what the server says now.
+ */
+async function trustThisAgent(agent: Agent): Promise<void> {
+  try {
+    await trustAgent(agent.scope, agent.name);
+    setAgentsResult(`Trusted ${agent.name}. Editing the file makes it untrusted again.`);
+  } catch (error) {
+    setAgentsResult(describeError(error));
+  }
+  await refreshAgents();
+}
+
 function wireSkills(): void {
   const close = () => {
     skills.panel.hidden = true;

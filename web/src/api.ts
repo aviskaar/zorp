@@ -114,6 +114,16 @@ export interface CompactionRecord {
 export interface SessionTranscript {
   messages: Message[];
   compactions: CompactionRecord[];
+  /** The agent it runs under, or null for the default. */
+  agent?: string | null;
+  /**
+   * Whether it has answered, which fixes the agent.
+   *
+   * Counted by the server with the same `has_answer` test
+   * `set_session_agent` applies, so the pane cannot offer a choice the
+   * server would refuse.
+   */
+  agent_locked?: boolean;
 }
 
 /**
@@ -288,6 +298,95 @@ export async function fetchSkills(): Promise<SkillListing> {
     skills: Array.isArray(body?.skills) ? body.skills : [],
     warnings: Array.isArray(body?.warnings) ? body.warnings : [],
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* agents                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One agent, as `GET /api/agents` lists it.
+ *
+ * An agent is a flavor with a description, picked by a person before a
+ * conversation starts, carrying the model, the prompt, the tool allow-list
+ * and the approval preset for the whole of it.
+ *
+ * **`name` and `description` are untrusted text.** They come out of a file
+ * that may have arrived by `git clone`. The server scrubs them before
+ * sending, and they still land on the page through `textContent`.
+ *
+ * `system_prompt` is absent from the listing on purpose: it can be long,
+ * and a listing is not where somebody reads one. `GET /api/agents/:scope/:name`
+ * carries it for the detail view.
+ */
+export interface Agent {
+  name: string;
+  scope: "user" | "workspace";
+  description: string | null;
+  model: string | null;
+  /** The tool allow-list, when the agent narrows one. Null means every tool. */
+  tools: string[] | null;
+  approval_preset: string | null;
+  /** Whether it carries shell commands or loosens approval. */
+  wants_privilege: boolean;
+  /** What trusting it would grant, in the same words the CLI shows. */
+  privilege_summary: string[];
+  trusted: boolean;
+  /** Whether running under it would apply everything it asks for. */
+  fully_applied: boolean;
+  /** Why the file could not be read. Listed rather than dropped. */
+  broken: string | null;
+  /** Only on the detail view. */
+  system_prompt?: string | null;
+  path?: string;
+}
+
+export interface AgentListing {
+  agents: Agent[];
+  /** The name of the card that means no flavor at all. */
+  default: string;
+}
+
+/** Every agent this server can see, at both scopes. */
+export async function fetchAgents(): Promise<AgentListing> {
+  const body = await request<AgentListing>("GET", "/api/agents");
+  return {
+    agents: Array.isArray(body?.agents) ? body.agents : [],
+    default: typeof body?.default === "string" ? body.default : "zorp",
+  };
+}
+
+/** One agent, with its system prompt. */
+export async function fetchAgent(scope: string, name: string): Promise<Agent> {
+  return request<Agent>(
+    "GET",
+    `/api/agents/${encodeURIComponent(scope)}/${encodeURIComponent(name)}`,
+  );
+}
+
+/**
+ * Record a workspace agent's current content hash as trusted.
+ *
+ * The only thing that turns a workspace agent's command-bearing fields on,
+ * and it is a person's click. Trust is by content hash, so editing the file
+ * afterwards revokes it on its own.
+ */
+export async function trustAgent(scope: string, name: string): Promise<void> {
+  await request(
+    "POST",
+    `/api/agents/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/trust`,
+    {},
+  );
+}
+
+/**
+ * Choose the agent a conversation runs under.
+ *
+ * Locked once the conversation has answered: the server returns 409 and the
+ * answer is to branch, which already copies the agent.
+ */
+export async function setSessionAgent(id: string, agent: string | null): Promise<void> {
+  await request("PUT", `/api/sessions/${encodeURIComponent(id)}/agent`, { agent });
 }
 
 /** The server's observed local voice runtime state. */
@@ -953,6 +1052,10 @@ export async function getSession(id: string): Promise<SessionTranscript> {
     // An older server sends no compactions, and a transcript with no
     // markers is what this page drew before they existed.
     compactions: Array.isArray(transcript?.compactions) ? transcript.compactions : [],
+    // Absent from a server built before agents existed, which reads the
+    // same way as a conversation with no agent: the default, unlocked.
+    agent: typeof transcript?.agent === "string" ? transcript.agent : null,
+    agent_locked: Boolean(transcript?.agent_locked),
   };
 }
 

@@ -247,6 +247,14 @@ resulting artifact, deliver it in the right form.
   `allowed-tools` in a skill's frontmatter is parsed, warned about, and
   ignored. See `docs/DECISIONS.md` (2026-08-18) before changing any of
   that.
+- The agents pane (`web/src/agents-view.ts`) is one card per agent, with
+  the default first because it is what a conversation runs as now. Its
+  listing is refetched on every open and never cached: editing a flavor
+  revokes its trust by content hash, and a cached listing would show a
+  trusted badge on a file that has since changed. Trusting is the only
+  control in the pane that widens anything; everything else narrows or
+  selects, and a button that could do nothing is drawn disabled or not at
+  all. See `docs/DECISIONS.md` (2026-09-14).
 - An agent is a flavor with a description, not a new format.
   `zorp-agent/src/agents.rs` reads the same two `flavors/` directories
   `--flavor` reads, `sessions.agent` holds the name a person picked, and

@@ -98,6 +98,46 @@ ledger reader still names no model-authored text column.
 
 ---
 
+## 2026-09-14: the agents pane is cards, and trusting one is the only button that widens anything
+
+**Decision:** `web/src/agents-view.ts` draws one card per agent in a pane
+in the same `aside` shape as settings and artifacts, opened from a pill that
+says what the conversation is running as.
+
+**The default is a card, and it is first.** A list that only showed the
+alternatives would not say what a conversation runs as now, which is the
+question somebody opening this pane actually has. Picking it clears the
+column rather than storing a name nothing would resolve.
+
+**A card has three states and they look different.** Ready, untrusted, and
+broken. The untrusted one lists what trusting would grant in the same words
+`privilege_summary` gives the CLI, so a person reads one sentence rather
+than two descriptions of one thing. The broken one shows its parse error and
+has no buttons at all, because an agent that silently vanishes is a run that
+silently loses its restrictions, and one that cannot be read must not be
+picked.
+
+**Trust is the only control here that widens anything, and it is a click.**
+Every other button narrows or selects. The listing is refetched on every
+open rather than cached, because editing a `.toml` revokes its trust by
+content hash and a cached listing would show a trusted badge on a file that
+has since changed. That is the one thing this pane must never do.
+
+**A button that cannot do anything is not drawn.** The agent already in use
+gets a disabled button reading "Running under this", and a conversation that
+has answered gets every button disabled plus the sentence about branching.
+The lock is read from the store through `has_answer`, the same test
+`set_session_agent` applies, so the pane cannot offer a choice the server
+would refuse.
+
+**A choice made before the conversation exists is held and applied.**
+Picking an agent on a brand new chat has no row to write to, so the page
+keeps it and `applyPendingAgent` writes it the moment `newSession` returns.
+Silent on failure: the turn is already in flight by then and a banner about
+the agent would land on top of the answer.
+
+---
+
 ## 2026-09-13: an agent is a flavor with a description, and a project one is untrusted until somebody clicks
 
 **Decision:** `zorp-agent/src/agents.rs` reads the two `flavors/`

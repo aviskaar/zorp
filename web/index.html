@@ -321,6 +321,27 @@
             <span id="search-indicator-text"></span>
           </div>
           <!--
+            Which agent this conversation runs under. A pill rather than a
+            popover because the pane behind it holds a card per agent with
+            what each one changes about a run, and a workspace agent that
+            wants shell commands needs room to say so before anybody trusts
+            it. The wording comes from web/src/agents-view.ts.
+          -->
+          <button
+            class="model-btn agent-btn"
+            id="agent-btn"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="agents-pane"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="8" r="3.4" />
+              <path d="M5.5 19a6.5 6.5 0 0 1 13 0" />
+            </svg>
+            <span id="agent-btn-label">zorp</span>
+          </button>
+          <!--
             How many skills this server can see. A button, unlike the search
             pill beside it, because there is something to read behind it:
             the names and descriptions of what is installed. It is still a
@@ -684,6 +705,46 @@
         moved to the Files button in the topbar, so a document gets the whole
         column and the pane can be dragged out to half the window.
       -->
+      <!--
+        Agents. A card per named profile a person can pick a conversation to
+        run under, in the same `aside` shape as the settings and artifact
+        panes.
+
+        An agent is a flavor with a description, so these are the same files
+        `--flavor` reads and `zorp-agent agents` lists. Picking one is a
+        person's decision and so is trusting one: the model can write a file
+        into `<workspace>/.zorp/flavors/`, which is exactly why a workspace
+        agent that carries shell commands applies them only once somebody
+        has read what it wants and clicked.
+      -->
+      <aside class="settings-pane" id="agents-pane" aria-label="Agents" hidden>
+        <div
+          class="pane-resizer pane-resizer-settings"
+          id="agents-resizer"
+          role="separator"
+          tabindex="0"
+          aria-orientation="vertical"
+          aria-label="Resize the agents pane"
+          title="Drag to resize. Double click to reset."
+        ></div>
+
+        <div class="artifacts-head">
+          <h2 class="settings-pane-title">Agents</h2>
+          <button class="icon-btn" id="agents-close" type="button" aria-label="Close agents">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <div class="settings-pane-body">
+          <p class="settings-note">
+            An agent carries the model, the instructions, the tools and the approval preset for a
+            whole conversation. It can only narrow what zorp may do, never widen it.
+          </p>
+          <div id="agents-list"></div>
+          <p class="settings-result" id="agents-result"></p>
+        </div>
+      </aside>
+
       <aside class="artifacts" id="artifacts" aria-label="Artifact preview" hidden>
         <!-- The artifact pane's inner edge. Same control as the sidebar's. -->
         <div

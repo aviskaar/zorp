@@ -576,6 +576,9 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
                     "title": title,
                     "status": s.status,
                     "project_id": s.project_id,
+                    // Which agent it runs under, so the top bar can say so
+                    // without a second request per row. Null is the default.
+                    "agent": s.agent,
                     // Only a stored session has one, which is how the page
                     // tells a conversation it can file from one that exists
                     // only in this process and has no row to write to yet.
@@ -591,6 +594,7 @@ async fn list_sessions(State(state): State<AppState>) -> Json<serde_json::Value>
                 "title": "New chat",
                 "status": "running",
                 "project_id": serde_json::Value::Null,
+                "agent": serde_json::Value::Null,
             }));
         }
     }
@@ -616,7 +620,18 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
         Ok(messages) => {
             let (rows, seqs) = transcript_with_seqs(&messages);
             let compactions = compaction_rows(&store, &id, &seqs);
-            Json(json!({"messages": rows, "compactions": compactions})).into_response()
+            Json(json!({
+                "messages": rows,
+                "compactions": compactions,
+                // Which agent this conversation runs under, and whether it
+                // is fixed. Both come from the store rather than being
+                // counted on the page: `has_answer` is the same test
+                // `set_session_agent` applies, so the pane cannot offer a
+                // choice the server would refuse.
+                "agent": store.session_agent(&id).unwrap_or_default(),
+                "agent_locked": store.has_answer(&id).unwrap_or(false),
+            }))
+            .into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
