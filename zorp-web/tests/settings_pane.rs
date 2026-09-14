@@ -9,6 +9,8 @@
 //! `zorp-agent/src/agent.rs` has `no_tool_clears_state_or_resets_settings`
 //! saying so from the other side.
 
+mod common;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
@@ -40,11 +42,11 @@ async fn get(url: String) -> serde_json::Value {
     serde_json::from_str(&body).unwrap()
 }
 
-async fn put(url: String, body: &'static str) -> (u16, String) {
+async fn put(url: String, body: String) -> (u16, String) {
     tokio::task::spawn_blocking(move || {
         match ureq::put(&url)
             .set("content-type", "application/json")
-            .send_string(body)
+            .send_string(&body)
         {
             Ok(response) => {
                 let status = response.status();
@@ -381,6 +383,22 @@ async fn the_probe_flag_accepts_the_spelling_the_docs_and_the_report_use() {
     let _env = ENV.lock().await;
     let fx = fixture().await;
 
+    // The probe makes a real request to the resolved endpoint, so point it
+    // at a local mock. Against the default endpoint this would be three
+    // live network calls from a unit test, which is slow when it works and
+    // hangs a continuous integration run when it does not.
+    let (base, _requests) = common::mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"#,
+    );
+    let (status, _) = put(
+        fx.url("/api/settings"),
+        format!(r#"{{"base_url":"{base}","model":"m","api_key":"sk-test"}}"#),
+    )
+    .await;
+    assert_eq!(status, 200, "the settings write was refused");
+
     for query in ["?probe=1", "?probe=true", "?probe"] {
         let (status, _) = get_status(fx.url(&format!("/api/doctor{query}"))).await;
         assert_eq!(status, 200, "GET /api/doctor{query} was refused");
@@ -421,7 +439,8 @@ async fn a_key_configured_in_the_browser_reads_as_set() {
 
     let (status, _) = put(
         fx.url("/api/settings"),
-        r#"{"base_url":"https://api.openai.com/v1","model":"m","api_key":"sk-TYPED-IN-THE-PANE"}"#,
+        r#"{"base_url":"https://api.openai.com/v1","model":"m","api_key":"sk-TYPED-IN-THE-PANE"}"#
+            .to_string(),
     )
     .await;
     assert_eq!(status, 200, "the settings write was refused");
