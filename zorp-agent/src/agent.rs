@@ -4125,6 +4125,41 @@ mod tests {
         }
     }
 
+    /// A person picks an agent, and a person trusts one. Never a model.
+    ///
+    /// This is the load bearing one for `zorp-agent/src/agents.rs`. The
+    /// model can already write a file into `<workspace>/.zorp/flavors/`
+    /// with `write_file`, which is why project scope is gated by content
+    /// hash. That gate is worth nothing if a tool can also click the
+    /// button: a model that could write a flavor granting itself `full`
+    /// approval and then trust it has granted itself full approval.
+    ///
+    /// So nothing may exist that sets a conversation's agent, records a
+    /// trust decision, or writes a flavor file through the agents API. The
+    /// routes for all three are in `zorp-web/src/api.rs` and each one says
+    /// it is a person's click.
+    #[test]
+    fn no_tool_picks_an_agent_or_trusts_one() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "set_agent",
+            "set_session_agent",
+            "pick_agent",
+            "trust_agent",
+            "trust_flavor",
+            "create_agent",
+            "write_agent",
+            "edit_agent",
+            "delete_agent",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// The ensemble's reviewer gets the read tools plus a shell and nothing
     /// that launches a run, a review or a subagent, and nothing that
     /// writes. Code launches every run. Same shape as the panel test above.

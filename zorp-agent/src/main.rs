@@ -234,6 +234,12 @@ enum Command {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
+    /// List the agents this machine has, at both scopes.
+    ///
+    /// An agent is a flavor with a description, so these are the same files
+    /// `--flavor` reads and the same ones the browser's agents pane shows.
+    /// Read-only: pick one with --flavor.
+    Agents,
     /// Group conversations. A project is a label and nothing more.
     ///
     /// Nothing about a conversation changes when it joins one, and
@@ -366,6 +372,7 @@ fn main() {
         Some(Command::Config { action }) => config(action, &overrides),
         Some(Command::Projects { action }) => projects(action),
         Some(Command::Doctor) => doctor(&overrides),
+        Some(Command::Agents) => agents(),
         Some(Command::Rm { id, yes, force }) => remove_session(&id, yes || cli.yes, force),
         Some(Command::Branch { id, answer, force }) => branch_session(&id, answer, force),
         #[cfg(feature = "research")]
@@ -946,6 +953,66 @@ fn panel_command(
     // they look like, so it is worth an exit code too.
     if !report.is_complete() {
         std::process::exit(1);
+    }
+}
+
+/// `zorp-agent agents`: the same set the browser's pane shows.
+///
+/// The two surfaces read the same files through the same functions, so a
+/// column that disagreed would mean one of them was lying about what a
+/// conversation would run under.
+///
+/// Read-only. Picking one on this surface is `--flavor`, which has always
+/// been how it works and is unchanged.
+fn agents() {
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let found = zorp_agent::agents::discover(&home, &cwd);
+
+    if found.is_empty() {
+        println!("no agents. An agent is a flavor with a description:");
+        println!("  ~/.config/zorp/flavors/<name>.toml     yours, everywhere");
+        println!("  ./.zorp/flavors/<name>.toml            this workspace's");
+        return;
+    }
+
+    let width = found
+        .iter()
+        .map(|a| a.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(zorp_agent::agents::DEFAULT_AGENT.len());
+
+    // First, because it is what every conversation runs as today and a list
+    // that only showed the alternatives would not say what you have now.
+    println!(
+        "{:<width$}  {:<9}  zorp as it comes: every tool, the default prompt",
+        zorp_agent::agents::DEFAULT_AGENT,
+        "built in",
+        width = width
+    );
+    for agent in &found {
+        let scope = match agent.scope {
+            zorp_agent::Scope::User => "user",
+            zorp_agent::Scope::Project => "workspace",
+        };
+        // Scrubbed, because a name and a description come out of a file
+        // that may have arrived by `git clone`, and an override inside one
+        // reorders every line after it.
+        let name = zorp_agent::sessions::scrub(&agent.name);
+        let note = match (&agent.broken, agent.wants_privilege && !agent.trusted) {
+            (Some(why), _) => format!("broken: {why}"),
+            (None, true) => format!(
+                "not trusted, so these are not applied: {}",
+                agent.privilege_summary.join("; ")
+            ),
+            (None, false) => agent
+                .description
+                .as_deref()
+                .map(zorp_agent::sessions::scrub)
+                .unwrap_or_else(|| "(no description)".to_string()),
+        };
+        println!("{name:<width$}  {scope:<9}  {note}", width = width);
     }
 }
 

@@ -35,6 +35,18 @@ pub fn is_valid_flavor_name(name: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Flavor {
     pub name: Option<String>,
+    /// One sentence saying when to run under this agent.
+    ///
+    /// The only field added for the browser's agents pane, and it is the
+    /// whole difference between a flavor and an agent: a card needs a line
+    /// of text under its name or a person picking one is picking by
+    /// filename. Nothing reads it at run time, so a flavor without one is
+    /// still a perfectly good flavor.
+    ///
+    /// Untrusted text. It comes out of a file that may have arrived by
+    /// `git clone`, so it lands on a page through `textContent` and is
+    /// scrubbed before it reaches a listing.
+    pub description: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub provider: Option<crate::provider::Provider>,
@@ -134,6 +146,7 @@ impl Flavor {
         overrides.extend(over.approval.overrides);
         Flavor {
             name: or(self.name, over.name),
+            description: or(self.description, over.description),
             model: or(self.model, over.model),
             base_url: or(self.base_url, over.base_url),
             provider: or(self.provider, over.provider),

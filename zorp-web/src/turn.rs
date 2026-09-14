@@ -184,12 +184,40 @@ pub fn system_prompt() -> &'static str {
 /// works in a workspace somebody picked once, and everything it renders
 /// would otherwise land in the top of it.
 pub fn turn_prompt(workspace: &std::path::Path) -> String {
+    scoped_prompt(system_prompt(), workspace)
+}
+
+/// One prompt plus the sentence only the server knows.
+///
+/// Split out from `turn_prompt` when agents arrived. An agent replaces what
+/// zorp is, which is the supported way to get a differently focused zorp
+/// without a fork. It does not get to drop where the files go: that is a
+/// fact about this server's workspace rather than a matter of taste, and an
+/// agent whose prompt omitted it would write into the top of somebody's
+/// repository.
+pub fn scoped_prompt(prompt: &str, workspace: &std::path::Path) -> String {
     format!(
         "{}\n\nYou are working in {}. Generated files, such as PDFs you render \
          and scratch scripts you write, go in scratch/ under that directory.",
-        system_prompt(),
+        prompt,
         workspace.display()
     )
+}
+
+/// The policy an agent's approval preset asks for, with the loopback guard
+/// still on.
+///
+/// `with_own_server` is not negotiable and is applied after the preset: one
+/// approved `run_command` that curls this server is otherwise enough to
+/// stand the approval gate down and make every later call unreviewed. An
+/// agent cannot turn that off, because an agent is a file that may have
+/// arrived by `git clone`.
+fn policy_from_preset(preset: zorp_agent::Preset, own_port: Option<u16>) -> zorp_agent::Policy {
+    let policy = zorp_agent::Policy::from_preset(preset);
+    match own_port {
+        Some(port) => policy.with_own_server(port),
+        None => policy,
+    }
 }
 
 /// Append one event to a session's replay backlog.
@@ -547,7 +575,53 @@ fn run_agent(
         message,
         recalled,
     } = ask;
-    let resolved = settings.lock().unwrap().effective_model();
+    // The agent this conversation runs under, resolved before anything is
+    // built from the settings, because it may replace some of them.
+    //
+    // The name is what the session row holds; the scope is resolved here
+    // through `layer_paths` the way the CLI does, so a user agent and a
+    // workspace agent of the same name merge the way they do on the CLI.
+    // Storing a scope would have frozen that.
+    let chosen = Store::open_default()
+        .ok()
+        .and_then(|store| store.session_agent(session_id).ok().flatten());
+    let profile = chosen.as_deref().map(|name| {
+        let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        zorp_agent::agents::gated(&home, &workspace, name)
+    });
+    // Said on the stream rather than swallowed. An agent picked for its
+    // restrictions that is quietly running without half of them is the
+    // failure this whole gate exists to prevent, and a browser turn cannot
+    // stop and ask the way the CLI does.
+    if let Some((_, withheld)) = &profile {
+        if *withheld {
+            renderer.notice(&format!(
+                "agent {}: this workspace agent asks to run commands or loosen approval                  and has not been trusted, so those settings are not applied. Trust it in                  the agents pane to turn them on.",
+                chosen.as_deref().unwrap_or("(unnamed)")
+            ));
+        }
+    }
+    let flavor = profile.map(|(flavor, _)| flavor);
+
+    let mut resolved = settings.lock().unwrap().effective_model();
+    // An agent may name its own model, endpoint and provider. Only when it
+    // does: an unset key inherits, which is what every other flavor field
+    // already does and is why `Flavor`'s scalars are all optional.
+    if let Some(flavor) = &flavor {
+        if let Some(model) = &flavor.model {
+            resolved.model = model.clone();
+            resolved.configured = true;
+        }
+        if let Some(base_url) = &flavor.base_url {
+            resolved.base_url = base_url.clone();
+        }
+        if let Some(provider) = flavor.provider {
+            resolved.provider = provider;
+        }
+        if let Some(max_tokens) = flavor.max_tokens {
+            resolved.max_tokens = Some(max_tokens);
+        }
+    }
     if !resolved.configured {
         return Err("no model configured, open settings and pick one".to_string());
     }
@@ -569,11 +643,24 @@ fn run_agent(
     // can be chosen while the server is running, and never fatal: a turn
     // whose scratch directory could not be created is still worth running.
     crate::workspace::ensure_scratch(&workspace);
-    let system = turn_prompt(&workspace);
+    // An agent's prompt replaces the default, which is what
+    // `docs/DECISIONS.md` (2026-08-18) already says a flavor's
+    // `system_prompt` does. The sentence about where generated files go is
+    // appended either way: it is the one thing only the server knows, and
+    // an agent that dropped it would write into the top of the workspace.
+    let system = match flavor.as_ref().and_then(|f| f.system_prompt.as_deref()) {
+        Some(prompt) => scoped_prompt(prompt, &workspace),
+        None => turn_prompt(&workspace),
+    };
     let cwd = workspace;
-    let steps = std::env::var("ZORP_MAX_STEPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
+    let steps = flavor
+        .as_ref()
+        .and_then(|f| f.max_steps)
+        .or_else(|| {
+            std::env::var("ZORP_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
         .unwrap_or(30);
 
     let cwd_display = cwd.display().to_string();
@@ -672,10 +759,30 @@ fn run_agent(
         ApprovalMode::Interactive(approver),
     )
     .with_context_budget(budget)
-    .register_builtins_filtered(None)
+    // An agent can only narrow. `register_builtins_filtered` picks from
+    // what this build has and cannot add a tool it lacks, so an agent
+    // asking for `web_search` in a build without the `search` feature gets
+    // a build without web search rather than an error.
+    .register_builtins_filtered(
+        flavor
+            .as_ref()
+            .and_then(|f| f.tools.enabled.as_deref()),
+    )
     .with_renderer(renderer);
 
-    agent = agent.with_policy(policy(own_port));
+    // Where the agent's approval section and the toolbar toggle disagree,
+    // the stricter wins. An agent picked to be read-only must not be
+    // loosened by a toggle somebody left on in another conversation, and a
+    // toggle is not a reason to tighten an agent either: the policy below
+    // is the floor and `WebApprover` still asks for anything it allows.
+    let policy = match flavor.as_ref().and_then(|f| f.approval.preset.as_deref()) {
+        Some(preset) => match zorp_agent::Preset::parse(preset) {
+            Some(preset) => policy_from_preset(preset, own_port),
+            None => policy(own_port),
+        },
+        None => policy(own_port),
+    };
+    agent = agent.with_policy(policy);
 
     // Stage two, for the window filling mid-run. Attached whether or not the
     // window is known: an unknown window fires nothing, and `/compact` needs
@@ -812,6 +919,62 @@ mod tests {
             .collect();
         assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
         assert_eq!(plan.records[0].message.text(), system_prompt());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An agent replaces what zorp is. It does not get to drop where the
+    /// files go.
+    ///
+    /// The sentence about `scratch/` is the one thing only the server
+    /// knows, and an agent whose prompt omitted it would write into the top
+    /// of somebody's repository. `docs/DECISIONS.md` (2026-08-18) already
+    /// says a flavor's `system_prompt` wins over the default, and this is
+    /// the line where that stops.
+    #[test]
+    fn an_agents_prompt_replaces_the_default_but_keeps_the_workspace_sentence() {
+        let workspace = std::path::Path::new("/tmp/some-workspace");
+        let theirs = scoped_prompt("You read and you summarise.", workspace);
+
+        assert!(theirs.starts_with("You read and you summarise."));
+        assert!(
+            !theirs.contains("research agent"),
+            "the default prompt survived an agent that replaced it: {theirs}"
+        );
+        assert!(theirs.contains("/tmp/some-workspace"), "{theirs}");
+        assert!(theirs.contains("scratch/"), "{theirs}");
+
+        // And with no agent it is exactly what it was.
+        assert_eq!(turn_prompt(workspace), scoped_prompt(system_prompt(), workspace));
+    }
+
+    /// The prompt reaches the model through the seed and never enters
+    /// `messages`, so recall, memory, title and branch never see it. An
+    /// agent's prompt is untrusted text out of a file that may have arrived
+    /// by `git clone`, which makes this property matter more rather than
+    /// less now that one can be chosen.
+    #[test]
+    fn an_agents_prompt_is_seeded_and_never_recorded() {
+        let (mut store, dir) = temp_store("agent-prompt");
+        record_all(
+            &mut store,
+            "s1",
+            &[Message::user("hello"), Message::assistant("hi")],
+        );
+
+        let theirs = scoped_prompt("SECRET AGENT PROMPT", std::path::Path::new("/tmp/w"));
+        let plan = seed_transcript(&store, "s1", &theirs, &ContextBudget::default());
+        assert_eq!(plan.records[0].message.text(), theirs);
+
+        // The store is what it was. Nothing about seeding a different
+        // prompt writes one.
+        let stored = store.load_message_records("s1").unwrap();
+        assert!(
+            !stored
+                .iter()
+                .any(|r| r.message.text().contains("SECRET AGENT PROMPT")),
+            "an agent prompt reached the transcript"
+        );
+        assert!(!stored.iter().any(|r| r.message.role == "system"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
