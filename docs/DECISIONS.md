@@ -119,6 +119,15 @@ command carrying a carriage return could redraw the line it was printed on
 and show something other than what would run. That is a substitution, not a
 cut: the byte count is printed beside it and nothing is hidden.
 
+Bidirectional overrides go the same way, and they are the reason the rule
+could not stay at `char::is_control`. U+202E and the rest of that range are
+Format rather than Control, so `is_control` is false for them and they used
+to travel straight through onto the line. One of them reverses everything
+drawn after it, which is the same defect the truncation was, reached by a
+different route: what the person reads is not what the shell runs.
+`title::is_invisible` is already the list of those characters in this crate,
+so `approval.rs` reuses it rather than keeping a second copy to drift.
+
 Only `run_command` gets a block. `write_file` and `apply_patch` report a
 byte count rather than contents on purpose, and printing a file body above
 an approval prompt would be a regression in the other direction.

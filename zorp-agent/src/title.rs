@@ -173,7 +173,7 @@ fn is_break(c: char) -> bool {
 /// Characters with no width and no business in a title: the bidirectional
 /// overrides, which can make a title render as something other than what is
 /// stored, and the zero-width joiners and the byte order mark.
-fn is_invisible(c: char) -> bool {
+pub(crate) fn is_invisible(c: char) -> bool {
     matches!(c,
         '\u{200B}'..='\u{200F}'
         | '\u{202A}'..='\u{202E}'
