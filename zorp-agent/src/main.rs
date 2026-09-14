@@ -1040,7 +1040,10 @@ fn data(clear_conversations: bool, clear_index: bool, reset_settings: bool, yes:
     if clear_index {
         match state::delete_search_index() {
             Ok(cleared) if cleared.is_empty() => println!("no search index to delete"),
-            Ok(cleared) => println!("deleted the search index ({} file(s))", cleared.removed.len()),
+            Ok(cleared) => println!(
+                "deleted the search index ({} file(s))",
+                cleared.removed.len()
+            ),
             Err(e) => {
                 eprintln!("zorp-agent: could not delete the search index: {e}");
                 std::process::exit(1);
