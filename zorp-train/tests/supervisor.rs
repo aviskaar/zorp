@@ -49,6 +49,21 @@ fn test_all_train_events_deserialization() {
         }
     );
 
+    let step_zero_eta_json = r#"{"type":"step","step":100,"loss":1.50,"lr":0.0001,"tokens":100000,"tok_per_sec":5000.0,"memory_gb":10.2,"eta_seconds":0}"#;
+    let step_zero_eta_event: TrainEvent = serde_json::from_str(step_zero_eta_json).unwrap();
+    assert_eq!(
+        step_zero_eta_event,
+        TrainEvent::Step {
+            step: 100,
+            loss: 1.50,
+            lr: 0.0001,
+            tokens: 100_000,
+            tok_per_sec: 5000.0,
+            memory_gb: 10.2,
+            eta_seconds: 0,
+        }
+    );
+
     let sample_json = r#"{"type":"sample","step":100,"prompt":"Hello","output":" world"}"#;
     let sample_event: TrainEvent = serde_json::from_str(sample_json).unwrap();
     assert_eq!(
@@ -183,3 +198,140 @@ for _ in range(50):
     assert!(sup.stop().is_ok());
     assert!(!sup.is_running());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_supervisor_child_abnormal_termination_emits_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempdir().unwrap();
+    let env_dir = tmp.path().join("mock-env");
+    let bin_dir = env_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let py_path = bin_dir.join("python3");
+    let mock_py = r#"#!/usr/bin/env python3
+import sys
+sys.stderr.write("Fatal crash in MLX: out of memory on Metal device\n")
+sys.exit(1)
+"#;
+    fs::write(&py_path, mock_py).unwrap();
+    let mut perms = fs::metadata(&py_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&py_path, perms).unwrap();
+
+    let env = TrainingEnvironment::new(env_dir);
+    let sup = TrainingSupervisor::new();
+    let mut rx = sup.subscribe();
+
+    let config = TrainingJobConfig {
+        run_id: "test-crash-run".to_string(),
+        dataset_id: "ds1".to_string(),
+        tokenizer_name: "tok1".to_string(),
+        recipe_name: "rec1".to_string(),
+        batch_size: 4,
+        gradient_accumulation_steps: 1,
+        learning_rate: 0.001,
+        warmup_steps: 10,
+        max_tokens: 10000,
+        checkpoint_every_steps: 100,
+        sample_every_steps: 50,
+    };
+
+    let run_dir = tmp.path().join("run");
+    let recipe = serde_json::json!({
+        "hidden_size": 64,
+        "vocab_size": 100,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "intermediate_size": 128,
+        "num_hidden_layers": 2,
+        "max_position_embeddings": 128
+    });
+
+    let handle = sup.start_job(&env, &config, &run_dir, recipe).await.unwrap();
+
+    // Verify error event is broadcast with exit code and stderr details
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for error event")
+        .expect("channel receive failed");
+
+    if let TrainEvent::Error { message } = ev {
+        assert!(
+            message.contains("code 1"),
+            "expected exit code in error message: {message}"
+        );
+        assert!(
+            message.contains("Fatal crash in MLX: out of memory on Metal device"),
+            "expected stderr in error message: {message}"
+        );
+    } else {
+        panic!("expected TrainEvent::Error, got: {ev:?}");
+    }
+
+    let _ = handle.await;
+    assert!(!sup.is_running());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_supervisor_stop_while_paused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempdir().unwrap();
+    let env_dir = tmp.path().join("mock-env");
+    let bin_dir = env_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let py_path = bin_dir.join("python3");
+    let mock_py = r#"#!/usr/bin/env python3
+import time
+while True:
+    time.sleep(0.1)
+"#;
+    fs::write(&py_path, mock_py).unwrap();
+    let mut perms = fs::metadata(&py_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&py_path, perms).unwrap();
+
+    let env = TrainingEnvironment::new(env_dir);
+    let sup = TrainingSupervisor::new();
+
+    let config = TrainingJobConfig {
+        run_id: "test-pause-stop-run".to_string(),
+        dataset_id: "ds1".to_string(),
+        tokenizer_name: "tok1".to_string(),
+        recipe_name: "rec1".to_string(),
+        batch_size: 4,
+        gradient_accumulation_steps: 1,
+        learning_rate: 0.001,
+        warmup_steps: 10,
+        max_tokens: 10000,
+        checkpoint_every_steps: 100,
+        sample_every_steps: 50,
+    };
+
+    let run_dir = tmp.path().join("run");
+    let recipe = serde_json::json!({
+        "hidden_size": 64,
+        "vocab_size": 100,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "intermediate_size": 128,
+        "num_hidden_layers": 2,
+        "max_position_embeddings": 128
+    });
+
+    let handle = sup.start_job(&env, &config, &run_dir, recipe).await.unwrap();
+    assert!(sup.is_running());
+
+    assert!(sup.pause().is_ok());
+    assert!(sup.stop().is_ok());
+    assert!(!sup.is_running());
+
+    // Joining handle must not deadlock or hang because SIGCONT resumes child to handle SIGTERM
+    let join_res = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+    assert!(join_res.is_ok(), "handle hung after stop while paused");
+}
+

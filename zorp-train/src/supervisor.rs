@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -111,6 +112,9 @@ impl TrainingSupervisor {
             let raw_pid = job.pid as i32;
             if let Some(pid) = rustix::process::Pid::from_raw(raw_pid) {
                 let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+                if job.is_paused {
+                    let _ = rustix::process::kill_process(pid, rustix::process::Signal::CONT);
+                }
             }
             Ok(())
         }
@@ -152,6 +156,8 @@ impl TrainingSupervisor {
             .arg(&script_path)
             .arg("--config")
             .arg(&config_path)
+            .env("PYTHONUNBUFFERED", "1")
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -167,17 +173,88 @@ impl TrainingSupervisor {
         }
 
         let stdout = child.stdout.take().ok_or("missing stdout")?;
+        let stderr = child.stderr.take().ok_or("missing stderr")?;
         let tx = self.tx.clone();
         let active_job = Arc::clone(&self.active_job);
 
         let handle = tokio::spawn(async move {
+            let stderr_lines = Arc::new(Mutex::new(VecDeque::with_capacity(30)));
+            let stderr_buf_clone = Arc::clone(&stderr_lines);
+
+            let stderr_task = tokio::spawn(async move {
+                let mut err_reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = err_reader.next_line().await {
+                    tracing::warn!(target: "zorp_train::supervisor", "{line}");
+                    if let Ok(mut buf) = stderr_buf_clone.lock() {
+                        if buf.len() >= 30 {
+                            buf.pop_front();
+                        }
+                        buf.push_back(line);
+                    }
+                }
+            });
+
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 if let Ok(event) = serde_json::from_str::<TrainEvent>(&line) {
                     let _ = tx.send(event);
                 }
             }
-            let _ = child.wait().await;
+
+            let wait_res = child.wait().await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stderr_task,
+            )
+            .await;
+
+            let collected_stderr: Vec<String> = stderr_lines
+                .lock()
+                .map(|b| b.iter().cloned().collect())
+                .unwrap_or_default();
+
+            match wait_res {
+                Ok(status) => {
+                    if !status.success() {
+                        let status_msg = match status.code() {
+                            Some(code) => format!("process exited with code {code}"),
+                            None => {
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::ExitStatusExt;
+                                    if let Some(sig) = status.signal() {
+                                        format!("process terminated by signal {sig}")
+                                    } else {
+                                        "process terminated abnormally".to_string()
+                                    }
+                                }
+                                #[cfg(not(unix))]
+                                {
+                                    "process terminated abnormally".to_string()
+                                }
+                            }
+                        };
+                        let message = if collected_stderr.is_empty() {
+                            status_msg
+                        } else {
+                            format!("{status_msg}: {}", collected_stderr.join("\n"))
+                        };
+                        let _ = tx.send(TrainEvent::Error { message });
+                    }
+                }
+                Err(e) => {
+                    let message = if collected_stderr.is_empty() {
+                        format!("failed to wait on child process: {e}")
+                    } else {
+                        format!(
+                            "failed to wait on child process: {e}: {}",
+                            collected_stderr.join("\n")
+                        )
+                    };
+                    let _ = tx.send(TrainEvent::Error { message });
+                }
+            }
+
             if let Ok(mut guard) = active_job.lock() {
                 if let Some(ref j) = *guard {
                     if j.pid == pid {

@@ -207,7 +207,7 @@ def train():
                     "tokens": total_tokens,
                     "tok_per_sec": tok_per_sec,
                     "memory_gb": get_metal_mem_gb(),
-                    "eta_seconds": int((target_tokens - total_tokens) / max(tok_per_sec, 1))
+                    "eta_seconds": max(0, int((target_tokens - total_tokens) / max(tok_per_sec, 1)))
                 })
 
             if step % sample_every == 0:
