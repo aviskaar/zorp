@@ -27,6 +27,7 @@ pub mod settings;
 pub mod state;
 pub mod title;
 pub mod tool_safety;
+pub mod train;
 pub mod turn;
 pub mod voice;
 pub mod workspace;
