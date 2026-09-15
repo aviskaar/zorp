@@ -1,28 +1,42 @@
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::sync_channel;
 use std::thread;
+use tokio::sync::oneshot;
 use zorp_web::{serve, ServeOptions};
 
-/// Chooses the port to listen on: port 7777 if available, otherwise falls back
-/// to port 0 (ephemeral port chosen by the OS).
-pub fn choose_port() -> u16 {
-    if TcpListener::bind("127.0.0.1:7777").is_ok() {
-        7777
+use std::sync::Mutex;
+
+static RUNNING: AtomicBool = AtomicBool::new(false);
+static STOP_TX: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
+
+
+pub fn choose_port(preferred: u16) -> u16 {
+    let bind_addr = format!("127.0.0.1:{preferred}");
+    if TcpListener::bind(&bind_addr).is_ok() {
+        preferred
     } else {
-        eprintln!("zorp-desktop: port 7777 is occupied; falling back to ephemeral port 0");
         0
     }
 }
 
-/// Spawns the `zorp-web` server on a background thread with its own Tokio runtime.
-/// Delivers the resolved bound `SocketAddr` synchronously before returning.
 pub fn start_background_server(
-    port: u16,
+    preferred_port: u16,
     bundle_resource_dir: Option<PathBuf>,
-) -> Result<(SocketAddr, Receiver<Result<(), String>>), String> {
-    let (addr_tx, addr_rx) = std::sync::mpsc::sync_channel::<Result<SocketAddr, String>>(1);
-    let (err_tx, err_rx) = channel::<Result<(), String>>();
+) -> Result<SocketAddr, String> {
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("server is already running".to_string());
+    }
+
+    let port = choose_port(preferred_port);
+    let (addr_tx, addr_rx) = sync_channel::<Result<SocketAddr, String>>(1);
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+
+    if let Ok(mut guard) = STOP_TX.lock() {
+        *guard = Some(stop_tx);
+    }
+
 
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -32,6 +46,7 @@ pub fn start_background_server(
             Ok(r) => r,
             Err(e) => {
                 let _ = addr_tx.send(Err(format!("failed to initialize tokio runtime: {e}")));
+                RUNNING.store(false, Ordering::SeqCst);
                 return;
             }
         };
@@ -59,10 +74,15 @@ pub fn start_background_server(
             match serve(options).await {
                 Ok(running) => {
                     let _ = addr_tx.send(Ok(running.addr));
-                    if let Err(e) = running.handle.await {
-                        let _ = err_tx.send(Err(format!("server task failed: {e}")));
-                    } else {
-                        let _ = err_tx.send(Ok(()));
+                    tokio::select! {
+                        _ = stop_rx => {
+                            // Stop requested
+                        }
+                        res = running.handle => {
+                            if let Err(e) = res {
+                                eprintln!("zorp server exited with error: {e}");
+                            }
+                        }
                     }
                 }
                 Err(e) => {
@@ -70,22 +90,33 @@ pub fn start_background_server(
                 }
             }
         });
+
+        RUNNING.store(false, Ordering::SeqCst);
     });
 
     match addr_rx.recv() {
-        Ok(Ok(addr)) => Ok((addr, err_rx)),
+        Ok(Ok(addr)) => Ok(addr),
         Ok(Err(e)) => Err(e),
-        Err(_) => Err("background server thread hung during startup".to_string()),
+        Err(_) => Err("background server startup hung".to_string()),
     }
 }
+
+pub fn stop_server() {
+    if let Ok(mut guard) = STOP_TX.lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn choose_port_falls_back_when_7777_is_held() {
-        let _guard = TcpListener::bind("127.0.0.1:7777").expect("should bind 7777 for test");
-        assert_eq!(choose_port(), 0);
+    fn choose_port_falls_back_when_preferred_is_held() {
+        let _guard = TcpListener::bind("127.0.0.1:17777").expect("should bind test port");
+        assert_eq!(choose_port(17777), 0);
     }
 }
