@@ -72,17 +72,17 @@ public struct MainWindowView: View {
             }
         }
         .inspector(isPresented: $inspectorPresented) {
-            VStack(spacing: 16) {
-                Text("Inspector")
-                    .font(.headline)
-                Spacer()
-                Text("Artifacts and ledger will appear here.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
+            if let vm = appState.activeSessionVM {
+                InspectorView(viewModel: vm)
+            } else {
+                ContentUnavailableView(
+                    "No Active Session",
+                    systemImage: "sidebar.trailing",
+                    description: Text("Select a session to view its artifacts and ledger.")
+                )
             }
-            .frame(minWidth: 260)
         }
+
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(action: { inspectorPresented.toggle() }) {
