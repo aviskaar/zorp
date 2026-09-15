@@ -8493,6 +8493,7 @@ dependencies = [
 name = "zorp-train"
 version = "0.5.0"
 dependencies = [
+ "rustix",
  "serde",
  "serde_json",
  "serde_yaml",

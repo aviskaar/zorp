@@ -17,3 +17,4 @@ tempfile = { workspace = true }
 tokio = { version = "1.37", features = ["full"] }
 tokio-stream = "0.1"
 tracing = "0.1"
+rustix = { workspace = true }
