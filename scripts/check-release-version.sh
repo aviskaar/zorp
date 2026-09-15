@@ -127,15 +127,38 @@ fi
 
 # Check excluded product packages that manage their own manifests: zorp-desktop
 desktop_cargo="$dir/zorp-desktop/Cargo.toml"
+desktop_bridge_cargo="$dir/zorp-desktop/bridge/Cargo.toml"
+desktop_plist="$dir/zorp-desktop/Zorp/Info.plist"
 desktop_tauri="$dir/zorp-desktop/tauri.conf.json"
 
-if [ -f "$desktop_cargo" ]; then
-    desktop_cargo_version="v$(sed -n 's/^version = "\(.*\)"$/\1/p' "$desktop_cargo" | head -n 1)"
+if [ -f "$desktop_bridge_cargo" ]; then
+    desktop_cargo_version="v$(sed -n 's/^version = "\(.*\)"$/\1/p' "$desktop_bridge_cargo" | head -n 1)"
     if [ "$tag" != "$desktop_cargo_version" ]; then
-        echo "zorp-desktop/Cargo.toml: version is '${desktop_cargo_version#v}' but this release is '$tag'" >&2
+        echo "zorp-desktop/bridge/Cargo.toml: version is '${desktop_cargo_version#v}' but this release is '$tag'" >&2
         fail=1
     else
-        echo "zorp-desktop/Cargo.toml: version matches $tag"
+        echo "zorp-desktop/bridge/Cargo.toml: version matches $tag"
+    fi
+elif [ -f "$desktop_cargo" ]; then
+    raw_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$desktop_cargo" | head -n 1)"
+    if [ -n "$raw_version" ]; then
+        desktop_cargo_version="v$raw_version"
+        if [ "$tag" != "$desktop_cargo_version" ]; then
+            echo "zorp-desktop/Cargo.toml: version is '${desktop_cargo_version#v}' but this release is '$tag'" >&2
+            fail=1
+        else
+            echo "zorp-desktop/Cargo.toml: version matches $tag"
+        fi
+    fi
+fi
+
+if [ -f "$desktop_plist" ]; then
+    desktop_plist_version="v$(sed -n '/<key>CFBundleShortVersionString<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' "$desktop_plist" | head -n 1)"
+    if [ "$tag" != "$desktop_plist_version" ]; then
+        echo "zorp-desktop/Zorp/Info.plist: version is '${desktop_plist_version#v}' but this release is '$tag'" >&2
+        fail=1
+    else
+        echo "zorp-desktop/Zorp/Info.plist: version matches $tag"
     fi
 fi
 
