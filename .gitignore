@@ -45,8 +45,11 @@ docs/paper/zorp-paper.tex
 zorp-desktop/target
 zorp-desktop/gen
 zorp-desktop/Zorp/Frameworks/
+zorp-desktop/Zorp/.build/
 zorp-desktop/build/
+.build/
 *.a
+
 
 
 # Worktrees
