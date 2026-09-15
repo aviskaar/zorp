@@ -103,7 +103,12 @@ fn api_router(state: AppState) -> Router {
         .allow_headers(Any)
         .allow_origin(allowed);
 
-    let app = Router::new()
+    let dev_state = state
+        .dev_state
+        .clone()
+        .unwrap_or_else(|| std::sync::Arc::new(crate::train::DevState::default()));
+
+    Router::new()
         .route("/api/health", get(health))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/branch", post(branch_session))
@@ -200,27 +205,13 @@ fn api_router(state: AppState) -> Router {
             post(recall_index).delete(delete_recall_index),
         )
         .route("/api/recall/search", get(recall_search))
+        .nest("/api/dev", crate::train::router(dev_state))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_token,
         ))
         .layer(cors)
-        .with_state(state.clone());
-
-    let dev_state = state.dev_state.clone().unwrap_or_else(|| {
-        let env_dir = zorp_train::environment::TrainingEnvironment::default_dir();
-        let models_dir = env_dir
-            .parent()
-            .unwrap_or(&env_dir)
-            .join("training")
-            .join("models");
-        std::sync::Arc::new(crate::train::DevState {
-            env: zorp_train::environment::TrainingEnvironment::new(env_dir),
-            supervisor: zorp_train::supervisor::TrainingSupervisor::new(),
-            registry: zorp_train::registry::ModelRegistry::new(models_dir),
-        })
-    });
-    app.nest("/api/dev", crate::train::router(dev_state))
+        .with_state(state)
 }
 
 async fn health() -> Json<serde_json::Value> {

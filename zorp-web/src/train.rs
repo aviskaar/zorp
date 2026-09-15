@@ -37,7 +37,10 @@ impl Default for DevState {
     }
 }
 
-pub fn router(state: Arc<DevState>) -> Router {
+pub fn router<S>(state: Arc<DevState>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new()
         .route("/status", get(get_status))
         .route("/environment/setup", post(setup_environment))
@@ -63,7 +66,10 @@ async fn get_status(State(state): State<Arc<DevState>>) -> Json<serde_json::Valu
 }
 
 async fn setup_environment(State(state): State<Arc<DevState>>) -> Json<serde_json::Value> {
-    match state.env.bootstrap() {
+    let res = tokio::task::spawn_blocking(move || state.env.bootstrap())
+        .await
+        .unwrap_or_else(|e| Err(format!("task join error: {e}")));
+    match res {
         Ok(()) => Json(serde_json::json!({ "status": "ok" })),
         Err(e) => Json(serde_json::json!({ "status": "error", "error": e })),
     }
@@ -128,7 +134,12 @@ async fn train_tokenizer(
             ],
         },
     };
-    match zorp_train::tokenizer::train_tokenizer(&state.env, &config, &dataset, &output) {
+    let res = tokio::task::spawn_blocking(move || {
+        zorp_train::tokenizer::train_tokenizer(&state.env, &config, &dataset, &output)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("task join error: {e}")));
+    match res {
         Ok(()) => Json(serde_json::json!({ "status": "ok" })),
         Err(e) => Json(serde_json::json!({ "status": "error", "error": e })),
     }
@@ -203,6 +214,11 @@ async fn serve_model(
     AxumPath(id): AxumPath<String>,
 ) -> Json<serde_json::Value> {
     let p = PathBuf::from(&id);
+    let p = if p.is_absolute() {
+        p
+    } else {
+        state.registry.models_dir().join(&id)
+    };
     match state.registry.serve_checkpoint(&state.env, &p).await {
         Ok(port) => Json(serde_json::json!({
             "status": "ok",

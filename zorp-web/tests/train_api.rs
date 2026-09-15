@@ -163,3 +163,45 @@ async fn test_dev_train_stream_endpoint() {
     let content_type = resp.header("content-type").unwrap_or_default().to_string();
     assert!(content_type.starts_with("text/event-stream"), "expected SSE, got {content_type}");
 }
+
+#[tokio::test]
+async fn test_dev_status_unauthorized_when_token_configured() {
+    let tmp = TempDir::new().unwrap();
+    let dev_state = Arc::new(DevState {
+        env: TrainingEnvironment::new(tmp.path().join("env")),
+        supervisor: TrainingSupervisor::new(),
+        registry: ModelRegistry::new(tmp.path().join("models")),
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app_state = AppState::with_token(Some("dev-secret".to_string())).with_dev_state(dev_state);
+    tokio::spawn(async move {
+        axum::serve(listener, zorp_web::api::router_with_state(app_state))
+            .await
+            .unwrap();
+    });
+
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        get(&format!("http://{addr}/api/dev/status"))
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(status, 401, "expected 401 unauthorized, got {status}: {body}");
+    assert_eq!(body, "missing or wrong token");
+
+    let (auth_status, _) = tokio::task::spawn_blocking(move || {
+        match ureq::get(&format!("http://{addr}/api/dev/status"))
+            .set("authorization", "Bearer dev-secret")
+            .call()
+        {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("request failed: {e}"),
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(auth_status, 200, "expected 200 with valid token");
+}
