@@ -8490,6 +8490,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zorp-train"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "zorp-voice"
 version = "0.5.0"
 dependencies = [
