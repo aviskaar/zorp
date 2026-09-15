@@ -56,9 +56,12 @@ public struct MainWindowView: View {
                     .padding(.vertical, 8)
                     .background(Color(.windowBackgroundColor).opacity(0.6))
 
+                    ConversationView(viewModel: vm)
+
                     Divider()
 
-                    ConversationView(viewModel: vm)
+                    ComposerView(viewModel: vm)
+
                 }
             } else {
                 ContentUnavailableView(

@@ -172,4 +172,26 @@ public actor ZorpClient {
         }
         return text
     }
+
+    public func setAutoApprove(sessionId: String, autoApprove: Bool) async throws {
+        let url = baseURL.appendingPathComponent("api/sessions/\(sessionId)/auto-approve")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["enabled": autoApprove]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        _ = try await session.data(for: request)
+    }
+
+    public func getAutoApprove(sessionId: String) async throws -> Bool {
+        let url = baseURL.appendingPathComponent("api/sessions/\(sessionId)/auto-approve")
+        let (data, response) = try await session.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let enabled = json["enabled"] as? Bool else {
+            return false
+        }
+        return enabled
+    }
 }
+
