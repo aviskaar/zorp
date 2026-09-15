@@ -1,0 +1,4 @@
+module CZorpBridge {
+    umbrella "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/CZorpBridge/include"
+    export *
+}

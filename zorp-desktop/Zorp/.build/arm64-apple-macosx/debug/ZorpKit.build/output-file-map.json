@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/.build/arm64-apple-macosx/debug/ZorpKit.build/primary.swiftdeps"
+  },
+  "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/Sources/ZorpKit/Bridge/BridgeService.swift": {
+    "dependencies": "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/.build/arm64-apple-macosx/debug/ZorpKit.build/BridgeService.d",
+    "object": "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/.build/arm64-apple-macosx/debug/ZorpKit.build/BridgeService.swift.o",
+    "swiftmodule": "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/.build/arm64-apple-macosx/debug/ZorpKit.build/BridgeService~partial.swiftmodule",
+    "swift-dependencies": "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/.build/arm64-apple-macosx/debug/ZorpKit.build/BridgeService.swiftdeps",
+    "diagnostics": "/Users/adityakarnam/Projects/aviskaar/zorp/.worktrees/feat-native-mac-swift-app/zorp-desktop/Zorp/.build/arm64-apple-macosx/debug/ZorpKit.build/BridgeService.dia"
+  }
+}
