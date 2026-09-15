@@ -8501,6 +8501,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "ureq",
 ]
 
 [[package]]
