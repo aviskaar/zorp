@@ -123,4 +123,76 @@ fn test_train_and_inspect_tokens_e2e() {
     assert_eq!(inspection.char_count, "machine learning tokenization".len());
     assert!(inspection.compression_chars_per_token > 0.0);
     assert!(!output_dir.join("_inspect_tmp.py").exists());
+
+    for hyphen_text in ["--help", "-123", "--model=qwen"] {
+        let inspect_res = inspect_tokens(&env, &output_dir, hyphen_text);
+        assert!(
+            inspect_res.is_ok(),
+            "inspect_tokens failed on hyphen-prefixed text {:?}: {:?}",
+            hyphen_text,
+            inspect_res
+        );
+        let insp = inspect_res.unwrap();
+        assert!(!insp.tokens.is_empty());
+        assert_eq!(insp.char_count, hyphen_text.len());
+        assert_eq!(insp.tokens.len(), insp.ids.len());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_train_tokenizer_empty_special_tokens() {
+    let status = std::process::Command::new("python3")
+        .args(["-c", "import tokenizers"])
+        .status();
+    let tokenizers_available = matches!(status, Ok(s) if s.success());
+    if !tokenizers_available {
+        eprintln!("Skipping test_train_tokenizer_empty_special_tokens: python3 with tokenizers not found");
+        return;
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempdir().unwrap();
+    let env_dir = tmp.path().join("test-env");
+    let bin_dir = env_dir.join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let py_wrapper = bin_dir.join("python3");
+    let script = "#!/bin/sh\nexec python3 \"$@\"\n";
+    fs::write(&py_wrapper, script).unwrap();
+    let mut perms = fs::metadata(&py_wrapper).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&py_wrapper, perms).unwrap();
+
+    let env = TrainingEnvironment::new(env_dir);
+
+    let dataset_path = tmp.path().join("dataset.jsonl");
+    let mut data = String::new();
+    for i in 0..50 {
+        data.push_str(&format!(
+            "{{\"text\": \"Sample line {} for training tokenizer with no special tokens.\"}}\n",
+            i
+        ));
+    }
+    fs::write(&dataset_path, data).unwrap();
+
+    let output_dir = tmp.path().join("bpe_no_special");
+    let cfg = TokenizerConfig {
+        name: "test-no-special".to_string(),
+        vocab_size: 300,
+        special_tokens: vec![],
+    };
+
+    let train_res = train_tokenizer(&env, &cfg, &dataset_path, &output_dir);
+    assert!(train_res.is_ok(), "train_tokenizer failed: {:?}", train_res);
+
+    let config_content = fs::read_to_string(output_dir.join("tokenizer_config.json")).unwrap();
+    let config_val: serde_json::Value = serde_json::from_str(&config_content).unwrap();
+    let special = config_val["special_tokens"].as_array().expect("special_tokens array");
+    assert!(
+        special.is_empty(),
+        "expected empty special_tokens array, got {:?}",
+        special
+    );
 }

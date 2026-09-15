@@ -1,6 +1,8 @@
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
+use tempfile::Builder;
 use crate::environment::TrainingEnvironment;
 use crate::manifest::TokenizerConfig;
 
@@ -22,11 +24,17 @@ pub fn train_tokenizer(
     dataset_path: &Path,
     output_dir: &Path,
 ) -> Result<(), String> {
-    let script_path = output_dir.join("_train_bpe_tmp.py");
-    if let Some(parent) = script_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&script_path, TRAIN_BPE_PY).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+
+    let mut script_file = Builder::new()
+        .prefix("train_bpe_")
+        .suffix(".py")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    script_file
+        .write_all(TRAIN_BPE_PY.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let script_path = script_file.into_temp_path();
 
     let py = env.python_path();
     let mut cmd = Command::new(py);
@@ -36,18 +44,14 @@ pub fn train_tokenizer(
         .arg("--output")
         .arg(output_dir)
         .arg("--vocab-size")
-        .arg(config.vocab_size.to_string());
+        .arg(config.vocab_size.to_string())
+        .arg("--special-tokens");
 
-    if !config.special_tokens.is_empty() {
-        cmd.arg("--special-tokens");
-        for token in &config.special_tokens {
-            cmd.arg(token);
-        }
+    for token in &config.special_tokens {
+        cmd.arg(token);
     }
 
-    let output = cmd.output();
-    let _ = std::fs::remove_file(&script_path);
-    let output = output.map_err(|e| e.to_string())?;
+    let output = cmd.output().map_err(|e| e.to_string())?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
@@ -61,20 +65,32 @@ pub fn inspect_tokens(
     tokenizer_dir: &Path,
     text: &str,
 ) -> Result<TokenInspection, String> {
-    let script_path = tokenizer_dir.join("_inspect_tmp.py");
-    std::fs::write(&script_path, INSPECT_TOKENS_PY).map_err(|e| e.to_string())?;
+    let mut script_file = Builder::new()
+        .prefix("inspect_tokens_")
+        .suffix(".py")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    script_file
+        .write_all(INSPECT_TOKENS_PY.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let script_path = script_file.into_temp_path();
 
     let py = env.python_path();
-    let output = Command::new(py)
+    let mut child = Command::new(py)
         .arg(&script_path)
         .arg("--tokenizer-dir")
         .arg(tokenizer_dir)
-        .arg("--text")
-        .arg(text)
-        .output();
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
 
-    let _ = std::fs::remove_file(&script_path);
-    let output = output.map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
+
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);

@@ -26,6 +26,10 @@ def inspect(tokenizer_dir: str, text: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--tokenizer-dir", required=True)
-    parser.add_argument("--text", required=True)
+    parser.add_argument("--text", required=False, default=None)
     args = parser.parse_args()
-    inspect(args.tokenizer_dir, args.text)
+    if args.text is not None:
+        text = args.text
+    else:
+        text = sys.stdin.buffer.read().decode("utf-8")
+    inspect(args.tokenizer_dir, text)
