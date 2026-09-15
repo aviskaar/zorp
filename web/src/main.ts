@@ -33,6 +33,7 @@ import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
 import { SettingsPaneView } from "./settings-pane";
 import { AgentsPaneView } from "./agents-pane";
+import { DeveloperModeView } from "./developer-mode";
 import { sessionFromSearch, searchForSession } from "./session-url";
 import { emptySessionRow, sessionRow, UNTITLED } from "./session-row";
 import { compactionMarker } from "./compaction-marker";
@@ -199,6 +200,10 @@ interface Elements {
   workspaceBtnLabel: HTMLElement;
   workspacePicker: HTMLElement;
   settingsBtn: HTMLButtonElement;
+  devToggleBtn: HTMLButtonElement;
+  devToggleLabel: HTMLElement;
+  chatShell: HTMLElement;
+  devShell: HTMLElement;
   status: HTMLElement;
   statusText: HTMLElement;
   contextMeter: HTMLElement;
@@ -495,6 +500,7 @@ function start(): void {
   wireSettings();
   wireWorkspace();
   wireAgents();
+  wireDeveloperMode();
   wireOnboarding();
   wireArtifacts();
   wireApprovalMode();
@@ -639,6 +645,10 @@ function collectElements(): Elements {
     workspaceBtnLabel: byId("workspace-btn-label"),
     workspacePicker: byId("workspace-picker"),
     settingsBtn: byId<HTMLButtonElement>("settings-btn"),
+    devToggleBtn: byId<HTMLButtonElement>("dev-toggle-btn"),
+    devToggleLabel: byId("dev-toggle-label"),
+    chatShell: byId("chat-shell"),
+    devShell: byId("dev-shell"),
     status: byId("status"),
     statusText: byId("status-text"),
     contextMeter: byId("context-meter"),
@@ -922,6 +932,85 @@ function wireWorkspace(): void {
     } else {
       closeSettings();
     }
+  });
+}
+
+let devModeView: DeveloperModeView | null = null;
+let currentMode: "agent" | "dev" = "agent";
+
+function showDeveloperMode(): void {
+  currentMode = "dev";
+  dom.chatShell.hidden = true;
+  dom.devShell.hidden = false;
+  dom.devToggleBtn.classList.add("active");
+  dom.devToggleLabel.textContent = "Agent Mode";
+
+  if (!devModeView) {
+    devModeView = new DeveloperModeView(
+      dom.devShell,
+      (modelName: string, baseUrl: string) => {
+        void handleOpenInZorp(modelName, baseUrl);
+      },
+      () => {
+        showAgentMode();
+      },
+    );
+  }
+  devModeView.render();
+}
+
+function showAgentMode(): void {
+  currentMode = "agent";
+  dom.devShell.hidden = true;
+  dom.chatShell.hidden = false;
+  dom.devToggleBtn.classList.remove("active");
+  dom.devToggleLabel.textContent = "Dev Mode";
+}
+
+function toggleDeveloperMode(): void {
+  if (currentMode === "agent") {
+    showDeveloperMode();
+  } else {
+    showAgentMode();
+  }
+}
+
+async function handleOpenInZorp(modelName: string, baseUrl: string): Promise<void> {
+  dom.settingsBaseUrl.value = baseUrl;
+
+  let hasOption = Array.from(dom.settingsModelSelect.options).some(
+    (opt) => opt.value === modelName,
+  );
+  if (!hasOption) {
+    dom.settingsModelSelect.append(modelOption(modelName));
+  }
+  dom.settingsModelSelect.value = modelName;
+  dom.settingsModelText.value = modelName;
+
+  try {
+    const update: SettingsUpdate = {
+      provider: "custom",
+      base_url: baseUrl,
+      model: modelName,
+    };
+    const saved = await putSettings(update);
+    currentSettings = saved;
+    applySettingsToForm(saved);
+    updateModelBadge(saved);
+    updateComposerWarning(saved);
+  } catch (e) {
+    console.error("Failed to update settings for Open in Zorp:", e);
+  }
+
+  showAgentMode();
+  startNewChat();
+  dom.input.value = "";
+  dom.input.focus();
+}
+
+function wireDeveloperMode(): void {
+  dom.devToggleBtn.addEventListener("click", () => {
+    toggleDeveloperMode();
   });
 }
 
