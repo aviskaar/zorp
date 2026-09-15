@@ -45,4 +45,10 @@ docs/paper/zorp-paper.tex
 zorp-desktop/target
 zorp-desktop/gen
 
+# Worktrees
+.worktrees
+.worktrees/
+
+
+
 

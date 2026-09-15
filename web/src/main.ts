@@ -31,6 +31,8 @@ import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
 import { PanelView } from "./panel-view";
 import { ZorpModeView } from "./zorp-mode";
+import { SettingsPaneView } from "./settings-pane";
+import { AgentsPaneView } from "./agents-pane";
 import { sessionFromSearch, searchForSession } from "./session-url";
 import { emptySessionRow, sessionRow, UNTITLED } from "./session-row";
 import { compactionMarker } from "./compaction-marker";
@@ -86,9 +88,11 @@ import {
   fetchSkills,
   getCapabilities,
   branchSession,
+  clearAllSessions,
   compactSession,
   createProject,
   deleteProject,
+  deleteRecallIndex,
   deleteSession,
   getSession,
   getSettings,
@@ -99,6 +103,8 @@ import {
   newSession,
   putSettings,
   recallSearch,
+  resetSettings,
+  setSessionAgent,
   setSessionProject,
   recallStatus,
   sendTurn,
@@ -184,14 +190,15 @@ interface Elements {
   projectError: HTMLElement;
   menu: HTMLButtonElement;
   sidebarClose: HTMLButtonElement;
+  agentBtn: HTMLButtonElement;
+  agentBtnLabel: HTMLElement;
   title: HTMLElement;
   modelBtn: HTMLButtonElement;
   modelBtnLabel: HTMLElement;
   workspaceBtn: HTMLButtonElement;
   workspaceBtnLabel: HTMLElement;
-  workspaceOverlay: HTMLElement;
-  workspaceClose: HTMLButtonElement;
   workspacePicker: HTMLElement;
+  settingsBtn: HTMLButtonElement;
   status: HTMLElement;
   statusText: HTMLElement;
   contextMeter: HTMLElement;
@@ -225,8 +232,13 @@ interface Elements {
   zorpThreshold: HTMLInputElement;
   zorpDirection: HTMLSelectElement;
   zorpRun: HTMLButtonElement;
-  settingsOverlay: HTMLElement;
+  settingsPane: HTMLElement;
+  settingsResizer: HTMLElement;
   settingsClose: HTMLButtonElement;
+  agentsPane: HTMLElement;
+  agentsResizer: HTMLElement;
+  agentsClose: HTMLButtonElement;
+  agentsHost: HTMLElement;
   settingsForm: HTMLFormElement;
   settingsPreset: HTMLSelectElement;
   settingsBaseUrl: HTMLInputElement;
@@ -331,6 +343,37 @@ const workspacePicker = new WorkspacePicker(document, dom.workspacePicker, (save
   applyWorkspace(saved);
   closeWorkspacePicker();
 });
+
+const settingsPaneView = new SettingsPaneView(document, dom.settingsPane, {
+  onClose: () => closeSettings(),
+  onResetAll: async () => {
+    await clearAllSessions();
+    await deleteRecallIndex();
+    await resetSettings();
+    startNewChat();
+    await refreshSessions();
+    await refreshSettingsBadge();
+    await loadSettingsIntoForm();
+  },
+  onClearSessions: async () => {
+    await clearAllSessions();
+    startNewChat();
+    await refreshSessions();
+  },
+});
+
+const agentsPaneView = new AgentsPaneView(document, dom.agentsHost, {
+  onClose: () => closeAgentsPane(),
+  onSelectAgent: async (name: string | null) => {
+    if (sessionId) {
+      await setSessionAgent(sessionId, name);
+    }
+    currentSessionAgent = name;
+    updateAgentBadge(name);
+  },
+  getCurrentAgent: () => currentSessionAgent,
+});
+
 const voiceInput = createVoiceInput(
   {
     input: dom.input,
@@ -350,6 +393,7 @@ const voiceInput = createVoiceInput(
 );
 
 let sessionId: string | null = null;
+let currentSessionAgent: string | null = null;
 let stream: EventStream | null = null;
 let streamSessionId: string | null = null;
 let catchUp: ZorpEvent[] | null = null;
@@ -436,6 +480,8 @@ let currentWorkspace: Workspace | null = null;
 const layoutStorage = layoutStore();
 let sidebarResizer: PaneResizer | null = null;
 let artifactsResizer: PaneResizer | null = null;
+let settingsResizer: PaneResizer | null = null;
+let agentsResizer: PaneResizer | null = null;
 
 start();
 
@@ -448,6 +494,7 @@ function start(): void {
   wireScroller();
   wireSettings();
   wireWorkspace();
+  wireAgents();
   wireOnboarding();
   wireArtifacts();
   wireApprovalMode();
@@ -583,14 +630,15 @@ function collectElements(): Elements {
     projectError: byId("project-error"),
     menu: byId<HTMLButtonElement>("menu"),
     sidebarClose: byId<HTMLButtonElement>("sidebar-close"),
+    agentBtn: byId<HTMLButtonElement>("agent-btn"),
+    agentBtnLabel: byId("agent-btn-label"),
     title: byId("session-title"),
     modelBtn: byId<HTMLButtonElement>("model-btn"),
     modelBtnLabel: byId("model-btn-label"),
     workspaceBtn: byId<HTMLButtonElement>("workspace-btn"),
     workspaceBtnLabel: byId("workspace-btn-label"),
-    workspaceOverlay: byId("workspace-overlay"),
-    workspaceClose: byId<HTMLButtonElement>("workspace-close"),
     workspacePicker: byId("workspace-picker"),
+    settingsBtn: byId<HTMLButtonElement>("settings-btn"),
     status: byId("status"),
     statusText: byId("status-text"),
     contextMeter: byId("context-meter"),
@@ -624,8 +672,13 @@ function collectElements(): Elements {
     voicePreview: byId("voice-preview"),
     voiceToast: byId("voice-toast"),
     voiceMeter: byId("voice-meter"),
-    settingsOverlay: byId("settings-overlay"),
+    settingsPane: byId("settings-pane"),
+    settingsResizer: byId("settings-resizer"),
     settingsClose: byId<HTMLButtonElement>("settings-close"),
+    agentsPane: byId("agents-pane"),
+    agentsResizer: byId("agents-resizer"),
+    agentsClose: byId<HTMLButtonElement>("agents-close"),
+    agentsHost: byId("agents-host"),
     settingsForm: byId<HTMLFormElement>("settings-form"),
     settingsPreset: byId<HTMLSelectElement>("settings-preset"),
     settingsBaseUrl: byId<HTMLInputElement>("settings-base-url"),
@@ -808,19 +861,26 @@ function wireScroller(): void {
 }
 
 function wireSettings(): void {
-  dom.modelBtn.addEventListener("click", () => void openSettings());
-  dom.composerWarningSettings.addEventListener("click", () => void openSettings());
-  dom.settingsClose.addEventListener("click", closeSettings);
-  dom.settingsOverlay.addEventListener("click", (event) => {
-    // Only a click on the backdrop itself closes it; clicks inside the
-    // panel bubble up from far more useful targets than "close the dialog".
-    if (event.target === dom.settingsOverlay) {
+  dom.settingsBtn.addEventListener("click", () => {
+    if (dom.settingsPane.hidden) {
+      void openSettings();
+    } else {
       closeSettings();
     }
   });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !dom.settingsOverlay.hidden) {
+  dom.modelBtn.addEventListener("click", () => {
+    if (dom.settingsPane.hidden) {
+      void openSettings("model");
+    } else {
       closeSettings();
+    }
+  });
+  dom.composerWarningSettings.addEventListener("click", () => void openSettings("model"));
+  dom.settingsClose.addEventListener("click", closeSettings);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.settingsPane.hidden) {
+      closeSettings();
+      dom.settingsBtn.focus();
     }
   });
   dom.settingsPreset.addEventListener("change", () => applyPreset(dom.settingsPreset.value));
@@ -833,22 +893,34 @@ function wireSettings(): void {
   });
 }
 
+function wireAgents(): void {
+  dom.agentBtn.addEventListener("click", () => {
+    if (dom.agentsPane.hidden) {
+      void openAgentsPane();
+    } else {
+      closeAgentsPane();
+    }
+  });
+  dom.agentsClose.addEventListener("click", closeAgentsPane);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !dom.agentsPane.hidden) {
+      closeAgentsPane();
+      dom.agentBtn.focus();
+    }
+  });
+}
+
 /**
- * The workspace pill and the overlay behind it.
+ * The workspace pill.
  *
  * Buttons only, like the settings wiring above. Nothing here starts a turn.
  */
 function wireWorkspace(): void {
-  dom.workspaceBtn.addEventListener("click", () => void openWorkspacePicker());
-  dom.workspaceClose.addEventListener("click", closeWorkspacePicker);
-  dom.workspaceOverlay.addEventListener("click", (event) => {
-    if (event.target === dom.workspaceOverlay) {
-      closeWorkspacePicker();
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !dom.workspaceOverlay.hidden) {
-      closeWorkspacePicker();
+  dom.workspaceBtn.addEventListener("click", () => {
+    if (dom.settingsPane.hidden) {
+      void openWorkspacePicker();
+    } else {
+      closeSettings();
     }
   });
 }
@@ -1042,6 +1114,9 @@ async function sendMessage(message: string): Promise<void> {
       setTitle("New chat");
       await refreshSessions();
       markActiveSession();
+      if (currentSessionAgent) {
+        await setSessionAgent(sessionId, currentSessionAgent).catch(() => {});
+      }
       if (autoApprove) {
         // The switch was thrown before there was a session to hold it. Tell
         // the server now, before the first tool runs, and if that does not
@@ -2595,6 +2670,14 @@ async function openSession(session: SessionSummary): Promise<void> {
     if (sessionId !== session.id) {
       return;
     }
+    currentSessionAgent = transcript.agent ?? null;
+    updateAgentBadge(currentSessionAgent);
+    if (!dom.agentsPane.hidden) {
+      void agentsPaneView.refresh();
+    }
+    if (!dom.settingsPane.hidden) {
+      void settingsPaneView.refreshSkills(sessionId);
+    }
     if (!transcript.messages.length) {
       showEmptyState();
     } else {
@@ -2652,6 +2735,8 @@ function startNewChat(): void {
   resetTranscript();
   rememberSessionInUrl(null);
   sessionId = null;
+  currentSessionAgent = null;
+  updateAgentBadge(null);
   setTitle("New chat");
   markActiveSession();
   // A new chat asks again. Standing approvals down is something you do to a
@@ -2660,6 +2745,9 @@ function startNewChat(): void {
   paintApprovalMode();
   showEmptyState();
   setStatus("idle", "idle");
+  if (!dom.agentsPane.hidden) {
+    void agentsPaneView.refresh();
+  }
 }
 
 function closeStream(): void {
@@ -2709,15 +2797,87 @@ const SETTINGS_ENV_VARS: Record<string, string> = {
   max_tokens: "ZORP_MAX_TOKENS",
 };
 
-async function openSettings(): Promise<void> {
-  dom.settingsOverlay.hidden = false;
+type RightPane = "artifacts" | "settings" | "agents";
+
+function openRightPane(type: RightPane): void {
+  dom.artifacts.hidden = type !== "artifacts";
+  dom.settingsPane.hidden = type !== "settings";
+  dom.agentsPane.hidden = type !== "agents";
+
+  dom.app.dataset.rightPane = type;
+  if (type === "artifacts") {
+    dom.app.dataset.artifacts = "open";
+    delete dom.app.dataset.settings;
+    delete dom.app.dataset.agents;
+  } else if (type === "settings") {
+    dom.app.dataset.settings = "open";
+    delete dom.app.dataset.artifacts;
+    delete dom.app.dataset.agents;
+  } else if (type === "agents") {
+    dom.app.dataset.agents = "open";
+    delete dom.app.dataset.artifacts;
+    delete dom.app.dataset.settings;
+  }
+
+  dom.artifactsBtn.setAttribute("aria-expanded", type === "artifacts" ? "true" : "false");
+  dom.settingsBtn.setAttribute("aria-expanded", type === "settings" ? "true" : "false");
+  dom.agentBtn.setAttribute("aria-expanded", type === "agents" ? "true" : "false");
+
+  describeHandles();
+}
+
+function closeRightPane(): void {
+  dom.artifacts.hidden = true;
+  dom.settingsPane.hidden = true;
+  dom.agentsPane.hidden = true;
+
+  delete dom.app.dataset.rightPane;
+  delete dom.app.dataset.artifacts;
+  delete dom.app.dataset.settings;
+  delete dom.app.dataset.agents;
+
+  dom.artifactsBtn.setAttribute("aria-expanded", "false");
+  dom.settingsBtn.setAttribute("aria-expanded", "false");
+  dom.agentBtn.setAttribute("aria-expanded", "false");
+
+  describeHandles();
+}
+
+function isRightPaneOpen(): boolean {
+  return !dom.artifacts.hidden || !dom.settingsPane.hidden || !dom.agentsPane.hidden;
+}
+
+async function openSettings(section?: string): Promise<void> {
+  openRightPane("settings");
   setSettingsResult("", null);
   await loadSettingsIntoForm();
   void refreshModelOptions();
+  await settingsPaneView.refresh(sessionId);
+  if (section) {
+    settingsPaneView.scrollTo(section);
+  }
 }
 
 function closeSettings(): void {
-  dom.settingsOverlay.hidden = true;
+  if (dom.app.dataset.rightPane === "settings") {
+    closeRightPane();
+  }
+}
+
+async function openAgentsPane(): Promise<void> {
+  openRightPane("agents");
+  await agentsPaneView.refresh();
+}
+
+function closeAgentsPane(): void {
+  if (dom.app.dataset.rightPane === "agents") {
+    closeRightPane();
+  }
+}
+
+function updateAgentBadge(agent: string | null): void {
+  dom.agentBtnLabel.textContent = agent ?? "zorp";
+  dom.agentBtn.title = agent ? `Agent: ${agent}` : "Agent: zorp (default)";
 }
 
 /* ------------------------------------------------------------------ */
@@ -2753,12 +2913,12 @@ function applyWorkspace(workspace: Workspace | null): void {
 }
 
 async function openWorkspacePicker(reason = ""): Promise<void> {
-  dom.workspaceOverlay.hidden = false;
+  await openSettings("workspace");
   await workspacePicker.open(reason);
 }
 
 function closeWorkspacePicker(): void {
-  dom.workspaceOverlay.hidden = true;
+  closeSettings();
   void refreshWorkspace();
 }
 
@@ -3608,7 +3768,7 @@ function wireLayout(): void {
     bounds: () =>
       sidebarBounds({
         viewport: window.innerWidth,
-        other: dom.artifacts.hidden ? 0 : (artifactsResizer?.current ?? 0),
+        other: isRightPaneOpen() ? (artifactsResizer?.current ?? 0) : 0,
       }),
     measure: () => dom.sidebar.getBoundingClientRect().width,
     onCommit: (px) => {
@@ -3617,19 +3777,53 @@ function wireLayout(): void {
     },
   });
 
+  const rightPaneBounds = () =>
+    artifactsBounds({
+      viewport: window.innerWidth,
+      other: sidebarIsCollapsed(root) ? 0 : (sidebarResizer?.current ?? 0),
+    });
+
   artifactsResizer = new PaneResizer({
     handle: dom.artifactsResizer,
     root,
     property: "--artifacts-w",
     sign: -1,
-    bounds: () =>
-      artifactsBounds({
-        viewport: window.innerWidth,
-        other: sidebarIsCollapsed(root) ? 0 : (sidebarResizer?.current ?? 0),
-      }),
+    bounds: rightPaneBounds,
     measure: () => dom.artifacts.getBoundingClientRect().width,
     onCommit: (px) => {
       saveWidth(layoutStorage, "artifacts", px);
+      settingsResizer?.set(px);
+      agentsResizer?.set(px);
+      describeHandles();
+    },
+  });
+
+  settingsResizer = new PaneResizer({
+    handle: dom.settingsResizer,
+    root,
+    property: "--artifacts-w",
+    sign: -1,
+    bounds: rightPaneBounds,
+    measure: () => dom.settingsPane.getBoundingClientRect().width,
+    onCommit: (px) => {
+      saveWidth(layoutStorage, "artifacts", px);
+      artifactsResizer?.set(px);
+      agentsResizer?.set(px);
+      describeHandles();
+    },
+  });
+
+  agentsResizer = new PaneResizer({
+    handle: dom.agentsResizer,
+    root,
+    property: "--artifacts-w",
+    sign: -1,
+    bounds: rightPaneBounds,
+    measure: () => dom.agentsPane.getBoundingClientRect().width,
+    onCommit: (px) => {
+      saveWidth(layoutStorage, "artifacts", px);
+      artifactsResizer?.set(px);
+      settingsResizer?.set(px);
       describeHandles();
     },
   });
@@ -3639,6 +3833,8 @@ function wireLayout(): void {
   }
   if (saved.artifacts !== null) {
     artifactsResizer.set(saved.artifacts);
+    settingsResizer.set(saved.artifacts);
+    agentsResizer.set(saved.artifacts);
   }
   setSidebarCollapsed(root, saved.collapsed, dom.menu);
   describeHandles();
@@ -3649,6 +3845,8 @@ function wireLayout(): void {
   window.addEventListener("resize", () => {
     sidebarResizer?.reclamp();
     artifactsResizer?.reclamp();
+    settingsResizer?.reclamp();
+    agentsResizer?.reclamp();
   });
 }
 
@@ -3664,6 +3862,8 @@ function wireLayout(): void {
 function describeHandles(): void {
   sidebarResizer?.describe();
   artifactsResizer?.describe();
+  settingsResizer?.describe();
+  agentsResizer?.describe();
 }
 
 /* ------------------------------------------------------------------ */
@@ -3784,15 +3984,13 @@ function closeFilesMenu(): void {
 
 /** Give the preview its column. Says nothing about which file is in it. */
 function showArtifactsPane(): void {
-  dom.artifacts.hidden = false;
-  dom.app.dataset.artifacts = "open";
-  describeHandles();
+  openRightPane("artifacts");
 }
 
 function closeArtifacts(): void {
-  dom.artifacts.hidden = true;
-  delete dom.app.dataset.artifacts;
-  describeHandles();
+  if (dom.app.dataset.rightPane === "artifacts") {
+    closeRightPane();
+  }
 }
 
 /** The most recently written file this turn produced, if any. */
