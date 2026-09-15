@@ -46,7 +46,9 @@ zorp-desktop/target
 zorp-desktop/gen
 
 # Worktrees
+.worktrees
 .worktrees/
+
 
 
 
