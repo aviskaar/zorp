@@ -41,34 +41,34 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0.0" --locked
-
-      - name: Build Web UI
+      - name: Check and test zorp-desktop bridge
         run: |
-          cd web
-          npm ci
-          npm run build
+          cargo check --manifest-path zorp-desktop/Cargo.toml
+          cargo test --manifest-path zorp-desktop/Cargo.toml
 
-      - name: Build DMG
+      - name: Build Universal Bridge
         run: |
-          cd zorp-desktop
-          cargo tauri build --target universal-apple-darwin
+          bash zorp-desktop/scripts/build-bridge.sh
+
+      - name: Test Native Swift App
+        run: |
+          cd zorp-desktop/Zorp
+          swift test
+
+      - name: Build Universal DMG
+        run: |
+          bash zorp-desktop/scripts/package-dmg.sh
 
       - name: Checksum DMG
         run: |
-          cd zorp-desktop/target/universal-apple-darwin/release/bundle/dmg
+          cd zorp-desktop/build
           shasum -a 256 *.dmg > Zorp.dmg.sha256
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: zorp-desktop-mac-dmg
-          path: zorp-desktop/target/universal-apple-darwin/release/bundle/dmg/*
+          path: zorp-desktop/build/*.dmg*
 
       - name: Attach to GitHub Release
         if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
@@ -86,4 +86,4 @@ jobs:
             fi
             sleep 5
           done
-          gh release upload "$tag" zorp-desktop/target/universal-apple-darwin/release/bundle/dmg/*.dmg* --clobber
+          gh release upload "$tag" zorp-desktop/build/*.dmg* --clobber

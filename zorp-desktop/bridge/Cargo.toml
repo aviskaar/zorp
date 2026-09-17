@@ -1,0 +1,16 @@
+[package]
+name = "zorp-desktop-bridge"
+version = "0.5.0"
+edition = "2021"
+description = "In-process C-ABI static library bridge for Zorp native macOS desktop app"
+license = "MIT"
+
+[lib]
+name = "zorp_desktop_bridge"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+zorp-web = { path = "../../zorp-web" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+url = "2"
+serde_json = "1"

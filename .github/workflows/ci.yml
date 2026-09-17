@@ -663,21 +663,18 @@ jobs:
       - name: Install Rust
         if: steps.filter.outputs.run_desktop == 'true'
         uses: dtolnay/rust-toolchain@stable
-      - name: Setup Node
-        if: steps.filter.outputs.run_desktop == 'true'
-        uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - name: Build Web UI
-        if: steps.filter.outputs.run_desktop == 'true'
-        run: |
-          cd web
-          npm ci
-          npm run build
-      - name: Check and test zorp-desktop
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+      - name: Check and test zorp-desktop bridge
         if: steps.filter.outputs.run_desktop == 'true'
         run: |
           cargo check --manifest-path zorp-desktop/Cargo.toml
           cargo test --manifest-path zorp-desktop/Cargo.toml
+      - name: Build universal bridge and test Swift app
+        if: steps.filter.outputs.run_desktop == 'true'
+        run: |
+          bash zorp-desktop/scripts/build-bridge.sh
+          cd zorp-desktop/Zorp
+          swift test
 
 
