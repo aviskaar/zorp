@@ -8,7 +8,12 @@ pub struct Manifest {
     pub experiment: ExperimentConfig,
     pub reference: RuntimeConfig,
     pub candidates: Vec<RuntimeConfig>,
-    pub contracts: ContractsConfig,
+    /// Required by `compat`, which refuses a manifest without it, and not
+    /// read by `bench`, which grades answers against a key rather than a
+    /// trace against contracts. Optional here so one manifest shape serves
+    /// both without a placeholder section that means nothing.
+    #[serde(default)]
+    pub contracts: Option<ContractsConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -83,7 +88,7 @@ contracts:
         assert_eq!(manifest.reference.reasoning_mode, "high");
         assert_eq!(manifest.candidates.len(), 1);
         assert_eq!(manifest.candidates[0].reasoning_mode, "low");
-        assert_eq!(manifest.contracts.critical.len(), 2);
+        assert_eq!(manifest.contracts.as_ref().unwrap().critical.len(), 2);
         assert_eq!(manifest.reference.provider, None);
     }
 

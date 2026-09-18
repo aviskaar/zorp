@@ -474,11 +474,24 @@ pub struct Retrying {
 impl Retrying {
     /// Nothing sent yet, under the policy the environment names.
     pub fn from_env() -> Self {
+        Self::with_policy(RetryPolicy::from_env())
+    }
+
+    /// Nothing sent yet, under a policy the caller states. For a caller
+    /// whose bound is part of what it measures: `zorp-eval bench` reports
+    /// latency, and a latency number means nothing if the developer's shell
+    /// got to choose how many times a request was sent.
+    pub fn with_policy(policy: RetryPolicy) -> Self {
         Self {
-            policy: RetryPolicy::from_env(),
+            policy,
             sent: 0,
             waited: Duration::ZERO,
         }
+    }
+
+    /// How many times the request has been sent so far, counting the first.
+    pub fn sent(&self) -> u32 {
+        self.sent
     }
 
     /// The provider refused with `code` and, when it named one, asked for

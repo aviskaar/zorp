@@ -85,6 +85,14 @@ pub fn run_suite(
     agent_binary: &Path,
 ) -> anyhow::Result<()> {
     let manifest = crate::manifest::load_manifest(manifest_path)?;
+    // Optional in the manifest because bench does not read it. compat does,
+    // and a compat run with no contracts would record runs and check nothing.
+    let Some(contracts_config) = &manifest.contracts else {
+        anyhow::bail!(
+            "{}: compat needs a contracts section (suite_dir and critical)",
+            manifest_path.display()
+        );
+    };
     let conn = init_db(db_path)?;
 
     // Command::current_dir resolves a relative program path against the new
@@ -107,10 +115,9 @@ pub fn run_suite(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let suite_dir = manifest_dir.join(&manifest.contracts.suite_dir);
+    let suite_dir = manifest_dir.join(&contracts_config.suite_dir);
 
-    let contracts: Vec<_> = manifest
-        .contracts
+    let contracts: Vec<_> = contracts_config
         .critical
         .iter()
         .map(|id| crate::contracts::load_contract(&suite_dir.join(format!("{id}.yaml"))))
@@ -764,6 +771,30 @@ mod tests {
             .query_row("SELECT trace_malformed_lines FROM runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(malformed, Some(1));
+    }
+
+    #[test]
+    fn run_suite_refuses_a_manifest_with_no_contracts_section() {
+        // Optional in the manifest because bench does not read it; compat
+        // would otherwise record runs having checked nothing.
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        fs::create_dir_all(tasks_dir.join("tb_fake")).unwrap();
+        fs::write(tasks_dir.join("tb_fake/prompt.md"), "do the thing").unwrap();
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(&fake_agent, "#!/bin/sh\nexit 0\n").unwrap();
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: zorp.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\n",
+        )
+        .unwrap();
+        let db_path = root.path().join("telemetry.db");
+        let error = run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("contracts section"), "{error}");
+        assert!(!db_path.exists(), "nothing should be recorded");
     }
 
     #[test]

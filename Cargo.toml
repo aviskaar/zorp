@@ -70,6 +70,7 @@ async-stream = "0.3"
 futures-core = "0.3"
 tower-http = { version = "0.6", features = ["cors", "fs", "set-header"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+csv = "1.4"
 # Office formats are zip archives of XML. Only stored and deflated entries
 # ever appear in one, so every other codec is switched off: aes, bzip2,
 # lzma, zstd and xz would all be attack surface for a file format that
