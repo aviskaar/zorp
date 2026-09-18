@@ -3889,8 +3889,21 @@ fn handle_chat_command(
             } else {
                 // The same index the model is shown in the `skill` tool's
                 // description, so what a person reads here is what the
-                // model has to choose from.
-                out.notice(&registry.index());
+                // model has to choose from. That is the offered set, which
+                // for a small model leaves the component skill out, so the
+                // rule that did it is printed under it: a skill missing
+                // with no reason given looks like a bug.
+                let offer = agent.skill_offer(&zorp_agent::TierChoice::from_env());
+                let withheld = offer.withheld(registry.iter().map(|s| s.name.as_str()));
+                let offered = registry.filtered(|skill| offer.offers(&skill.name));
+                out.notice(&offered.index());
+                if !withheld.is_empty() {
+                    out.notice(&format!(
+                        "installed but not offered to this model: {}. {}",
+                        withheld.join(", "),
+                        offer.reason
+                    ));
+                }
             }
         }
         ChatCommand::LoadCapsule(name) => {

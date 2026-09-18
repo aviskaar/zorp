@@ -98,6 +98,23 @@ pub struct SettingsState {
     /// not a field on `PutSettings`: a workspace is validated before it is
     /// stored, and `PUT /api/workspace` is the one door that does it.
     pub workspace: Option<String>,
+    /// The context window each model's listing stated, keyed by endpoint and
+    /// id, from the last time `/api/models` fetched that endpoint.
+    ///
+    /// In memory only, like `api_key`, and never persisted: it is the
+    /// provider's word about its own models and it can change, so the next
+    /// listing is the authority rather than a copy on disk. It exists for one
+    /// reader, the skill offer, which uses a stated window as one of its two
+    /// facts. See `zorp_agent::skill_routing`. A server that has not listed
+    /// the endpoint since it started knows no window, which is the same as a
+    /// provider that sends none.
+    pub listed_windows: std::collections::HashMap<(String, String), u64>,
+}
+
+/// The endpoint half of a `listed_windows` key. A trailing slash is the same
+/// endpoint, and the panel is not consistent about writing one.
+fn endpoint_key(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_string()
 }
 
 /// The non-secret fields plus their provenance, computed once and shared by
@@ -114,6 +131,27 @@ struct CoreFields {
 }
 
 impl SettingsState {
+    /// Remember what a listing of `base_url` said about each model's window.
+    /// A model the listing gave no window for keeps no entry, so a later
+    /// listing that stops stating one does not leave an old number behind.
+    pub fn record_listing(&mut self, base_url: &str, details: &[ModelDetail]) {
+        let endpoint = endpoint_key(base_url);
+        self.listed_windows.retain(|(e, _), _| *e != endpoint);
+        for detail in details {
+            if let Some(tokens) = detail.context_length {
+                self.listed_windows
+                    .insert((endpoint.clone(), detail.id.clone()), tokens);
+            }
+        }
+    }
+
+    /// The window the listing of `base_url` stated for `model`, if it did.
+    pub fn listed_window(&self, base_url: &str, model: &str) -> Option<u64> {
+        self.listed_windows
+            .get(&(endpoint_key(base_url), model.to_string()))
+            .copied()
+    }
+
     /// What a freshly started server has: nothing chosen through the UI yet,
     /// and the one secret env var captured once. Every other field is read
     /// live from the environment at resolution time instead (see
@@ -812,6 +850,40 @@ mod tests {
     /// The workspace is a path and not a secret, so unlike the API key it
     /// survives a restart. A person who chose a directory in the browser
     /// should not have to choose it again tomorrow.
+    /// The skill offer reads a listed window by endpoint and id, so the
+    /// same id on another endpoint is a different model, a slash is not a
+    /// different endpoint, and a relisting replaces what the last one said.
+    #[test]
+    fn a_listing_remembers_windows_per_endpoint_and_forgets_on_relist() {
+        let mut state = SettingsState::default();
+        let detail = |id: &str, window: Option<u64>| ModelDetail {
+            id: id.to_string(),
+            context_length: window,
+            ..ModelDetail::default()
+        };
+        state.record_listing(
+            "https://openrouter.ai/api/v1/",
+            &[detail("a", Some(8_192)), detail("b", None)],
+        );
+        assert_eq!(
+            state.listed_window("https://openrouter.ai/api/v1", "a"),
+            Some(8_192)
+        );
+        assert_eq!(
+            state.listed_window("https://openrouter.ai/api/v1", "b"),
+            None
+        );
+        assert_eq!(state.listed_window("http://localhost:11434/v1", "a"), None);
+
+        state.record_listing("https://openrouter.ai/api/v1", &[detail("a", None)]);
+        assert_eq!(
+            state.listed_window("https://openrouter.ai/api/v1", "a"),
+            None
+        );
+        // Never written to the settings file.
+        assert!(!format!("{:?}", state.to_persisted()).contains("8192"));
+    }
+
     #[test]
     fn the_workspace_round_trips_through_the_settings_file() {
         let dir = tempfile::tempdir().unwrap();

@@ -584,6 +584,90 @@ struct Ask<'a> {
     recalled: Option<String>,
 }
 
+/// The agent a conversation runs under, by name, and its flavor with
+/// whether privileged fields were withheld. `(None, None)` for a
+/// conversation with no agent picked.
+fn session_profile(
+    session_id: &str,
+    workspace: &std::path::Path,
+) -> (Option<String>, Option<(zorp_agent::Flavor, bool)>) {
+    let chosen = Store::open_default()
+        .ok()
+        .and_then(|store| store.session_agent(session_id).ok().flatten());
+    let profile = chosen.as_deref().map(|name| {
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        zorp_agent::agents::gated(&home, workspace, name)
+    });
+    (chosen, profile)
+}
+
+/// An agent may name its own model, endpoint and provider. Only when it
+/// does: an unset key inherits, which is what every other flavor field
+/// already does and is why `Flavor`'s scalars are all optional.
+fn apply_flavor_model(resolved: &mut crate::settings::EffectiveModel, flavor: &zorp_agent::Flavor) {
+    if let Some(model) = &flavor.model {
+        resolved.model = model.clone();
+        resolved.configured = true;
+    }
+    if let Some(base_url) = &flavor.base_url {
+        resolved.base_url = base_url.clone();
+    }
+    if let Some(provider) = flavor.provider {
+        resolved.provider = provider;
+    }
+    if let Some(max_tokens) = flavor.max_tokens {
+        resolved.max_tokens = Some(max_tokens);
+    }
+}
+
+/// Which skills a turn would offer its model, and why, for a page to show.
+///
+/// The model is resolved the way `run_agent` resolves it, including an
+/// agent that names its own, and the offer comes from the same
+/// `zorp_agent::skill_offer` the agent's `register_skills` calls over the
+/// same facts: the id the client will send, `ZORP_CONTEXT_TOKENS`, and the
+/// listed window. So the reason a person reads is the reason the index was
+/// built from. `session_id` is `None` outside a conversation, which is the
+/// configured model with no agent applied.
+///
+/// Returns the model id too, empty when none is configured, since "not
+/// offered to this model" is only useful beside the model's name.
+pub fn skill_offer_for(
+    settings: &SettingsHandle,
+    workspace: Option<&std::path::Path>,
+    session_id: Option<&str>,
+) -> (String, zorp_agent::SkillOffer) {
+    let mut resolved = settings.lock().unwrap().effective_model();
+    if let (Some(id), Some(root)) = (session_id, workspace) {
+        if let (_, Some((flavor, _))) = session_profile(id, root) {
+            apply_flavor_model(&mut resolved, &flavor);
+        }
+    }
+    let listed_window = settings
+        .lock()
+        .unwrap()
+        .listed_window(&resolved.base_url, &resolved.model);
+    // An unconfigured server resolves to the default id, which is a model
+    // nobody chose; reporting an offer "to gpt-4o" there would be naming a
+    // model the turn will refuse to run. No id is the honest answer.
+    let id = if resolved.configured {
+        resolved.model.trim().to_string()
+    } else {
+        String::new()
+    };
+    let offer = zorp_agent::skill_offer(
+        zorp_agent::ModelFacts {
+            id: Some(id.as_str()).filter(|m| !m.is_empty()),
+            configured_window: ContextBudget::from_env().limit_tokens,
+            listed_window,
+        },
+        &zorp_agent::TierChoice::from_env(),
+    );
+    (id, offer)
+}
+
 fn run_agent(
     ask: Ask<'_>,
     workspace: std::path::PathBuf,
@@ -605,15 +689,7 @@ fn run_agent(
     // through `layer_paths` the way the CLI does, so a user agent and a
     // workspace agent of the same name merge the way they do on the CLI.
     // Storing a scope would have frozen that.
-    let chosen = Store::open_default()
-        .ok()
-        .and_then(|store| store.session_agent(session_id).ok().flatten());
-    let profile = chosen.as_deref().map(|name| {
-        let home = std::env::var("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        zorp_agent::agents::gated(&home, &workspace, name)
-    });
+    let (chosen, profile) = session_profile(session_id, &workspace);
     // Said on the stream rather than swallowed. An agent picked for its
     // restrictions that is quietly running without half of them is the
     // failure this whole gate exists to prevent, and a browser turn cannot
@@ -629,24 +705,13 @@ fn run_agent(
     let flavor = profile.map(|(flavor, _)| flavor);
 
     let mut resolved = settings.lock().unwrap().effective_model();
-    // An agent may name its own model, endpoint and provider. Only when it
-    // does: an unset key inherits, which is what every other flavor field
-    // already does and is why `Flavor`'s scalars are all optional.
     if let Some(flavor) = &flavor {
-        if let Some(model) = &flavor.model {
-            resolved.model = model.clone();
-            resolved.configured = true;
-        }
-        if let Some(base_url) = &flavor.base_url {
-            resolved.base_url = base_url.clone();
-        }
-        if let Some(provider) = flavor.provider {
-            resolved.provider = provider;
-        }
-        if let Some(max_tokens) = flavor.max_tokens {
-            resolved.max_tokens = Some(max_tokens);
-        }
+        apply_flavor_model(&mut resolved, flavor);
     }
+    let listed_window = settings
+        .lock()
+        .unwrap()
+        .listed_window(&resolved.base_url, &resolved.model);
     if !resolved.configured {
         return Err("no model configured, open settings and pick one".to_string());
     }
@@ -784,6 +849,9 @@ fn run_agent(
         ApprovalMode::Interactive(approver),
     )
     .with_context_budget(budget)
+    // Before the builtins, because registering the `skill` tool is where the
+    // offer is decided and this is one of the facts it reads.
+    .with_listed_context_window(listed_window)
     // An agent can only narrow. `register_builtins_filtered` picks from
     // what this build has and cannot add a tool it lacks, so an agent
     // asking for `web_search` in a build without the `search` feature gets

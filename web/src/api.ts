@@ -282,6 +282,46 @@ export interface SkillListing {
   skills: SkillSummary[];
   /** A skill that could not be read or parsed, named rather than swallowed. */
   warnings: string[];
+  /** Absent from a server built before skills were routed by model. */
+  offer?: SkillOffer | null;
+}
+
+/**
+ * Which installed skills a model is offered, and the rule that decided.
+ *
+ * The component skill is left out of a small model's `skill` index, by a
+ * rule in code over the model id and its context window, never by a model
+ * call. The listing still shows every skill on disk, so this is what says
+ * why one of them is missing from a conversation. `reason` is the rule's
+ * own sentence; `setting` is what `ZORP_SKILL_TIER` asked for. The model id
+ * came off a settings file or a provider's listing, and like every other
+ * string here it reaches the page through `textContent`.
+ */
+export interface SkillOffer {
+  /** Null when no model is configured yet. */
+  model: string | null;
+  tier: "full" | "plain";
+  setting: "auto" | "full" | "plain";
+  reason: string;
+  /** Installed skills this model is not offered, by name. */
+  withheld: string[];
+}
+
+/** A well formed offer, or null. An older server sends none. */
+function offerFrom(raw: unknown): SkillOffer | null {
+  const o = raw as Partial<SkillOffer> | null | undefined;
+  if (!o || typeof o.reason !== "string" || (o.tier !== "full" && o.tier !== "plain")) {
+    return null;
+  }
+  return {
+    model: typeof o.model === "string" ? o.model : null,
+    tier: o.tier,
+    setting: o.setting === "full" || o.setting === "plain" ? o.setting : "auto",
+    reason: o.reason,
+    withheld: Array.isArray(o.withheld)
+      ? o.withheld.filter((n): n is string => typeof n === "string")
+      : [],
+  };
 }
 
 /** Every skill this server can see. Read-only: there is no route that loads one. */
@@ -290,6 +330,7 @@ export async function fetchSkills(): Promise<SkillListing> {
   return {
     skills: Array.isArray(body?.skills) ? body.skills : [],
     warnings: Array.isArray(body?.warnings) ? body.warnings : [],
+    offer: offerFrom(body?.offer),
   };
 }
 
@@ -338,6 +379,11 @@ export interface ActiveSkillListing {
   loaded: number;
   /** How many still have their instructions in the request. */
   active: number;
+  /**
+   * What this conversation's model is offered, with its agent applied.
+   * Absent from a server built before skills were routed by model.
+   */
+  offer?: SkillOffer | null;
 }
 
 /**
@@ -355,6 +401,7 @@ export async function fetchActiveSkills(sessionId: string): Promise<ActiveSkillL
     skills: Array.isArray(body?.skills) ? body.skills : [],
     loaded: typeof body?.loaded === "number" ? body.loaded : 0,
     active: typeof body?.active === "number" ? body.active : 0,
+    offer: offerFrom(body?.offer),
   };
 }
 

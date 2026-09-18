@@ -30,7 +30,12 @@ fn discovered() -> zorp_skill::SkillRegistry {
     registry
 }
 
-const FIRST_PARTY: &[&str] = &["artifact-design", "artifact-diagramming", "landing-page"];
+const FIRST_PARTY: &[&str] = &[
+    "artifact-design",
+    "artifact-diagramming",
+    "landing-page",
+    "react-components",
+];
 
 fn first_party_skills() -> Vec<zorp_skill::Skill> {
     let registry = discovered();
@@ -189,5 +194,54 @@ fn the_landing_skill_separates_the_preview_from_the_shipped_page() {
     assert!(
         body.contains("real server") || body.contains("real browser"),
         "the skill does not say the shipped page is different"
+    );
+}
+
+/// The component skill is the one a transpiler in the page is most likely to
+/// be tried from, so it names the trap too, and it has to say that the pane
+/// cannot preview what it produces and that zorp does not build it. A skill
+/// that let a model promise a preview would produce a blank pane and a
+/// confused person.
+#[test]
+fn the_component_skill_names_the_trap_and_what_zorp_cannot_do() {
+    let body = discovered()
+        .get("react-components")
+        .expect("present")
+        .body
+        .to_lowercase();
+    assert!(body.contains("text/babel"), "the trap is not named");
+    assert!(
+        body.contains("cannot preview"),
+        "the skill does not say the pane cannot preview it"
+    );
+    assert!(
+        body.contains("no build step"),
+        "the skill does not say zorp does not build it"
+    );
+}
+
+/// The two authoring skills split rather than duplicate. The component
+/// skill builds on `landing-page` and says so, and `landing-page` points at
+/// the component skill only conditionally, because a small model is not
+/// offered it and must not be told to load something it cannot see.
+#[test]
+fn the_authoring_skills_refer_to_each_other_without_duplicating() {
+    let registry = discovered();
+    let react = registry.get("react-components").expect("present");
+    assert!(
+        react.description.contains("landing-page"),
+        "{}",
+        react.description
+    );
+    assert!(react.body.contains("`landing-page`"));
+    // The long lists live in one place. The component skill does not carry
+    // its own copy of the section order or the generated page tells.
+    assert!(!react.body.contains("purple to pink"));
+    assert!(!react.body.contains("header    a wordmark"));
+
+    let landing = registry.get("landing-page").expect("present").body.clone();
+    assert!(
+        landing.contains("`react-components` skill, when it\nis in your list"),
+        "landing-page should mention the component skill only as conditional"
     );
 }

@@ -237,3 +237,91 @@ async fn there_is_no_route_that_loads_a_skill() {
 
     std::env::remove_var("ZORP_SKILLS_DIR");
 }
+
+/// Routing offers a small model a subset, and the listing has to say so
+/// without hiding anything. Every installed skill is still listed, the
+/// withheld one is named, and the reason is the rule's own sentence with the
+/// model in it. The override moves it both ways, read live.
+#[tokio::test]
+async fn the_listing_says_which_skills_the_model_is_offered_and_why() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let env_skills = dir.path().join("env-skills");
+    write_skill(
+        &env_skills,
+        "landing-page",
+        "Plain HTML pages.",
+        "html body",
+    );
+    write_skill(
+        &env_skills,
+        "react-components",
+        "Pages as components.",
+        "jsx body",
+    );
+    std::env::set_var("ZORP_SKILLS_DIR", &env_skills);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+    std::env::set_var("ZORP_MODEL", "qwen2.5:7b");
+    std::env::remove_var("ZORP_SKILL_TIER");
+    std::env::remove_var("ZORP_CONTEXT_TOKENS");
+
+    let addr = spawn().await;
+    let body = get_json(format!("http://{addr}/api/skills")).await;
+    let names: Vec<&str> = body["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    // Discovery is unchanged: the person sees both.
+    assert!(names.contains(&"landing-page"), "{body}");
+    assert!(names.contains(&"react-components"), "{body}");
+
+    let offer = &body["offer"];
+    assert_eq!(offer["model"], "qwen2.5:7b", "{body}");
+    assert_eq!(offer["tier"], "plain", "{body}");
+    assert_eq!(offer["setting"], "auto", "{body}");
+    assert_eq!(
+        offer["withheld"],
+        serde_json::json!(["react-components"]),
+        "{body}"
+    );
+    let reason = offer["reason"].as_str().unwrap();
+    assert!(reason.contains("qwen2.5:7b"), "{reason}");
+    assert!(reason.contains("ZORP_SKILL_TIER"), "{reason}");
+
+    std::env::set_var("ZORP_SKILL_TIER", "full");
+    let body = get_json(format!("http://{addr}/api/skills")).await;
+    assert_eq!(body["offer"]["tier"], "full", "{body}");
+    assert_eq!(body["offer"]["setting"], "full", "{body}");
+    assert_eq!(body["offer"]["withheld"], serde_json::json!([]), "{body}");
+
+    std::env::remove_var("ZORP_SKILL_TIER");
+    std::env::set_var("ZORP_MODEL", "claude-opus-5");
+    let body = get_json(format!("http://{addr}/api/skills")).await;
+    assert_eq!(body["offer"]["tier"], "full", "{body}");
+    std::env::set_var("ZORP_CONTEXT_TOKENS", "8192");
+    let body = get_json(format!("http://{addr}/api/skills")).await;
+    assert_eq!(body["offer"]["tier"], "plain", "{body}");
+    assert!(
+        body["offer"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("ZORP_CONTEXT_TOKENS"),
+        "{body}"
+    );
+
+    std::env::set_var("ZORP_SKILL_TIER", "plain");
+    std::env::remove_var("ZORP_CONTEXT_TOKENS");
+    let body = get_json(format!("http://{addr}/api/skills")).await;
+    assert_eq!(body["offer"]["tier"], "plain", "{body}");
+
+    for var in [
+        "ZORP_SKILL_TIER",
+        "ZORP_MODEL",
+        "ZORP_SKILLS_DIR",
+        "ZORP_WORKSPACE",
+    ] {
+        std::env::remove_var(var);
+    }
+}
