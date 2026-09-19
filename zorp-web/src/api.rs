@@ -763,6 +763,7 @@ async fn doctor_route(
 /// longer on disk are exactly the kind of thing this route exists to show.
 async fn active_skills(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     let workspace = state.workspace_root();
+    let settings = state.settings.clone();
     let answered = tokio::task::spawn_blocking(move || {
         let store = zorp_agent::Store::open_default().map_err(|e| e.to_string())?;
         if store.session_status(&id).ok().flatten().is_none() {
@@ -806,10 +807,19 @@ async fn active_skills(State(state): State<AppState>, Path(id): Path<String>) ->
             })
             .collect();
         let active = rows.iter().filter(|r| r.presence.is_active()).count();
+        // What this conversation's model is offered, resolved with the
+        // conversation's agent applied, since an agent can name its own
+        // model. "Why does this conversation not have the component skill"
+        // is a question about this conversation, so it is answered here.
+        let offer = offer_json(
+            crate::turn::skill_offer_for(&settings, workspace.as_deref(), Some(&id)),
+            &installed,
+        );
         Ok::<_, String>(json!({
             "skills": skills,
             "loaded": rows.len(),
             "active": active,
+            "offer": offer,
         }))
     })
     .await;
@@ -1088,6 +1098,10 @@ async fn set_session_agent_route(
 async fn list_skills(State(state): State<AppState>) -> Json<serde_json::Value> {
     let workspace = state.workspace_root();
     let (skills, warnings) = discover_skills(workspace.as_deref());
+    let offer = offer_json(
+        crate::turn::skill_offer_for(&state.settings, workspace.as_deref(), None),
+        &skills,
+    );
     let rows: Vec<serde_json::Value> = skills
         .into_iter()
         .map(|skill| {
@@ -1106,7 +1120,31 @@ async fn list_skills(State(state): State<AppState>) -> Json<serde_json::Value> {
         .collect();
     // A skill that could not be read or parsed is named here rather than
     // swallowed. Somebody whose skill is missing needs to know why.
-    Json(json!({ "skills": rows, "warnings": warnings }))
+    Json(json!({ "skills": rows, "warnings": warnings, "offer": offer }))
+}
+
+/// Which installed skills the model is offered, and the rule that decided.
+///
+/// The listing above is every skill on disk, and it stays that way: routing
+/// hides nothing from the person. This is the other half, what the model's
+/// `skill` index holds, so a person looking at a conversation that has only
+/// the plain HTML skill can read why rather than suspect a bug. The same
+/// precedent as onboarding: the rule is printed beside the choice it made.
+/// Nothing here is a control. The override is `ZORP_SKILL_TIER`, set where
+/// the server runs.
+fn offer_json(
+    (model, offer): (String, zorp_agent::SkillOffer),
+    installed: &[zorp_skill::Skill],
+) -> serde_json::Value {
+    let withheld = offer.withheld(installed.iter().map(|s| s.name.as_str()));
+    json!({
+        // Null rather than a blank when no model is configured yet.
+        "model": Some(model).filter(|m| !m.is_empty()),
+        "tier": offer.tier,
+        "setting": offer.setting,
+        "reason": offer.reason,
+        "withheld": withheld,
+    })
 }
 
 async fn create_session(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -2323,6 +2361,7 @@ async fn list_models(
     };
     let base_url = field("base_url").or(query.base_url).unwrap_or_default();
     let api_key = field("api_key").or_else(|| state.settings.lock().unwrap().api_key.clone());
+    let listed_url = base_url.clone();
     let result =
         tokio::task::spawn_blocking(move || settings::fetch_models(&base_url, api_key.as_deref()))
             .await
@@ -2330,6 +2369,16 @@ async fn list_models(
                 error: Some(format!("internal error: {e}")),
                 ..settings::ModelsResult::default()
             });
+    // What the listing said about windows is kept for the skill offer, which
+    // reads a stated `context_length` as one of its two facts. Only from a
+    // listing that answered: a failed probe says nothing about any model.
+    if result.error.is_none() {
+        state
+            .settings
+            .lock()
+            .unwrap()
+            .record_listing(&listed_url, &result.details);
+    }
     // `models` is the bare id list every existing caller reads and it does
     // not change. `details` is the same models with whatever else the
     // endpoint said about each, which for OpenRouter is what separates a

@@ -194,6 +194,24 @@ impl SkillRegistry {
         self.skills.is_empty()
     }
 
+    /// A copy holding only the skills `keep` accepts.
+    ///
+    /// Discovery is not changed by this and does not know it exists: what is
+    /// on disk is still every skill `discover` found, and a caller that wants
+    /// the whole set still has it. This is for a caller that offers a subset
+    /// to one particular model, which is a decision about the model and not
+    /// about the files, so it is made outside this crate and applied here.
+    pub fn filtered(&self, keep: impl Fn(&Skill) -> bool) -> SkillRegistry {
+        SkillRegistry {
+            skills: self
+                .skills
+                .iter()
+                .filter(|(_, skill)| keep(skill))
+                .map(|(name, skill)| (name.clone(), skill.clone()))
+                .collect(),
+        }
+    }
+
     /// One `name: description` line per skill, which is the whole of what the
     /// model sees before it picks one. Bodies stay on disk until invoked.
     pub fn index(&self) -> String {
@@ -348,6 +366,20 @@ mod tests {
 
     fn discover_one(root: &Path) -> (SkillRegistry, Vec<String>) {
         SkillRegistry::discover(&[root.to_path_buf()])
+    }
+
+    /// Filtering is a view over what was found. The registry it came from is
+    /// untouched, which is what "discovery is unchanged" means in code.
+    #[test]
+    fn filtered_keeps_what_the_predicate_accepts_and_leaves_the_source_alone() {
+        let root = tempdir().unwrap();
+        write_skill(root.path(), "keep", "k", "body");
+        write_skill(root.path(), "drop", "d", "body");
+        let (all, _) = discover_one(root.path());
+        let some = all.filtered(|s| s.name != "drop");
+        assert_eq!(some.names(), vec!["keep".to_string()]);
+        assert!(!some.index().contains("drop"));
+        assert_eq!(all.len(), 2);
     }
 
     #[test]

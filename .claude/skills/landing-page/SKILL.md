@@ -218,6 +218,10 @@ What makes the conversion mechanical:
 Say in the answer which sections map to which components, so the person
 reading has the conversion plan and not just the file.
 
+Writing the components themselves is the `react-components` skill, when it
+is in your list of skills. When it is not, the answer is still this file:
+plain HTML, written so the conversion can be done later.
+
 ## Before you save
 
 - Does the hero say what this is and who it is for, in words a competitor

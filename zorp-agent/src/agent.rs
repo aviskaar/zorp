@@ -337,6 +337,11 @@ pub struct Agent {
     /// How large the context window is, when anybody has said, and how much of
     /// it the transcript may fill. Unknown by default; see `context_window`.
     context_budget: ContextBudget,
+    /// The window the provider's model listing stated for this model, when a
+    /// caller has one. Only the skill offer reads it: the budget above is
+    /// what a person configured and drives compaction, and a listing is not
+    /// a reason to start compacting. See `skill_routing`.
+    listed_window: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -430,7 +435,33 @@ impl Agent {
             renderer: stderr_renderer(),
             cancel,
             context_budget: ContextBudget::from_env(),
+            listed_window: None,
         }
+    }
+
+    /// Say what the provider's listing gave as this model's context window.
+    /// Must come before `register_builtins*`, which is where the skill offer
+    /// is decided.
+    pub fn with_listed_context_window(mut self, tokens: Option<u64>) -> Self {
+        self.listed_window = tokens;
+        self
+    }
+
+    /// Which skills this agent's model is offered, and why, under `choice`.
+    ///
+    /// The same function every surface that reports the offer calls, over
+    /// the same two facts: the id the model client will send, and the
+    /// windows known at construction. So what `/skills` or the browser says
+    /// is what the `skill` tool was built from.
+    pub fn skill_offer(&self, choice: &crate::skill_routing::TierChoice) -> crate::SkillOffer {
+        crate::skill_routing::skill_offer(
+            crate::ModelFacts {
+                id: self.model.identity(),
+                configured_window: self.context_budget.limit_tokens,
+                listed_window: self.listed_window,
+            },
+            choice,
+        )
     }
 
     /// Say how large the context window is. The default reads
@@ -712,13 +743,44 @@ impl Agent {
     /// directories to look in. The env driven version above reads whatever
     /// the machine has installed, which is right in production and wrong in a
     /// test.
-    pub fn register_skills(mut self, scopes: &[PathBuf]) -> Self {
-        let (skills, warnings) = zorp_skill::SkillRegistry::discover(scopes);
+    pub fn register_skills(self, scopes: &[PathBuf]) -> Self {
+        let choice = crate::skill_routing::TierChoice::from_env();
+        self.register_skills_with(scopes, &choice)
+    }
+
+    /// `register_skills` with the override passed in rather than read from
+    /// `ZORP_SKILL_TIER`, so a test can say what it wants without touching
+    /// the process environment.
+    ///
+    /// The offer is applied to the registry the tool is built from, so a
+    /// withheld skill is absent from the index, from the schema's `enum`, and
+    /// from the lookup behind `run`. Asked for by name anyway, it is the
+    /// same "no skill named" error an invented name gets. Discovery is not
+    /// involved: the full set is what was found, and every listing a person
+    /// reads still shows it.
+    pub fn register_skills_with(
+        mut self,
+        scopes: &[PathBuf],
+        choice: &crate::skill_routing::TierChoice,
+    ) -> Self {
+        let (found, warnings) = zorp_skill::SkillRegistry::discover(scopes);
         // A skipped skill is reported, never swallowed. Someone whose skill
         // stopped appearing needs to be told why.
         for warning in warnings {
             eprintln!("zorp-agent: {warning}");
         }
+        let offer = self.skill_offer(choice);
+        let withheld = offer.withheld(found.iter().map(|s| s.name.as_str()));
+        if !withheld.is_empty() {
+            // Said where the CLI's other skill warnings go. The browser says
+            // it in the skills panel, from the same function.
+            eprintln!(
+                "zorp-agent: not offering {} to this model. {}",
+                withheld.join(", "),
+                offer.reason
+            );
+        }
+        let skills = found.filtered(|skill| offer.offers(&skill.name));
         if !skills.is_empty() {
             self.registry
                 .register(Box::new(crate::skill_tool::SkillTool::new(skills)));
@@ -4213,6 +4275,118 @@ mod tests {
         let a =
             agent(Scripted::new(vec![text("done")])).register_skills(&[root.path().to_path_buf()]);
         assert!(a.tool_names().contains(&"skill".to_string()));
+    }
+
+    /// An agent talking to `model_id`, never called. `HttpModel` because its
+    /// `identity` is the id, which is the fact the offer reads.
+    fn agent_for_model(model_id: &str) -> Agent {
+        Agent::new(
+            Box::new(crate::model::HttpModel {
+                url: "http://127.0.0.1:9/never".into(),
+                api_key: None,
+                model: model_id.into(),
+                provider: crate::provider::Provider::OpenAiCompatible,
+                max_tokens: None,
+            }),
+            "system",
+            1,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .with_context_budget(ContextBudget::default())
+    }
+
+    fn authoring_skills() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for (name, description) in [
+            ("landing-page", "plain html pages"),
+            (
+                "react-components",
+                "COMPONENT ENTRY: pages as react components",
+            ),
+        ] {
+            let dir = root.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nbody"),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    fn skill_schema(a: &Agent) -> String {
+        a.registry
+            .schemas()
+            .into_iter()
+            .find(|s| s["function"]["name"] == "skill")
+            .expect("the skill tool is registered")
+            .to_string()
+    }
+
+    /// The point of routing at the index. A small model's `skill` tool must
+    /// not mention the component skill anywhere: not in the description it
+    /// reads every turn, and not in the enum it could pick from.
+    #[test]
+    fn a_small_model_never_sees_the_component_skill_in_the_index() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        let a = agent_for_model("qwen2.5:7b")
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Auto);
+        let schema = skill_schema(&a);
+        assert!(schema.contains("landing-page"), "{schema}");
+        assert!(!schema.contains("react-components"), "{schema}");
+        assert!(!schema.contains("COMPONENT ENTRY"), "{schema}");
+
+        // Asked for by name anyway, it is not there to load.
+        let call = crate::model::ToolCall {
+            id: "1".into(),
+            name: "skill".into(),
+            arguments: serde_json::json!({"name": "react-components"}),
+        };
+        let mut a = a;
+        let out = a.registry.dispatch(&call, &mut a.cx);
+        assert!(out.content.contains("no skill named"), "{}", out.content);
+    }
+
+    #[test]
+    fn a_capable_or_unknown_model_sees_both_authoring_skills() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        for id in ["llama-3.3-70b-instruct", "claude-opus-5", "gpt-4o"] {
+            let a = agent_for_model(id)
+                .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Auto);
+            let schema = skill_schema(&a);
+            assert!(schema.contains("landing-page"), "{id}: {schema}");
+            assert!(schema.contains("react-components"), "{id}: {schema}");
+        }
+    }
+
+    /// The context half of the rule, through the agent: a listed window that
+    /// is too small withholds the skill from a model whose id says nothing.
+    #[test]
+    fn a_small_listed_window_withholds_the_component_skill() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        let a = agent_for_model("claude-opus-5")
+            .with_listed_context_window(Some(8_192))
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Auto);
+        assert!(!skill_schema(&a).contains("react-components"));
+    }
+
+    #[test]
+    fn the_override_reaches_the_index_in_both_directions() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        let small = agent_for_model("gemma2:2b")
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Full);
+        assert!(skill_schema(&small).contains("react-components"));
+        let large = agent_for_model("claude-opus-5")
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Plain);
+        assert!(!skill_schema(&large).contains("react-components"));
+        assert!(skill_schema(&large).contains("landing-page"));
     }
 
     /// An empty tool is worse than no tool: it spends schema space telling the

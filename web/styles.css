@@ -955,6 +955,13 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* A skill installed but left out of this model's index. Still listed, and
+   dimmed rather than hidden, because routing hides nothing from the person. */
+.skills-withheld .skills-name,
+.skills-withheld .skills-description {
+  opacity: 0.6;
+}
+
 /* A skill asking for tools and not getting them is a thing a reader should
    be able to see rather than discover. */
 .skills-declared {

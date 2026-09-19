@@ -268,21 +268,37 @@ resulting artifact, deliver it in the right form.
   a turn, never from anything a model wrote, and a load is recognised by
   the header `Skill::instructions` puts on a body rather than by the name
   in the call. Both routes are read-only and neither sends a body.
-  The repository ships three of its own under `.claude/skills/`.
+  The repository ships four of its own under `.claude/skills/`.
   `artifact-design` and `artifact-diagramming` say how to write the
   `.html` and `.svg` files the browser's side pane renders, and
   `landing-page` says how to write a page that leaves the pane and goes on
   a real server, including the authoring rules that make a later move to
-  JSX mechanical rather than a rewrite. All three are pinned
+  JSX mechanical rather than a rewrite. `react-components` makes that move:
+  the same page as React components in a Vite project the person builds,
+  on top of `landing-page` rather than repeating it. All four are pinned
   by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
   parsing takes its skill off every surface with only a warning to say so.
-  All three state the constraint that decides everything else about such a
+  All four state the constraint that decides everything else about such a
   file: the pane serves it under a bare `Content-Security-Policy: sandbox`,
   so no script in it runs and a page written against the opposite assumption
   renders as nothing. That header does not block an external font, stylesheet
-  or image, so keeping those out is a rule the three skills state and nothing
+  or image, so keeping those out is a rule the skills state and nothing
   enforces, and a page that loads them previews fine while telling a third
   party who opened it.
+  Which skills a model is offered depends on the model, and
+  `zorp-agent/src/skill_routing.rs` decides it with a rule in code and no
+  model call. A size under 14B read from the id (`qwen2.5:7b`), or a
+  context window under 16,384 tokens from `ZORP_CONTEXT_TOKENS` or the
+  provider listing's `context_length`, withholds `react-components` from
+  the `skill` tool's index, schema and lookup. An id that encodes no size
+  (`gpt-4o`, `claude-opus-5`) is offered everything, because those are
+  overwhelmingly the large hosted models. `ZORP_SKILL_TIER=full` or
+  `plain` overrides it either way. Discovery is unchanged and nothing is
+  hidden from the person: `/api/skills` and the active route carry an
+  `offer` with the rule's own sentence, the skills panel prints it beside
+  the dimmed skill, and the CLI says it on stderr and under `/skills`. See
+  `docs/DECISIONS.md` (2026-09-18) before changing the thresholds, the
+  default for an unknown size, or the named list.
   Three surfaces now say what is installed, and all three only read.
   `zorp --skills` lists them and `zorp --skill <name> <prompt>` puts one
   skill's instructions in front of a prompt, with `/skills` and
@@ -290,7 +306,8 @@ resulting artifact, deliver it in the right form.
   in front of the user's words and never into the system prompt, because
   the system slot is the one channel the harness speaks in.
   `zorp-agent`'s chat REPL gains `/skills`, which prints the same index the
-  model is shown. And `zorp-web` answers `GET /api/skills` with names,
+  model is shown, which is the offered set, with the rule under it when it
+  withheld anything. And `zorp-web` answers `GET /api/skills` with names,
   descriptions, paths and scopes, reports a count on
   `GET /api/capabilities`, and draws a toolbar pill with a popover behind
   it. **None of those loads a skill.** There is no route that does and

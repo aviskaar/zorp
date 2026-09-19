@@ -25,6 +25,7 @@ import type {
   ActiveSkillListing,
   SkillAvailability,
   SkillListing,
+  SkillOffer,
   SkillSummary,
 } from "./api.ts";
 
@@ -189,6 +190,28 @@ function renderActiveSection(
 }
 
 /**
+ * The rule that decided which skills the model is offered, printed beside
+ * the list it applies to.
+ *
+ * Only when there is something to explain: a skill withheld, or a person's
+ * override in force. A model offered everything by the rule has nothing
+ * missing and needs no sentence about it. The same precedent as onboarding,
+ * which prints its rule next to the model it picked, and for the same
+ * reason: a skill that is installed and absent from a conversation with no
+ * explanation looks like a bug.
+ */
+function renderOffer(doc: Document, panel: HTMLElement, offer: SkillOffer): void {
+  if (!offer.withheld.length && offer.setting === "auto") {
+    return;
+  }
+  const who = offer.model ?? "this model";
+  const lead = offer.withheld.length
+    ? `Not offered to ${who}: ${offer.withheld.join(", ")}. `
+    : "";
+  panel.append(textNode(doc, "p", "skills-note skills-offer", lead + offer.reason));
+}
+
+/**
  * Fill the popover from a listing.
  *
  * Grouped by scope, in the order the scopes are searched, so a reader can
@@ -222,6 +245,13 @@ export function renderSkillsPanel(
     ),
   );
 
+  // The conversation's own answer when there is one, since an agent can
+  // name its own model; the configured model's otherwise.
+  const offer = active?.offer ?? listing.offer ?? null;
+  if (offer) {
+    renderOffer(doc, panel, offer);
+  }
+
   if (!listing.skills.length) {
     panel.append(
       textNode(
@@ -254,6 +284,15 @@ export function renderSkillsPanel(
       // A title rather than a line, because it is long and it is not what
       // the list is for.
       item.title = skill.path;
+      if (offer?.withheld.includes(skill.name)) {
+        // Still listed, because routing hides nothing from the person. It
+        // is the model's index this is missing from, and the note above
+        // says why.
+        item.classList.add("skills-withheld");
+        item.append(
+          textNode(doc, "span", "skills-declared", "not offered to this model"),
+        );
+      }
       if (skill.declared_tools.length) {
         // Said plainly, because a skill asking for tools and not getting
         // them is a thing a reader should be able to see rather than
