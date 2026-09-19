@@ -32,6 +32,9 @@ fn test_all_train_events_deserialization() {
             parameters: 250_000_000,
             device: "Apple Metal".to_string(),
             memory_total_gb: 16.0,
+            data: None,
+            corpus_tokens: 0,
+            dropped_tokens: 0,
         }
     );
 

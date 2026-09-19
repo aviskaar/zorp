@@ -20,6 +20,27 @@ import {
 
 export type DevTab = "datasets" | "tokenizer" | "architecture" | "pretrain" | "registry";
 
+/// What the init event said this run is training on. A loss curve over
+/// synthetic tokens looks exactly like a loss curve over text, so this is
+/// the only thing on the page that tells them apart. A run that reported
+/// nothing says so: "synthetic" would be a guess, and it is the guess that
+/// makes noise look like a corpus.
+export function describeTrainingData(ev: {
+  data?: string;
+  corpus_tokens?: number;
+  dropped_tokens?: number;
+}): string {
+  if (ev.data === "corpus") {
+    const kept = (ev.corpus_tokens ?? 0).toLocaleString();
+    const dropped = ev.dropped_tokens ?? 0;
+    return dropped > 0
+      ? `Corpus, ${kept} tokens (${dropped.toLocaleString()} dropped, out of vocabulary)`
+      : `Corpus, ${kept} tokens`;
+  }
+  if (ev.data === "synthetic") return "Synthetic tokens, no corpus";
+  return "Not reported";
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -735,6 +756,10 @@ export class DeveloperModeView {
             <div class="label">Metal Memory</div>
             <div class="val" id="val-mem">&mdash;</div>
           </div>
+          <div class="metric-card">
+            <div class="label">Training Data</div>
+            <div class="val" id="val-data">&mdash;</div>
+          </div>
         </div>
 
         <div class="dev-card" style="margin-top: 18px;">
@@ -986,6 +1011,8 @@ export class DeveloperModeView {
     } else if (ev.type === "init") {
       const m = document.getElementById("val-mem");
       if (m) m.textContent = `0.0 GB / ${ev.memory_total_gb.toFixed(1)} GB (${ev.device})`;
+      const d = document.getElementById("val-data");
+      if (d) d.textContent = describeTrainingData(ev);
     }
   }
 

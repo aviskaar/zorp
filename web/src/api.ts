@@ -2146,7 +2146,17 @@ export interface DevServeResponse {
 }
 
 export type TrainEvent =
-  | { type: "init"; parameters: number; device: string; memory_total_gb: number }
+  | {
+      type: "init";
+      parameters: number;
+      device: string;
+      memory_total_gb: number;
+      // "corpus" or "synthetic". Absent means the run did not say, which
+      // the page reports as such rather than guessing either one.
+      data?: string;
+      corpus_tokens?: number;
+      dropped_tokens?: number;
+    }
   | {
       type: "step";
       step: number;

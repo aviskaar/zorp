@@ -85,6 +85,18 @@ pub enum TrainEvent {
         parameters: usize,
         device: String,
         memory_total_gb: f64,
+        /// `corpus` or `synthetic`, as the Python side reported it. `None`
+        /// means it did not say, which is not the same as synthetic and is
+        /// not rendered as it: these fields are `default` so a run that
+        /// omits them loses the claim rather than the whole init event, and
+        /// a dropped init event is how the page ends up showing a loss
+        /// curve with nothing saying what produced it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        #[serde(default)]
+        corpus_tokens: usize,
+        #[serde(default)]
+        dropped_tokens: usize,
     },
     Step {
         step: usize,

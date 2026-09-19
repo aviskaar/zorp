@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 
-import { DeveloperModeView } from "../src/developer-mode.ts";
+import { DeveloperModeView, describeTrainingData } from "../src/developer-mode.ts";
 
 const jsdom = new JSDOM("<!doctype html><body><div id='container'></div></body>");
 const doc = jsdom.window.document;
@@ -109,4 +109,23 @@ test("the pretrain tab offers a corpus and a tokenizer, and says what empty mean
   // page has to say so before somebody starts one.
   const text = container.textContent ?? "";
   assert.match(text, /synthetic/i);
+});
+
+// The one line on the page that tells a loss curve over text from a loss
+// curve over noise. "Not reported" is deliberate: a run that said nothing
+// must not be rendered as either one.
+test("the pretrain dashboard says what the run trained on, and never guesses", () => {
+  assert.equal(
+    describeTrainingData({ data: "corpus", corpus_tokens: 818184, dropped_tokens: 0 }),
+    "Corpus, 818,184 tokens",
+  );
+  assert.equal(
+    describeTrainingData({ data: "corpus", corpus_tokens: 708380, dropped_tokens: 109804 }),
+    "Corpus, 708,380 tokens (109,804 dropped, out of vocabulary)",
+  );
+  assert.equal(
+    describeTrainingData({ data: "synthetic", corpus_tokens: 0, dropped_tokens: 0 }),
+    "Synthetic tokens, no corpus",
+  );
+  assert.equal(describeTrainingData({}), "Not reported");
 });

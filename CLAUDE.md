@@ -574,12 +574,20 @@ resulting artifact, deliver it in the right form.
   it did not: `tokenizer_dir` and `dataset_path` are optional, the supervisor
   forwards them exactly as given and guesses nothing, and with either missing
   the Python side trains on synthetic tokens and names which of the two in
-  its init event. A loss curve over noise looks exactly like a loss curve
-  over text, and an earlier draft resolved those paths relative to the
-  process's working directory, which made the corpus depend on where the
-  server was started. A sample is what the model produced or there is no
-  sample event; the placeholder sentence that used to be emitted was
-  indistinguishable on the page from a model that had learned to write it.
+  its init event. That report has to reach the page to be worth anything:
+  `TrainEvent::Init` carries `data`, `corpus_tokens` and `dropped_tokens`,
+  and the Pretrain tab draws them as a Training Data metric. Serde drops
+  unknown fields by default, so those three parsed fine and were silently
+  thrown away until the enum named them, which left the browser drawing a
+  loss curve with nothing saying what made it. The test that fails if they
+  go again is in `zorp-train/tests/manifest.rs`, and it also pins the case
+  where a run reported nothing: that reads as "Not reported" and never as
+  synthetic. A loss curve over noise looks exactly like a loss curve over
+  text, and an earlier draft resolved those paths relative to the process's
+  working directory, which made the corpus depend on where the server was
+  started. A sample is what the model produced or there is no sample event;
+  the placeholder sentence that used to be emitted was indistinguishable on
+  the page from a model that had learned to write it.
   And a token id at or past the recipe's `vocab_size` is dropped rather than
   clamped, because clamping trains on a token the text did not contain.
   Nothing here is reachable by a model: no tool starts a run, trains a

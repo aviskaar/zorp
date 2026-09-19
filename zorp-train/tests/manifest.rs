@@ -112,3 +112,55 @@ fn test_train_event_serde() {
     let deserialized: TrainEvent = serde_json::from_str(&serialized).expect("deserialize event");
     assert_eq!(event, deserialized);
 }
+
+/// The Python side says whether it trained on a corpus or on synthetic
+/// tokens. Serde drops unknown fields by default, so before these fields
+/// existed on the enum that report parsed fine and was silently thrown
+/// away, and the browser drew a loss curve with nothing saying what made
+/// it. This is the test that fails if they go again.
+#[test]
+fn an_init_event_carries_what_the_run_trained_on() {
+    let on_corpus: TrainEvent = serde_json::from_str(
+        r#"{"type":"init","parameters":5476352,"device":"Apple Metal","memory_total_gb":0.02,
+             "data":"corpus","corpus_tokens":818184,"dropped_tokens":109804}"#,
+    )
+    .expect("deserialize init");
+    assert_eq!(
+        on_corpus,
+        TrainEvent::Init {
+            parameters: 5_476_352,
+            device: "Apple Metal".to_string(),
+            memory_total_gb: 0.02,
+            data: Some("corpus".to_string()),
+            corpus_tokens: 818_184,
+            dropped_tokens: 109_804,
+        }
+    );
+
+    let synthetic: TrainEvent = serde_json::from_str(
+        r#"{"type":"init","parameters":1,"device":"Apple Metal","memory_total_gb":0.0,
+             "data":"synthetic","corpus_tokens":0,"dropped_tokens":0}"#,
+    )
+    .expect("deserialize init");
+    match synthetic {
+        TrainEvent::Init { data, .. } => assert_eq!(data.as_deref(), Some("synthetic")),
+        other => panic!("expected an init event, got {other:?}"),
+    }
+
+    // A run that said nothing keeps its init event and loses only the
+    // claim. Dropping the whole event would take the parameter count and
+    // the device off the page too.
+    let silent: TrainEvent = serde_json::from_str(
+        r#"{"type":"init","parameters":7,"device":"Apple Metal","memory_total_gb":1.0}"#,
+    )
+    .expect("deserialize init");
+    match silent {
+        TrainEvent::Init {
+            data, parameters, ..
+        } => {
+            assert_eq!(data, None, "absent must not read as synthetic");
+            assert_eq!(parameters, 7);
+        }
+        other => panic!("expected an init event, got {other:?}"),
+    }
+}
