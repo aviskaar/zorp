@@ -1,3 +1,8 @@
+//! Developer mode's routes, which exist only in a build with `train`.
+//!
+//! Run with: cargo test -p zorp-web --features train
+#![cfg(feature = "train")]
+
 //! Developer Mode API endpoints integration tests.
 
 use std::net::SocketAddr;

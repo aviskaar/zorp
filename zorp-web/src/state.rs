@@ -171,6 +171,7 @@ pub struct AppState {
     #[cfg(feature = "voice")]
     pub voice_bootstrap: Option<Arc<dyn crate::voice::VoiceBootstrap>>,
     /// Developer mode pretraining state (env, supervisor, model registry).
+    #[cfg(feature = "train")]
     pub dev_state: Option<Arc<crate::train::DevState>>,
 }
 
@@ -215,6 +216,7 @@ impl AppState {
         self
     }
 
+    #[cfg(feature = "train")]
     pub fn with_dev_state(mut self, dev_state: Arc<crate::train::DevState>) -> Self {
         self.dev_state = Some(dev_state);
         self
