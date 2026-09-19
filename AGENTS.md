@@ -223,20 +223,33 @@ resulting artifact, deliver it in the right form.
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
 - `zorp-search/` is zorp's own web search capability: a
-  `SearchProvider` trait with Tavily as the first provider. It depends on
-  no other workspace member and knows nothing about agents or tools.
-  `zorp-agent` exposes it as the `web_search` built-in behind the
-  non-default `search` feature, which is the only built-in that sends
-  anything over the network. `research` deliberately does not enable it;
-  run `--features research,search` when you want it. The API key comes
-  from `ZORP_TAVILY_API_KEY` and never from a flavor manifest. `zorp-web`
-  has its own opt-in `search` feature that turns the same built-in on for
-  the browser, off by default for the same reason, and it reports whether
-  the tool is really there at `GET /api/capabilities`. That answer is
-  observed rather than re-derived: `zorp_agent::web_search_availability`
-  shares one function with the registration site, and a test pins it to
-  `tool_names()`. See `docs/DECISIONS.md` (2026-08-21) before changing
-  either.
+  `SearchProvider` trait with two providers, Tavily and a self-hosted
+  SearXNG. It depends on no other workspace member and knows nothing
+  about agents or tools. `zorp-agent` exposes it as the `web_search`
+  built-in behind the non-default `search` feature, which is the only
+  built-in that sends anything over the network. `research` deliberately
+  does not enable it; run `--features research,search` when you want it.
+  `ZORP_SEARCH_PROVIDER` picks the provider, read in `web_search_tool()`
+  and nowhere else: unset or blank means `tavily`, `searxng` means
+  SearXNG, and anything else is an error that leaves the tool
+  unregistered, never a fallback to the other provider. Tavily's key
+  comes from `ZORP_TAVILY_API_KEY`; SearXNG takes no key and reads its
+  instance from `ZORP_SEARXNG_BASE_URL`, defaulting to
+  `http://localhost:8888`. None of the three ever comes from a flavor
+  manifest, because a workspace file the model can write must not move
+  where queries go. A local SearXNG is not a loopback capability and must
+  not be described as one: it forwards every query to the engines it
+  aggregates, so a search still leaves the machine and the availability
+  answer still says so. `zorp-web` has its own opt-in `search` feature
+  that turns the same built-in on for the browser, off by default for the
+  same reason, and it reports whether the tool is really there, and which
+  provider it uses, at `GET /api/capabilities`. That answer is observed
+  rather than re-derived: `zorp_agent::web_search_availability` shares
+  one function with the registration site for whichever provider is
+  selected, and a test pins it to `tool_names()`. Run `cargo test -p
+  zorp-search`, `cargo test -p zorp-agent --features search` and `cargo
+  test -p zorp-web --features search` whenever any of it changes. See
+  `docs/DECISIONS.md` (2026-08-21, 2026-09-18) before changing either.
 - `zorp-skill/` is zorp's own skill capability: discovery and parsing
   for Claude Code compatible skills (`SKILL.md` in a directory, YAML
   frontmatter plus a markdown body). Like `zorp-search` it depends on no

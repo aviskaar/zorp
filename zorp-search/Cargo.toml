@@ -3,7 +3,7 @@ name        = "zorp-search"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Web search providers for zorp, with Tavily as the first one."
+description = "Web search providers for zorp: Tavily, and a self-hosted SearXNG."
 license.workspace = true
 
 [lints]
