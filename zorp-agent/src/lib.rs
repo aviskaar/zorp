@@ -58,6 +58,7 @@ mod verify;
 pub use active_skills::{active_skills, ActiveSkill, Presence};
 pub use agent::{
     web_search_availability, Agent, Outcome, RunRecorder, Summarizer, ToolAvailability,
+    SEARCH_PROVIDER_VAR,
 };
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use capsule::{

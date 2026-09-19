@@ -218,8 +218,9 @@ async fn health() -> Json<serde_json::Value> {
 /// tool exists, and the browser can observe none of them. Whether
 /// `zorp-web` was compiled with the `search` feature is a fact about the
 /// binary. Whether the policy permits the tool is a fact about the code the
-/// binary runs. Whether the search provider found its key is a fact about
-/// the environment the server was started in, and it can change without a
+/// binary runs. Whether the provider `ZORP_SEARCH_PROVIDER` selects can be
+/// built, which for Tavily means finding its key, is a fact about the
+/// environment the server was started in, and it can change without a
 /// restart, so this is answered per request rather than at startup.
 ///
 /// A separate route rather than another field on `/api/settings`, which is

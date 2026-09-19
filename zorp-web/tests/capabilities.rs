@@ -1,11 +1,11 @@
 //! `GET /api/capabilities`: what this build can actually do.
 //!
 //! The endpoint exists because the browser cannot work these capabilities
-//! out for itself. Three separate things
-//! decide whether that tool is there: whether `zorp-web` was built with the
-//! `search` feature, whether the policy permits the tool, and whether the
-//! search provider found its key in the server's environment. A page can see
-//! none of the three, so it has to be told.
+//! out for itself. Three separate things decide whether that tool is there:
+//! whether `zorp-web` was built with the `search` feature, whether the
+//! policy permits the tool, and whether the selected search provider can be
+//! built from the server's environment. A page can see none of the three,
+//! so it has to be told.
 //!
 //! Voice shares this endpoint. Its value comes from the same observed status
 //! function as `GET /api/voice/status`, and voice route tests pin that equality.
@@ -99,6 +99,7 @@ async fn without_the_search_feature_web_search_is_unavailable() {
 #[tokio::test]
 async fn with_the_feature_but_no_key_web_search_is_unavailable() {
     let _guard = ENV.lock().await;
+    std::env::remove_var("ZORP_SEARCH_PROVIDER");
     std::env::remove_var("ZORP_TAVILY_API_KEY");
     let addr = spawn().await;
     let capability = web_search(addr).await;
@@ -120,11 +121,49 @@ async fn with_the_feature_but_no_key_web_search_is_unavailable() {
 #[tokio::test]
 async fn with_the_feature_and_a_key_web_search_is_available() {
     let _guard = ENV.lock().await;
+    std::env::remove_var("ZORP_SEARCH_PROVIDER");
     std::env::set_var("ZORP_TAVILY_API_KEY", "test-key-not-a-real-one");
     let addr = spawn().await;
     let capability = web_search(addr).await;
     std::env::remove_var("ZORP_TAVILY_API_KEY");
     assert!(available(&capability), "{capability}");
+}
+
+/// SearXNG takes no key, so selecting it is the whole of turning search on,
+/// and the answer names it. It still says the search leaves this machine:
+/// an instance on localhost forwards the query to the engines it
+/// aggregates, and the indicator must not suggest otherwise.
+#[cfg(feature = "search")]
+#[tokio::test]
+async fn selecting_searxng_makes_web_search_available_without_a_key() {
+    let _guard = ENV.lock().await;
+    std::env::remove_var("ZORP_TAVILY_API_KEY");
+    std::env::set_var("ZORP_SEARCH_PROVIDER", "searxng");
+    let addr = spawn().await;
+    let capability = web_search(addr).await;
+    std::env::remove_var("ZORP_SEARCH_PROVIDER");
+    assert!(available(&capability), "{capability}");
+    let detail = detail(&capability);
+    assert!(detail.contains("searxng"), "{detail}");
+    assert!(detail.contains("leaves this machine"), "{detail}");
+}
+
+/// A provider name that is not one is unavailable, with the variable in the
+/// reason. The Tavily key is set, so an answer of "available" here would
+/// mean a silent fallback to the provider nobody named.
+#[cfg(feature = "search")]
+#[tokio::test]
+async fn an_unknown_provider_is_unavailable_and_never_falls_back() {
+    let _guard = ENV.lock().await;
+    std::env::set_var("ZORP_TAVILY_API_KEY", "test-key-not-a-real-one");
+    std::env::set_var("ZORP_SEARCH_PROVIDER", "searxgn");
+    let addr = spawn().await;
+    let capability = web_search(addr).await;
+    std::env::remove_var("ZORP_SEARCH_PROVIDER");
+    std::env::remove_var("ZORP_TAVILY_API_KEY");
+    assert!(!available(&capability), "{capability}");
+    let detail = detail(&capability);
+    assert!(detail.contains("ZORP_SEARCH_PROVIDER"), "{detail}");
 }
 
 /// Same gate as every other route. It reports what this server is built

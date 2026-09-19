@@ -1,0 +1,41 @@
+{
+  "query": "searxng",
+  "number_of_results": 0,
+  "results": [
+    {
+      "url": "https://docs.searxng.org/",
+      "title": "SearXNG, a privacy-respecting metasearch engine",
+      "content": "SearXNG is a free internet metasearch engine which aggregates results from up to 243 search services. Users are neither tracked nor profiled.",
+      "publishedDate": null,
+      "thumbnail": null,
+      "engine": "duckduckgo",
+      "template": "default.html",
+      "parsed_url": ["https", "docs.searxng.org", "/", "", "", ""],
+      "img_src": "",
+      "priority": "",
+      "engines": ["duckduckgo", "brave", "startpage", "wikipedia"],
+      "positions": [1, 1, 1, 2],
+      "score": 4.0,
+      "category": "general"
+    },
+    {
+      "url": "https://github.com/searxng/searxng",
+      "title": "GitHub - searxng/searxng: SearXNG is a free internet metasearch engine",
+      "publishedDate": null,
+      "thumbnail": null,
+      "engine": "github",
+      "template": "default.html",
+      "parsed_url": ["https", "github.com", "/searxng/searxng", "", "", ""],
+      "img_src": "",
+      "priority": "",
+      "engines": ["github"],
+      "positions": [1],
+      "category": "it"
+    }
+  ],
+  "answers": [],
+  "corrections": [],
+  "infoboxes": [],
+  "suggestions": ["searxng docker", "searxng instances"],
+  "unresponsive_engines": [["google", "timeout"]]
+}
