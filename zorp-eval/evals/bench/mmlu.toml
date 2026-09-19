@@ -1,0 +1,12 @@
+about = """
+MMLU, 57 subjects, four options. A hashed 500 item sample of the 14,042
+item test split, the same 500 every run. Fetched once from the Hugging Face
+datasets server into the bench cache, never into this tree.
+"""
+format = "mmlu"
+limit = 500
+
+[source]
+huggingface = "cais/mmlu"
+config = "all"
+split = "test"

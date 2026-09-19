@@ -1,0 +1,29 @@
+# An example bench manifest. Same shape compat reads; bench ignores
+# contracts, so a bench-only manifest leaves that section out.
+#
+#   cargo run -p zorp-eval -- bench \
+#     --manifest zorp-eval/evals/bench/manifest.example.yaml \
+#     --cases zorp-eval/evals/bench \
+#     --db zorp-eval/evals/results/telemetry.db
+#
+# api_key_env names a variable in your environment and never holds a key.
+# reasoning_mode is sent the way zorp-agent sends it (reasoning_effort on an
+# OpenAI-compatible endpoint, a thinking budget on Anthropic); an empty
+# string sends nothing.
+schema_version: zorp.compat/v1
+experiment:
+  id: bench-example
+  repetitions: 1
+reference:
+  id: local-qwen3-4b
+  reasoning_mode: ""
+  provider: openai
+  model: qwen3:4b
+  base_url: http://localhost:11434/v1
+candidates:
+  - id: openrouter-small
+    reasoning_mode: ""
+    provider: openai
+    model: meta-llama/llama-3.2-3b-instruct
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY

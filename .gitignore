@@ -58,4 +58,10 @@ zorp-desktop/build/
 
 
 
+# Worktrees
+.worktrees
+.worktrees/
+
+
+
 
