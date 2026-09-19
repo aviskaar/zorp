@@ -103,6 +103,19 @@ fn api_router(state: AppState) -> Router {
         .allow_headers(Any)
         .allow_origin(allowed);
 
+    // Developer mode's routes are registered whatever the feature says. A
+    // browser that gets a 404 cannot tell "this server does not do that" from
+    // "you typed the URL wrong", and the tab has to be able to say which.
+    #[cfg(feature = "train")]
+    let dev_routes = crate::train::router(
+        state
+            .dev_state
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(crate::train::DevState::default())),
+    );
+    #[cfg(not(feature = "train"))]
+    let dev_routes: Router<AppState> = Router::new().fallback(dev_absent);
+
     Router::new()
         .route("/api/health", get(health))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
@@ -200,6 +213,7 @@ fn api_router(state: AppState) -> Router {
             post(recall_index).delete(delete_recall_index),
         )
         .route("/api/recall/search", get(recall_search))
+        .nest("/api/dev", dev_routes)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_token,
@@ -1861,6 +1875,20 @@ async fn start_investigate(
 ) -> impl IntoResponse {
     let _ = body;
     (StatusCode::NOT_IMPLEMENTED, RESEARCH_ABSENT).into_response()
+}
+
+#[cfg(not(feature = "train"))]
+const TRAIN_ABSENT: &str = "this zorp-web was built without the train feature, so developer mode \
+     is not compiled in. Rebuild it with --features train.";
+
+/// Every `/api/dev` path on a server built without `train`.
+///
+/// A fallback rather than one handler per route: the set of developer mode
+/// routes is the gated crate's business, and enumerating them here would be a
+/// second list to keep in step with it.
+#[cfg(not(feature = "train"))]
+async fn dev_absent() -> impl IntoResponse {
+    (StatusCode::NOT_IMPLEMENTED, TRAIN_ABSENT).into_response()
 }
 
 #[cfg(not(feature = "research"))]

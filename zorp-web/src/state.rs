@@ -170,6 +170,9 @@ pub struct AppState {
     /// only this package/process boundary while exercising the real route.
     #[cfg(feature = "voice")]
     pub voice_bootstrap: Option<Arc<dyn crate::voice::VoiceBootstrap>>,
+    /// Developer mode pretraining state (env, supervisor, model registry).
+    #[cfg(feature = "train")]
+    pub dev_state: Option<Arc<crate::train::DevState>>,
 }
 
 impl AppState {
@@ -210,6 +213,12 @@ impl AppState {
     /// saved path.
     pub fn with_workspace(mut self, root: std::path::PathBuf) -> Self {
         self.workspace_flag = Some(root);
+        self
+    }
+
+    #[cfg(feature = "train")]
+    pub fn with_dev_state(mut self, dev_state: Arc<crate::train::DevState>) -> Self {
+        self.dev_state = Some(dev_state);
         self
     }
 

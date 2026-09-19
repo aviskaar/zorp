@@ -187,7 +187,7 @@
         ></div>
       </aside>
 
-      <main class="main">
+      <main class="main" id="chat-shell">
         <header class="topbar">
           <!--
             The way back. On a phone this opens the drawer; on a wide window
@@ -271,6 +271,17 @@
               />
             </svg>
             <span id="settings-btn-label">Settings</span>
+          </button>
+          <button
+            class="model-btn dev-toggle-btn"
+            id="dev-toggle-btn"
+            type="button"
+            title="Switch to Developer Mode"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" />
+            </svg>
+            <span id="dev-toggle-label">Dev Mode</span>
           </button>
           <!--
             The file listing used to sit at the top of the artifact pane and
@@ -704,6 +715,7 @@
           </form>
         </section>
       </main>
+      <div class="dev-shell" id="dev-shell" hidden></div>
 
       <!--
         The artifact pane. A run ends in a file, and until this existed the

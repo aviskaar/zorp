@@ -32,6 +32,13 @@ recall = ["zorp-agent/recall", "dep:zorp-recall", "dep:sha2"]
 # 501 without it, so a browser gets told why the button is off instead of
 # a 404 it cannot explain.
 research = ["dep:zorp-track", "zorp-agent/research"]
+# Developer mode: training a model on this machine. Off by default for the
+# reason `voice` is: it supervises a Python environment it installs itself and
+# serves inference from it, and starting a local web UI should not acquire the
+# ability to spawn subprocesses and download a runtime by side effect. The
+# `/api/dev` routes exist either way and answer 501 without it, so the page can
+# say why the tab is off.
+train = ["dep:zorp-train"]
 # Recalling those conversations into a live turn, rather than only into the
 # sidebar. Built on `recall` because it is the same index read a second way,
 # and separate from it because they are different risks: `recall` puts old
@@ -55,9 +62,11 @@ zorp-mcp = { path = "../zorp-mcp" }
 zorp-recall = { path = "../zorp-recall", optional = true }
 zorp-track = { path = "../zorp-track", optional = true }
 zorp-voice = { path = "../zorp-voice", optional = true }
+zorp-train = { path = "../zorp-train", optional = true }
 sha2 = { workspace = true, optional = true }
 axum = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

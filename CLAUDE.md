@@ -561,6 +561,38 @@ resulting artifact, deliver it in the right form.
   more exposed than the shell the agent already runs, which is why a
   non-loopback bind still needs a token. See `docs/DECISIONS.md`
   (2026-09-05).
+- `zorp-train/` is zorp's developer mode: dataset manifests, a BPE
+  tokenizer trainer, Qwen style architecture recipes with a parameter
+  calculator, a pretraining loop on Apple Metal through MLX, and a model
+  registry that serves a finished checkpoint back on loopback so "Open in
+  Zorp" puts a model you trained into the model picker. It supervises an
+  isolated Python environment at `~/.zorp/training-env` and talks to it over
+  stdout as JSON lines. `zorp-web` exposes it behind the non-default
+  `train` feature at `/api/dev/*`, token gated like every other route, and
+  `web/src/developer-mode.ts` draws the five tabs.
+  Three things are not negotiable. A run trains on a real corpus or it says
+  it did not: `tokenizer_dir` and `dataset_path` are optional, the supervisor
+  forwards them exactly as given and guesses nothing, and with either missing
+  the Python side trains on synthetic tokens and names which of the two in
+  its init event. That report has to reach the page to be worth anything:
+  `TrainEvent::Init` carries `data`, `corpus_tokens` and `dropped_tokens`,
+  and the Pretrain tab draws them as a Training Data metric. Serde drops
+  unknown fields by default, so those three parsed fine and were silently
+  thrown away until the enum named them, which left the browser drawing a
+  loss curve with nothing saying what made it. The test that fails if they
+  go again is in `zorp-train/tests/manifest.rs`, and it also pins the case
+  where a run reported nothing: that reads as "Not reported" and never as
+  synthetic. A loss curve over noise looks exactly like a loss curve over
+  text, and an earlier draft resolved those paths relative to the process's
+  working directory, which made the corpus depend on where the server was
+  started. A sample is what the model produced or there is no sample event;
+  the placeholder sentence that used to be emitted was indistinguishable on
+  the page from a model that had learned to write it.
+  And a token id at or past the recipe's `vocab_size` is dropped rather than
+  clamped, because clamping trains on a token the text did not contain.
+  Nothing here is reachable by a model: no tool starts a run, trains a
+  tokenizer, or serves a checkpoint. See `docs/DECISIONS.md` (2026-09-19)
+  and `docs/superpowers/plans/2026-09-14-zorp-developer-mode-pretraining.md`.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's

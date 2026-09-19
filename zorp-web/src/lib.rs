@@ -27,6 +27,8 @@ pub mod settings;
 pub mod state;
 pub mod title;
 pub mod tool_safety;
+#[cfg(feature = "train")]
+pub mod train;
 pub mod turn;
 pub mod voice;
 pub mod workspace;

@@ -2046,3 +2046,194 @@ export async function setSessionAgent(id: string, agent: string | null): Promise
   return request<void>("PUT", `/api/sessions/${segment(id)}/agent`, { agent });
 }
 
+/* ------------------------------------------------------------------ */
+/* developer mode / pretraining                                        */
+/* ------------------------------------------------------------------ */
+
+export interface DevStatusResponse {
+  environment_status: string;
+  python_path?: string | null;
+}
+
+export interface DevSetupResponse {
+  status: string;
+  error?: string;
+}
+
+export interface ArchitectureRecipe {
+  name: string;
+  family: string;
+  vocab_size: number;
+  max_position_embeddings: number;
+  hidden_size: number;
+  intermediate_size: number;
+  num_hidden_layers: number;
+  num_attention_heads: number;
+  num_key_value_heads: number;
+  rms_norm_eps: number;
+  rope_theta: number;
+  qk_norm: boolean;
+  tie_word_embeddings: boolean;
+}
+
+export interface ParameterBreakdown {
+  embedding_params: number;
+  attention_params: number;
+  mlp_params: number;
+  norm_params: number;
+  total_params: number;
+}
+
+export interface DevRecipesResponse {
+  recipes: ArchitectureRecipe[];
+  default_breakdown: ParameterBreakdown;
+}
+
+export interface TokenizerConfig {
+  name: string;
+  vocab_size: number;
+  special_tokens?: string[];
+}
+
+export interface TokenInspection {
+  tokens: string[];
+  ids: number[];
+  char_count: number;
+  token_count: number;
+  compression_chars_per_token: number;
+}
+
+export interface InspectTokensResponse {
+  result?: TokenInspection;
+  error?: string;
+}
+
+export interface TrainingJobConfig {
+  run_id: string;
+  dataset_id: string;
+  tokenizer_name: string;
+  recipe_name: string;
+  batch_size: number;
+  gradient_accumulation_steps: number;
+  learning_rate: number;
+  warmup_steps: number;
+  max_tokens: number;
+  checkpoint_every_steps: number;
+  sample_every_steps: number;
+  /** Where the trained tokenizer lives. Absent means synthetic tokens. */
+  tokenizer_dir?: string;
+  /** The corpus to train on. Absent means synthetic tokens. */
+  dataset_path?: string;
+}
+
+export interface CheckpointMetadata {
+  run_id: string;
+  step: number;
+  loss: number;
+  checkpoint_dir: string;
+  created_at_iso: string;
+}
+
+export interface DevModelsResponse {
+  models: CheckpointMetadata[];
+}
+
+export interface DevServeResponse {
+  status: string;
+  port?: number;
+  base_url?: string;
+  error?: string;
+}
+
+export type TrainEvent =
+  | {
+      type: "init";
+      parameters: number;
+      device: string;
+      memory_total_gb: number;
+      // "corpus" or "synthetic". Absent means the run did not say, which
+      // the page reports as such rather than guessing either one.
+      data?: string;
+      corpus_tokens?: number;
+      dropped_tokens?: number;
+    }
+  | {
+      type: "step";
+      step: number;
+      loss: number;
+      lr: number;
+      tokens: number;
+      tok_per_sec: number;
+      memory_gb: number;
+      eta_seconds: number;
+    }
+  | { type: "sample"; step: number; prompt: string; output: string }
+  | { type: "checkpoint"; step: number; loss: number; path: string }
+  | { type: "error"; message: string };
+
+export async function getDevStatus(): Promise<DevStatusResponse> {
+  return request<DevStatusResponse>("GET", "/api/dev/status");
+}
+
+export async function setupDevEnvironment(): Promise<DevSetupResponse> {
+  return request<DevSetupResponse>("POST", "/api/dev/environment/setup", {});
+}
+
+export async function getDevRecipes(): Promise<DevRecipesResponse> {
+  return request<DevRecipesResponse>("GET", "/api/dev/recipes");
+}
+
+export async function inspectDevTokens(
+  tokenizerDir: string,
+  text: string,
+): Promise<InspectTokensResponse> {
+  return request<InspectTokensResponse>("POST", "/api/dev/tokenizer/inspect", {
+    tokenizer_dir: tokenizerDir,
+    text,
+  });
+}
+
+export async function trainDevTokenizer(
+  datasetPath: string,
+  outputDir: string,
+  config?: TokenizerConfig,
+): Promise<{ status: string; error?: string }> {
+  return request<{ status: string; error?: string }>("POST", "/api/dev/tokenizer/train", {
+    dataset_path: datasetPath,
+    output_dir: outputDir,
+    config,
+  });
+}
+
+export async function startDevTrain(
+  runDir: string,
+  config: TrainingJobConfig,
+  recipe?: ArchitectureRecipe | Record<string, unknown>,
+): Promise<{ status: string; error?: string }> {
+  return request<{ status: string; error?: string }>("POST", "/api/dev/train/start", {
+    run_dir: runDir,
+    config,
+    recipe,
+  });
+}
+
+export async function pauseDevTrain(): Promise<{ status: string; error?: string }> {
+  return request<{ status: string; error?: string }>("POST", "/api/dev/train/pause", {});
+}
+
+export async function resumeDevTrain(): Promise<{ status: string; error?: string }> {
+  return request<{ status: string; error?: string }>("POST", "/api/dev/train/resume", {});
+}
+
+export async function stopDevTrain(): Promise<{ status: string; error?: string }> {
+  return request<{ status: string; error?: string }>("POST", "/api/dev/train/stop", {});
+}
+
+export async function listDevModels(): Promise<DevModelsResponse> {
+  return request<DevModelsResponse>("GET", "/api/dev/models");
+}
+
+export async function serveDevModel(id: string): Promise<DevServeResponse> {
+  return request<DevServeResponse>("POST", `/api/dev/models/${segment(id)}/serve`, {});
+}
+
