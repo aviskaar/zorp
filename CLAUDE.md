@@ -223,20 +223,33 @@ resulting artifact, deliver it in the right form.
   inherited harness code as they're added. Use new crates or clearly
   named modules, not the inherited ones.
 - `zorp-search/` is zorp's own web search capability: a
-  `SearchProvider` trait with Tavily as the first provider. It depends on
-  no other workspace member and knows nothing about agents or tools.
-  `zorp-agent` exposes it as the `web_search` built-in behind the
-  non-default `search` feature, which is the only built-in that sends
-  anything over the network. `research` deliberately does not enable it;
-  run `--features research,search` when you want it. The API key comes
-  from `ZORP_TAVILY_API_KEY` and never from a flavor manifest. `zorp-web`
-  has its own opt-in `search` feature that turns the same built-in on for
-  the browser, off by default for the same reason, and it reports whether
-  the tool is really there at `GET /api/capabilities`. That answer is
-  observed rather than re-derived: `zorp_agent::web_search_availability`
-  shares one function with the registration site, and a test pins it to
-  `tool_names()`. See `docs/DECISIONS.md` (2026-08-21) before changing
-  either.
+  `SearchProvider` trait with two providers, Tavily and a self-hosted
+  SearXNG. It depends on no other workspace member and knows nothing
+  about agents or tools. `zorp-agent` exposes it as the `web_search`
+  built-in behind the non-default `search` feature, which is the only
+  built-in that sends anything over the network. `research` deliberately
+  does not enable it; run `--features research,search` when you want it.
+  `ZORP_SEARCH_PROVIDER` picks the provider, read in `web_search_tool()`
+  and nowhere else: unset or blank means `tavily`, `searxng` means
+  SearXNG, and anything else is an error that leaves the tool
+  unregistered, never a fallback to the other provider. Tavily's key
+  comes from `ZORP_TAVILY_API_KEY`; SearXNG takes no key and reads its
+  instance from `ZORP_SEARXNG_BASE_URL`, defaulting to
+  `http://localhost:8888`. None of the three ever comes from a flavor
+  manifest, because a workspace file the model can write must not move
+  where queries go. A local SearXNG is not a loopback capability and must
+  not be described as one: it forwards every query to the engines it
+  aggregates, so a search still leaves the machine and the availability
+  answer still says so. `zorp-web` has its own opt-in `search` feature
+  that turns the same built-in on for the browser, off by default for the
+  same reason, and it reports whether the tool is really there, and which
+  provider it uses, at `GET /api/capabilities`. That answer is observed
+  rather than re-derived: `zorp_agent::web_search_availability` shares
+  one function with the registration site for whichever provider is
+  selected, and a test pins it to `tool_names()`. Run `cargo test -p
+  zorp-search`, `cargo test -p zorp-agent --features search` and `cargo
+  test -p zorp-web --features search` whenever any of it changes. See
+  `docs/DECISIONS.md` (2026-08-21, 2026-09-18) before changing either.
 - `zorp-skill/` is zorp's own skill capability: discovery and parsing
   for Claude Code compatible skills (`SKILL.md` in a directory, YAML
   frontmatter plus a markdown body). Like `zorp-search` it depends on no
@@ -255,21 +268,37 @@ resulting artifact, deliver it in the right form.
   a turn, never from anything a model wrote, and a load is recognised by
   the header `Skill::instructions` puts on a body rather than by the name
   in the call. Both routes are read-only and neither sends a body.
-  The repository ships three of its own under `.claude/skills/`.
+  The repository ships four of its own under `.claude/skills/`.
   `artifact-design` and `artifact-diagramming` say how to write the
   `.html` and `.svg` files the browser's side pane renders, and
   `landing-page` says how to write a page that leaves the pane and goes on
   a real server, including the authoring rules that make a later move to
-  JSX mechanical rather than a rewrite. All three are pinned
+  JSX mechanical rather than a rewrite. `react-components` makes that move:
+  the same page as React components in a Vite project the person builds,
+  on top of `landing-page` rather than repeating it. All four are pinned
   by `zorp-skill/tests/first_party.rs`, because a `SKILL.md` that stops
   parsing takes its skill off every surface with only a warning to say so.
-  All three state the constraint that decides everything else about such a
+  All four state the constraint that decides everything else about such a
   file: the pane serves it under a bare `Content-Security-Policy: sandbox`,
   so no script in it runs and a page written against the opposite assumption
   renders as nothing. That header does not block an external font, stylesheet
-  or image, so keeping those out is a rule the three skills state and nothing
+  or image, so keeping those out is a rule the skills state and nothing
   enforces, and a page that loads them previews fine while telling a third
   party who opened it.
+  Which skills a model is offered depends on the model, and
+  `zorp-agent/src/skill_routing.rs` decides it with a rule in code and no
+  model call. A size under 14B read from the id (`qwen2.5:7b`), or a
+  context window under 16,384 tokens from `ZORP_CONTEXT_TOKENS` or the
+  provider listing's `context_length`, withholds `react-components` from
+  the `skill` tool's index, schema and lookup. An id that encodes no size
+  (`gpt-4o`, `claude-opus-5`) is offered everything, because those are
+  overwhelmingly the large hosted models. `ZORP_SKILL_TIER=full` or
+  `plain` overrides it either way. Discovery is unchanged and nothing is
+  hidden from the person: `/api/skills` and the active route carry an
+  `offer` with the rule's own sentence, the skills panel prints it beside
+  the dimmed skill, and the CLI says it on stderr and under `/skills`. See
+  `docs/DECISIONS.md` (2026-09-18) before changing the thresholds, the
+  default for an unknown size, or the named list.
   Three surfaces now say what is installed, and all three only read.
   `zorp --skills` lists them and `zorp --skill <name> <prompt>` puts one
   skill's instructions in front of a prompt, with `/skills` and
@@ -277,7 +306,8 @@ resulting artifact, deliver it in the right form.
   in front of the user's words and never into the system prompt, because
   the system slot is the one channel the harness speaks in.
   `zorp-agent`'s chat REPL gains `/skills`, which prints the same index the
-  model is shown. And `zorp-web` answers `GET /api/skills` with names,
+  model is shown, which is the offered set, with the rule under it when it
+  withheld anything. And `zorp-web` answers `GET /api/skills` with names,
   descriptions, paths and scopes, reports a count on
   `GET /api/capabilities`, and draws a toolbar pill with a popover behind
   it. **None of those loads a skill.** There is no route that does and
@@ -559,7 +589,7 @@ resulting artifact, deliver it in the right form.
   capabilities are called or what they cover; both have changed at least
   once already. There is no separate architecture index; there was one and
   it drifted, see `docs/DECISIONS.md` (2026-08-20).
-- `zorp-eval` has two halves and only one of them gates. `compat` spawns
+- `zorp-eval` has three parts and only one of them gates. `compat` spawns
   the agent against a live provider and grades what it left behind, which
   answers a question about models: a recent nine task run lost four tasks
   to upstream 404s, so it can never gate a merge. `harness` runs the real
@@ -588,6 +618,45 @@ resulting artifact, deliver it in the right form.
   `docs/superpowers/specs/2026-09-05-harness-eval-catalogue.md`, and it
   names what is already proved at a cheaper level so nobody writes it
   twice. See `docs/DECISIONS.md` (2026-09-05).
+- `bench` is the third part of `zorp-eval`: live models, real network,
+  scored on public benchmarks (MMLU, MMLU-Pro, GPQA, TruthfulQA mc1,
+  GSM8K), one table across the runtimes in a manifest.
+  `cargo run -p zorp-eval -- bench --manifest <m.yaml> --cases
+  zorp-eval/evals/bench`. It is not `harness`, whose name means the
+  scripted provider on loopback; its code is `zorp-eval/src/bench/`. It
+  reads the manifest `compat` reads (a bench-only manifest leaves out
+  `contracts`, and `compat` refuses one without it) and writes each item
+  as a `runs` row, with `passed` NULL when there was nothing to grade, plus
+  a `bench_results` row keyed by the same `run_id`, so the table is a
+  query over the runner's database and not a second store. One rule
+  decides everything else and it is not negotiable: a measurement that did
+  not happen is not a zero. Every item ends correct, incorrect or
+  unevaluable, and an unreachable endpoint, a timeout, a rate limit that
+  outlasted the retry bound, an HTTP or in-stream error, a truncated
+  stream, a reply cut off at the token limit, a filter refusal or an empty
+  reply is unevaluable, never scored, and counted in its own column beside
+  attempted and scored, with a row that scored nothing reading n/a. A
+  reply that arrived and commits to no readable answer is scored as wrong
+  and counted as `unparsed`. Cells come from code-derived columns only, the
+  rule `evals/harbor/ensemble_report.py` lives under, and the table carries
+  its contamination caveat in text. The same three rules as `harness`
+  hold: an unknown field in a case is an error, an empty case directory is
+  an error, and every inherited `ZORP_` variable is cleared from the
+  process before the first request, with a case stating its timeout and
+  retry bound as fields. Requests still go through `zorp::http_agent` and
+  `zorp::send_json_retrying`; the case's `timeout_secs` is a deadline on
+  each request and `zorp::Retrying::with_policy` carries its retry bound,
+  so no second agent and no second copy of the retry rules. Datasets are never vendored: they are fetched once
+  from the Hugging Face datasets server into `ZORP_BENCH_CACHE` or the
+  user's cache directory. GPQA is gated and is never downloaded; a case
+  points at a local CSV, a path inside this repository is refused, and its
+  text and replies stay out of the database (`gpqa.toml.example`). Tests
+  use invented fixtures in `zorp-eval/tests/fixtures/bench/` and the
+  `zorp-stub` provider, never a real dataset or the network. It gates
+  nothing and no merge-gating job runs it, for the reason `compat` does
+  not. Perplexity, memory and active-parameter counts need local weights
+  and are a separate piece of work; code-execution benchmarks are not
+  there yet. See `docs/DECISIONS.md` (2026-09-18).
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.

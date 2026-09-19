@@ -25,6 +25,12 @@ impl WebSearch {
     pub fn new(provider: Box<dyn SearchProvider + Send + Sync>) -> Self {
         WebSearch { provider }
     }
+
+    /// Which provider the searches go to, so the availability answer can
+    /// say where a query will leave for and not only that it will.
+    pub fn provider_name(&self) -> &str {
+        self.provider.name()
+    }
 }
 
 impl Tool for WebSearch {

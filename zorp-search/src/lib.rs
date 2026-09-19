@@ -5,8 +5,10 @@
 //! harness, and the harness's tool adapter is the only place that knows a
 //! search is a tool call.
 
+mod searxng;
 mod tavily;
 
+pub use searxng::{SearxngProvider, SEARXNG_BASE_URL, SEARXNG_BASE_URL_VAR};
 pub use tavily::TavilyProvider;
 
 use std::fmt;
@@ -48,7 +50,8 @@ impl Query {
 }
 
 /// One hit. This is the intersection of what Tavily, Brave, and Exa return,
-/// so a second provider needs no change above the trait.
+/// so a second provider needs no change above the trait. SearXNG was the
+/// second, and needed none.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     pub title: String,
@@ -66,7 +69,8 @@ pub struct SearchResult {
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum SearchError {
-    /// No key was configured, so no request was attempted.
+    /// No key was configured, so no request was attempted. Only a provider
+    /// that takes a key can return this; SearXNG takes none and never does.
     MissingApiKey { provider: String, var: String },
     /// The provider answered with a non-2xx status.
     Status {

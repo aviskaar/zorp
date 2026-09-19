@@ -44,6 +44,7 @@ mod sandbox;
 mod search_tool;
 mod session;
 pub mod sessions;
+pub mod skill_routing;
 mod skill_tool;
 pub mod state;
 pub mod streaming;
@@ -57,6 +58,7 @@ mod verify;
 pub use active_skills::{active_skills, ActiveSkill, Presence};
 pub use agent::{
     web_search_availability, Agent, Outcome, RunRecorder, Summarizer, ToolAvailability,
+    SEARCH_PROVIDER_VAR,
 };
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use capsule::{
@@ -70,6 +72,9 @@ pub use context_window::{
     ContextBudget, ContextUsage, SeedPlan, TokenUsage, UsageSource,
 };
 pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
+pub use skill_routing::{
+    parse_size_billions, skill_offer, ModelFacts, SkillOffer, SkillTier, TierChoice,
+};
 // `resolve_configured` and `resolve_scoped` are re-exported and nothing names
 // them. Dropping them from this list is not the fix: `flavor` is a private
 // module and both are one-line wrappers their own tests are the only caller

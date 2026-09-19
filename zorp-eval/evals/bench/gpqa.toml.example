@@ -1,0 +1,21 @@
+# GPQA is gated, and bench never downloads it. To run it:
+#
+#   1. Accept the terms at https://huggingface.co/datasets/Idavidrein/gpqa
+#      (or the authors' GitHub release) and download the zip yourself. The
+#      password is in the authors' README.
+#   2. Unzip it somewhere outside this repository. bench refuses a GPQA path
+#      inside the zorp tree, because a file there is one `git add .` from a
+#      public commit, and the authors ask that items never appear anywhere
+#      they could be scraped. The canary strings in the dataset are there to
+#      catch exactly that.
+#   3. Copy this file to a cases directory of your own (not this one, so a
+#      default run does not fail on a path you do not have) as gpqa.toml,
+#      set path below, and pass --cases to that directory.
+#
+# GPQA question text and model replies are not written to the telemetry
+# database; only item ids, the key letter and the extracted letter are.
+about = "GPQA diamond: 198 graduate-level questions, four options."
+format = "gpqa"
+
+[source]
+path = "~/datasets/gpqa/gpqa_diamond.csv"

@@ -41,9 +41,28 @@ docs/paper/zorp-paper.tex
 # Written into the repo root by the harness when jobs are driven by hand.
 /jobs/
 
-# Desktop Tauri build outputs
+# Desktop build outputs
 zorp-desktop/target
 zorp-desktop/gen
+zorp-desktop/Zorp/Frameworks/
+zorp-desktop/Zorp/.build/
+zorp-desktop/build/
+.build/
+*.a
+
+
+
+# Worktrees
+.worktrees
+.worktrees/
+
+
+
+# Worktrees
+.worktrees
+.worktrees/
+
+
 
 # Worktrees
 .worktrees

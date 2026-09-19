@@ -25,7 +25,13 @@ import {
   skillsView,
   type SkillsView,
 } from "../src/skills-view.ts";
-import type { ActiveSkill, ActiveSkillListing, SkillListing, SkillSummary } from "../src/api.ts";
+import type {
+  ActiveSkill,
+  ActiveSkillListing,
+  SkillListing,
+  SkillOffer,
+  SkillSummary,
+} from "../src/api.ts";
 
 const MARKUP = `
 <!doctype html><body>
@@ -394,4 +400,107 @@ test("with no active listing the panel is exactly what it was before", () => {
   assert.doesNotMatch(view.panel.textContent!, /in this conversation/);
   assert.equal(view.panel.querySelectorAll(".skills-item").length, 1);
   assert.match(view.panel.textContent!, /grants no tool/);
+});
+
+/* ------------------------------------------------------------------ */
+/* which skills the model is offered                                   */
+/* ------------------------------------------------------------------ */
+
+function plainOffer(over: Partial<SkillOffer> = {}): SkillOffer {
+  return {
+    model: "qwen2.5:7b",
+    tier: "plain",
+    setting: "auto",
+    reason:
+      "qwen2.5:7b reads as 7B parameters from its id, under the 14B the component skill is offered at, so pages are written as plain HTML. Set ZORP_SKILL_TIER=full or ZORP_SKILL_TIER=plain to decide it yourself.",
+    withheld: ["react-components"],
+    ...over,
+  };
+}
+
+function authoring(offer: SkillOffer | null): SkillListing {
+  return listing({
+    skills: [
+      skill({ name: "landing-page", scope: "workspace" }),
+      skill({ name: "react-components", scope: "workspace" }),
+    ],
+    offer,
+  });
+}
+
+test("a withheld skill is still listed, marked, and the rule says why", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, authoring(plainOffer()));
+
+  const names = [...view.panel.querySelectorAll(".skills-name")].map((n) => n.textContent);
+  assert.deepEqual(names, ["landing-page", "react-components"]);
+
+  const withheld = view.panel.querySelectorAll(".skills-withheld");
+  assert.equal(withheld.length, 1);
+  assert.equal(withheld[0].querySelector(".skills-name")?.textContent, "react-components");
+  assert.match(withheld[0].textContent ?? "", /not offered to this model/);
+
+  const note = view.panel.querySelector(".skills-offer")?.textContent ?? "";
+  assert.match(note, /Not offered to qwen2\.5:7b: react-components\./);
+  assert.match(note, /ZORP_SKILL_TIER/);
+});
+
+test("a model offered everything by the rule gets no sentence about it", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    authoring(plainOffer({ model: "claude-opus-5", tier: "full", withheld: [], reason: "all" })),
+  );
+  assert.equal(view.panel.querySelector(".skills-offer"), null);
+  assert.equal(view.panel.querySelectorAll(".skills-withheld").length, 0);
+});
+
+test("an override in force is said even when nothing is withheld", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    authoring(
+      plainOffer({
+        tier: "full",
+        setting: "full",
+        withheld: [],
+        reason: "ZORP_SKILL_TIER=full offers every installed skill to every model.",
+      }),
+    ),
+  );
+  assert.match(view.panel.querySelector(".skills-offer")?.textContent ?? "", /ZORP_SKILL_TIER=full/);
+});
+
+test("the conversation's offer wins over the configured model's", () => {
+  const { doc, view } = fixture();
+  const active: ActiveSkillListing = {
+    skills: [],
+    loaded: 0,
+    active: 0,
+    offer: plainOffer({ model: "gemma2:2b" }),
+  };
+  renderSkillsPanel(
+    doc,
+    view.panel,
+    authoring(plainOffer({ model: "claude-opus-5", tier: "full", withheld: [] })),
+    active,
+  );
+  assert.match(view.panel.querySelector(".skills-offer")?.textContent ?? "", /gemma2:2b/);
+  assert.equal(view.panel.querySelectorAll(".skills-withheld").length, 1);
+});
+
+test("a model id that looks like markup lands as text", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, authoring(plainOffer({ model: "<img src=x onerror=alert(1)>" })));
+  assert.equal(view.panel.querySelector("img"), null);
+  assert.match(view.panel.querySelector(".skills-offer")?.textContent ?? "", /<img src=x/);
+});
+
+test("an older server with no offer draws the panel as it was", () => {
+  const { doc, view } = fixture();
+  renderSkillsPanel(doc, view.panel, authoring(null));
+  assert.equal(view.panel.querySelector(".skills-offer"), null);
+  assert.equal(view.panel.querySelectorAll(".skills-withheld").length, 0);
 });

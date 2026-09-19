@@ -1,0 +1,11 @@
+about = """
+TruthfulQA, multiple choice with exactly one true option (mc1), all 817
+questions. The dataset lists the true option first, so bench shows the
+options in an order fixed by each question's id.
+"""
+format = "truthfulqa_mc1"
+
+[source]
+huggingface = "truthfulqa/truthful_qa"
+config = "multiple_choice"
+split = "validation"

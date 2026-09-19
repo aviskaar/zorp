@@ -11,6 +11,12 @@
 //! skill, in this tool's description. Bodies stay on disk until asked for.
 //! That is the whole point of the two level design, and it is also why a
 //! skill cannot spend context it was not given.
+//!
+//! The registry handed in here is the set offered to this agent's model,
+//! not everything discovered. `skill_routing` decides that, and
+//! `Agent::register_skills_with` applies it before this tool exists, so a
+//! skill withheld from a small model is absent from the index, the schema
+//! and the lookup alike. Nothing in this file knows the rule.
 
 use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult};
 use serde_json::{json, Value};

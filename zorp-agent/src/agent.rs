@@ -337,6 +337,11 @@ pub struct Agent {
     /// How large the context window is, when anybody has said, and how much of
     /// it the transcript may fill. Unknown by default; see `context_window`.
     context_budget: ContextBudget,
+    /// The window the provider's model listing stated for this model, when a
+    /// caller has one. Only the skill offer reads it: the budget above is
+    /// what a person configured and drives compaction, and a listing is not
+    /// a reason to start compacting. See `skill_routing`.
+    listed_window: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -430,7 +435,33 @@ impl Agent {
             renderer: stderr_renderer(),
             cancel,
             context_budget: ContextBudget::from_env(),
+            listed_window: None,
         }
+    }
+
+    /// Say what the provider's listing gave as this model's context window.
+    /// Must come before `register_builtins*`, which is where the skill offer
+    /// is decided.
+    pub fn with_listed_context_window(mut self, tokens: Option<u64>) -> Self {
+        self.listed_window = tokens;
+        self
+    }
+
+    /// Which skills this agent's model is offered, and why, under `choice`.
+    ///
+    /// The same function every surface that reports the offer calls, over
+    /// the same two facts: the id the model client will send, and the
+    /// windows known at construction. So what `/skills` or the browser says
+    /// is what the `skill` tool was built from.
+    pub fn skill_offer(&self, choice: &crate::skill_routing::TierChoice) -> crate::SkillOffer {
+        crate::skill_routing::skill_offer(
+            crate::ModelFacts {
+                id: self.model.identity(),
+                configured_window: self.context_budget.limit_tokens,
+                listed_window: self.listed_window,
+            },
+            choice,
+        )
     }
 
     /// Say how large the context window is. The default reads
@@ -687,11 +718,13 @@ impl Agent {
             self = self.register_skills(&scopes);
         }
 
-        // The search provider needs an API key. Missing one warns and skips
-        // registration rather than failing the process: a build with the
-        // `search` feature on is still a perfectly good agent for tasks that
-        // never search. Capabilities that genuinely require it, `validate`
-        // above all, then fail with their own gate message.
+        // Tavily needs an API key, and `ZORP_SEARCH_PROVIDER` can name a
+        // provider that does not exist. Either one warns and skips
+        // registration rather than failing the process, and neither falls
+        // back to the other provider. A build with the `search` feature on
+        // is still a perfectly good agent for tasks that never search.
+        // Capabilities that genuinely require it, `validate` above all, then
+        // fail with their own gate message.
         #[cfg(feature = "search")]
         if allow("web_search") {
             match web_search_tool() {
@@ -710,13 +743,44 @@ impl Agent {
     /// directories to look in. The env driven version above reads whatever
     /// the machine has installed, which is right in production and wrong in a
     /// test.
-    pub fn register_skills(mut self, scopes: &[PathBuf]) -> Self {
-        let (skills, warnings) = zorp_skill::SkillRegistry::discover(scopes);
+    pub fn register_skills(self, scopes: &[PathBuf]) -> Self {
+        let choice = crate::skill_routing::TierChoice::from_env();
+        self.register_skills_with(scopes, &choice)
+    }
+
+    /// `register_skills` with the override passed in rather than read from
+    /// `ZORP_SKILL_TIER`, so a test can say what it wants without touching
+    /// the process environment.
+    ///
+    /// The offer is applied to the registry the tool is built from, so a
+    /// withheld skill is absent from the index, from the schema's `enum`, and
+    /// from the lookup behind `run`. Asked for by name anyway, it is the
+    /// same "no skill named" error an invented name gets. Discovery is not
+    /// involved: the full set is what was found, and every listing a person
+    /// reads still shows it.
+    pub fn register_skills_with(
+        mut self,
+        scopes: &[PathBuf],
+        choice: &crate::skill_routing::TierChoice,
+    ) -> Self {
+        let (found, warnings) = zorp_skill::SkillRegistry::discover(scopes);
         // A skipped skill is reported, never swallowed. Someone whose skill
         // stopped appearing needs to be told why.
         for warning in warnings {
             eprintln!("zorp-agent: {warning}");
         }
+        let offer = self.skill_offer(choice);
+        let withheld = offer.withheld(found.iter().map(|s| s.name.as_str()));
+        if !withheld.is_empty() {
+            // Said where the CLI's other skill warnings go. The browser says
+            // it in the skills panel, from the same function.
+            eprintln!(
+                "zorp-agent: not offering {} to this model. {}",
+                withheld.join(", "),
+                offer.reason
+            );
+        }
+        let skills = found.filtered(|skill| offer.offers(&skill.name));
         if !skills.is_empty() {
             self.registry
                 .register(Box::new(crate::skill_tool::SkillTool::new(skills)));
@@ -1588,9 +1652,56 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
 /// same question asked without keeping the answer.
 #[cfg(feature = "search")]
 fn web_search_tool() -> Result<crate::search_tool::WebSearch, String> {
-    zorp_search::TavilyProvider::from_env()
-        .map(|provider| crate::search_tool::WebSearch::new(Box::new(provider)))
-        .map_err(|e| e.to_string())
+    let selected = std::env::var(SEARCH_PROVIDER_VAR).ok();
+    search_provider(selected.as_deref()).map(crate::search_tool::WebSearch::new)
+}
+
+/// Picks which search provider `web_search` talks to. Read from the
+/// environment, in `web_search_tool` and nowhere else, and never from a
+/// flavor manifest: a workspace file the model can write must not move where
+/// queries go, which is the same reason the Tavily key is not in one either.
+pub const SEARCH_PROVIDER_VAR: &str = "ZORP_SEARCH_PROVIDER";
+
+/// The providers `SEARCH_PROVIDER_VAR` can name, in the order an error lists
+/// them. The first is the default.
+#[cfg(feature = "search")]
+const SEARCH_PROVIDERS: [&str; 2] = ["tavily", "searxng"];
+
+/// Build the provider `selected` names. Unset or blank means `tavily`, so
+/// everything that worked before a second provider existed still works
+/// without anyone setting anything.
+///
+/// A value that names no provider is an error, and never a quiet fallback to
+/// the default. Somebody who wrote `searxgn` meant to keep their queries on
+/// their own instance, and sending them to a vendor instead is the one
+/// outcome worse than no search at all. The error names the variable and the
+/// values it takes, so it is fixable from the message alone.
+///
+/// Matching is exact after trimming. Provider names are the lowercase
+/// identifiers `SearchProvider::name` returns, and one spelling per provider
+/// is easier to grep for in a config than several.
+#[cfg(feature = "search")]
+fn search_provider(
+    selected: Option<&str>,
+) -> Result<Box<dyn zorp_search::SearchProvider + Send + Sync>, String> {
+    let name = selected
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(SEARCH_PROVIDERS[0]);
+    match name {
+        "tavily" => zorp_search::TavilyProvider::from_env()
+            .map(|provider| Box::new(provider) as Box<_>)
+            .map_err(|e| e.to_string()),
+        // Cannot fail to construct: no key, and a default base URL. Whether
+        // an instance is actually there is found out by searching, as with
+        // whether a Tavily key is one Tavily accepts.
+        "searxng" => Ok(Box::new(zorp_search::SearxngProvider::from_env())),
+        other => Err(format!(
+            "{SEARCH_PROVIDER_VAR} is {other:?}, which names no search provider; \
+             set it to one of {} or unset it for tavily",
+            SEARCH_PROVIDERS.join(", ")
+        )),
+    }
 }
 
 /// Whether a tool is there, and when it is not, why not.
@@ -1627,13 +1738,19 @@ impl ToolAvailability {
 /// Three separate things have to hold, and a caller that checked only the
 /// first would be wrong most of the time. The crate has to have been built
 /// with the `search` feature, which is not on by default. The policy has to
-/// permit the tool. And the provider has to find its key, which is read from
-/// the environment every time rather than cached, so a server started
-/// without one does not have to be restarted to notice it.
+/// permit the tool. And the selected provider has to be buildable: a
+/// `ZORP_SEARCH_PROVIDER` that names a real provider, and for Tavily a key.
+/// Both are read from the environment every time rather than cached, so a
+/// server started without them does not have to be restarted to notice.
+///
+/// It answers for whichever provider is selected, through the same
+/// `web_search_tool` registration calls, so the two cannot disagree about
+/// which provider that is.
 ///
 /// It reports that the tool is there, not that searching will work. Whether
-/// the key is one Tavily accepts is only knowable by spending a search, and
-/// this question gets asked on page loads.
+/// the key is one Tavily accepts, or whether a SearXNG instance is listening
+/// at its URL, is only knowable by spending a search, and this question gets
+/// asked on page loads.
 pub fn web_search_availability(policy: &Policy) -> ToolAvailability {
     let call = crate::model::ToolCall {
         id: String::new(),
@@ -1645,9 +1762,15 @@ pub fn web_search_availability(policy: &Policy) -> ToolAvailability {
     }
     #[cfg(feature = "search")]
     match web_search_tool() {
-        Ok(_) => ToolAvailability::yes(
-            "web_search is registered, and every search asks before it leaves this machine.",
-        ),
+        // Says which provider, because with two of them "registered" alone
+        // does not tell anyone where a query goes. And it still says the
+        // search leaves this machine whichever one it is: a SearXNG instance
+        // on localhost forwards the query to the engines it aggregates, so
+        // there is no provider for which that sentence stops being true.
+        Ok(tool) => ToolAvailability::yes(format!(
+            "web_search is registered against {}, and every search asks before it leaves this machine.",
+            tool.provider_name()
+        )),
         Err(e) => ToolAvailability::no(e),
     }
     #[cfg(not(feature = "search"))]
@@ -1791,6 +1914,7 @@ mod tests {
     /// `Policy`, rather than against a copy of either one's reasoning.
     #[test]
     fn web_search_availability_agrees_with_the_gates_it_reports_on() {
+        let _env = SEARCH_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let names = agent(Scripted::new(vec![]))
             .register_builtins_filtered(None)
             .tool_names();
@@ -1815,6 +1939,142 @@ mod tests {
             !reported.detail.trim().is_empty(),
             "an answer with no reason is not worth showing anyone"
         );
+    }
+
+    /// Held by every test here that reads or writes the search variables.
+    ///
+    /// Cargo runs tests on parallel threads in one process, so an
+    /// environment variable is shared between them. The availability test
+    /// above reads the selection twice, once through registration and once
+    /// through the answer, and a test below setting `ZORP_SEARCH_PROVIDER`
+    /// in between would make it fail for a reason that has nothing to do
+    /// with the code. A `std` mutex locked inside each test body, not a
+    /// helper that returns the guard: a guard has to live in the test's own
+    /// scope to cover it. Poison is stepped over so one failure does not
+    /// cascade into the rest.
+    static SEARCH_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Sets a variable for the length of a test and puts back whatever was
+    /// there, including nothing, when dropped. Only ever built while
+    /// `SEARCH_ENV` is held.
+    #[cfg(feature = "search")]
+    struct EnvVar {
+        name: &'static str,
+        previous: Option<String>,
+    }
+
+    #[cfg(feature = "search")]
+    impl EnvVar {
+        fn set(name: &'static str, value: Option<&str>) -> EnvVar {
+            let previous = std::env::var(name).ok();
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+            EnvVar { name, previous }
+        }
+    }
+
+    #[cfg(feature = "search")]
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    #[cfg(feature = "search")]
+    fn registers_web_search() -> bool {
+        agent(Scripted::new(vec![]))
+            .register_builtins_filtered(None)
+            .tool_names()
+            .iter()
+            .any(|name| name == "web_search")
+    }
+
+    /// Nothing that worked before a second provider existed stops working:
+    /// unset and blank both mean Tavily, and Tavily still wants its key.
+    #[cfg(feature = "search")]
+    #[test]
+    fn an_unset_or_blank_selection_is_tavily() {
+        let _env = SEARCH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let key = EnvVar::set("ZORP_TAVILY_API_KEY", Some("test-key-not-a-real-one"));
+        for selected in [None, Some(""), Some("   ")] {
+            let provider = search_provider(selected).unwrap();
+            assert_eq!(provider.name(), "tavily", "{selected:?}");
+        }
+        drop(key);
+        let _key = EnvVar::set("ZORP_TAVILY_API_KEY", None);
+        let err = search_provider(None).err().unwrap();
+        assert!(err.contains("ZORP_TAVILY_API_KEY"), "{err}");
+    }
+
+    /// SearXNG takes no key, so selecting it is enough on its own.
+    #[cfg(feature = "search")]
+    #[test]
+    fn searxng_is_selected_by_name_and_needs_no_key() {
+        let _env = SEARCH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _key = EnvVar::set("ZORP_TAVILY_API_KEY", None);
+        for selected in ["searxng", " searxng\n"] {
+            let provider = search_provider(Some(selected)).unwrap();
+            assert_eq!(provider.name(), "searxng", "{selected:?}");
+        }
+    }
+
+    /// A misspelling is an error that says how to fix it. It is never the
+    /// default provider, whose name the person did not write.
+    #[cfg(feature = "search")]
+    #[test]
+    fn an_unknown_selection_is_an_error_naming_the_choices() {
+        let _env = SEARCH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _key = EnvVar::set("ZORP_TAVILY_API_KEY", Some("test-key-not-a-real-one"));
+        for selected in ["searxgn", "Tavily", "brave"] {
+            let err = search_provider(Some(selected)).err().unwrap();
+            assert!(err.contains(SEARCH_PROVIDER_VAR), "{err}");
+            assert!(err.contains(selected), "{err}");
+            assert!(err.contains("tavily") && err.contains("searxng"), "{err}");
+        }
+    }
+
+    /// The same rules through the environment, and through both of the
+    /// things that read it: registration and the availability answer. The
+    /// Tavily key is set throughout, so a fallback to Tavily would register
+    /// the tool, and the assertion is that it does not.
+    #[cfg(feature = "search")]
+    #[test]
+    fn the_environment_selects_the_provider_for_registration_and_the_answer_alike() {
+        let _env = SEARCH_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _key = EnvVar::set("ZORP_TAVILY_API_KEY", Some("test-key-not-a-real-one"));
+
+        let selected = EnvVar::set(SEARCH_PROVIDER_VAR, Some("searxgn"));
+        assert!(!registers_web_search(), "an unknown provider fell back");
+        let reported = web_search_availability(&Policy::default());
+        assert!(!reported.available, "{reported:?}");
+        assert!(
+            reported.detail.contains(SEARCH_PROVIDER_VAR),
+            "{reported:?}"
+        );
+        drop(selected);
+
+        let selected = EnvVar::set(SEARCH_PROVIDER_VAR, Some("searxng"));
+        assert!(registers_web_search());
+        let reported = web_search_availability(&Policy::default());
+        assert!(reported.available, "{reported:?}");
+        assert!(reported.detail.contains("searxng"), "{reported:?}");
+        // A local instance is still a search that leaves this machine, and
+        // the answer must not start implying otherwise.
+        assert!(
+            reported.detail.contains("leaves this machine"),
+            "{reported:?}"
+        );
+        drop(selected);
+
+        let _selected = EnvVar::set(SEARCH_PROVIDER_VAR, None);
+        let reported = web_search_availability(&Policy::default());
+        assert!(reported.available, "{reported:?}");
+        assert!(reported.detail.contains("tavily"), "{reported:?}");
     }
 
     /// An endpoint that answers slowly and at length, over a real socket.
@@ -4015,6 +4275,118 @@ mod tests {
         let a =
             agent(Scripted::new(vec![text("done")])).register_skills(&[root.path().to_path_buf()]);
         assert!(a.tool_names().contains(&"skill".to_string()));
+    }
+
+    /// An agent talking to `model_id`, never called. `HttpModel` because its
+    /// `identity` is the id, which is the fact the offer reads.
+    fn agent_for_model(model_id: &str) -> Agent {
+        Agent::new(
+            Box::new(crate::model::HttpModel {
+                url: "http://127.0.0.1:9/never".into(),
+                api_key: None,
+                model: model_id.into(),
+                provider: crate::provider::Provider::OpenAiCompatible,
+                max_tokens: None,
+            }),
+            "system",
+            1,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .with_context_budget(ContextBudget::default())
+    }
+
+    fn authoring_skills() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        for (name, description) in [
+            ("landing-page", "plain html pages"),
+            (
+                "react-components",
+                "COMPONENT ENTRY: pages as react components",
+            ),
+        ] {
+            let dir = root.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nbody"),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    fn skill_schema(a: &Agent) -> String {
+        a.registry
+            .schemas()
+            .into_iter()
+            .find(|s| s["function"]["name"] == "skill")
+            .expect("the skill tool is registered")
+            .to_string()
+    }
+
+    /// The point of routing at the index. A small model's `skill` tool must
+    /// not mention the component skill anywhere: not in the description it
+    /// reads every turn, and not in the enum it could pick from.
+    #[test]
+    fn a_small_model_never_sees_the_component_skill_in_the_index() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        let a = agent_for_model("qwen2.5:7b")
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Auto);
+        let schema = skill_schema(&a);
+        assert!(schema.contains("landing-page"), "{schema}");
+        assert!(!schema.contains("react-components"), "{schema}");
+        assert!(!schema.contains("COMPONENT ENTRY"), "{schema}");
+
+        // Asked for by name anyway, it is not there to load.
+        let call = crate::model::ToolCall {
+            id: "1".into(),
+            name: "skill".into(),
+            arguments: serde_json::json!({"name": "react-components"}),
+        };
+        let mut a = a;
+        let out = a.registry.dispatch(&call, &mut a.cx);
+        assert!(out.content.contains("no skill named"), "{}", out.content);
+    }
+
+    #[test]
+    fn a_capable_or_unknown_model_sees_both_authoring_skills() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        for id in ["llama-3.3-70b-instruct", "claude-opus-5", "gpt-4o"] {
+            let a = agent_for_model(id)
+                .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Auto);
+            let schema = skill_schema(&a);
+            assert!(schema.contains("landing-page"), "{id}: {schema}");
+            assert!(schema.contains("react-components"), "{id}: {schema}");
+        }
+    }
+
+    /// The context half of the rule, through the agent: a listed window that
+    /// is too small withholds the skill from a model whose id says nothing.
+    #[test]
+    fn a_small_listed_window_withholds_the_component_skill() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        let a = agent_for_model("claude-opus-5")
+            .with_listed_context_window(Some(8_192))
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Auto);
+        assert!(!skill_schema(&a).contains("react-components"));
+    }
+
+    #[test]
+    fn the_override_reaches_the_index_in_both_directions() {
+        use crate::skill_routing::TierChoice;
+        let root = authoring_skills();
+        let small = agent_for_model("gemma2:2b")
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Full);
+        assert!(skill_schema(&small).contains("react-components"));
+        let large = agent_for_model("claude-opus-5")
+            .register_skills_with(&[root.path().to_path_buf()], &TierChoice::Plain);
+        assert!(!skill_schema(&large).contains("react-components"));
+        assert!(skill_schema(&large).contains("landing-page"));
     }
 
     /// An empty tool is worse than no tool: it spends schema space telling the

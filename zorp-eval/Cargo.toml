@@ -22,3 +22,13 @@ tempfile = { workspace = true }
 # The scripted provider the harness suite serves, shared with zorp-agent's
 # transport tests so the two cannot drift apart.
 zorp-stub = { path = "../zorp-stub" }
+# The bench half sends model traffic, and model traffic goes through
+# `zorp::http_agent` and `zorp::send_json_retrying`: one place for timeouts
+# and one place for what a refused request becomes.
+zorp = { path = ".." }
+ureq = { workspace = true }
+# Where fetched datasets are cached when ZORP_BENCH_CACHE does not say.
+dirs = { workspace = true }
+# GPQA ships as a CSV inside a password-protected zip, with multi-line
+# quoted fields, which is not something to parse by hand.
+csv = { workspace = true }

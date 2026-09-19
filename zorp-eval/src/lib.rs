@@ -1,5 +1,6 @@
 // Library entrypoint
 
+pub mod bench;
 pub mod config;
 pub mod contracts;
 pub mod grader;

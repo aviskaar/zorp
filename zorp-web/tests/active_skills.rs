@@ -305,3 +305,39 @@ async fn asking_the_question_changes_nothing_in_the_store() {
         assert_eq!(a.message.text(), b.message.text());
     }
 }
+
+/// "Why does this conversation not have the component skill" is a question a
+/// person asks about a conversation, so the answer is on this route too: the
+/// rule's sentence, the model it was applied to, and what it withheld.
+#[tokio::test]
+async fn the_report_says_which_skills_this_conversations_model_is_offered() {
+    let _env = ENV.lock().await;
+    std::env::set_var("ZORP_MODEL", "gemma2:2b");
+    std::env::remove_var("ZORP_SKILL_TIER");
+    let fx = fixture(
+        &[(
+            "c1",
+            "landing-page",
+            skill_body("landing-page", "Step one."),
+        )],
+        &["landing-page", "react-components"],
+    )
+    .await;
+
+    let body = get_json(fx.url("s1")).await;
+    std::env::remove_var("ZORP_MODEL");
+    let offer = &body["offer"];
+    assert_eq!(offer["model"], "gemma2:2b", "{body}");
+    assert_eq!(offer["tier"], "plain", "{body}");
+    assert_eq!(
+        offer["withheld"],
+        serde_json::json!(["react-components"]),
+        "{body}"
+    );
+    assert!(
+        offer["reason"].as_str().unwrap().contains("gemma2:2b"),
+        "{body}"
+    );
+    // The loaded skill is still reported as loaded; routing is not presence.
+    assert_eq!(body["skills"][0]["name"], "landing-page", "{body}");
+}

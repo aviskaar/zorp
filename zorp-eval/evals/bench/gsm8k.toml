@@ -1,0 +1,11 @@
+about = """
+GSM8K grade school maths, graded on the final number. A hashed 500 item
+sample of the 1,319 item test split.
+"""
+format = "gsm8k"
+limit = 500
+
+[source]
+huggingface = "openai/gsm8k"
+config = "main"
+split = "test"
