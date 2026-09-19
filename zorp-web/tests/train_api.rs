@@ -53,11 +53,10 @@ async fn test_dev_status_endpoint() {
     });
 
     let addr = spawn_test_server(dev_state).await;
-    let (status, body) = tokio::task::spawn_blocking(move || {
-        get(&format!("http://{addr}/api/dev/status"))
-    })
-    .await
-    .unwrap();
+    let (status, body) =
+        tokio::task::spawn_blocking(move || get(&format!("http://{addr}/api/dev/status")))
+            .await
+            .unwrap();
 
     assert_eq!(status, 200, "status endpoint returned {status}: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -75,17 +74,22 @@ async fn test_dev_recipes_endpoint() {
     });
 
     let addr = spawn_test_server(dev_state).await;
-    let (status, body) = tokio::task::spawn_blocking(move || {
-        get(&format!("http://{addr}/api/dev/recipes"))
-    })
-    .await
-    .unwrap();
+    let (status, body) =
+        tokio::task::spawn_blocking(move || get(&format!("http://{addr}/api/dev/recipes")))
+            .await
+            .unwrap();
 
     assert_eq!(status, 200, "recipes endpoint returned {status}: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let recipes = v.get("recipes").and_then(|r| r.as_array()).expect("recipes array");
+    let recipes = v
+        .get("recipes")
+        .and_then(|r| r.as_array())
+        .expect("recipes array");
     assert!(!recipes.is_empty());
-    assert_eq!(recipes[0].get("family").and_then(|f| f.as_str()), Some("qwen-inspired"));
+    assert_eq!(
+        recipes[0].get("family").and_then(|f| f.as_str()),
+        Some("qwen-inspired")
+    );
     assert!(v.get("default_breakdown").is_some());
 }
 
@@ -102,15 +106,17 @@ async fn test_dev_models_endpoint() {
     });
 
     let addr = spawn_test_server(dev_state).await;
-    let (status, body) = tokio::task::spawn_blocking(move || {
-        get(&format!("http://{addr}/api/dev/models"))
-    })
-    .await
-    .unwrap();
+    let (status, body) =
+        tokio::task::spawn_blocking(move || get(&format!("http://{addr}/api/dev/models")))
+            .await
+            .unwrap();
 
     assert_eq!(status, 200, "models endpoint returned {status}: {body}");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let models = v.get("models").and_then(|m| m.as_array()).expect("models array");
+    let models = v
+        .get("models")
+        .and_then(|m| m.as_array())
+        .expect("models array");
     assert!(models.is_empty());
 }
 
@@ -153,15 +159,16 @@ async fn test_dev_train_stream_endpoint() {
 
     let addr = spawn_test_server(dev_state).await;
     let url = format!("http://{addr}/api/dev/train/stream");
-    let resp = tokio::task::spawn_blocking(move || {
-        ureq::get(&url).call().unwrap()
-    })
-    .await
-    .unwrap();
+    let resp = tokio::task::spawn_blocking(move || ureq::get(&url).call().unwrap())
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), 200);
     let content_type = resp.header("content-type").unwrap_or_default().to_string();
-    assert!(content_type.starts_with("text/event-stream"), "expected SSE, got {content_type}");
+    assert!(
+        content_type.starts_with("text/event-stream"),
+        "expected SSE, got {content_type}"
+    );
 }
 
 #[tokio::test]
@@ -182,13 +189,15 @@ async fn test_dev_status_unauthorized_when_token_configured() {
             .unwrap();
     });
 
-    let (status, body) = tokio::task::spawn_blocking(move || {
-        get(&format!("http://{addr}/api/dev/status"))
-    })
-    .await
-    .unwrap();
+    let (status, body) =
+        tokio::task::spawn_blocking(move || get(&format!("http://{addr}/api/dev/status")))
+            .await
+            .unwrap();
 
-    assert_eq!(status, 401, "expected 401 unauthorized, got {status}: {body}");
+    assert_eq!(
+        status, 401,
+        "expected 401 unauthorized, got {status}: {body}"
+    );
     assert_eq!(body, "missing or wrong token");
 
     let (auth_status, _) = tokio::task::spawn_blocking(move || {

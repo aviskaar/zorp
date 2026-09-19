@@ -142,9 +142,7 @@ impl ModelRegistry {
         };
 
         // Drain remaining stdout in background
-        tokio::spawn(async move {
-            while let Ok(Some(_)) = reader.next_line().await {}
-        });
+        tokio::spawn(async move { while let Ok(Some(_)) = reader.next_line().await {} });
 
         *self.active_server.lock().map_err(|e| e.to_string())? = Some(child);
         *self.active_port.lock().map_err(|e| e.to_string())? = Some(port);

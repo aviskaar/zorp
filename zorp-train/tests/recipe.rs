@@ -44,7 +44,10 @@ fn test_qk_norm_toggle() {
 
     // QK norm removes 2 * d per layer = 2 * 896 * 24 = 43,008
     let baseline = calculate_parameters(&default_qwen_recipe());
-    assert_eq!(baseline.attention_params - breakdown.attention_params, 43_008);
+    assert_eq!(
+        baseline.attention_params - breakdown.attention_params,
+        43_008
+    );
     assert_eq!(baseline.total_params - breakdown.total_params, 43_008);
 }
 

@@ -114,7 +114,11 @@ fn test_train_and_inspect_tokens_e2e() {
     assert!(!output_dir.join("_train_bpe_tmp.py").exists());
 
     let inspect_res = inspect_tokens(&env, &output_dir, "machine learning tokenization");
-    assert!(inspect_res.is_ok(), "inspect_tokens failed: {:?}", inspect_res);
+    assert!(
+        inspect_res.is_ok(),
+        "inspect_tokens failed: {:?}",
+        inspect_res
+    );
 
     let inspection = inspect_res.unwrap();
     assert!(!inspection.tokens.is_empty());
@@ -147,7 +151,9 @@ fn test_train_tokenizer_empty_special_tokens() {
         .status();
     let tokenizers_available = matches!(status, Ok(s) if s.success());
     if !tokenizers_available {
-        eprintln!("Skipping test_train_tokenizer_empty_special_tokens: python3 with tokenizers not found");
+        eprintln!(
+            "Skipping test_train_tokenizer_empty_special_tokens: python3 with tokenizers not found"
+        );
         return;
     }
 
@@ -189,7 +195,9 @@ fn test_train_tokenizer_empty_special_tokens() {
 
     let config_content = fs::read_to_string(output_dir.join("tokenizer_config.json")).unwrap();
     let config_val: serde_json::Value = serde_json::from_str(&config_content).unwrap();
-    let special = config_val["special_tokens"].as_array().expect("special_tokens array");
+    let special = config_val["special_tokens"]
+        .as_array()
+        .expect("special_tokens array");
     assert!(
         special.is_empty(),
         "expected empty special_tokens array, got {:?}",

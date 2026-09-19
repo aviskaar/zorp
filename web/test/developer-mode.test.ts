@@ -89,3 +89,24 @@ test("DeveloperModeView triggers onBackToAgent when back button clicked", () => 
   backBtn.click();
   assert.equal(backCalled, true);
 });
+
+test("the pretrain tab offers a corpus and a tokenizer, and says what empty means", () => {
+  const container = doc.createElement("div");
+  const view = new DeveloperModeView(container, () => {}, () => {});
+  view.render();
+
+  const dataset = container.querySelector("#pt-dataset") as HTMLInputElement | null;
+  const tokenizer = container.querySelector("#pt-tokenizer") as HTMLInputElement | null;
+  assert.ok(dataset, "no dataset path input on the pretrain tab");
+  assert.ok(tokenizer, "no tokenizer directory input on the pretrain tab");
+
+  // Defaults match the Tokenizer tab's, so the two tabs describe one layout
+  // on disk rather than two.
+  assert.equal(dataset!.value, ".zorp/training/data/pretrain.jsonl");
+  assert.equal(tokenizer!.value, ".zorp/training/tokenizer");
+
+  // A synthetic run looks exactly like a real one in a loss curve, so the
+  // page has to say so before somebody starts one.
+  const text = container.textContent ?? "";
+  assert.match(text, /synthetic/i);
+});

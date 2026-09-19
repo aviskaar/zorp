@@ -1,6 +1,6 @@
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,7 +62,10 @@ impl TrainingEnvironment {
 
         // Verify MLX and tokenizers can be imported
         let check = Command::new(&py)
-            .args(["-c", "import mlx.core; import tokenizers; import safetensors"])
+            .args([
+                "-c",
+                "import mlx.core; import tokenizers; import safetensors",
+            ])
             .output();
 
         match check {

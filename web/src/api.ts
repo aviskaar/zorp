@@ -2073,6 +2073,10 @@ export interface TrainingJobConfig {
   max_tokens: number;
   checkpoint_every_steps: number;
   sample_every_steps: number;
+  /** Where the trained tokenizer lives. Absent means synthetic tokens. */
+  tokenizer_dir?: string;
+  /** The corpus to train on. Absent means synthetic tokens. */
+  dataset_path?: string;
 }
 
 export interface CheckpointMetadata {

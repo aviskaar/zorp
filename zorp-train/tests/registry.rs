@@ -31,7 +31,11 @@ fn test_registry_list_checkpoints_direct_and_nested() {
     fs::write(dir_alpha.join("model.safetensors"), b"alpha_weights").unwrap();
 
     // 2. Nested checkpoint in runs/*/checkpoints/*: models_dir/runs/run_beta/checkpoints/step_100/model.safetensors
-    let dir_beta = models_dir.join("runs").join("run_beta").join("checkpoints").join("step_100");
+    let dir_beta = models_dir
+        .join("runs")
+        .join("run_beta")
+        .join("checkpoints")
+        .join("step_100");
     fs::create_dir_all(&dir_beta).unwrap();
     fs::write(dir_beta.join("model.safetensors"), b"beta_weights").unwrap();
 
@@ -65,17 +69,26 @@ fn test_registry_list_checkpoints_direct_and_nested() {
     list.sort_by(|a, b| a.run_id.cmp(&b.run_id));
 
     // Assert custom_gamma metadata
-    let gamma = list.iter().find(|c| c.run_id == "custom_gamma").expect("custom_gamma found");
+    let gamma = list
+        .iter()
+        .find(|c| c.run_id == "custom_gamma")
+        .expect("custom_gamma found");
     assert_eq!(gamma.step, 250);
     assert_eq!(gamma.loss, 1.45);
     assert_eq!(gamma.created_at_iso, "2026-09-14T10:00:00Z");
 
     // Assert model_alpha metadata
-    let alpha = list.iter().find(|c| c.run_id == "model_alpha").expect("model_alpha found");
+    let alpha = list
+        .iter()
+        .find(|c| c.run_id == "model_alpha")
+        .expect("model_alpha found");
     assert_eq!(alpha.step, 0);
 
     // Assert run_beta metadata
-    let beta = list.iter().find(|c| c.run_id == "run_beta").expect("run_beta found");
+    let beta = list
+        .iter()
+        .find(|c| c.run_id == "run_beta")
+        .expect("run_beta found");
     assert_eq!(beta.step, 100);
 }
 
@@ -109,7 +122,10 @@ async fn test_registry_serve_and_stop_lifecycle() {
     assert_eq!(reg.active_port(), None);
 
     // Launch server on ephemeral port
-    let port = reg.serve_checkpoint(&env, &ckpt_dir).await.expect("server starts");
+    let port = reg
+        .serve_checkpoint(&env, &ckpt_dir)
+        .await
+        .expect("server starts");
     assert!(port > 0, "bound port must be > 0");
     assert!(reg.is_serving());
     assert_eq!(reg.active_port(), Some(port));

@@ -1,3 +1,5 @@
+use crate::environment::TrainingEnvironment;
+use crate::manifest::{TrainEvent, TrainingJobConfig};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
@@ -5,8 +7,6 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::broadcast;
-use crate::environment::TrainingEnvironment;
-use crate::manifest::{TrainEvent, TrainingJobConfig};
 
 const MLX_TRAIN_PY: &str = include_str!("../python/mlx_train.py");
 
@@ -44,10 +44,7 @@ impl TrainingSupervisor {
     }
 
     pub fn is_running(&self) -> bool {
-        self.active_job
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
+        self.active_job.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     pub fn active_pid(&self) -> Option<u32> {
@@ -140,7 +137,7 @@ impl TrainingSupervisor {
         std::fs::write(&script_path, MLX_TRAIN_PY).map_err(|e| e.to_string())?;
 
         let config_path = run_dir.join("job_config.json");
-        let full_cfg = serde_json::json!({
+        let mut full_cfg = serde_json::json!({
             "run_dir": run_dir.to_str().unwrap_or("."),
             "batch_size": config.batch_size,
             "learning_rate": config.learning_rate,
@@ -149,6 +146,15 @@ impl TrainingSupervisor {
             "sample_every_steps": config.sample_every_steps,
             "recipe": recipe_json,
         });
+        // Forwarded as given, never guessed. With neither present the
+        // Python side trains on synthetic tokens and says so in its init
+        // event, which is the honest report for a run with no corpus.
+        if let Some(dir) = config.tokenizer_dir.as_deref() {
+            full_cfg["tokenizer_dir"] = serde_json::json!(dir);
+        }
+        if let Some(path) = config.dataset_path.as_deref() {
+            full_cfg["dataset_path"] = serde_json::json!(path);
+        }
         std::fs::write(&config_path, full_cfg.to_string()).map_err(|e| e.to_string())?;
 
         let py = env.python_path();
@@ -202,11 +208,7 @@ impl TrainingSupervisor {
             }
 
             let wait_res = child.wait().await;
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                stderr_task,
-            )
-            .await;
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), stderr_task).await;
 
             let collected_stderr: Vec<String> = stderr_lines
                 .lock()

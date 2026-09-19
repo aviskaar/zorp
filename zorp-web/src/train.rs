@@ -163,11 +163,7 @@ async fn start_train(
                 )
             }
         },
-        None => {
-            return Json(
-                serde_json::json!({ "status": "error", "error": "missing config" }),
-            )
-        }
+        None => return Json(serde_json::json!({ "status": "error", "error": "missing config" })),
     };
     let recipe = body
         .get("recipe")

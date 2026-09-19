@@ -57,6 +57,16 @@ pub struct TrainingJobConfig {
     pub max_tokens: usize,
     pub checkpoint_every_steps: usize,
     pub sample_every_steps: usize,
+    /// Where the trained tokenizer lives. `None` means no tokenizer was
+    /// given, and training falls back to synthetic tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer_dir: Option<String>,
+    /// The corpus to train on. `None` means the same fallback. Both are
+    /// resolved by the caller, never guessed here: a path guessed relative
+    /// to the process's working directory is a different corpus depending
+    /// on where the server was started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

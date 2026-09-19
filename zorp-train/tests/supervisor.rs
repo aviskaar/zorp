@@ -23,7 +23,8 @@ async fn test_supervisor_channel() {
 
 #[test]
 fn test_all_train_events_deserialization() {
-    let init_json = r#"{"type":"init","parameters":250000000,"device":"Apple Metal","memory_total_gb":16.0}"#;
+    let init_json =
+        r#"{"type":"init","parameters":250000000,"device":"Apple Metal","memory_total_gb":16.0}"#;
     let init_event: TrainEvent = serde_json::from_str(init_json).unwrap();
     assert_eq!(
         init_event,
@@ -75,7 +76,8 @@ fn test_all_train_events_deserialization() {
         }
     );
 
-    let checkpoint_json = r#"{"type":"checkpoint","step":500,"loss":1.85,"path":"/tmp/checkpoints/step_500"}"#;
+    let checkpoint_json =
+        r#"{"type":"checkpoint","step":500,"loss":1.85,"path":"/tmp/checkpoints/step_500"}"#;
     let checkpoint_event: TrainEvent = serde_json::from_str(checkpoint_json).unwrap();
     assert_eq!(
         checkpoint_event,
@@ -154,6 +156,8 @@ for _ in range(50):
         max_tokens: 10000,
         checkpoint_every_steps: 100,
         sample_every_steps: 50,
+        tokenizer_dir: None,
+        dataset_path: None,
     };
 
     let run_dir = tmp.path().join("run");
@@ -236,6 +240,8 @@ sys.exit(1)
         max_tokens: 10000,
         checkpoint_every_steps: 100,
         sample_every_steps: 50,
+        tokenizer_dir: None,
+        dataset_path: None,
     };
 
     let run_dir = tmp.path().join("run");
@@ -249,7 +255,10 @@ sys.exit(1)
         "max_position_embeddings": 128
     });
 
-    let handle = sup.start_job(&env, &config, &run_dir, recipe).await.unwrap();
+    let handle = sup
+        .start_job(&env, &config, &run_dir, recipe)
+        .await
+        .unwrap();
 
     // Verify error event is broadcast with exit code and stderr details
     let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
@@ -310,6 +319,8 @@ while True:
         max_tokens: 10000,
         checkpoint_every_steps: 100,
         sample_every_steps: 50,
+        tokenizer_dir: None,
+        dataset_path: None,
     };
 
     let run_dir = tmp.path().join("run");
@@ -323,7 +334,10 @@ while True:
         "max_position_embeddings": 128
     });
 
-    let handle = sup.start_job(&env, &config, &run_dir, recipe).await.unwrap();
+    let handle = sup
+        .start_job(&env, &config, &run_dir, recipe)
+        .await
+        .unwrap();
     assert!(sup.is_running());
 
     assert!(sup.pause().is_ok());
@@ -335,3 +349,78 @@ while True:
     assert!(join_res.is_ok(), "handle hung after stop while paused");
 }
 
+/// The two paths reach the Python side exactly as configured, and are absent
+/// from the config when nobody set them.
+///
+/// The absence half is the point. An earlier version guessed, walking a list
+/// of paths relative to the process's working directory, which means the
+/// corpus a run trained on depended on where the server happened to be
+/// started. A run with no corpus has to be a run with no corpus, so that the
+/// Python side can say "synthetic" in its init event.
+#[tokio::test]
+async fn start_job_forwards_the_corpus_paths_and_never_invents_them() {
+    use std::os::unix::fs::PermissionsExt;
+
+    async fn config_written_for(
+        tokenizer_dir: Option<String>,
+        dataset_path: Option<String>,
+    ) -> serde_json::Value {
+        let tmp = tempdir().unwrap();
+        let env_dir = tmp.path().join("env");
+        let bin = env_dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let py_path = bin.join("python3");
+        fs::write(&py_path, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = fs::metadata(&py_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&py_path, perms).unwrap();
+
+        let config = TrainingJobConfig {
+            run_id: "r".to_string(),
+            dataset_id: "ds".to_string(),
+            tokenizer_name: "tok".to_string(),
+            recipe_name: "rec".to_string(),
+            batch_size: 4,
+            gradient_accumulation_steps: 1,
+            learning_rate: 0.001,
+            warmup_steps: 1,
+            max_tokens: 100,
+            checkpoint_every_steps: 10,
+            sample_every_steps: 10,
+            tokenizer_dir,
+            dataset_path,
+        };
+
+        let run_dir = tmp.path().join("run");
+        let sup = TrainingSupervisor::new();
+        let handle = sup
+            .start_job(
+                &TrainingEnvironment::new(env_dir),
+                &config,
+                &run_dir,
+                serde_json::json!({"vocab_size": 32}),
+            )
+            .await;
+        assert!(handle.is_ok(), "start_job failed: {:?}", handle.err());
+        let written = fs::read_to_string(run_dir.join("job_config.json")).unwrap();
+        serde_json::from_str(&written).unwrap()
+    }
+
+    let given = config_written_for(
+        Some("/tmp/tok-abc".to_string()),
+        Some("/tmp/corpus.jsonl".to_string()),
+    )
+    .await;
+    assert_eq!(given["tokenizer_dir"], "/tmp/tok-abc");
+    assert_eq!(given["dataset_path"], "/tmp/corpus.jsonl");
+
+    let absent = config_written_for(None, None).await;
+    assert!(
+        absent.get("tokenizer_dir").is_none(),
+        "a tokenizer directory was invented: {absent}"
+    );
+    assert!(
+        absent.get("dataset_path").is_none(),
+        "a dataset path was invented: {absent}"
+    );
+}

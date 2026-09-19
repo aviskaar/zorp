@@ -72,6 +72,8 @@ fn test_training_job_config_serde() {
         max_tokens: 1_000_000,
         checkpoint_every_steps: 500,
         sample_every_steps: 100,
+        tokenizer_dir: None,
+        dataset_path: None,
     };
     let serialized = serde_json::to_string(&config).expect("serialize config");
     let deserialized: TrainingJobConfig =

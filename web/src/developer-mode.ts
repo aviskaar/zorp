@@ -755,6 +755,25 @@ export class DeveloperModeView {
           <pre class="sample-text" id="sample-text">"Waiting for training sample generation…"</pre>
         </div>
 
+        <div class="dev-card" style="margin-top: 18px;">
+          <div class="card-header">
+            <h3>Training Corpus</h3>
+          </div>
+          <p class="dev-muted">Leave either field empty to train on synthetic
+          tokens. A synthetic run still produces a loss curve, so the run
+          reports which of the two it was.</p>
+          <div class="form-grid">
+            <div class="form-row">
+              <label for="pt-dataset">Dataset Path</label>
+              <input type="text" id="pt-dataset" value=".zorp/training/data/pretrain.jsonl" />
+            </div>
+            <div class="form-row">
+              <label for="pt-tokenizer">Tokenizer Directory</label>
+              <input type="text" id="pt-tokenizer" value=".zorp/training/tokenizer" />
+            </div>
+          </div>
+        </div>
+
         <div class="controls-row" style="margin-top: 20px;">
           <button class="btn btn-primary" id="btn-start">Start Training</button>
           <button class="btn btn-secondary" id="btn-pause" disabled>Pause</button>
@@ -816,6 +835,12 @@ export class DeveloperModeView {
           max_tokens: 500_000_000,
           checkpoint_every_steps: 100,
           sample_every_steps: 50,
+          // Empty means absent, not empty string: the server treats a
+          // missing path as "no corpus" and trains on synthetic tokens.
+          tokenizer_dir:
+            (body.querySelector("#pt-tokenizer") as HTMLInputElement | null)?.value.trim() || undefined,
+          dataset_path:
+            (body.querySelector("#pt-dataset") as HTMLInputElement | null)?.value.trim() || undefined,
         };
 
         try {
