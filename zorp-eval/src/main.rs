@@ -1,5 +1,5 @@
 use clap::Parser;
-use zorp_eval::{harness, runner};
+use zorp_eval::{bench, harness, runner};
 mod cli;
 
 fn main() -> anyhow::Result<()> {
@@ -34,6 +34,41 @@ fn main() -> anyhow::Result<()> {
             if !harness::run_suite(&cases, &agent_binary)? {
                 std::process::exit(1);
             }
+        }
+        cli::Command::Bench {
+            manifest,
+            cases,
+            db,
+            cache,
+        } => {
+            // Everything read from the environment is read first: the cache
+            // directory, and each runtime's key, which may itself be a
+            // ZORP_ variable. Then every inherited ZORP_ variable goes,
+            // before the first request builds the shared HTTP agent.
+            let cache = match cache {
+                Some(cache) => cache,
+                None => bench::dataset::default_cache_dir()?,
+            };
+            let plan = bench::Plan::prepare(bench::Options {
+                manifest,
+                cases,
+                db: db.clone(),
+                cache,
+                datasets_server: bench::dataset::DATASETS_SERVER.to_string(),
+            })?;
+            let cleared = bench::clear_inherited_zorp_env();
+            if !cleared.is_empty() {
+                eprintln!("bench: cleared inherited {}", cleared.join(", "));
+            }
+            let outcomes = plan.run()?;
+            println!("{}", outcomes.table);
+            println!(
+                "Results in {} (session {}).",
+                db.display(),
+                outcomes.session
+            );
+            // Exit zero whatever the rows say. Nothing gates on this, and an
+            // exit code that tracked accuracy would invite something to.
         }
     }
     Ok(())

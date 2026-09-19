@@ -1,0 +1,12 @@
+about = """
+MMLU-Pro: harder MMLU-style questions with up to ten options, so chance is
+ten percent rather than twenty-five. A hashed 500 item sample of the test
+split.
+"""
+format = "mmlu_pro"
+limit = 500
+
+[source]
+huggingface = "TIGER-Lab/MMLU-Pro"
+config = "default"
+split = "test"

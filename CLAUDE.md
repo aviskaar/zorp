@@ -572,7 +572,7 @@ resulting artifact, deliver it in the right form.
   capabilities are called or what they cover; both have changed at least
   once already. There is no separate architecture index; there was one and
   it drifted, see `docs/DECISIONS.md` (2026-08-20).
-- `zorp-eval` has two halves and only one of them gates. `compat` spawns
+- `zorp-eval` has three parts and only one of them gates. `compat` spawns
   the agent against a live provider and grades what it left behind, which
   answers a question about models: a recent nine task run lost four tasks
   to upstream 404s, so it can never gate a merge. `harness` runs the real
@@ -601,6 +601,45 @@ resulting artifact, deliver it in the right form.
   `docs/superpowers/specs/2026-09-05-harness-eval-catalogue.md`, and it
   names what is already proved at a cheaper level so nobody writes it
   twice. See `docs/DECISIONS.md` (2026-09-05).
+- `bench` is the third part of `zorp-eval`: live models, real network,
+  scored on public benchmarks (MMLU, MMLU-Pro, GPQA, TruthfulQA mc1,
+  GSM8K), one table across the runtimes in a manifest.
+  `cargo run -p zorp-eval -- bench --manifest <m.yaml> --cases
+  zorp-eval/evals/bench`. It is not `harness`, whose name means the
+  scripted provider on loopback; its code is `zorp-eval/src/bench/`. It
+  reads the manifest `compat` reads (a bench-only manifest leaves out
+  `contracts`, and `compat` refuses one without it) and writes each item
+  as a `runs` row, with `passed` NULL when there was nothing to grade, plus
+  a `bench_results` row keyed by the same `run_id`, so the table is a
+  query over the runner's database and not a second store. One rule
+  decides everything else and it is not negotiable: a measurement that did
+  not happen is not a zero. Every item ends correct, incorrect or
+  unevaluable, and an unreachable endpoint, a timeout, a rate limit that
+  outlasted the retry bound, an HTTP or in-stream error, a truncated
+  stream, a reply cut off at the token limit, a filter refusal or an empty
+  reply is unevaluable, never scored, and counted in its own column beside
+  attempted and scored, with a row that scored nothing reading n/a. A
+  reply that arrived and commits to no readable answer is scored as wrong
+  and counted as `unparsed`. Cells come from code-derived columns only, the
+  rule `evals/harbor/ensemble_report.py` lives under, and the table carries
+  its contamination caveat in text. The same three rules as `harness`
+  hold: an unknown field in a case is an error, an empty case directory is
+  an error, and every inherited `ZORP_` variable is cleared from the
+  process before the first request, with a case stating its timeout and
+  retry bound as fields. Requests still go through `zorp::http_agent` and
+  `zorp::send_json_retrying`; the case's `timeout_secs` is a deadline on
+  each request and `zorp::Retrying::with_policy` carries its retry bound,
+  so no second agent and no second copy of the retry rules. Datasets are never vendored: they are fetched once
+  from the Hugging Face datasets server into `ZORP_BENCH_CACHE` or the
+  user's cache directory. GPQA is gated and is never downloaded; a case
+  points at a local CSV, a path inside this repository is refused, and its
+  text and replies stay out of the database (`gpqa.toml.example`). Tests
+  use invented fixtures in `zorp-eval/tests/fixtures/bench/` and the
+  `zorp-stub` provider, never a real dataset or the network. It gates
+  nothing and no merge-gating job runs it, for the reason `compat` does
+  not. Perplexity, memory and active-parameter counts need local weights
+  and are a separate piece of work; code-execution benchmarks are not
+  there yet. See `docs/DECISIONS.md` (2026-09-18).
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.

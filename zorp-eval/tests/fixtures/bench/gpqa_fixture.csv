@@ -1,0 +1,4 @@
+Question,Correct Answer,Incorrect Answer 1,Incorrect Answer 2,Incorrect Answer 3,Record ID
+"Invented fixture, not GPQA text: which answer is the correct one?
+It spans two lines, the way real rows can.",Invented correct answer one,Invented wrong answer one,Invented wrong answer two,Invented wrong answer three,recFIXTURE1
+Invented fixture question two,Invented correct answer two,Wrong a,Wrong b,Wrong c,recFIXTURE2
