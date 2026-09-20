@@ -205,15 +205,23 @@ async fn list_models(State(state): State<Arc<DevState>>) -> Json<serde_json::Val
     Json(serde_json::json!({ "models": models }))
 }
 
+/// What a request naming a checkpoint the registry never listed gets.
+const NO_SUCH_CHECKPOINT: &str = "no such checkpoint in the registry";
+
+/// Serve a checkpoint the registry listed, and only one it listed.
+///
+/// The id is resolved by looking it up in the listing rather than by
+/// joining it onto the models directory. Serving starts a Python process
+/// pointed at the directory, so a joined id would let `../` walk out of
+/// the models directory and an id taken as a path would let an absolute
+/// one skip it altogether, which is a request choosing what this machine
+/// runs inference over.
 async fn serve_model(
     State(state): State<Arc<DevState>>,
     AxumPath(id): AxumPath<String>,
 ) -> Json<serde_json::Value> {
-    let p = PathBuf::from(&id);
-    let p = if p.is_absolute() {
-        p
-    } else {
-        state.registry.models_dir().join(&id)
+    let Some(p) = state.registry.resolve_checkpoint(&id) else {
+        return Json(serde_json::json!({ "status": "error", "error": NO_SUCH_CHECKPOINT }));
     };
     match state.registry.serve_checkpoint(&state.env, &p).await {
         Ok(port) => Json(serde_json::json!({

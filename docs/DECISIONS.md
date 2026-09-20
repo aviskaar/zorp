@@ -49,6 +49,17 @@ model that had learned to write it, which is the same failure as a
 fabricated measurement. It now decodes what the model produced, and with
 no tokenizer there is no sample event at all.
 
+**Why a checkpoint id is looked up and never joined.**
+`POST /api/dev/models/:id/serve` starts a Python process pointed at the
+directory the id names. The first cut built that directory by joining the
+id onto `models_dir`, and took the id as the path outright when it was
+absolute, so `../` walked out of the models directory and an absolute id
+skipped it entirely. `ModelRegistry::resolve_checkpoint` matches the id
+against what `list_checkpoints` actually found and answers with that
+directory or with nothing, so a name a request invented can only ever name
+a checkpoint the listing already offered. Same rule as every other name
+that arrives in a request here.
+
 **What it rules out:** any model-initiated training, tokenizer build or
 checkpoint serve, since none of it is a tool; a remote training or
 inference endpoint, because the whole point is local weights on this

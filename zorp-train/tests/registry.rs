@@ -184,3 +184,56 @@ async fn test_registry_serve_and_stop_lifecycle() {
     // Repeated stop should be safe
     reg.stop_server().expect("repeated stop_server succeeds");
 }
+
+/// A checkpoint id from a request is looked up, never joined onto a path.
+///
+/// `serve_checkpoint` starts a Python process pointed at the directory it
+/// is handed. When the id was joined onto the models directory, `../`
+/// segments walked out of it, and an id that was already absolute skipped
+/// it entirely, so a request could name any directory on the machine.
+/// Resolution answers only with a directory `list_checkpoints` found.
+#[test]
+fn resolve_checkpoint_refuses_a_path_the_listing_never_offered() {
+    let tmp = tempdir().unwrap();
+    let models_dir = tmp.path().join("models");
+
+    let listed = models_dir.join("run_alpha");
+    fs::create_dir_all(&listed).unwrap();
+    fs::write(listed.join("model.safetensors"), b"alpha").unwrap();
+
+    // A checkpoint shaped directory that sits outside the models directory.
+    let outside = tmp.path().join("elsewhere").join("not_ours");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("model.safetensors"), b"someone else's").unwrap();
+
+    let reg = ModelRegistry::new(models_dir.clone());
+
+    // The listing's own path, and the path under the models directory, are
+    // the two things a browser sends back.
+    assert_eq!(
+        reg.resolve_checkpoint(&listed.to_string_lossy()),
+        Some(listed.clone())
+    );
+    assert_eq!(reg.resolve_checkpoint("run_alpha"), Some(listed));
+
+    // An absolute path outside the models directory.
+    assert_eq!(reg.resolve_checkpoint(&outside.to_string_lossy()), None);
+
+    // The same one reached by walking out of the models directory.
+    let traversal = format!(
+        "../{}/{}",
+        tmp.path()
+            .join("elsewhere")
+            .file_name()
+            .unwrap()
+            .to_string_lossy(),
+        "not_ours"
+    );
+    assert_eq!(reg.resolve_checkpoint(&traversal), None);
+
+    // And a directory that exists but holds no weights, so the listing
+    // never named it.
+    fs::create_dir_all(models_dir.join("empty_dir")).unwrap();
+    assert_eq!(reg.resolve_checkpoint("empty_dir"), None);
+    assert_eq!(reg.resolve_checkpoint(""), None);
+}

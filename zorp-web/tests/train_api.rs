@@ -219,3 +219,74 @@ async fn test_dev_status_unauthorized_when_token_configured() {
     .unwrap();
     assert_eq!(auth_status, 200, "expected 200 with valid token");
 }
+
+/// Serving a checkpoint is a lookup in the registry, never a path join.
+///
+/// The route starts a Python process pointed at the directory it is given.
+/// It used to build that directory by joining the request's id onto the
+/// models directory, and to take the id as the path outright when it was
+/// absolute, so a request could point inference at any directory on the
+/// machine. Both shapes are refused by name here: anything the listing did
+/// not offer gets `no such checkpoint in the registry` and no process is
+/// started.
+#[tokio::test]
+async fn serve_refuses_a_checkpoint_the_registry_never_listed() {
+    let tmp = TempDir::new().unwrap();
+    let models_dir = tmp.path().join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+
+    // A checkpoint shaped directory outside the models directory.
+    let outside = tmp.path().join("elsewhere").join("not_ours");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("model.safetensors"), b"someone else's").unwrap();
+
+    let dev_state = Arc::new(DevState {
+        env: TrainingEnvironment::new(tmp.path().join("env")),
+        supervisor: TrainingSupervisor::new(),
+        registry: ModelRegistry::new(models_dir),
+    });
+
+    let addr = spawn_test_server(dev_state).await;
+
+    for id in [
+        outside.to_string_lossy().to_string(),
+        "../elsewhere/not_ours".to_string(),
+        "no_such_run".to_string(),
+    ] {
+        let url = format!(
+            "http://{addr}/api/dev/models/{}/serve",
+            urlencoding_all(&id)
+        );
+        let (status, body) =
+            tokio::task::spawn_blocking(move || post_json(&url, &serde_json::json!({})))
+                .await
+                .unwrap();
+
+        assert_eq!(status, 200, "serve returned {status}: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v.get("error").and_then(|e| e.as_str()),
+            Some("no such checkpoint in the registry"),
+            "serving {id} was not refused as an unlisted checkpoint: {body}"
+        );
+        assert!(
+            v.get("port").is_none(),
+            "serving {id} reported a port: {body}"
+        );
+    }
+}
+
+/// Percent encode every byte that is not unreserved, so a path stays one
+/// segment. `encodeURIComponent` in `web/src/api.ts` does the same job.
+fn urlencoding_all(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}

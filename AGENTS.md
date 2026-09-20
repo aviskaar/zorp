@@ -590,8 +590,15 @@ resulting artifact, deliver it in the right form.
   the page from a model that had learned to write it.
   And a token id at or past the recipe's `vocab_size` is dropped rather than
   clamped, because clamping trains on a token the text did not contain.
+  A checkpoint id on `POST /api/dev/models/:id/serve` is looked up in the
+  registry and never joined onto a path, because serving starts a process
+  pointed at the directory the id names: `ModelRegistry::resolve_checkpoint`
+  answers only with a directory `list_checkpoints` found, so `../` cannot
+  walk out of the models directory and an absolute id cannot skip it.
   Nothing here is reachable by a model: no tool starts a run, trains a
-  tokenizer, or serves a checkpoint. See `docs/DECISIONS.md` (2026-09-19)
+  tokenizer, or serves a checkpoint, and
+  `no_tool_trains_a_model_or_serves_a_checkpoint` in `zorp-agent/src/agent.rs`
+  is what says so. See `docs/DECISIONS.md` (2026-09-19)
   and `docs/superpowers/plans/2026-09-14-zorp-developer-mode-pretraining.md`.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic

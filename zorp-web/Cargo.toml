@@ -66,7 +66,7 @@ zorp-train = { path = "../zorp-train", optional = true }
 sha2 = { workspace = true, optional = true }
 axum = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

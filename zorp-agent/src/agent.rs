@@ -4533,6 +4533,38 @@ mod tests {
         }
     }
 
+    /// Training a model on this machine is a person's decision.
+    ///
+    /// Developer mode installs a Python environment, starts a pretraining
+    /// run on it, and serves a finished checkpoint back for inference.
+    /// CLAUDE.md says none of it is reachable by a model, and this is what
+    /// says so in code, the same shape as the two tests above. A tool that
+    /// started a run would be a turn spending an afternoon of somebody's
+    /// hardware, and one that served a checkpoint would be a turn choosing
+    /// what the next turn's model is.
+    #[test]
+    fn no_tool_trains_a_model_or_serves_a_checkpoint() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "start_training",
+            "start_train",
+            "train_model",
+            "pretrain",
+            "train_tokenizer",
+            "stop_training",
+            "pause_training",
+            "serve_model",
+            "serve_checkpoint",
+            "setup_training_environment",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// A person picks an agent, and a person trusts one. Never a model.
     ///
     /// This is the load bearing one for `zorp-agent/src/agents.rs`. The

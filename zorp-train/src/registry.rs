@@ -68,6 +68,34 @@ impl ModelRegistry {
         checkpoints
     }
 
+    /// The directory a request's checkpoint id names, or `None`.
+    ///
+    /// A lookup in the listing and never a path join. `serve_checkpoint`
+    /// starts a Python process pointed at whatever it is handed, so an id
+    /// joined onto `models_dir` lets `../` walk out of it, and an id taken
+    /// as a path lets an absolute one skip it entirely. Matching against
+    /// the checkpoints this registry actually found means a name a request
+    /// invented can only ever name a directory the listing already offered.
+    ///
+    /// The id is either the `checkpoint_dir` a listing printed, which is
+    /// what the browser sends back, or that directory's path relative to
+    /// `models_dir`.
+    pub fn resolve_checkpoint(&self, id: &str) -> Option<PathBuf> {
+        if id.is_empty() {
+            return None;
+        }
+        let wanted = Path::new(id);
+        self.list_checkpoints().into_iter().find_map(|c| {
+            let dir = PathBuf::from(&c.checkpoint_dir);
+            let listed_relative = dir.strip_prefix(&self.models_dir).ok();
+            if c.checkpoint_dir == id || listed_relative == Some(wanted) {
+                Some(dir)
+            } else {
+                None
+            }
+        })
+    }
+
     pub async fn serve_checkpoint(
         &self,
         env: &TrainingEnvironment,

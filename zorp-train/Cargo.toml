@@ -14,8 +14,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
 tempfile = { workspace = true }
-tokio = { version = "1.37", features = ["full"] }
-tokio-stream = "0.1"
+# The workspace tokio plus the two this crate adds: it supervises a Python
+# child and reads its lines. `full` was what this asked for, and feature
+# unification meant every build of the workspace got all of tokio.
+tokio = { workspace = true, features = ["process", "io-util"] }
+tokio-stream = { workspace = true }
 tracing = "0.1"
 rustix = { workspace = true }
 

@@ -129,3 +129,58 @@ test("the pretrain dashboard says what the run trained on, and never guesses", (
   );
   assert.equal(describeTrainingData({}), "Not reported");
 });
+
+// A checkpoint's name and path are read off disk, not written here, and the
+// registry list is the one place in this file that puts them in an HTML
+// string rather than through `textContent`. Every renderer in `web/src`
+// lives under the rule that text zorp did not write cannot become markup,
+// so the escaping is pinned rather than assumed: drop `escapeHtml` from
+// those interpolations and this fails.
+test("a checkpoint name or path containing markup is text, not markup", async () => {
+  const container = doc.createElement("div");
+  const view = new DeveloperModeView(container, () => {}, () => {});
+
+  const evil = '<img src=x onerror="document.title=\'pwned\'">';
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown) => {
+    const path = String(input);
+    const body = path.includes("/api/dev/models")
+      ? JSON.stringify({
+          models: [
+            {
+              run_id: evil,
+              step: 100,
+              loss: 1.5,
+              checkpoint_dir: `/models/${evil}`,
+              created_at_iso: "2026-09-19T00:00:00Z",
+            },
+          ],
+        })
+      : "{}";
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    view.render();
+    const regBtn = Array.from(container.querySelectorAll(".nav-btn")).find(
+      (b) => b.getAttribute("data-tab") === "registry",
+    ) as HTMLButtonElement;
+    regBtn.click();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const row = container.querySelector(".model-row");
+    assert.ok(row, "the checkpoint was not drawn at all");
+    assert.equal(container.querySelectorAll("img").length, 0, "the name became an element");
+    assert.match(container.textContent ?? "", /<img src=x onerror=/);
+
+    // The path rides on the button as data, and stays data there too.
+    const btn = container.querySelector(".open-zorp-btn") as HTMLButtonElement;
+    assert.equal(btn.dataset.path, `/models/${evil}`);
+    assert.equal(btn.dataset.name, evil);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

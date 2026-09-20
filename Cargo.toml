@@ -66,6 +66,9 @@ rustix = { version = "1", features = ["process"] }
 clap = { version = "4", features = ["derive"] }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# The `sync` feature is what wraps a broadcast receiver as a stream, which
+# is how a training run's events reach the browser.
+tokio-stream = { version = "0.1", features = ["sync"] }
 async-stream = "0.3"
 futures-core = "0.3"
 tower-http = { version = "0.6", features = ["cors", "fs", "set-header"] }
