@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -131,15 +131,24 @@ impl ModelRegistry {
             .spawn()
             .map_err(|e| format!("failed to start mlx_serve: {e}"))?;
 
-        // Drain stderr in the background
-        if let Some(stderr) = child.stderr.take() {
+        // Drain stderr in the background, keeping what it said. A start that
+        // fails says why there and nowhere else, and a caller told only that
+        // it timed out has nothing to act on.
+        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let draining = child.stderr.take().map(|stderr| {
+            let errors = Arc::clone(&errors);
             tokio::spawn(async move {
                 let mut err_reader = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = err_reader.next_line().await {
                     tracing::debug!(target: "zorp_train::registry::mlx_serve", "{line}");
+                    if let Ok(mut held) = errors.lock() {
+                        if held.len() < 20 {
+                            held.push(line);
+                        }
+                    }
                 }
-            });
-        }
+            })
+        });
 
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let mut reader = BufReader::new(stdout).lines();
@@ -161,11 +170,16 @@ impl ModelRegistry {
             Ok(Ok(p)) => p,
             Ok(Err(e)) => {
                 let _ = child.start_kill();
-                return Err(e);
+                drained(draining).await;
+                return Err(with_stderr(&e, &errors));
             }
             Err(_) => {
                 let _ = child.start_kill();
-                return Err("timeout waiting for mlx_serve to bind".to_string());
+                drained(draining).await;
+                return Err(with_stderr(
+                    "timeout waiting for mlx_serve to bind",
+                    &errors,
+                ));
             }
         };
 
@@ -191,6 +205,28 @@ impl ModelRegistry {
             *script_guard = None;
         }
         Ok(())
+    }
+}
+
+/// Wait, briefly, for the stderr reader to finish. The child has been killed
+/// by now, so its stderr closes and the task ends; the bound is there in case
+/// it does not.
+async fn drained(task: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(task) = task {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+    }
+}
+
+/// The reason with whatever mlx_serve printed on its way out.
+fn with_stderr(reason: &str, errors: &Arc<Mutex<Vec<String>>>) -> String {
+    let said = errors
+        .lock()
+        .map(|held| held.join("; "))
+        .unwrap_or_default();
+    if said.is_empty() {
+        reason.to_string()
+    } else {
+        format!("{reason}: {said}")
     }
 }
 

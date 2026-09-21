@@ -237,3 +237,42 @@ fn resolve_checkpoint_refuses_a_path_the_listing_never_offered() {
     assert_eq!(reg.resolve_checkpoint("empty_dir"), None);
     assert_eq!(reg.resolve_checkpoint(""), None);
 }
+
+/// A start that fails says why. The reason lives on the Python process's
+/// stderr and nowhere else, so an error that drops it leaves a caller with
+/// "it timed out" and nothing to act on.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_that_will_not_start_reports_what_it_printed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempdir().unwrap();
+    let bin_dir = tmp.path().join("mock-env").join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+
+    let py_path = bin_dir.join("python3");
+    fs::write(
+        &py_path,
+        "#!/bin/sh\necho 'ModuleNotFoundError: No module named mlx' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&py_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&py_path, perms).unwrap();
+
+    let ckpt_dir = tmp.path().join("models").join("test_model");
+    fs::create_dir_all(&ckpt_dir).unwrap();
+
+    let env = TrainingEnvironment::new(tmp.path().join("mock-env"));
+    let reg = ModelRegistry::new(tmp.path().join("models"));
+
+    let err = reg
+        .serve_checkpoint(&env, &ckpt_dir)
+        .await
+        .expect_err("a server that exits cannot be serving");
+    assert!(
+        err.contains("No module named mlx"),
+        "the error must carry what the process printed, got: {err}"
+    );
+    assert!(!reg.is_serving());
+}

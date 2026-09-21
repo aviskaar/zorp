@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import socketserver
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -102,12 +103,27 @@ class SimpleCompletionHandler(BaseHTTPRequestHandler):
         sys.stderr.flush()
 
 
+class LoopbackHTTPServer(HTTPServer):
+    """Bind without the reverse DNS lookup HTTPServer.server_bind does.
+
+    The base class asks socket.getfqdn for the address it just bound, which
+    is a reverse lookup that can sit for tens of seconds on a machine with
+    no reverse resolution for 127.0.0.1. Nothing here reads server_name, and
+    the caller is waiting on the SERVER_BOUND line that comes after the bind.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+
 def run_server(port: int, checkpoint_dir: str):
     if not os.path.exists(checkpoint_dir):
         sys.stderr.write(f"Checkpoint directory does not exist: {checkpoint_dir}\n")
         sys.exit(1)
 
-    server = HTTPServer(("127.0.0.1", port), SimpleCompletionHandler)
+    server = LoopbackHTTPServer(("127.0.0.1", port), SimpleCompletionHandler)
     bound_port = server.server_address[1]
     sys.stdout.write(f"SERVER_BOUND:{bound_port}\n")
     sys.stdout.flush()
