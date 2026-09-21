@@ -8494,6 +8494,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zorp-train"
+version = "0.5.0"
+dependencies = [
+ "rustix",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "ureq",
+]
+
+[[package]]
 name = "zorp-voice"
 version = "0.5.0"
 dependencies = [
@@ -8522,6 +8537,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "toml",
  "tower-http",
  "ureq",
@@ -8531,6 +8547,7 @@ dependencies = [
  "zorp-recall",
  "zorp-skill",
  "zorp-track",
+ "zorp-train",
  "zorp-voice",
 ]
 

@@ -264,16 +264,21 @@ jobs:
       - name: Clippy zorp-agent (otel, search, clipboard)
         run: cargo clippy -p zorp-agent --features otel,search,clipboard --all-targets --locked -- -D warnings
 
-      # test rather than clippy, because these three do have tests of their
+      # test rather than clippy, because these four do have tests of their
       # own and those tests are the point. `capabilities.rs` pins what the
       # browser is told about `web_search` in a build that has it,
-      # `memory.rs` drives a whole recalled turn byte for byte, and
-      # `voice.rs` covers the routes that only exist with the feature.
+      # `memory.rs` drives a whole recalled turn byte for byte, `voice.rs`
+      # covers the routes that only exist with the feature, and
+      # `train_api.rs` covers developer mode's, including the one that says
+      # a checkpoint id is looked up in the registry rather than joined onto
+      # a path. A default build compiles none of those routes, so without
+      # this step they were ungated.
       # None of it touches the network: the search tests use a nonsense key
-      # and never spend a search, and the memory and voice tests run their
-      # servers on loopback.
-      - name: Test zorp-web (search, memory, voice)
-        run: cargo test -p zorp-web --features search,memory,voice --locked
+      # and never spend a search, and the memory, voice and train tests run
+      # their servers on loopback. Developer mode's tests start no Python:
+      # they point it at a training environment that was never installed.
+      - name: Test zorp-web (search, memory, voice, train)
+        run: cargo test -p zorp-web --features search,memory,voice,train --locked
 
       # The same two features on the terminal side, which is where the
       # chunker, the fingerprint and the indexer actually live now. `memory`
