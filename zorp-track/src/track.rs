@@ -1,8 +1,8 @@
+use crate::id::now_millis;
 use crate::schema::SCHEMA;
 use crate::TrackError;
 use duckdb::{Connection, OptionalExt};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// DuckDB-backed store for tracks, preregistrations, experiments,
 /// metrics, and checkpoints.
@@ -18,13 +18,6 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         Ok(Store { conn })
     }
-}
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

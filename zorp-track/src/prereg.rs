@@ -1,10 +1,11 @@
+use crate::id::now_millis;
 use crate::track::Store;
 use crate::TrackError;
 use duckdb::OptionalExt;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// Which way the pre-registered metric is supposed to move, and
 /// therefore which side of the kill threshold kills the track.
@@ -58,13 +59,6 @@ pub struct Preregistration {
     pub file_hash: String,
     pub git_commit_hash: Option<String>,
     pub committed_at: i64,
-}
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {

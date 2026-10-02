@@ -1,14 +1,7 @@
+use crate::id::now_millis;
 use crate::track::Store;
 use crate::TrackError;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// One thing a critique pass found wrong with a draft. `kind` is a plain
 /// string for the same reason `checkpoint`'s `kind` is: the set of

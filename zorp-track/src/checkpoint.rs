@@ -1,16 +1,9 @@
+use crate::id::now_millis;
 use crate::track::Store;
 use crate::TrackError;
 use duckdb::OptionalExt;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// Asks a human a yes/no question at a research checkpoint. Mirrors
 /// zorp-agent's `Approver` trait, at track granularity instead of
