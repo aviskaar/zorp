@@ -44,12 +44,106 @@ mod otel_init {
             .ok()?;
 
         use tracing_subscriber::prelude::*;
-        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-        let subscriber = tracing_subscriber::registry().with(telemetry);
+        let subscriber = tracing_subscriber::registry().with(export_layer(tracer));
 
         tracing::subscriber::set_global_default(subscriber).ok()?;
 
         Some(OtelGuard { _rt: rt })
+    }
+
+    /// The layer that turns spans into OpenTelemetry spans for export.
+    ///
+    /// It exports zorp's own spans and nothing else. The OTLP exporter
+    /// ships batches through reqwest, and hyper underneath it opens
+    /// `encode_headers` and `parse_headers` spans on every request. No span
+    /// of ours is active on the exporter's thread, so without this filter
+    /// each of those reached the collector as a root trace of its own (#22).
+    ///
+    /// This is an allow-list of our target prefix rather than a deny-list of
+    /// hyper's, because a deny-list has to be kept up with every dependency
+    /// that adds instrumentation, and the failure mode is the same noise
+    /// coming back unnoticed. `Targets` matches by prefix, so `zorp` covers
+    /// `zorp_agent::agent`, `zorp_agent::model`, and any other `zorp_*`
+    /// crate that adds spans later. The filter sits on this layer alone, so
+    /// any layer added beside it later sees every span as before.
+    pub fn export_layer<S, T>(tracer: T) -> impl tracing_subscriber::Layer<S>
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+        T: opentelemetry::trace::Tracer + tracing_opentelemetry::PreSampledTracer + 'static,
+    {
+        use tracing_subscriber::Layer as _;
+        let ours = tracing_subscriber::filter::Targets::new()
+            .with_target("zorp", tracing_subscriber::filter::LevelFilter::TRACE);
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(ours)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::export_layer;
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::export::trace::{ExportResult, SpanData, SpanExporter};
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::prelude::*;
+
+        /// Keeps every span it is handed, so a test can read what would
+        /// have gone to the collector.
+        #[derive(Debug, Clone, Default)]
+        struct Collect(Arc<Mutex<Vec<SpanData>>>);
+
+        impl SpanExporter for Collect {
+            fn export(
+                &mut self,
+                batch: Vec<SpanData>,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ExportResult> + Send>>
+            {
+                self.0.lock().unwrap().extend(batch);
+                Box::pin(std::future::ready(Ok(())))
+            }
+        }
+
+        /// Issue #22: the OTLP exporter's own HTTP client (hyper, under
+        /// reqwest) opens `encode_headers` and `parse_headers` spans while
+        /// it ships a batch. Nothing of ours is active on that thread, so
+        /// each one used to reach the collector as a root trace of its own.
+        #[test]
+        fn only_zorp_spans_are_exported() {
+            let collect = Collect::default();
+            let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+                .with_simple_exporter(collect.clone())
+                .build();
+            let subscriber =
+                tracing_subscriber::registry().with(export_layer(provider.tracer("test")));
+
+            tracing::subscriber::with_default(subscriber, || {
+                // The targets `Agent::run` and its loop get by default.
+                let run = tracing::info_span!(target: "zorp_agent::agent", "agent_run");
+                let _entered = run.enter();
+                drop(tracing::info_span!(target: "zorp_agent::agent", "agent_step").entered());
+                // What hyper 0.14 emits from `proto::h1::role`.
+                drop(
+                    tracing::trace_span!(target: "hyper::proto::h1::role", "encode_headers")
+                        .entered(),
+                );
+                drop(
+                    tracing::trace_span!(target: "hyper::proto::h1::role", "parse_headers")
+                        .entered(),
+                );
+            });
+            provider.force_flush();
+
+            let spans = collect.0.lock().unwrap();
+            let mut names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
+            names.sort();
+            assert_eq!(names, ["agent_run", "agent_step"]);
+
+            // The filter must not cut the step loose from its run.
+            let run = spans.iter().find(|s| s.name == "agent_run").unwrap();
+            let step = spans.iter().find(|s| s.name == "agent_step").unwrap();
+            assert_eq!(step.parent_span_id, run.span_context.span_id());
+            assert_eq!(step.span_context.trace_id(), run.span_context.trace_id());
+        }
     }
 }
 
