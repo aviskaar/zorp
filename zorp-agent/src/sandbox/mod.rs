@@ -262,7 +262,10 @@ fn child_exited_unreaped(pid: i32) -> Result<bool, ToolError> {
 /// alive; the kernel only refuses when there is nothing signalable there.
 /// On macOS a group whose last member is an exited-but-unreaped child
 /// answers EPERM rather than ESRCH, and both callers below reach this
-/// after the child is known to have exited.
+/// after the child is known to have exited. The third caller,
+/// `tools::Context::kill_background_process`, may reach it while the
+/// group is still running; there the same reading holds, because that
+/// group was also created by us with setpgid.
 ///
 /// Anything else is a real error and still fails the run. Getting this
 /// wrong in the forgiving direction would hide a kill that did not happen;
@@ -273,7 +276,7 @@ fn kill_error_is_already_gone(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM))
 }
 
-fn kill_process_group(pgid: i32) -> io::Result<()> {
+pub(crate) fn kill_process_group(pgid: i32) -> io::Result<()> {
     if unsafe { libc::kill(-pgid, libc::SIGKILL) } == 0 {
         return Ok(());
     }
