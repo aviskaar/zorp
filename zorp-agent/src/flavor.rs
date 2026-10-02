@@ -6,15 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// Lowercase hex SHA-256 of the given text.
 pub fn content_hash(text: &str) -> String {
-    use std::fmt::Write;
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    format!("{:x}", hasher.finalize())
 }
 
 /// True if `name` is a single normal path component: no separators, no `..`,
@@ -390,6 +384,19 @@ pub fn resolve_scoped_configured(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn content_hash_is_lowercase_zero_padded_sha256_hex() {
+        // Trust hashes are persisted, so the exact string format is pinned.
+        assert_eq!(
+            content_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            content_hash(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 
     #[test]
     fn parse_reads_known_fields_and_sections() {

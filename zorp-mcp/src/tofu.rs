@@ -22,11 +22,7 @@ pub fn server_config_hash(cfg: &ServerConfig) -> String {
     );
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    format!("{:x}", hasher.finalize())
 }
 
 pub struct McpTofuStore {
@@ -84,6 +80,17 @@ mod tests {
             trust: TrustLevel::Sandbox,
             timeout_secs: None,
         }
+    }
+
+    #[test]
+    fn server_config_hash_is_pinned() {
+        // TOFU pins on disk store this exact string, so a format change
+        // would silently untrust every pinned server.
+        let h = server_config_hash(&sample());
+        assert_eq!(
+            h,
+            "03de80d1f9288ce1a1323d0a841487169b4f29946aa0e16ee0c9c6a762ea31b2"
+        );
     }
 
     #[test]
