@@ -1,17 +1,10 @@
 //! aryabhatta step 2: per-experiment forecasts, and the rule that a
 //! forecast cannot be written after its outcome exists.
 
+use crate::id::now_millis;
 use crate::track::Store;
 use crate::TrackError;
 use duckdb::OptionalExt;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// A quantitative forecast about one metric of one experiment, written
 /// before that experiment produces the metric.

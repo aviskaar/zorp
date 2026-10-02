@@ -1,14 +1,7 @@
+use crate::id::now_millis;
 use crate::track::Store;
 use crate::TrackError;
 use duckdb::OptionalExt;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExperimentStatus {

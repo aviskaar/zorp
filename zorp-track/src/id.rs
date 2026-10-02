@@ -13,6 +13,12 @@ pub(crate) fn next_seq() -> u64 {
     NEXT_SEQ.fetch_add(1, Ordering::SeqCst)
 }
 
+/// Current wall-clock time in milliseconds since the Unix epoch. Every
+/// timestamp column in the store is written with this.
+pub(crate) fn now_millis() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
 /// Generate a date-prefixed, lowercase, hyphenated slug from hypothesis
 /// text, e.g. "Adaptive Memory Consolidation!" becomes
 /// "2026-08-09-adaptive-memory-consolidation".

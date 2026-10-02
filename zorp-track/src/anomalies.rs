@@ -21,14 +21,10 @@
 //! edge from it. Without that rule the agent's own speculation becomes
 //! tomorrow's observation.
 
+use crate::id::now_millis;
 use crate::rerun::{GateOutcome, GateVerdict};
 use crate::track::Store;
 use crate::TrackError;
-use chrono::Utc;
-
-fn now_millis() -> i64 {
-    Utc::now().timestamp_millis()
-}
 
 /// Where an admitted anomaly stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
