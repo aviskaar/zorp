@@ -1,4 +1,5 @@
 use crate::config::TelemetryThresholds;
+use crate::BoxErr;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -21,7 +22,7 @@ pub struct GraderResult {
 }
 
 pub trait Grader: Send + Sync {
-    fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult>;
+    fn evaluate(&self, ctx: &EvalContext) -> Result<GraderResult, BoxErr>;
 }
 
 pub struct ScriptGrader {
@@ -29,7 +30,7 @@ pub struct ScriptGrader {
 }
 
 impl Grader for ScriptGrader {
-    fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+    fn evaluate(&self, ctx: &EvalContext) -> Result<GraderResult, BoxErr> {
         let trimmed = self.command.trim();
         if trimmed.is_empty() {
             return Ok(GraderResult {
@@ -65,7 +66,7 @@ pub struct TelemetryGrader {
 }
 
 impl Grader for TelemetryGrader {
-    fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+    fn evaluate(&self, ctx: &EvalContext) -> Result<GraderResult, BoxErr> {
         let Some(transcript) = &ctx.transcript else {
             return Ok(GraderResult {
                 passed: false,
@@ -104,15 +105,15 @@ pub struct LlmRubricGrader {
 }
 
 impl Grader for LlmRubricGrader {
-    fn evaluate(&self, _ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+    fn evaluate(&self, _ctx: &EvalContext) -> Result<GraderResult, BoxErr> {
         // No LLM call exists yet. Returning a fabricated pass here would
         // silently corrupt eval results, so fail loudly instead.
-        anyhow::bail!(
+        Err(format!(
             "LlmRubricGrader is not implemented: refusing to fabricate a grading result \
              (rubric: {:?}, api_url: {:?})",
-            self.rubric,
-            self.api_url
+            self.rubric, self.api_url
         )
+        .into())
     }
 }
 

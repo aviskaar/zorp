@@ -1,8 +1,9 @@
+use crate::BoxErr;
 use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn init_db(db_path: &Path) -> anyhow::Result<Connection> {
+pub fn init_db(db_path: &Path) -> Result<Connection, BoxErr> {
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -44,7 +45,7 @@ pub fn init_db(db_path: &Path) -> anyhow::Result<Connection> {
     Ok(conn)
 }
 
-fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> anyhow::Result<()> {
+fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<(), BoxErr> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let exists = stmt
         .query_map([], |row| row.get::<_, String>(1))?
@@ -60,7 +61,7 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> anyh
 /// from an optional `scope.txt` file (one path glob per line, `#`-comments
 /// and blank lines ignored), joined as a comma-separated string for
 /// ZORP_ALLOWED_PATHS. Returns `Ok(None)` when the task declares no scope.
-fn task_allowed_paths(task_dir: &Path) -> anyhow::Result<Option<String>> {
+fn task_allowed_paths(task_dir: &Path) -> Result<Option<String>, BoxErr> {
     let scope_file = task_dir.join("scope.txt");
     if !scope_file.exists() {
         return Ok(None);
@@ -83,15 +84,16 @@ pub fn run_suite(
     tasks_dir: &Path,
     db_path: &Path,
     agent_binary: &Path,
-) -> anyhow::Result<()> {
+) -> Result<(), BoxErr> {
     let manifest = crate::manifest::load_manifest(manifest_path)?;
     // Optional in the manifest because bench does not read it. compat does,
     // and a compat run with no contracts would record runs and check nothing.
     let Some(contracts_config) = &manifest.contracts else {
-        anyhow::bail!(
+        return Err(format!(
             "{}: compat needs a contracts section (suite_dir and critical)",
             manifest_path.display()
-        );
+        )
+        .into());
     };
     let conn = init_db(db_path)?;
 
@@ -121,7 +123,7 @@ pub fn run_suite(
         .critical
         .iter()
         .map(|id| crate::contracts::load_contract(&suite_dir.join(format!("{id}.yaml"))))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, BoxErr>>()?;
 
     let mut runtimes = vec![manifest.reference.clone()];
     runtimes.extend(manifest.candidates.clone());
@@ -159,10 +161,10 @@ pub fn run_suite(
                         // also leave the task directory dirty.
                         crate::snapshot::restore(&backup_dir, &task_dir)?;
                         fs::remove_dir_all(&backup_dir)?;
-                        anyhow::bail!(
+                        return Err(format!(
                             "setup.sh failed for task {task_id} (runtime {}, repetition {repetition}): exit status {setup_status}",
                             runtime.id
-                        );
+                        ).into());
                     }
                 }
                 let snapshot_hash = crate::snapshot::snapshot_hash(&task_dir)?;

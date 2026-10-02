@@ -14,12 +14,13 @@
 //! a grader and nothing here reads it. The rule is the one
 //! `evals/harbor/ensemble_report.py` lives under.
 
+use crate::BoxErr;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use rusqlite::Connection;
 
-pub fn init_schema(conn: &Connection) -> anyhow::Result<()> {
+pub fn init_schema(conn: &Connection) -> Result<(), BoxErr> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS bench_results (
             id INTEGER PRIMARY KEY,
@@ -86,7 +87,7 @@ impl Outcome {
     }
 }
 
-pub fn insert(conn: &Connection, r: &Record) -> anyhow::Result<()> {
+pub fn insert(conn: &Connection, r: &Record) -> Result<(), BoxErr> {
     let run_id = format!(
         "{}/{}/{}/{}/{}",
         r.session, r.runtime_id, r.benchmark, r.item_id, r.repetition
@@ -178,7 +179,7 @@ pub fn rows(
     session: &str,
     benchmarks: &[String],
     runtimes: &[String],
-) -> anyhow::Result<Vec<Row>> {
+) -> Result<Vec<Row>, BoxErr> {
     let mut statement = conn.prepare(
         "SELECT r.runtime_id, b.benchmark, b.outcome, b.unparsed, b.reason,
                 r.latency, b.ttft_ms, b.completion_tokens, b.sends

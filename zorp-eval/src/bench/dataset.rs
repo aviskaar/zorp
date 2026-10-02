@@ -12,6 +12,7 @@
 //! item quietly dropped, because a benchmark that lost a tenth of its items
 //! to a schema change reports a number over a different benchmark.
 
+use crate::BoxErr;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -67,19 +68,19 @@ pub fn letter(index: usize) -> char {
 /// The default cache directory: `ZORP_BENCH_CACHE` when set, else
 /// `<user cache dir>/zorp/bench`. Read once, before bench clears the
 /// environment.
-pub fn default_cache_dir() -> anyhow::Result<PathBuf> {
+pub fn default_cache_dir() -> Result<PathBuf, BoxErr> {
     if let Some(dir) = std::env::var_os("ZORP_BENCH_CACHE").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
     dirs::cache_dir()
         .map(|dir| dir.join("zorp").join("bench"))
         .ok_or_else(|| {
-            anyhow::anyhow!("no cache directory on this system; set ZORP_BENCH_CACHE or --cache")
+            BoxErr::from("no cache directory on this system; set ZORP_BENCH_CACHE or --cache")
         })
 }
 
 /// The items one case runs, after its limit.
-pub fn load(case: &Loaded, cache: &Path, server: &str) -> anyhow::Result<Vec<Item>> {
+pub fn load(case: &Loaded, cache: &Path, server: &str) -> Result<Vec<Item>, BoxErr> {
     let source = &case.case.source;
     let rows = if let Some(dataset) = &source.huggingface {
         let config = source.config.as_deref().unwrap_or("default");
@@ -99,11 +100,12 @@ pub fn load(case: &Loaded, cache: &Path, server: &str) -> anyhow::Result<Vec<Ite
     let mut items = rows
         .into_iter()
         .map(|(id, row)| {
-            item(format, &id, &row).map_err(|e| anyhow::anyhow!("{}: row {id}: {e}", case.name))
+            item(format, &id, &row)
+                .map_err(|e| BoxErr::from(format!("{}: row {id}: {e}", case.name)))
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, BoxErr>>()?;
     if items.is_empty() {
-        anyhow::bail!("{}: the dataset has no rows", case.name);
+        return Err(format!("{}: the dataset has no rows", case.name).into());
     }
     if let Some(limit) = case.case.limit {
         items = sample(&case.name, items, limit);
@@ -153,35 +155,36 @@ fn resolve(dir: &Path, path: &Path) -> PathBuf {
 /// public commit. So a GPQA path inside the tree is refused outright,
 /// fixtures included: the one in the test suite is invented text and is
 /// copied to a temporary directory before it is read.
-pub fn refuse_gpqa_inside_the_tree(path: &Path) -> anyhow::Result<()> {
+pub fn refuse_gpqa_inside_the_tree(path: &Path) -> Result<(), BoxErr> {
     let tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let (Ok(tree), Ok(path)) = (tree.canonicalize(), path.canonicalize()) else {
         // A path that does not exist fails on read with a better message.
         return Ok(());
     };
     if path.starts_with(&tree) {
-        anyhow::bail!(
+        return Err(format!(
             "{}: GPQA must not live inside the zorp repository ({}). It is gated \
              and carries canary strings; keep it where it cannot be committed",
             path.display(),
             tree.display()
-        );
+        )
+        .into());
     }
     Ok(())
 }
 
 /// Rows from a local file, each with its id.
-fn read_file_rows(path: &Path) -> anyhow::Result<Vec<(String, Value)>> {
+fn read_file_rows(path: &Path) -> Result<Vec<(String, Value)>, BoxErr> {
     let is_csv = path.extension().is_some_and(|e| e == "csv");
     let rows = if is_csv {
         read_csv(path)
     } else {
         read_jsonl(path)
     };
-    rows.map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    rows.map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))
 }
 
-fn read_jsonl(path: &Path) -> anyhow::Result<Vec<(String, Value)>> {
+fn read_jsonl(path: &Path) -> Result<Vec<(String, Value)>, BoxErr> {
     let file = std::fs::File::open(path)?;
     let mut rows = Vec::new();
     for (n, line) in std::io::BufReader::new(file).lines().enumerate() {
@@ -189,15 +192,15 @@ fn read_jsonl(path: &Path) -> anyhow::Result<Vec<(String, Value)>> {
         if line.trim().is_empty() {
             continue;
         }
-        let row: Value =
-            serde_json::from_str(&line).map_err(|e| anyhow::anyhow!("line {}: {e}", n + 1))?;
+        let row: Value = serde_json::from_str(&line)
+            .map_err(|e| BoxErr::from(format!("line {}: {e}", n + 1)))?;
         let id = own_id(&row).unwrap_or_else(|| rows.len().to_string());
         rows.push((id, row));
     }
     Ok(rows)
 }
 
-fn read_csv(path: &Path) -> anyhow::Result<Vec<(String, Value)>> {
+fn read_csv(path: &Path) -> Result<Vec<(String, Value)>, BoxErr> {
     let mut reader = csv::Reader::from_path(path)?;
     let headers = reader.headers()?.clone();
     let mut rows = Vec::new();
@@ -234,7 +237,7 @@ fn cached_hub_rows(
     dataset: &str,
     config: &str,
     split: &str,
-) -> anyhow::Result<Vec<(String, Value)>> {
+) -> Result<Vec<(String, Value)>, BoxErr> {
     let path = cache
         .join("huggingface")
         .join(dataset)
@@ -248,12 +251,12 @@ fn cached_hub_rows(
         let rows = fetch_hub_rows(server, dataset, config, split)?;
         write_cache(&path, &rows)?;
     }
-    read_jsonl(&path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    read_jsonl(&path).map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))
 }
 
 /// Written whole to a temporary file and renamed, so an interrupted fetch
 /// leaves no cache file rather than a short one that reads as the dataset.
-fn write_cache(path: &Path, rows: &[Value]) -> anyhow::Result<()> {
+fn write_cache(path: &Path, rows: &[Value]) -> Result<(), BoxErr> {
     let dir = path.parent().expect("a cache path has a parent");
     std::fs::create_dir_all(dir)?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
@@ -274,7 +277,7 @@ pub fn fetch_hub_rows(
     dataset: &str,
     config: &str,
     split: &str,
-) -> anyhow::Result<Vec<Value>> {
+) -> Result<Vec<Value>, BoxErr> {
     let mut rows = Vec::new();
     let mut offset = 0usize;
     loop {
@@ -289,32 +292,33 @@ pub fn fetch_hub_rows(
         if page.get("partial").and_then(Value::as_bool) == Some(true) {
             // The server only indexes part of a large split. A benchmark over
             // whichever part it indexed is not the benchmark.
-            anyhow::bail!("{url}: the datasets server only has part of this split");
+            return Err(format!("{url}: the datasets server only has part of this split").into());
         }
         let total = page
             .get("num_rows_total")
             .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("{url}: no num_rows_total in the reply"))?
+            .ok_or_else(|| BoxErr::from(format!("{url}: no num_rows_total in the reply")))?
             as usize;
         let page_rows = page
             .get("rows")
             .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("{url}: no rows in the reply"))?;
+            .ok_or_else(|| BoxErr::from(format!("{url}: no rows in the reply")))?;
         for entry in page_rows {
             if entry
                 .get("truncated_cells")
                 .and_then(Value::as_array)
                 .is_some_and(|cells| !cells.is_empty())
             {
-                anyhow::bail!(
+                return Err(format!(
                     "{url}: the server truncated a cell, so a question or key is cut short"
-                );
+                )
+                .into());
             }
             let index = entry.get("row_idx").and_then(Value::as_u64);
             let mut row = entry
                 .get("row")
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("{url}: an entry with no row"))?;
+                .ok_or_else(|| BoxErr::from(format!("{url}: an entry with no row")))?;
             if let (Some(index), Some(fields)) = (index, row.as_object_mut()) {
                 fields.insert("row_idx".into(), Value::from(index));
             }
@@ -331,7 +335,7 @@ pub fn fetch_hub_rows(
 /// A GET through the workspace's one HTTP agent, sent again a few times while
 /// the server says it is rate limiting. Fetching is not a measurement, so
 /// its patience is fixed here rather than taken from any case.
-fn get_json(url: &str) -> anyhow::Result<Value> {
+fn get_json(url: &str) -> Result<Value, BoxErr> {
     let mut wait = std::time::Duration::from_secs(2);
     for attempt in 1.. {
         match zorp::http_agent()
@@ -347,9 +351,9 @@ fn get_json(url: &str) -> anyhow::Result<Value> {
             }
             Err(ureq::Error::Status(code, resp)) => {
                 let body = resp.into_string().unwrap_or_default();
-                anyhow::bail!("{url}: status {code}: {}", body.trim());
+                return Err(format!("{url}: status {code}: {}", body.trim()).into());
             }
-            Err(e) => anyhow::bail!("{url}: {e}"),
+            Err(e) => return Err(format!("{url}: {e}").into()),
         }
     }
     unreachable!("the loop returns or bails")
@@ -367,36 +371,36 @@ fn encode(part: &str) -> String {
 }
 
 /// One row, read as `format` says.
-fn item(format: Format, id: &str, row: &Value) -> anyhow::Result<Item> {
+fn item(format: Format, id: &str, row: &Value) -> Result<Item, BoxErr> {
     let id = row
         .get("row_idx")
         .and_then(Value::as_u64)
         .filter(|_| own_id(row).is_none())
         .map(|n| n.to_string())
         .unwrap_or_else(|| id.to_string());
-    let text = |field: &str| -> anyhow::Result<String> {
+    let text = |field: &str| -> Result<String, BoxErr> {
         row.get(field)
             .and_then(Value::as_str)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("no {field:?}"))
+            .ok_or_else(|| BoxErr::from(format!("no {field:?}")))
     };
-    let strings = |value: Option<&Value>, field: &str| -> anyhow::Result<Vec<String>> {
+    let strings = |value: Option<&Value>, field: &str| -> Result<Vec<String>, BoxErr> {
         value
             .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("no {field:?} list"))?
+            .ok_or_else(|| BoxErr::from(format!("no {field:?} list")))?
             .iter()
             .map(|v| {
                 v.as_str()
                     .map(str::to_string)
-                    .ok_or_else(|| anyhow::anyhow!("{field:?} holds a non-string"))
+                    .ok_or_else(|| BoxErr::from(format!("{field:?} holds a non-string")))
             })
             .collect()
     };
-    let index = |field: &str, options: usize| -> anyhow::Result<usize> {
+    let index = |field: &str, options: usize| -> Result<usize, BoxErr> {
         let value = row
             .get(field)
-            .ok_or_else(|| anyhow::anyhow!("no {field:?}"))?;
+            .ok_or_else(|| BoxErr::from(format!("no {field:?}")))?;
         let index = match value {
             Value::Number(n) => n.as_u64().map(|n| n as usize),
             // Some exports write the class label as its letter.
@@ -406,9 +410,11 @@ fn item(format: Format, id: &str, row: &Value) -> anyhow::Result<Item> {
             }
             _ => None,
         };
-        index
-            .filter(|i| *i < options)
-            .ok_or_else(|| anyhow::anyhow!("{field:?} is {value}, not one of {options} options"))
+        index.filter(|i| *i < options).ok_or_else(|| {
+            BoxErr::from(format!(
+                "{field:?} is {value}, not one of {options} options"
+            ))
+        })
     };
     let item = match format {
         Format::Mmlu => {
@@ -432,12 +438,12 @@ fn item(format: Format, id: &str, row: &Value) -> anyhow::Result<Item> {
         Format::TruthfulqaMc1 => {
             let targets = row
                 .get("mc1_targets")
-                .ok_or_else(|| anyhow::anyhow!("no \"mc1_targets\""))?;
+                .ok_or_else(|| BoxErr::from("no \"mc1_targets\""))?;
             let options = strings(targets.get("choices"), "mc1_targets.choices")?;
             let labels: Vec<i64> = targets
                 .get("labels")
                 .and_then(Value::as_array)
-                .ok_or_else(|| anyhow::anyhow!("no \"mc1_targets.labels\""))?
+                .ok_or_else(|| BoxErr::from("no \"mc1_targets.labels\""))?
                 .iter()
                 .map(|v| v.as_i64().unwrap_or(-1))
                 .collect();
@@ -448,7 +454,7 @@ fn item(format: Format, id: &str, row: &Value) -> anyhow::Result<Item> {
                 .map(|(i, _)| i)
                 .collect();
             if labels.len() != options.len() || true_ones.len() != 1 {
-                anyhow::bail!("mc1_targets needs one label per choice and exactly one true");
+                return Err("mc1_targets needs one label per choice and exactly one true".into());
             }
             // The true option is always first in the dataset. Shown in that
             // order, "always answer A" would score perfectly.
@@ -469,7 +475,7 @@ fn item(format: Format, id: &str, row: &Value) -> anyhow::Result<Item> {
                 .rsplit_once("####")
                 .map(|(_, n)| n.trim().replace(',', ""))
                 .filter(|n| super::grade::parse_number(n).is_some())
-                .ok_or_else(|| anyhow::anyhow!("\"answer\" does not end in #### <number>"))?;
+                .ok_or_else(|| BoxErr::from("\"answer\" does not end in #### <number>"))?;
             Item {
                 id,
                 question: text("question")?,
@@ -479,7 +485,7 @@ fn item(format: Format, id: &str, row: &Value) -> anyhow::Result<Item> {
     };
     if let Key::Choice { options, .. } = &item.key {
         if options.len() < 2 || options.len() > 10 {
-            anyhow::bail!("{} options; bench grades 2 to 10", options.len());
+            return Err(format!("{} options; bench grades 2 to 10", options.len()).into());
         }
     }
     Ok(item)

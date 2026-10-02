@@ -21,6 +21,7 @@
 //! stream (`stream_options.include_usage`); a provider that does not send it
 //! leaves the token columns empty rather than estimated.
 
+use crate::BoxErr;
 use std::io::BufRead;
 use std::time::{Duration, Instant};
 
@@ -63,7 +64,7 @@ pub enum ReasoningMode {
 }
 
 impl ReasoningMode {
-    pub fn parse(text: &str) -> anyhow::Result<Self> {
+    pub fn parse(text: &str) -> Result<Self, BoxErr> {
         Ok(match text.trim().to_ascii_lowercase().as_str() {
             "none" => Self::None,
             "minimal" => Self::Minimal,
@@ -71,7 +72,7 @@ impl ReasoningMode {
             "medium" => Self::Medium,
             "high" => Self::High,
             "xhigh" => Self::XHigh,
-            other => anyhow::bail!("unknown reasoning mode: {other}"),
+            other => return Err(format!("unknown reasoning mode: {other}").into()),
         })
     }
 

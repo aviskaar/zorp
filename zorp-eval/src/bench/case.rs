@@ -8,6 +8,7 @@
 //! meant to be over two hundred, and a misspelled bound is a latency column
 //! measured under a bound nobody chose.
 
+use crate::BoxErr;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -135,10 +136,10 @@ pub struct Loaded {
     pub case: Case,
 }
 
-pub fn load(path: &Path) -> anyhow::Result<Loaded> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    let case = parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+pub fn load(path: &Path) -> Result<Loaded, BoxErr> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))?;
+    let case = parse(&text).map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))?;
     let name = case.name.clone().unwrap_or_else(|| {
         path.file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -151,7 +152,7 @@ pub fn load(path: &Path) -> anyhow::Result<Loaded> {
     Ok(Loaded { name, dir, case })
 }
 
-pub fn parse(text: &str) -> anyhow::Result<Case> {
+pub fn parse(text: &str) -> Result<Case, BoxErr> {
     let case: Case = toml::from_str(text)?;
     case.check()?;
     Ok(case)
@@ -160,49 +161,51 @@ pub fn parse(text: &str) -> anyhow::Result<Case> {
 /// Every `.toml` case in `dir`, in file name order. A directory with none is
 /// an error: a bench run that exits having measured nothing would print an
 /// empty table, and an empty table reads as "nothing to report".
-pub fn load_dir(dir: &Path) -> anyhow::Result<Vec<Loaded>> {
+pub fn load_dir(dir: &Path) -> Result<Vec<Loaded>, BoxErr> {
     let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?
+        .map_err(|e| BoxErr::from(format!("{}: {e}", dir.display())))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|e| e == "toml"))
         .collect();
     paths.sort();
     if paths.is_empty() {
-        anyhow::bail!("no .toml bench cases in {}", dir.display());
+        return Err(format!("no .toml bench cases in {}", dir.display()).into());
     }
     let cases = paths
         .iter()
         .map(|p| load(p))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, BoxErr>>()?;
     let mut seen = std::collections::BTreeSet::new();
     for case in &cases {
         if !seen.insert(case.name.as_str()) {
-            anyhow::bail!(
+            return Err(format!(
                 "two bench cases in {} are both called {:?}; one table row each would be one row for both",
                 dir.display(),
                 case.name
-            );
+            ).into());
         }
     }
     Ok(cases)
 }
 
 impl Case {
-    fn check(&self) -> anyhow::Result<()> {
+    fn check(&self) -> Result<(), BoxErr> {
         let source = &self.source;
         match (&source.huggingface, &source.path) {
-            (Some(_), Some(_)) => anyhow::bail!("source: huggingface and path cannot both be set"),
-            (None, None) => anyhow::bail!("source: set one of huggingface or path"),
+            (Some(_), Some(_)) => {
+                return Err("source: huggingface and path cannot both be set".into())
+            }
+            (None, None) => return Err("source: set one of huggingface or path".into()),
             (Some(dataset), None) => {
                 if source.split.is_none() {
-                    anyhow::bail!("source: a huggingface source needs a split");
+                    return Err("source: a huggingface source needs a split".into());
                 }
                 if dataset
                     .split('/')
                     .any(|part| part.is_empty() || part == "..")
                 {
-                    anyhow::bail!("source: {dataset:?} is not a dataset id");
+                    return Err(format!("source: {dataset:?} is not a dataset id").into());
                 }
                 // GPQA is gated on purpose: its authors ask that it not be
                 // redistributed, and they put canary strings in it so a
@@ -212,29 +215,28 @@ impl Case {
                 // from being committed. The user downloads it, agrees to the
                 // terms, and points a case at the file.
                 if self.format == Format::Gpqa {
-                    anyhow::bail!(
-                        "source: GPQA is gated and is never downloaded by bench. \
+                    return Err("source: GPQA is gated and is never downloaded by bench. \
                          Accept its terms, download it yourself, and set path to the CSV \
                          (outside this repository)"
-                    );
+                        .into());
                 }
             }
             (None, Some(_)) => {
                 if source.config.is_some() || source.split.is_some() {
-                    anyhow::bail!(
-                        "source: config and split are read only for a huggingface source"
+                    return Err(
+                        "source: config and split are read only for a huggingface source".into(),
                     );
                 }
             }
         }
         if self.limit == Some(0) {
-            anyhow::bail!("limit: 0 items is a run that measures nothing");
+            return Err("limit: 0 items is a run that measures nothing".into());
         }
         if self.bounds.timeout_secs == 0 {
-            anyhow::bail!("bounds.timeout_secs: 0 would time out every request");
+            return Err("bounds.timeout_secs: 0 would time out every request".into());
         }
         if self.bounds.max_tokens == Some(0) {
-            anyhow::bail!("bounds.max_tokens: 0 leaves no room for an answer");
+            return Err("bounds.max_tokens: 0 leaves no room for an answer".into());
         }
         Ok(())
     }

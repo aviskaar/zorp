@@ -1,8 +1,9 @@
+use crate::BoxErr;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn snapshot_hash(workspace: &Path) -> anyhow::Result<String> {
+pub fn snapshot_hash(workspace: &Path) -> Result<String, BoxErr> {
     let mut paths = walk_files(workspace)?;
     paths.sort();
     let mut hasher = Sha256::new();
@@ -14,7 +15,7 @@ pub fn snapshot_hash(workspace: &Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn walk_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+fn walk_files(dir: &Path) -> Result<Vec<PathBuf>, BoxErr> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -31,21 +32,21 @@ fn walk_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-pub fn snapshot_copy(workspace: &Path, dest: &Path) -> anyhow::Result<()> {
+pub fn snapshot_copy(workspace: &Path, dest: &Path) -> Result<(), BoxErr> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
     }
     copy_dir_recursive(workspace, dest)
 }
 
-pub fn restore(dest: &Path, workspace: &Path) -> anyhow::Result<()> {
+pub fn restore(dest: &Path, workspace: &Path) -> Result<(), BoxErr> {
     if workspace.exists() {
         fs::remove_dir_all(workspace)?;
     }
     copy_dir_recursive(dest, workspace)
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), BoxErr> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;

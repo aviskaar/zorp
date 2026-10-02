@@ -5,6 +5,7 @@
 //! than a silent skip, because a misspelled expectation that is quietly
 //! dropped is a case that passes without checking anything.
 
+use crate::BoxErr;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -173,33 +174,34 @@ pub struct FileExpect {
     pub absent: bool,
 }
 
-pub fn load(path: &Path) -> anyhow::Result<Case> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+pub fn load(path: &Path) -> Result<Case, BoxErr> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))?;
     let case: Case =
-        toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        toml::from_str(&text).map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))?;
     case.check()
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        .map_err(|e| BoxErr::from(format!("{}: {e}", path.display())))?;
     Ok(case)
 }
 
 impl Case {
-    fn check(&self) -> anyhow::Result<()> {
+    fn check(&self) -> Result<(), BoxErr> {
         if self.replies.is_empty() {
-            anyhow::bail!("a case needs at least one [[reply]]");
+            return Err("a case needs at least one [[reply]]".into());
         }
         for (i, reply) in self.replies.iter().enumerate() {
             reply
                 .transport
                 .check()
-                .map_err(|e| anyhow::anyhow!("reply {i}: {e}"))?;
+                .map_err(|e| BoxErr::from(format!("reply {i}: {e}")))?;
         }
         for file in &self.expect.files {
             if file.absent && (file.contents.is_some() || file.contains.is_some()) {
-                anyhow::bail!(
+                return Err(format!(
                     "{}: absent and a content expectation cannot both hold",
                     file.path
-                );
+                )
+                .into());
             }
         }
         Ok(())
@@ -212,7 +214,7 @@ impl Case {
 }
 
 impl Transport {
-    fn check(&self) -> anyhow::Result<()> {
+    fn check(&self) -> Result<(), BoxErr> {
         let allowed = self.kind.fields();
         let set: Vec<&str> = [
             ("after", self.after.is_some()),
@@ -228,14 +230,15 @@ impl Transport {
         .filter(|name| !allowed.contains(name))
         .collect();
         if !set.is_empty() {
-            anyhow::bail!(
+            return Err(format!(
                 "transport kind {:?} does not read {}",
                 self.kind,
                 set.join(", ")
-            );
+            )
+            .into());
         }
         if self.kind == TransportKind::Status && self.code.is_none() {
-            anyhow::bail!("transport kind status needs a code");
+            return Err("transport kind status needs a code".into());
         }
         Ok(())
     }
@@ -353,7 +356,7 @@ impl Transport {
 mod tests {
     use super::*;
 
-    fn parse(text: &str) -> anyhow::Result<Case> {
+    fn parse(text: &str) -> Result<Case, BoxErr> {
         let case: Case = toml::from_str(text)?;
         case.check()?;
         Ok(case)
