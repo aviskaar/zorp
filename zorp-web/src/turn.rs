@@ -229,10 +229,7 @@ pub fn scoped_prompt(prompt: &str, workspace: &std::path::Path) -> String {
 /// A name that does not parse falls to the floor rather than being ignored,
 /// because a typo in a preset is not a reason to run looser.
 fn effective_preset(asked: Option<&str>) -> zorp_agent::Preset {
-    const FLOOR: zorp_agent::Preset = zorp_agent::Preset::ReadOnly;
-    asked
-        .and_then(zorp_agent::Preset::parse)
-        .map_or(FLOOR, |asked| asked.min(FLOOR))
+    zorp_agent::Preset::capped(asked, zorp_agent::Preset::ReadOnly)
 }
 
 fn policy_from_preset(preset: zorp_agent::Preset, own_port: Option<u16>) -> zorp_agent::Policy {
