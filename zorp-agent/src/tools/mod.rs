@@ -274,13 +274,13 @@ impl Context {
 
     pub fn kill_background_process(&mut self, pid: u32) -> Result<(), ToolError> {
         if let Some((_, mut child)) = self.background_processes.remove(&pid) {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
+            // The child leads its own group (setpgid in start), so the
+            // group id is its pid. Reap before reporting a kill failure so
+            // an error never leaves a zombie behind.
+            let killed = crate::sandbox::kill_process_group(pid as i32);
             let _ = child.kill();
             let _ = child.wait();
-            Ok(())
+            killed.map_err(|e| ToolError::new(format!("kill process group: {e}")))
         } else {
             Err(ToolError::new(format!(
                 "No background process found with PID {pid}"
@@ -618,6 +618,49 @@ mod tests {
         for pid in cx.background_processes.keys().copied().collect::<Vec<_>>() {
             cx.kill_background_process(pid).unwrap();
         }
+    }
+
+    /// Killing a background process takes its whole group down, not just
+    /// the shell: a grandchild the shell started must be gone too. Killing
+    /// only the shell would leave the `sleep` running, reparented to init.
+    #[test]
+    fn kill_background_process_kills_the_whole_group() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let pid = cx
+            .start_background_process("sleep 30 & echo $! > child.pid; wait")
+            .unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let child_pid: i32 = loop {
+            if let Some(n) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+            {
+                break n;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child pid never written"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let alive = |p: i32| unsafe { libc::kill(p, 0) } == 0;
+        assert!(alive(child_pid), "grandchild should be running before kill");
+
+        cx.kill_background_process(pid).unwrap();
+
+        // The shell is reaped by kill_background_process. The orphaned
+        // grandchild is reaped by init, which can take a moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive(child_pid) || alive(pid as i32) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background process group survived kill"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(cx.background_process_count(), 0);
     }
 
     /// Nothing is derived for another tool, or for a shell call whose stored
