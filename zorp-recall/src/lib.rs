@@ -8,7 +8,8 @@
 //! - [`OllamaEmbedder`] turns text into a vector by asking a local model.
 //! - [`Index`] keeps the vectors in a SQLite file and answers queries.
 //!
-//! This crate depends on no other workspace member. It is handed the text
+//! This crate depends on no workspace member except `zorp-loopback`, which
+//! holds the guard it shares with `zorp-voice`. It is handed the text
 //! to index rather than reading a store, so it knows nothing about
 //! sessions, agents, or the web server, and nothing about it has to change
 //! when they do. `zorp-web` is the caller that knows a conversation is a
@@ -38,4 +39,4 @@ pub use embed::{
     EMBED_URL_VAR,
 };
 pub use index::{Chunk, Conversation, Hit, Index, IndexError, Passage, Stats};
-pub use loopback::{LoopbackError, LoopbackResolver, LoopbackUrl};
+pub use loopback::{LoopbackError, LoopbackResolver, LoopbackUrl, RecallWording};

@@ -9,10 +9,11 @@ license.workspace = true
 [lints]
 workspace = true
 
-# No dependency on any other workspace member. This crate knows about a
-# loopback HTTP endpoint, a SQLite file, and cosine similarity. It knows
-# nothing about sessions, agents, or the web server, and it is handed the
-# text to index rather than reading a store itself.
+# No dependency on any other workspace member except `zorp-loopback`, the
+# guard it shares with `zorp-voice`, which itself depends on no member. This
+# crate knows about a loopback HTTP endpoint, a SQLite file, and cosine
+# similarity. It knows nothing about sessions, agents, or the web server,
+# and it is handed the text to index rather than reading a store itself.
 #
 # Every one of these three is already in the tree that zorp-web links.
 # That is most of the argument for SQLite over LanceDB here: this whole
@@ -21,6 +22,9 @@ workspace = true
 ureq       = { workspace = true }
 serde_json = { workspace = true }
 rusqlite   = { workspace = true }
+# Ours, and its only dependency is the `ureq` above, so it adds no outside
+# crate either.
+zorp-loopback = { path = "../zorp-loopback" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

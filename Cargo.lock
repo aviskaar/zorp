@@ -8433,6 +8433,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zorp-loopback"
+version = "0.5.0"
+dependencies = [
+ "ureq",
+]
+
+[[package]]
 name = "zorp-mcp"
 version = "0.5.0"
 dependencies = [
@@ -8453,6 +8460,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ureq",
+ "zorp-loopback",
 ]
 
 [[package]]
@@ -8519,6 +8527,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ureq",
+ "zorp-loopback",
 ]
 
 [[package]]

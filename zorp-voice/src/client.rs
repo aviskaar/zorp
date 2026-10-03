@@ -1,6 +1,6 @@
 //! The Qwen ASR 0.0.6 voice runtime, over checked loopback HTTP.
 
-use crate::loopback::{LoopbackError, LoopbackResolver, LoopbackUrl};
+use crate::loopback::{DirectRuntime, LoopbackError, LoopbackResolver, LoopbackUrl};
 use crate::SetupStage;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};

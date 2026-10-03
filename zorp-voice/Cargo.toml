@@ -9,8 +9,10 @@ license.workspace = true
 [lints]
 workspace = true
 
-# No dependency on another workspace member. This crate knows only the
-# checked local Qwen ASR HTTP contract and the audio handed to it.
+# No dependency on another workspace member except `zorp-loopback`, the
+# guard it shares with `zorp-recall`, which itself depends on no member.
+# This crate knows only the checked local Qwen ASR HTTP contract and the
+# audio handed to it.
 [dependencies]
 base64 = { workspace = true }
 serde = { workspace = true }
@@ -18,6 +20,7 @@ serde_json = { workspace = true }
 ureq = { workspace = true }
 dirs = { workspace = true }
 rustix = { workspace = true }
+zorp-loopback = { path = "../zorp-loopback" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
