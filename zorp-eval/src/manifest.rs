@@ -1,3 +1,4 @@
+use crate::BoxErr;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -48,7 +49,7 @@ pub struct ContractsConfig {
     pub critical: Vec<String>,
 }
 
-pub fn load_manifest(path: &Path) -> anyhow::Result<Manifest> {
+pub fn load_manifest(path: &Path) -> Result<Manifest, BoxErr> {
     let text = fs::read_to_string(path)?;
     Ok(serde_yaml_ng::from_str(&text)?)
 }

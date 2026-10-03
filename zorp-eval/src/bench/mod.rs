@@ -30,6 +30,7 @@ pub mod dataset;
 pub mod grade;
 pub mod report;
 
+use crate::BoxErr;
 use std::path::PathBuf;
 
 use client::{Endpoint, Wire};
@@ -67,16 +68,16 @@ pub struct Outcomes {
 }
 
 impl Plan {
-    pub fn prepare(options: Options) -> anyhow::Result<Self> {
+    pub fn prepare(options: Options) -> Result<Self, BoxErr> {
         let manifest = crate::manifest::load_manifest(&options.manifest)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", options.manifest.display()))?;
+            .map_err(|e| BoxErr::from(format!("{}: {e}", options.manifest.display())))?;
         if manifest.experiment.repetitions == 0 {
-            anyhow::bail!("experiment.repetitions is 0, which is a run that measures nothing");
+            return Err("experiment.repetitions is 0, which is a run that measures nothing".into());
         }
         let mut runtimes = Vec::new();
         for runtime in std::iter::once(&manifest.reference).chain(&manifest.candidates) {
             if runtimes.iter().any(|(id, _)| id == &runtime.id) {
-                anyhow::bail!("two runtimes are both called {:?}", runtime.id);
+                return Err(format!("two runtimes are both called {:?}", runtime.id).into());
             }
             runtimes.push((runtime.id.clone(), endpoint(runtime)?));
         }
@@ -92,7 +93,7 @@ impl Plan {
 
     /// Load every case's items, then ask every runtime every item as many
     /// times as the manifest says, and build the table.
-    pub fn run(self) -> anyhow::Result<Outcomes> {
+    pub fn run(self) -> Result<Outcomes, BoxErr> {
         // Every dataset is read before anything is sent, so a missing file
         // or a schema change fails the run before it costs anything.
         let mut suites = Vec::new();
@@ -194,17 +195,17 @@ impl Plan {
 /// One runtime from the manifest, resolved. The key is read here, once,
 /// before the environment is cleared, and a variable the manifest names but
 /// nobody set is an error now rather than a table of 401s later.
-fn endpoint(runtime: &crate::manifest::RuntimeConfig) -> anyhow::Result<Endpoint> {
+fn endpoint(runtime: &crate::manifest::RuntimeConfig) -> Result<Endpoint, BoxErr> {
     let id = &runtime.id;
     let wire = match runtime.provider.as_deref().unwrap_or("openai") {
         "openai" => Wire::OpenAi,
         "anthropic" | "claude" => Wire::Anthropic,
-        other => anyhow::bail!("runtime {id}: unknown provider {other:?}"),
+        other => return Err(format!("runtime {id}: unknown provider {other:?}").into()),
     };
     let model = runtime.model.clone().ok_or_else(|| {
-        anyhow::anyhow!(
+        BoxErr::from(format!(
             "runtime {id}: bench needs a model; the agent's default is not a benchmark subject"
-        )
+        ))
     })?;
     let base = runtime.base_url.clone().unwrap_or_else(|| {
         match wire {
@@ -223,7 +224,9 @@ fn endpoint(runtime: &crate::manifest::RuntimeConfig) -> anyhow::Result<Endpoint
     let api_key = match &runtime.api_key_env {
         None => None,
         Some(var) => Some(std::env::var(var).map_err(|_| {
-            anyhow::anyhow!("runtime {id}: api_key_env names {var}, which is not set")
+            BoxErr::from(format!(
+                "runtime {id}: api_key_env names {var}, which is not set"
+            ))
         })?),
     };
     let reasoning_mode = if runtime.reasoning_mode.trim().is_empty() {
@@ -231,7 +234,7 @@ fn endpoint(runtime: &crate::manifest::RuntimeConfig) -> anyhow::Result<Endpoint
     } else {
         Some(
             client::ReasoningMode::parse(&runtime.reasoning_mode)
-                .map_err(|e| anyhow::anyhow!("runtime {id}: {e}"))?,
+                .map_err(|e| BoxErr::from(format!("runtime {id}: {e}")))?,
         )
     };
     Ok(Endpoint {

@@ -1,5 +1,8 @@
 // Library entrypoint
 
+/// Shared boxed error, mirroring the core so `?` composes across crates.
+pub type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+
 pub mod bench;
 pub mod config;
 pub mod contracts;

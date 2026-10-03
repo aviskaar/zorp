@@ -8416,7 +8416,6 @@ dependencies = [
 name = "zorp-eval"
 version = "0.5.0"
 dependencies = [
- "anyhow",
  "clap",
  "csv",
  "dirs",

@@ -19,6 +19,7 @@
 
 pub mod case;
 
+use crate::BoxErr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::Ordering;
@@ -58,23 +59,23 @@ pub struct CaseResult {
 
 /// Run every `.toml` case in `dir`, print one line each, and report whether
 /// they all passed.
-pub fn run_suite(dir: &Path, agent_binary: &Path) -> anyhow::Result<bool> {
+pub fn run_suite(dir: &Path, agent_binary: &Path) -> Result<bool, BoxErr> {
     let agent_binary = agent_binary.canonicalize().map_err(|e| {
-        anyhow::anyhow!(
+        BoxErr::from(format!(
             "{}: {e} (build it first: cargo build -p zorp-agent)",
             agent_binary.display()
-        )
+        ))
     })?;
 
     let mut cases: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?
+        .map_err(|e| BoxErr::from(format!("{}: {e}", dir.display())))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|e| e == "toml"))
         .collect();
     cases.sort();
     if cases.is_empty() {
-        anyhow::bail!("no .toml cases in {}", dir.display());
+        return Err(format!("no .toml cases in {}", dir.display()).into());
     }
 
     println!("harness: {} cases from {}", cases.len(), dir.display());
@@ -138,7 +139,7 @@ pub fn run_case(path: &Path, agent_binary: &Path) -> CaseResult {
     }
 }
 
-fn run_case_inner(path: &Path, case: &Case, agent_binary: &Path) -> anyhow::Result<Vec<String>> {
+fn run_case_inner(path: &Path, case: &Case, agent_binary: &Path) -> Result<Vec<String>, BoxErr> {
     let root = tempfile::tempdir()?;
     let workspace = root.path().join("workspace");
     std::fs::create_dir_all(&workspace)?;
@@ -152,7 +153,7 @@ fn run_case_inner(path: &Path, case: &Case, agent_binary: &Path) -> anyhow::Resu
             .unwrap_or_else(|| Path::new("."))
             .join(fixture);
         crate::snapshot::snapshot_copy(&from, &workspace)
-            .map_err(|e| anyhow::anyhow!("fixture {}: {e}", from.display()))?;
+            .map_err(|e| BoxErr::from(format!("fixture {}: {e}", from.display())))?;
     }
 
     let (address, connections) = scripted_server(FRAMING, case.script());
@@ -268,7 +269,7 @@ fn run_case_inner(path: &Path, case: &Case, agent_binary: &Path) -> anyhow::Resu
 /// Run the child and refuse to wait forever for it. The wait ends on the
 /// child's own exit, not on a poll, so nothing here is tuned to how fast a
 /// machine is.
-fn wait_with_ceiling(mut command: Command) -> anyhow::Result<std::process::Output> {
+fn wait_with_ceiling(mut command: Command) -> Result<std::process::Output, BoxErr> {
     let mut child = command.spawn()?;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
@@ -296,7 +297,7 @@ fn wait_with_ceiling(mut command: Command) -> anyhow::Result<std::process::Outpu
         Ok(piped) => piped,
         Err(_) => {
             let _ = reader.join();
-            anyhow::bail!("the run was still going after {CEILING:?} and was killed");
+            return Err(format!("the run was still going after {CEILING:?} and was killed").into());
         }
     };
     let _ = reader.join();
@@ -308,7 +309,7 @@ fn wait_with_ceiling(mut command: Command) -> anyhow::Result<std::process::Outpu
 }
 
 /// The `role` column of the stored transcript, in `seq` order.
-fn transcript_roles(state_db: &Path) -> anyhow::Result<Vec<String>> {
+fn transcript_roles(state_db: &Path) -> Result<Vec<String>, BoxErr> {
     let conn = rusqlite::Connection::open(state_db)?;
     let mut statement = conn.prepare("SELECT role FROM messages ORDER BY seq, id")?;
     let roles = statement

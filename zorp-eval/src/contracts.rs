@@ -1,3 +1,4 @@
+use crate::BoxErr;
 use serde::Deserialize;
 use serde_json::Value;
 use std::fs;
@@ -55,7 +56,7 @@ pub struct Trace {
     pub malformed_lines: usize,
 }
 
-pub fn load_contract(path: &Path) -> anyhow::Result<Contract> {
+pub fn load_contract(path: &Path) -> Result<Contract, BoxErr> {
     let text = fs::read_to_string(path)?;
     let contract: Contract = serde_yaml_ng::from_str(&text)?;
     // A typo in a predicate id must fail loudly at load time. Otherwise it
@@ -63,18 +64,19 @@ pub fn load_contract(path: &Path) -> anyhow::Result<Contract> {
     // list, or a silent pass in a forbidden list.
     for pred in contract.required.iter().chain(contract.forbidden.iter()) {
         if !is_known_predicate(&contract.id, &pred.id) {
-            anyhow::bail!(
+            return Err(format!(
                 "unknown predicate id '{}' for contract '{}' in {}",
                 pred.id,
                 contract.id,
                 path.display()
-            );
+            )
+            .into());
         }
     }
     Ok(contract)
 }
 
-pub fn load_trace(path: &Path) -> anyhow::Result<Trace> {
+pub fn load_trace(path: &Path) -> Result<Trace, BoxErr> {
     let text = fs::read_to_string(path)?;
     let mut events = Vec::new();
     let mut malformed_lines = 0usize;
