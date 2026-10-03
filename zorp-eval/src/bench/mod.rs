@@ -28,6 +28,7 @@ pub mod case;
 pub mod client;
 pub mod dataset;
 pub mod grade;
+pub mod local;
 pub mod report;
 
 use crate::BoxErr;
