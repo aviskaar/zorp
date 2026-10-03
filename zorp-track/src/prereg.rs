@@ -64,11 +64,7 @@ pub struct Preregistration {
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    format!("{:x}", hasher.finalize())
 }
 
 fn render_prereg_md(
@@ -482,6 +478,20 @@ mod tests {
     use super::*;
     use crate::track::Store;
     use tempfile::tempdir;
+
+    #[test]
+    fn sha256_hex_is_lowercase_zero_padded() {
+        // Pre-registration integrity hashes are persisted, so the exact
+        // string format is pinned.
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 
     fn init_git_repo(dir: &Path) {
         std::process::Command::new("git")
