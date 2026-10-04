@@ -699,8 +699,11 @@ resulting artifact, deliver it in the right form.
   `zorp-stub` provider, never a real dataset or the network. It gates
   nothing and no merge-gating job runs it, for the reason `compat` does
   not. Perplexity, memory and active-parameter counts need local weights
-  and are a separate piece of work; code-execution benchmarks are not
-  there yet. See `docs/DECISIONS.md` (2026-09-18).
+  and are a separate piece of work (#259). Their table,
+  `bench_local_results` in `zorp-eval/src/bench/local.rs`, exists and has
+  no writer yet, and SQLite itself refuses a measured row with no value or
+  an unevaluable row with one. Code-execution benchmarks are not there
+  yet. See `docs/DECISIONS.md` (2026-09-18).
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.
