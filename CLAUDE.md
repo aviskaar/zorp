@@ -351,9 +351,13 @@ resulting artifact, deliver it in the right form.
   `no_tool_clears_state_or_resets_settings`.
 - `zorp-recall/` is zorp's own conversation search: a loopback guard, an
   embedder that talks to a local Ollama, and a SQLite vector index over the
-  conversations in `zorp-agent`'s store. Like `zorp-search` and `zorp-skill`
-  it depends on no other workspace member. `zorp-web` exposes it behind the
-  non-default `recall` feature as three endpoints and a sidebar search box.
+  conversations in `zorp-agent`'s store. It depends on `zorp-loopback` and
+  nothing else in the workspace. `zorp-loopback` is the one copy of the
+  guard `zorp-recall` and `zorp-voice` share, `LoopbackUrl::parse` and
+  `LoopbackResolver`, and depends on no workspace member itself; each caller
+  keeps its own refusal wording, its own redirect and proxy settings, and
+  its own canary tests. `zorp-web` exposes it behind the non-default
+  `recall` feature as three endpoints and a sidebar search box.
   One background worker sweeps at startup and every 300 seconds by default,
   configurable with `ZORP_RECALL_SWEEP_SECS`, where 0 disables automatic
   sweeps. A finished turn queues its session on that same worker. The worker
@@ -378,9 +382,10 @@ resulting artifact, deliver it in the right form.
   `docs/DECISIONS.md` (2026-08-22, 2026-08-24) before changing any of that,
   especially the choice of SQLite over the LanceDB library in `zorp-track`.
 - `zorp-voice/` is zorp's own voice transcription client and runtime bootstrap
-  for Qwen3-ASR 0.0.6. It depends on no other workspace member. `zorp-web`
-  exposes it behind the non-default `voice` feature. The status, readiness, and
-  transcription routes exist in every build, and the mutating routes answer
+  for Qwen3-ASR 0.0.6. It depends on `zorp-loopback` and nothing else in
+  the workspace. `zorp-web` exposes it behind the non-default `voice`
+  feature. The status, readiness, and transcription routes exist in every
+  build, and the mutating routes answer
   501 without it. Recorded voice has the same boundary as recall text: the
   endpoint passes written-form and resolution checks, the client gets a
   resolver for that host and port only, redirects are off, and proxy discovery
@@ -858,8 +863,8 @@ resulting artifact, deliver it in the right form.
   index silently holds two conventions the day they disagree, and
   `there_is_one_chunker_and_one_fingerprint` fails if a second appears.
   They are in `zorp-agent` rather than in `zorp-recall` because that crate
-  deliberately depends on no other workspace member, and the store the
-  chunker reads is here. `zorp-agent recall <query>`, `--index`,
+  deliberately depends on no workspace member but `zorp-loopback`, and the
+  store the chunker reads is here. `zorp-agent recall <query>`, `--index`,
   `/recall` in the REPL, and `--recall` on a turn. Every rule is unchanged
   and still enforced where it was: conversation text goes to a loopback
   address or it goes nowhere, the unit is a verbatim message, an assistant

@@ -1,0 +1,18 @@
+[package]
+name = "zorp-loopback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The one loopback guard: is this endpoint on the machine the user is sitting at?"
+license.workspace = true
+
+[lints]
+workspace = true
+
+# No dependency on any workspace member, and nothing but ureq, because the
+# whole crate is one question and the resolver ureq is handed. `zorp-recall`
+# and `zorp-voice` both depend on it and on no other member, so it must
+# never grow a dependency that would drag either of them into the rest of
+# the workspace.
+[dependencies]
+ureq = { workspace = true }
