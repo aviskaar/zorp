@@ -32,6 +32,23 @@ impl Preset {
             _ => None,
         }
     }
+
+    /// What a surface runs under, given the preset an agent asked for and
+    /// the loosest the surface allows.
+    ///
+    /// The stricter of the two wins, so an agent narrows what a surface asks
+    /// about and never loosens it: `Decision::Allow` skips the approver
+    /// entirely, and an agent is a file that may have arrived by `git clone`.
+    /// An agent that names no preset gets the cap. A name that does not
+    /// parse also gets the cap, because a typo is not a reason to run looser.
+    ///
+    /// Every surface goes through this one function, so a second copy of the
+    /// rule cannot drift from the first. The browser passes `ReadOnly`.
+    pub fn capped(asked: Option<&str>, cap: Preset) -> Preset {
+        asked
+            .and_then(Preset::parse)
+            .map_or(cap, |asked| asked.min(cap))
+    }
 }
 
 /// Per-operation approval policy. Reads are always allowed and unknown tools are
@@ -857,6 +874,25 @@ fn tokenize_command(command: &str) -> Result<TokenizedCommand, ()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Under a cap looser than the browser's, an agent still cannot climb
+    /// above it, and one that asks for less still gets less.
+    #[test]
+    fn a_preset_is_capped_and_never_raised() {
+        let cap = Preset::Editor;
+        assert_eq!(Preset::capped(Some("full"), cap), Preset::Editor);
+        assert_eq!(Preset::capped(Some("editor"), cap), Preset::Editor);
+        assert_eq!(Preset::capped(Some("read-only"), cap), Preset::ReadOnly);
+    }
+
+    /// No preset, or one nobody can parse, is the cap and not something
+    /// looser.
+    #[test]
+    fn a_missing_or_unreadable_preset_is_the_cap() {
+        assert_eq!(Preset::capped(None, Preset::Editor), Preset::Editor);
+        assert_eq!(Preset::capped(Some("ful"), Preset::Editor), Preset::Editor);
+        assert_eq!(Preset::capped(Some(""), Preset::ReadOnly), Preset::ReadOnly);
+    }
 
     fn call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {
