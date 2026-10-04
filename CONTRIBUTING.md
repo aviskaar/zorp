@@ -11,7 +11,7 @@ don't fit the project's direction.
 
 Read [`AGENTS.md`](AGENTS.md) for the tool-agnostic project instructions,
 [`docs/superpowers/specs/`](docs/superpowers/specs/) for the approved
-designs, and [`docs/DECISIONS.md`](docs/DECISIONS.md) for the product and
+designs, and [`docs/decisions/`](docs/decisions/README.md) for the product and
 architecture decision log. Check there before proposing something that's
 already been decided against.
 
@@ -70,7 +70,7 @@ commands above locally before opening a PR is on you.
 
 - Keep PRs focused on one change.
 - Include or update tests for behavior changes.
-- Update relevant docs (`README.md`, `docs/DECISIONS.md`, the design spec
+- Update relevant docs (`README.md`, `docs/decisions/`, the design spec
   the change belongs to) when a change affects them.
 - CI (build + test) must pass.
 

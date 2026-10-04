@@ -1,7 +1,7 @@
 # Decision log
 
 zorp keeps a product and architecture decision log in the repository:
-[`docs/DECISIONS.md`](https://github.com/aviskaar/zorp/blob/main/docs/DECISIONS.md).
+[`docs/decisions/`](https://github.com/aviskaar/zorp/tree/main/docs/decisions), one architecture decision record per file.
 
 It is the source of truth for why things are the way they are, and this
 site deliberately does not copy it. A copy would drift, and a decision

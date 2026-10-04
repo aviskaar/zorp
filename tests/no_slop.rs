@@ -16,7 +16,7 @@
 //!   inherited record of the project this one was forked from. Editing
 //!   somebody else's document to change how it reads makes it a worse
 //!   record of what they wrote.
-//! - `docs/DECISIONS.md` says in its own opening that entries are never
+//! - `docs/DECISIONS.md` and `docs/decisions/` say in their own opening that entries are never
 //!   rewritten, so that a reader can see what was believed at the time.
 //!   That rule does not have a punctuation exception.
 //! - `docs/superpowers/` and `docs/uat/` are dated plans, specs and run
@@ -37,6 +37,7 @@ const EXEMPT: &[&str] = &[
     "docs/upstream-quecto",
     "docs/UPSTREAM_QUECTO_README.md",
     "docs/DECISIONS.md",
+    "docs/decisions",
     "docs/superpowers",
     "docs/uat",
     "docs/assets",
