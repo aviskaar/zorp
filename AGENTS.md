@@ -624,10 +624,12 @@ resulting artifact, deliver it in the right form.
   sessions. `docs/upstream-quecto/` holds quecto's historical specs, plans,
   and changelog. Read those for context, but don't edit them; they're a
   record of the past, not of zorp.
-- `docs/DECISIONS.md` is the product and architecture decision log. Add a
-  short entry whenever a real decision gets made (not every change; use
-  judgment), and check it before re-deriving a decision that's already
-  there.
+- `docs/decisions/` is the product and architecture decision log, one ADR
+  per file (MADR layout, see its `README.md`). Add a short record whenever a
+  real decision gets made (not every change; use judgment), and check it
+  before re-deriving a decision that's already there. `docs/DECISIONS.md`
+  is only a date-to-record table, so a citation like "`docs/DECISIONS.md`
+  (2026-09-05)" still resolves.
 - `docs/superpowers/specs/` holds the approved designs, one per
   capability. Check the relevant spec before assuming what zorp's
   capabilities are called or what they cover; both have changed at least
