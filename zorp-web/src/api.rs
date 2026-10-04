@@ -218,6 +218,10 @@ fn api_router(state: AppState) -> Router {
             state.clone(),
             crate::auth::require_token,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::refuse_cross_site,
+        ))
         .layer(cors)
         .with_state(state)
 }
