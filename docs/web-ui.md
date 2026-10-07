@@ -137,8 +137,8 @@ and not shown, the same as in the terminal. Providers that cannot stream,
 which includes Anthropic today, still answer exactly as they did before.
 
 **Reading what a run produced.** The Files button opens a pane listing the
-files in the directory the server was started in, and renders them. It is
-read-only. Paths are resolved against that directory and refused if they
+files in the workspace, and renders them. It is read-only. Paths are
+resolved against the workspace and refused if they
 land outside it, and only an allowlist of extensions is served at all, so
 this is a window on the workspace rather than a file server.
 
