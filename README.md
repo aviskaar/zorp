@@ -37,7 +37,9 @@ hypothesis are all the same shape of problem to zorp. It's built by
 > shared research foundation (tracks, evidence records, checkpoints) are
 > in place and fully tested. All four capabilities built on top,
 > validate, investigate, co-write, and deliver, are built and tested.
-> See [Status and roadmap](#status-and-roadmap) below.
+> Training your own models is the next direction: pretraining works in
+> developer mode, and Zorp RL (fine-tuning and retraining on your own
+> usage) is planned. See [Status and roadmap](#status-and-roadmap) below.
 
 ## Contents
 
@@ -192,6 +194,34 @@ design specs live, and repo conventions.
 - [ ] A published investigation trace, start to finish
 - [ ] A grounded-vs-baseline evaluation
 - [ ] A systems paper about zorp itself, submitted to arXiv
+
+### Where this is going: own your intelligence
+
+zorp is free, local first AI you own: your models, your files, your
+machine. The next step is **Zorp RL**, the training side, where models
+are retrained and post-trained on how you actually use them. It covers
+the full stack, and closes it into a loop:
+
+```
+pretrain ─▶ fine-tune ─▶ use in zorp ─▶ observe ─▶ Zorp RL self-trains
+               ▲                                        │
+               └────────────────────────────────────────┘
+```
+
+Pretrain or fine-tune a model, use it in zorp, and feed the logs from
+that use back to Zorp RL, which trains on the new data and returns a
+better model. Each pass fits the model more closely to one person's or
+one team's usage patterns, and because the loop is meant to run on your
+own hardware, those logs are meant to stay there too.
+
+Most of this is direction, not product. What exists today:
+
+- [x] **Pretrain**: developer mode (`zorp-train`) trains a BPE tokenizer and a Qwen style model from scratch on Apple Metal through MLX
+- [x] **Use it in zorp**: a finished checkpoint is served on loopback and shows up in the model picker ("Open in Zorp")
+- [ ] **Observability**: partly there. Conversations are kept in the local session store and traces export over OpenTelemetry; turning them into training data is not built
+- [ ] **Fine-tune**: post-train an existing open model on your own data
+- [ ] **Zorp RL**: reinforcement learning and fine-tuning from local usage logs
+- [ ] **Automated training**: retrain on new data without being asked, and keep a new model only when it measures better than the one it would replace
 
 ## Origins
 
