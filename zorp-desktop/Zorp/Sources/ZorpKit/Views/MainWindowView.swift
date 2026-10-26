@@ -1,100 +1,101 @@
 import SwiftUI
 
 public struct MainWindowView: View {
-    @Bindable public var appState: AppState
-    @State private var inspectorPresented: Bool = false
+    @Bindable var app: AppState
+    @State private var showFiles = false
+    @Environment(\.openSettings) private var openSettings
 
-    public init(appState: AppState) {
-        self.appState = appState
+    public init(app: AppState) {
+        self.app = app
     }
 
     public var body: some View {
         NavigationSplitView {
-            SidebarView(appState: appState)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+            SidebarView(app: app)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 380)
         } detail: {
-            if let vm = appState.activeSessionVM {
-                VStack(spacing: 0) {
-                    // Header Bar
-                    HStack(spacing: 12) {
-                        Text("Session")
-                            .font(.headline)
-                            .bold()
-
-                        Spacer()
-
-                        // Context Meter
-                        if vm.usedTokens > 0 {
-                            HStack(spacing: 4) {
-                                Image(systemName: "gauge.with.needle")
-                                    .font(.caption)
-                                if let limit = vm.limitTokens {
-                                    Text("\(vm.usedTokens) / \(limit)")
-                                } else {
-                                    Text("\(vm.usedTokens) tokens (\(vm.contextSource))")
-                                }
-                            }
-                            .font(.caption2)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.secondary.opacity(0.12))
-                            .cornerRadius(12)
-                        }
-
-                        // Bolt / Investigate Button
-                        Button(action: {
-                            Task {
-                                try? await vm.client.startInvestigate(sessionId: vm.sessionId, attempts: 3)
-                            }
-                        }) {
-                            Label("Bolt", systemImage: "bolt.fill")
-                                .foregroundColor(.yellow)
-                        }
-                        .help("Run Investigation Bolt (3 attempts)")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color(.windowBackgroundColor).opacity(0.6))
-
-                    ConversationView(viewModel: vm)
-
-                    Divider()
-
-                    ComposerView(viewModel: vm)
-
-                }
-            } else {
-                ContentUnavailableView(
-                    "No Session Selected",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Select a session from the sidebar or start a new one.")
-                )
-            }
+            ConversationView(app: app, session: app.current)
+                .navigationTitle(app.current.title)
+                .navigationSubtitle(app.workspace?.path.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "")
         }
-        .inspector(isPresented: $inspectorPresented) {
-            if let vm = appState.activeSessionVM {
-                InspectorView(viewModel: vm)
-            } else {
-                ContentUnavailableView(
-                    "No Active Session",
-                    systemImage: "sidebar.trailing",
-                    description: Text("Select a session to view its artifacts and ledger.")
-                )
-            }
+        .inspector(isPresented: $showFiles) {
+            FilesPane(app: app)
+                .inspectorColumnWidth(min: 260, ideal: 340, max: 600)
         }
-
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                ModelMenu(app: app) { openSettings() }
+            }
             ToolbarItem(placement: .primaryAction) {
-                Button(action: { inspectorPresented.toggle() }) {
-                    Image(systemName: "sidebar.trailing")
+                Button {
+                    showFiles.toggle()
+                } label: {
+                    Label("Files", systemImage: "sidebar.trailing")
                 }
-                .help("Toggle Inspector (⌘\\)")
+                .help("Show the workspace's files")
             }
         }
-        .onChange(of: appState.activeSessionId) {
-            if let id = appState.activeSessionId {
-                appState.selectSession(id)
+        .task { await app.start() }
+        .onChange(of: app.wantsWorkspacePicker) {
+            if app.wantsWorkspacePicker { WorkspacePicker.run(app: app) }
+        }
+        .onChange(of: app.wantsSettings) {
+            if app.wantsSettings {
+                app.wantsSettings = false
+                openSettings()
             }
         }
+        .onChange(of: app.filesGeneration) {
+            // A turn that wrote files is worth a look; open the pane once.
+            if !showFiles, app.current.items.contains(where: { $0.isTool }) {
+                Task {
+                    if let listing = try? await app.client.listArtifacts(), !listing.files.isEmpty {
+                        showFiles = true
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The model the next message goes to, switchable from the toolbar.
+struct ModelMenu: View {
+    @Bindable var app: AppState
+    let openSettings: () -> Void
+
+    private var current: String {
+        guard let settings = app.settings else { return "No model" }
+        return settings.configured ? settings.model : "Set up a model"
+    }
+
+    var body: some View {
+        Menu {
+            if app.models.isEmpty {
+                Text(app.modelsError ?? "No models listed yet")
+            } else {
+                ForEach(app.models.prefix(60)) { detail in
+                    Button {
+                        Task { await app.selectModel(detail.id) }
+                    } label: {
+                        if detail.id == app.settings?.model {
+                            Label(detail.name ?? detail.id, systemImage: "checkmark")
+                        } else {
+                            Text(detail.name ?? detail.id)
+                        }
+                    }
+                }
+                if app.models.count > 60 {
+                    Text("\(app.models.count - 60) more in Settings")
+                }
+            }
+            Divider()
+            Button("Model Settings…", action: openSettings)
+        } label: {
+            Label(current, systemImage: "cpu")
+                .labelStyle(.titleAndIcon)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("The model the next message is sent to")
     }
 }

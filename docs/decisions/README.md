@@ -11,6 +11,7 @@ To add one, copy the last file, take the next number, and add a row below.
 
 | # | Date | Decision | Status |
 |---|------|----------|--------|
+| 0140 | 2026-10-26 | [The Mac app is native and speaks the browser's API](0140-the-mac-app-is-native-and-speaks-the-browser-s-api.md) | accepted |
 | 0138 | 2026-10-04 | [Decisions are one ADR per file](0138-decisions-are-one-adr-per-file.md) | accepted |
 | 0137 | 2026-10-01 | [one loopback guard, in a crate of its own](0137-one-loopback-guard-in-a-crate-of-its-own.md) | accepted |
 | 0136 | 2026-10-03 | [the bolt loop stops early on a committed stop width, and only from three attempts up](0136-the-bolt-loop-stops-early-on-a-committed-stop-width-and-only.md) | accepted |
