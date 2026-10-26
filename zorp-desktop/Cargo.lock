@@ -2691,6 +2691,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-stream"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3468,7 +3480,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zorp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde_json",
  "ureq",
@@ -3477,7 +3489,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-agent"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "clap",
@@ -3501,7 +3513,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-desktop-bridge"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde_json",
  "tokio",
@@ -3511,7 +3523,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3523,11 +3535,11 @@ dependencies = [
 
 [[package]]
 name = "zorp-skill"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "zorp-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -3538,6 +3550,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "toml",
  "tower-http",
  "ureq",
