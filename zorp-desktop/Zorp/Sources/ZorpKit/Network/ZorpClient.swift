@@ -44,7 +44,7 @@ public enum APIError: LocalizedError, Equatable, Sendable {
 /// It mirrors `web/src/api.ts`.
 public final class ZorpClient: Sendable {
     public let baseURL: URL
-    private let session: URLSession
+    let session: URLSession
 
     public init(baseURL: URL, session: URLSession = .shared) {
         self.baseURL = baseURL

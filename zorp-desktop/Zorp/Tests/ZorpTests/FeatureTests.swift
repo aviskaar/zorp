@@ -25,8 +25,50 @@ import Testing
     #expect(data.files.first?.envVar == "ZORP_STORE")
 }
 
+/// `available` is what the server says when it was built with voice and
+/// nothing is running yet. Reading that as ready is how a recording was
+/// once sent to a runtime nobody had started.
+@Test func voiceIsReadyOnlyWhenTheRuntimeAnswersWithItsModel() throws {
+    func status(_ json: String) throws -> VoiceStatus {
+        try JSONDecoder().decode(VoiceStatus.self, from: Data(json.utf8))
+    }
+    let notStarted = try status(#"{"available":true,"runtime_reachable":false,"model_present":false,"setup_available":true,"endpoint":"http://127.0.0.1:8000","model":"Qwen/Qwen3-ASR-0.6B","stage":null,"command":"qwen-asr-serve","detail":"no local voice runtime answered"}"#)
+    #expect(notStarted.available)
+    #expect(!notStarted.ready)
+
+    let noModel = try status(#"{"available":true,"runtime_reachable":true,"model_present":false,"setup_available":true,"detail":"loading"}"#)
+    #expect(!noModel.ready)
+
+    let running = try status(#"{"available":true,"runtime_reachable":true,"model_present":true,"setup_available":true,"detail":"ready"}"#)
+    #expect(running.ready)
+
+    let notBuilt = try status(#"{"available":false,"runtime_reachable":false,"model_present":false,"setup_available":false,"detail":"built without voice"}"#)
+    #expect(!notBuilt.ready)
+}
+
 @MainActor
 @Suite(.serialized) struct FeatureRequestTests {
+    @Test func voiceSetupIsAJsonPostAndFollowsTheStagesToReady() async throws {
+        StubProtocol.reset([
+            "POST /api/voice/wait": (200, "data: {\"status\":\"waiting\",\"stage\":\"installing\",\"model\":\"m\",\"detail\":\"\"}\n\ndata: {\"status\":\"ready\",\"stage\":\"ready\",\"model\":\"m\",\"detail\":\"Voice input is ready.\"}\n\n"),
+        ])
+        let seen = Stages()
+        try await stubClient().waitForVoice { event in seen.add(event.stage) }
+        #expect(StubProtocol.contentTypes["POST /api/voice/wait"] == "application/json")
+        #expect(seen.all == ["installing", "ready"])
+    }
+
+    @Test func voiceSetupThatEndsWithoutReadyIsAnError() async {
+        let client = stubClient()
+        // The suite is serialized, so this replaces the route above.
+        StubProtocol.reset([
+            "POST /api/voice/wait": (200, "data: {\"status\":\"waiting\",\"stage\":\"loading\",\"model\":\"m\",\"detail\":\"\"}\n\n"),
+        ])
+        await #expect(throws: APIError.self) {
+            try await client.waitForVoice { _ in }
+        }
+    }
+
     @Test func aBoltRunPostsTheQuestionAndPrereg() async {
         StubProtocol.reset(["POST /api/sessions/b1/investigate": (202, "")])
         let vm = SessionViewModel(client: stubClient(), sessionId: "b1")
@@ -100,5 +142,11 @@ import Testing
         #expect(done.verdict?.contains("killed") == true)
         #expect(vm.items.count == 1)
     }
+}
+final class Stages: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stages: [String] = []
+    func add(_ stage: String) { lock.lock(); stages.append(stage); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return stages }
 }
 #endif

@@ -41,10 +41,14 @@ extension ZorpClient {
     public func waitForVoice(onEvent: @escaping @Sendable (VoiceWaitEvent) -> Void) async throws {
         var request = URLRequest(url: url("api/voice/wait"))
         request.httpMethod = "POST"
+        // The server refuses this without a JSON content type, so that a
+        // cross-origin page cannot start setup with a simple request.
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
         request.timeoutInterval = 3600
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: request)
+            (bytes, response) = try await session.bytes(for: request)
         } catch {
             throw APIError.transport(error.localizedDescription)
         }
@@ -54,15 +58,16 @@ extension ZorpClient {
             for try await line in bytes.lines { text += line + "\n" }
             throw APIError.http(status: http.statusCode, body: text)
         }
-        var failure: String?
         for try await line in bytes.lines {
             guard let payload = SSEStream.dataField(line),
                   let event = try? JSONDecoder().decode(VoiceWaitEvent.self, from: Data(payload.utf8)) else { continue }
             onEvent(event)
-            if event.status == "error" { failure = event.detail }
-            if event.status == "ready" { break }
+            if event.status == "error" { throw APIError.http(status: 503, body: event.detail) }
+            if event.status == "ready" { return }
         }
-        if let failure { throw APIError.http(status: 503, body: failure) }
+        // Ending without either is not ready: recording now would send the
+        // audio to a runtime that never came up.
+        throw APIError.transport("the voice setup stream ended before the model was ready")
     }
 
     // MARK: panel
