@@ -119,8 +119,14 @@ zorp-agent "<task>"                      # the agent, in the terminal
 zorp-web --workspace ~/research          # the chat UI on http://127.0.0.1:7777
 ```
 
-On a Mac you can instead download `Zorp_<version>_universal.dmg` from the
+On a Mac you can instead download `Zorp-v<version>-universal.dmg` from the
 latest GitHub release and drag `Zorp.app` to `/Applications`.
+
+On Windows, download `zorp-v<version>-x86_64-pc-windows-msvc.zip` from the
+latest release, unzip it, and put the folder on your `PATH`. zorp runs the
+agent's commands under Git Bash, so install
+[Git for Windows](https://git-scm.com/download/win) first, or set `ZORP_SH`
+to the `sh.exe` you want. The desktop app is Mac only.
 
 To build from source, run from Docker, or tune timeouts and retries, see
 [Getting started](docs/getting-started.md). The four research capabilities

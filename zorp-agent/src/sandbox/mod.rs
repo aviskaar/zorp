@@ -1,23 +1,23 @@
 // Process supervision needs raw syscalls: setpgid in pre_exec so the
 // child leads its own process group, and waitid/killpg to reap it and
-// its descendants. There is no safe std equivalent, so the workspace
-// unsafe_code lint is turned off for this module only.
+// its descendants, or a job object on Windows. There is no safe std
+// equivalent, so the workspace unsafe_code lint is turned off for this
+// module only.
 #![allow(unsafe_code)]
 
-#[cfg(not(unix))]
-compile_error!("zorp-agent M4 requires a Unix target");
-
 mod capture;
+mod group;
 
 use crate::tools::ToolError;
 use capture::{capture_stream, render_capture};
+pub(crate) use group::{shell, ProcessGroup};
 use std::collections::HashSet;
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -67,7 +67,7 @@ impl CommandOutput {
 
 impl Sandbox {
     pub fn new(repo_root: PathBuf, cancel: CancelToken) -> Self {
-        let repo_root = repo_root.canonicalize().unwrap_or(repo_root);
+        let repo_root = shell_dir(repo_root.canonicalize().unwrap_or(repo_root));
         Self {
             repo_root,
             cancel,
@@ -101,24 +101,24 @@ impl Sandbox {
             .secrets
             .get_or_init(|| Arc::new(secret_values()))
             .clone();
-        let mut cmd = Command::new("/bin/sh");
+        let mut cmd = Command::new(shell().map_err(|e| ToolError::new(format!("spawn: {e}")))?);
         cmd.arg("-c")
             .arg(command)
             .current_dir(&self.repo_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setpgid(0, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        ProcessGroup::prepare(&mut cmd);
         let mut child = cmd
             .spawn()
             .map_err(|e| ToolError::new(format!("spawn: {e}")))?;
-        let pgid = child.id() as i32;
+        let group = match ProcessGroup::adopt(&child) {
+            Ok(group) => group,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ToolError::new(format!("adopt process group: {e}")));
+            }
+        };
         let mut stdout = child
             .stdout
             .take()
@@ -127,8 +127,8 @@ impl Sandbox {
             .stderr
             .take()
             .ok_or_else(|| ToolError::new("stderr pipe unavailable"))?;
-        let stdout_probe = duplicate_fd(stdout.as_raw_fd())?;
-        let stderr_probe = duplicate_fd(stderr.as_raw_fd())?;
+        let stdout_probe = probe(&stdout)?;
+        let stderr_probe = probe(&stderr)?;
         let output_cap = self.output_cap;
         let finalize_delay = self.reader_finalize_delay;
         let stdout_eof = Arc::new(AtomicBool::new(false));
@@ -156,14 +156,10 @@ impl Sandbox {
         });
         let started = Instant::now();
         let (status, timed_out, cancelled) = loop {
-            if child_exited_unreaped(pgid)? {
+            if child_exited(&mut child)? {
                 let pipes_closed = stream_closed(&stdout_eof, &stdout_probe)?
                     && stream_closed(&stderr_eof, &stderr_probe)?;
-                let kill_result = if pipes_closed {
-                    Ok(())
-                } else {
-                    kill_process_group(pgid)
-                };
+                let kill_result = if pipes_closed { Ok(()) } else { group.kill() };
                 let status = child
                     .wait()
                     .map_err(|e| ToolError::new(format!("reap: {e}")))?;
@@ -173,7 +169,7 @@ impl Sandbox {
             let cancelled = self.cancel.load(Ordering::SeqCst);
             let timed_out = started.elapsed() >= self.timeout;
             if cancelled || timed_out {
-                let kill_result = kill_process_group(pgid);
+                let kill_result = group.kill();
                 if let Err(error) = kill_result {
                     child.try_wait().map_err(|e| {
                         ToolError::new(format!("check child after failed kill: {e}"))
@@ -205,6 +201,61 @@ impl Sandbox {
     }
 }
 
+/// The directory a shell is started in. On Windows a canonical path is a
+/// verbatim `\\?\C:\...` path, which Git Bash cannot use as a working
+/// directory, so a drive path loses the prefix here and only here: the
+/// containment checks elsewhere compare canonical paths with canonical
+/// paths and keep it.
+fn shell_dir(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(rest) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        if rest.as_bytes().get(1) == Some(&b':') {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
+/// A second handle on an output pipe, polled for hangup while a reader
+/// thread owns the first. Windows has no poll on a pipe, so it has nothing
+/// to hold and reads the reader's own EOF flag instead.
+#[cfg(unix)]
+type Probe = OwnedFd;
+#[cfg(windows)]
+struct Probe;
+
+#[cfg(unix)]
+fn probe(stream: &impl AsRawFd) -> Result<Probe, ToolError> {
+    duplicate_fd(stream.as_raw_fd())
+}
+
+#[cfg(windows)]
+fn probe<T>(_stream: &T) -> Result<Probe, ToolError> {
+    Ok(Probe)
+}
+
+#[cfg(windows)]
+fn stream_closed(eof: &AtomicBool, _probe: &Probe) -> Result<bool, ToolError> {
+    Ok(eof.load(Ordering::SeqCst))
+}
+
+/// Whether the shell has exited. Unix asks without reaping, so the pid
+/// cannot be reused while the group is still being killed. A Windows
+/// process handle stays valid until it is closed, so `try_wait` is enough.
+#[cfg(unix)]
+fn child_exited(child: &mut Child) -> Result<bool, ToolError> {
+    child_exited_unreaped(child.id() as i32)
+}
+
+#[cfg(windows)]
+fn child_exited(child: &mut Child) -> Result<bool, ToolError> {
+    child
+        .try_wait()
+        .map(|status| status.is_some())
+        .map_err(|e| ToolError::new(format!("observe child: {e}")))
+}
+
+#[cfg(unix)]
 fn duplicate_fd(fd: i32) -> Result<OwnedFd, ToolError> {
     let duplicated = unsafe { libc::dup(fd) };
     if duplicated == -1 {
@@ -216,6 +267,7 @@ fn duplicate_fd(fd: i32) -> Result<OwnedFd, ToolError> {
     Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
 }
 
+#[cfg(unix)]
 fn stream_closed(eof: &AtomicBool, probe: &OwnedFd) -> Result<bool, ToolError> {
     if eof.load(Ordering::SeqCst) {
         return Ok(true);
@@ -235,6 +287,7 @@ fn stream_closed(eof: &AtomicBool, probe: &OwnedFd) -> Result<bool, ToolError> {
     Ok(descriptor.revents & libc::POLLHUP != 0)
 }
 
+#[cfg(unix)]
 fn child_exited_unreaped(pid: i32) -> Result<bool, ToolError> {
     let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
     let result = unsafe {
@@ -272,10 +325,12 @@ fn child_exited_unreaped(pid: i32) -> Result<bool, ToolError> {
 /// getting it wrong in the strict direction is what produced a flaky test
 /// suite, because a command that had already succeeded failed while
 /// cleaning up something that was no longer there.
+#[cfg(unix)]
 fn kill_error_is_already_gone(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::EPERM))
 }
 
+#[cfg(unix)]
 pub(crate) fn kill_process_group(pgid: i32) -> io::Result<()> {
     if unsafe { libc::kill(-pgid, libc::SIGKILL) } == 0 {
         return Ok(());
@@ -292,8 +347,8 @@ fn secret_values() -> Vec<Vec<u8>> {
     let mut seen = HashSet::new();
     let mut values = Vec::new();
     for (name, value) in std::env::vars_os() {
-        let name = name.as_os_str().as_bytes();
-        let value = value.as_os_str().as_bytes().to_vec();
+        let name = name.as_encoded_bytes();
+        let value = value.as_encoded_bytes().to_vec();
         if !value.is_empty()
             && ["KEY", "TOKEN", "SECRET", "PASSWORD"]
                 .iter()
@@ -345,6 +400,7 @@ mod tests {
     // holding only an unreaped zombie macOS answers EPERM where Linux
     // answers ESRCH. Same fact, different errno, and only one of them was
     // being forgiven.
+    #[cfg(unix)]
     #[test]
     fn a_group_that_is_already_gone_is_not_a_failed_kill() {
         assert!(kill_error_is_already_gone(&io::Error::from_raw_os_error(
@@ -357,6 +413,7 @@ mod tests {
             libc::EINVAL
         )));
     }
+    #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
     use std::sync::Mutex;
     use std::thread;
@@ -365,6 +422,7 @@ mod tests {
     // holds this lock for the mutation's full lifetime.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(unix)]
     #[test]
     fn observes_child_exit_without_reaping_it() {
         let mut child = Command::new("/bin/sh")
@@ -395,6 +453,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn snapshots_non_unicode_environment_best_effort() {
         let _env_lock = ENV_LOCK.lock().unwrap();
@@ -475,6 +534,7 @@ mod tests {
         assert!(!marker.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn runs_at_repo_root_and_captures_both_streams() {
         let dir = tempfile::tempdir().unwrap();
@@ -486,6 +546,24 @@ mod tests {
         assert_eq!(
             out.stdout.trim(),
             dir.path().canonicalize().unwrap().display().to_string()
+        );
+        assert_eq!(out.stderr, "err");
+    }
+
+    // Git Bash prints `/c/Users/...` for `pwd`; `pwd -W` is the same
+    // directory in the form Windows writes it, with forward slashes.
+    #[cfg(windows)]
+    #[test]
+    fn runs_at_repo_root_and_captures_both_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_timeout(Duration::from_secs(5))
+            .run("pwd -W; printf err >&2; exit 7")
+            .unwrap();
+        assert_eq!(out.status, Some(7));
+        assert_eq!(
+            PathBuf::from(out.stdout.trim().replace('/', "\\")),
+            shell_dir(dir.path().canonicalize().unwrap())
         );
         assert_eq!(out.stderr, "err");
     }
