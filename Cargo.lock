@@ -8403,6 +8403,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "ureq",
+ "windows-sys 0.61.2",
  "zorp",
  "zorp-mcp",
  "zorp-recall",
@@ -8483,6 +8484,7 @@ version = "0.6.0"
 dependencies = [
  "libc",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

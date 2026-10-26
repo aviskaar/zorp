@@ -75,6 +75,12 @@ jobs:
           # architectures' SDKs, so this needs no extra toolchain.
           - os: macos-latest
             target: x86_64-apple-darwin
+          # MSVC rather than GNU, because that is the toolchain a Windows
+          # user who builds from source has, and the runner ships it. The
+          # binaries run every command under Git Bash; see
+          # zorp-agent/src/sandbox/group.rs.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -110,10 +116,18 @@ jobs:
         run: |
           set -euo pipefail
           name="zorp-${{ github.ref_name }}-${{ matrix.target }}"
+          # Windows binaries end in .exe and ship as a .zip, which Explorer
+          # and Expand-Archive open with nothing installed.
+          exe=""
+          archive="$name.tar.gz"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            exe=".exe"
+            archive="$name.zip"
+          fi
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/zorp" "dist/$name/"
-          cp "target/${{ matrix.target }}/release/zorp-agent" "dist/$name/"
-          cp "target/${{ matrix.target }}/release/zorp-web" "dist/$name/"
+          cp "target/${{ matrix.target }}/release/zorp$exe" "dist/$name/"
+          cp "target/${{ matrix.target }}/release/zorp-agent$exe" "dist/$name/"
+          cp "target/${{ matrix.target }}/release/zorp-web$exe" "dist/$name/"
           cp README.md LICENSE NOTICE.md "dist/$name/"
           # The web UI is static files the server does not embed, so they
           # ship beside the binaries. Without them zorp-web serves an API
@@ -125,7 +139,11 @@ jobs:
           # this out and the UI still loads, just quietly in the system font,
           # which is the kind of break nobody files a bug about.
           cp -r web/fonts "dist/$name/web/fonts"
-          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            (cd dist && 7z a -tzip "$archive" "$name" > /dev/null)
+          else
+            tar -czf "dist/$archive" -C dist "$name"
+          fi
           # Checksums are the only way a user can tell that what they
           # downloaded is what was built.
           #
@@ -139,16 +157,17 @@ jobs:
           (
             cd dist
             if command -v shasum >/dev/null; then
-              shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+              shasum -a 256 "$archive" > "$archive.sha256"
             else
-              sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+              sha256sum "$archive" > "$archive.sha256"
             fi
           )
 
       - name: Smoke test the built binary
         # A release that cannot print its own version is worse than no
         # release. Only run where the host can execute what we just built.
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
         run: |
           "target/${{ matrix.target }}/release/zorp-agent" --version
           "target/${{ matrix.target }}/release/zorp-agent" --help > /dev/null
@@ -156,7 +175,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: zorp-${{ matrix.target }}
-          path: dist/*.tar.gz*
+          path: |
+            dist/*.tar.gz*
+            dist/*.zip*
           if-no-files-found: error
 
   publish:
@@ -199,6 +220,12 @@ jobs:
             ```bash
             zorp-web          # then open http://127.0.0.1:7777
             ```
+
+            On Windows, download the `x86_64-pc-windows-msvc` `.zip`, unzip
+            it, and put the folder on your `PATH`. zorp runs the agent's
+            commands under Git Bash, so install
+            [Git for Windows](https://git-scm.com/download/win) first, or set
+            `ZORP_SH` to its `bin\sh.exe`.
 
             For macOS users, a standalone native desktop app (`Zorp.dmg`) is
             also attached to this release.

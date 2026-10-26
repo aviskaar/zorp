@@ -709,6 +709,15 @@ resulting artifact, deliver it in the right form.
 - `cargo build --workspace` and `cargo test --workspace` before considering
   Rust changes done. The tree is `cargo fmt` clean and CI gates on it, so
   run `cargo fmt --all` before committing.
+- Windows is a release target. `zorp-agent/src/sandbox/group.rs` is the one
+  platform specific piece: commands run under Git for Windows' `sh.exe`
+  (`ZORP_SH`, then `PATH`, then the installer's locations, never WSL) inside a
+  job object, where Unix uses `/bin/sh` inside a process group, and
+  `ProcessGroup` is the type both go through. Git Bash rather than PowerShell
+  because the `run_command` denylist reads POSIX syntax, and a second command
+  language would need a second denylist. The `windows` CI job builds the
+  shipped binaries and runs the sandbox's tests, not the whole suite. See
+  `docs/DECISIONS.md` (2026-10-26).
 - `zorp::http_agent` is the one HTTP agent for model traffic and the one
   place timeouts are set: 30 seconds to connect, `ZORP_HTTP_TIMEOUT_SECS`
   to read, defaulting to 900. Anything in the workspace that talks to a
