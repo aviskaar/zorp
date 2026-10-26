@@ -1,6 +1,6 @@
 [package]
 name = "zorp-desktop-bridge"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "In-process C-ABI static library bridge for Zorp native macOS desktop app"
 license = "MIT"
