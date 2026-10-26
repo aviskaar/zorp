@@ -43,7 +43,11 @@ public final class VoiceRecorder {
         }
         do {
             let status = try await client.voiceStatus()
-            if !status.available {
+            guard status.available else {
+                error = status.detail
+                return
+            }
+            if !status.ready {
                 guard status.setupAvailable else {
                     error = status.detail
                     return

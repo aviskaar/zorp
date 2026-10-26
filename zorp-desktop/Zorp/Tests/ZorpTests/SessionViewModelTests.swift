@@ -10,6 +10,7 @@ import Testing
 final class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var routes: [String: (Int, String)] = [:]
     nonisolated(unsafe) static var sent: [(method: String, path: String, body: [String: Any])] = []
+    nonisolated(unsafe) static var contentTypes: [String: String] = [:]
     static let lock = NSLock()
 
     /// Add routes. Suites run side by side, so this never clears what
@@ -37,6 +38,7 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         }
         Self.lock.lock()
         Self.sent.append((method, path, body))
+        Self.contentTypes["\(method) \(path)"] = request.value(forHTTPHeaderField: "Content-Type")
         let (status, text) = Self.routes["\(method) \(path)"] ?? (404, "not found")
         Self.lock.unlock()
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!

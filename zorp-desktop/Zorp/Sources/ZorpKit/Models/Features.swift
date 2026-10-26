@@ -98,6 +98,8 @@ public struct AgentSummary: Codable, Hashable, Identifiable, Sendable {
 
 /// `GET /api/voice/status`, and `voice` inside `/api/capabilities`.
 public struct VoiceStatus: Codable, Hashable, Sendable {
+    /// The server was built with voice. It says nothing about whether the
+    /// speech runtime is running: that is `ready`.
     public let available: Bool
     public let runtimeReachable: Bool
     public let modelPresent: Bool
@@ -121,6 +123,10 @@ public struct VoiceStatus: Codable, Hashable, Sendable {
         stage = try? c.decodeIfPresent(String.self, forKey: .stage)
         detail = (try? c.decode(String.self, forKey: .detail)) ?? "Voice input is unavailable."
     }
+
+    /// The runtime answered and has its model, so a recording can be
+    /// transcribed now. Anything less needs the readiness request first.
+    public var ready: Bool { available && runtimeReachable && modelPresent }
 }
 
 /// One frame of `POST /api/voice/wait`.
