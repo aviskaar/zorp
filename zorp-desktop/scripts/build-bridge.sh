@@ -9,6 +9,11 @@ INCLUDE_DIR="${REPO_ROOT}/zorp-desktop/Zorp/Bridge"
 
 mkdir -p "${OUTPUT_DIR}" "${INCLUDE_DIR}"
 
+# The app runs on macOS 14 and later. Without this the C parts of the
+# bridge (ring, SQLite, DuckDB) are compiled for whatever macOS the build
+# machine runs, and the linker warns that they need a newer one.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+
 echo "==> Building zorp-desktop-bridge for aarch64-apple-darwin..."
 cargo build --manifest-path "${BRIDGE_DIR}/Cargo.toml" --release --target aarch64-apple-darwin
 

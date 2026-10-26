@@ -46,6 +46,10 @@ struct TimelineRow: View {
             CompactionRow(messages: messages, before: before, after: after, summary: summary, ok: ok, reason: reason)
         case .memory(let citations, let unavailable):
             MemoryRow(citations: citations, unavailable: unavailable)
+        case .panel(let run):
+            PanelRow(run: run)
+        case .investigate(let run):
+            InvestigateRow(run: run, session: session) { path in session.host?.openFile(path) }
         }
     }
 }

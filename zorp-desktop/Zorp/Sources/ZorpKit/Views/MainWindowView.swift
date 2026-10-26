@@ -2,7 +2,7 @@ import SwiftUI
 
 public struct MainWindowView: View {
     @Bindable var app: AppState
-    @State private var showFiles = false
+    @State private var showSkills = false
     @Environment(\.openSettings) private var openSettings
 
     public init(app: AppState) {
@@ -18,17 +18,27 @@ public struct MainWindowView: View {
                 .navigationTitle(app.current.title)
                 .navigationSubtitle(app.workspace?.path.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "")
         }
-        .inspector(isPresented: $showFiles) {
+        .inspector(isPresented: $app.showFiles) {
             FilesPane(app: app)
                 .inspectorColumnWidth(min: 260, ideal: 340, max: 600)
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
+            ToolbarItemGroup(placement: .principal) {
                 ModelMenu(app: app) { openSettings() }
+                AgentMenu(app: app)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showFiles.toggle()
+                    showSkills.toggle()
+                } label: {
+                    Label("Skills", systemImage: "sparkles")
+                }
+                .help("Installed skills, and which are in this conversation")
+                .popover(isPresented: $showSkills) { SkillsPopover(app: app) }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    app.showFiles.toggle()
                 } label: {
                     Label("Files", systemImage: "sidebar.trailing")
                 }
@@ -47,10 +57,10 @@ public struct MainWindowView: View {
         }
         .onChange(of: app.filesGeneration) {
             // A turn that wrote files is worth a look; open the pane once.
-            if !showFiles, app.current.items.contains(where: { $0.isTool }) {
+            if !app.showFiles, app.current.items.contains(where: { $0.isTool }) {
                 Task {
                     if let listing = try? await app.client.listArtifacts(), !listing.files.isEmpty {
-                        showFiles = true
+                        app.showFiles = true
                     }
                 }
             }

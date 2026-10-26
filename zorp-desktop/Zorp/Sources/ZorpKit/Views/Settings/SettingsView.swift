@@ -33,8 +33,16 @@ public struct SettingsView: View {
                 .tabItem { Label("Model", systemImage: "cpu") }
             WorkspaceSettingsView(app: app)
                 .tabItem { Label("Workspace", systemImage: "folder") }
+            AgentsSettingsView(app: app)
+                .tabItem { Label("Agents", systemImage: "person.crop.circle") }
+            McpSettingsView(app: app)
+                .tabItem { Label("MCP", systemImage: "puzzlepiece.extension") }
+            DataSettingsView(app: app)
+                .tabItem { Label("Data", systemImage: "internaldrive") }
+            DoctorSettingsView(app: app)
+                .tabItem { Label("Doctor", systemImage: "stethoscope") }
         }
-        .frame(width: 620, height: 560)
+        .frame(width: 660, height: 580)
     }
 }
 

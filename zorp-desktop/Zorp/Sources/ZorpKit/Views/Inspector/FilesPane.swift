@@ -84,7 +84,13 @@ public struct FilesPane: View {
                     .help("Show the selected file in Finder")
             }
         }
-        .task(id: app.filesGeneration) { await load() }
+        .task(id: app.filesGeneration) {
+            await load()
+            if let path = app.fileToOpen {
+                app.fileToOpen = nil
+                selected = path
+            }
+        }
         .onChange(of: selected) { Task { await open() } }
     }
 

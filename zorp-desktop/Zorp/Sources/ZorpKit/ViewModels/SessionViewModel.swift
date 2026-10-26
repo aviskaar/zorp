@@ -12,6 +12,12 @@ public protocol SessionHost: AnyObject {
     func needsWorkspace()
     /// A turn finished, so the Files pane may have something new.
     func turnFinished()
+    /// A run produced a file worth opening, such as an investigate draft.
+    func openFile(_ path: String)
+}
+
+extension SessionHost {
+    public func openFile(_ path: String) {}
 }
 
 /// One conversation: its timeline, its event stream and the controls that
@@ -45,6 +51,10 @@ public final class SessionViewModel {
     private var streamTask: Task<Void, Never>?
     private var streamingItem: UUID?
     private var compactingItem: UUID?
+    private var panelItem: UUID?
+    private var investigateItem: UUID?
+    /// The question the running bolt is about, for reading its ledger.
+    public private(set) var investigateQuestion: String?
     private var lastSeq: Int64 = -1
     private var answers = 0
     /// While joining a session, the server's replay is held here rather
@@ -91,18 +101,19 @@ public final class SessionViewModel {
         catchUp = joining ? [] : nil
         let stream = SSEStream(url: client.eventsURL(id: id))
         streamTask = Task { @MainActor [weak self] in
-            let events = stream.events { status in
-                Task { @MainActor [weak self] in self?.streamStatus = status }
-            }
+            let items = stream.items()
             if joining {
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: SessionViewModel.catchUpWindow)
                     self?.applyCatchUp()
                 }
             }
-            for await event in events {
+            for await item in items {
                 guard let self else { break }
-                self.receive(event)
+                switch item {
+                case .event(let event): self.receive(event)
+                case .status(let status): self.streamStatus = status
+                }
             }
         }
     }
@@ -230,13 +241,94 @@ public final class SessionViewModel {
             append(.stopped)
         case .done:
             finishTurn()
-        case .reviewerStarted, .reviewerFinished, .reviewerFailed, .panelDone,
-             .investigateProgress, .investigateDone, .unknown:
+        case .reviewerStarted(let lens):
+            updatePanel { $0.reviewers.append(PanelReviewer(lens: lens, state: .running, findings: [], answer: "", why: nil)) }
+        case .reviewerFinished(let lens, let findings, let answer):
+            updatePanel { run in
+                if let i = run.reviewers.firstIndex(where: { $0.lens == lens }) {
+                    run.reviewers[i].state = .finished
+                    run.reviewers[i].findings = findings
+                    run.reviewers[i].answer = answer
+                } else {
+                    run.reviewers.append(PanelReviewer(lens: lens, state: .finished, findings: findings, answer: answer, why: nil))
+                }
+            }
+        case .reviewerFailed(let lens, let why):
+            updatePanel { run in
+                if let i = run.reviewers.firstIndex(where: { $0.lens == lens }) {
+                    run.reviewers[i].state = .failed
+                    run.reviewers[i].why = why
+                } else {
+                    run.reviewers.append(PanelReviewer(lens: lens, state: .failed, findings: [], answer: "", why: why))
+                }
+            }
+        case .panelDone(let target, let requested, let verdicts, let complete, let agreements):
+            updatePanel { run in
+                run.target = target
+                run.lensesRequested = requested
+                run.verdicts = verdicts
+                run.complete = complete
+                run.agreements = agreements
+            }
+            panelItem = nil
+        case .investigateProgress(_, let phase, let attempt, let of, let ledger):
+            updateInvestigate { run in
+                run.line = InvestigateRun.phaseLine(phase, attempt: attempt, of: of)
+                run.attempt = attempt ?? run.attempt
+                run.of = of ?? run.of
+                if let ledger { run.ledger = ledger }
+            }
+        case .investigateDone(_, let approved, let needsPrereg, let artifact):
+            updateInvestigate { run in
+                run.verdict = InvestigateRun.verdictLine(approved)
+                run.artifact = artifact
+                run.needsPrereg = needsPrereg
+                run.finished = true
+            }
+            if let artifact { host?.openFile(artifact) }
+        case .unknown:
             break
         }
     }
 
+    private func updatePanel(_ change: (inout PanelRun) -> Void) {
+        if let id = panelItem, let index = items.firstIndex(where: { $0.id == id }),
+           case .panel(var run) = items[index].kind {
+            change(&run)
+            items[index].kind = .panel(run)
+        } else {
+            var run = PanelRun()
+            change(&run)
+            let item = TimelineItem(.panel(run))
+            panelItem = item.id
+            items.append(item)
+        }
+    }
+
+    private func updateInvestigate(_ change: (inout InvestigateRun) -> Void) {
+        if let id = investigateItem, let index = items.firstIndex(where: { $0.id == id }),
+           case .investigate(var run) = items[index].kind {
+            change(&run)
+            items[index].kind = .investigate(run)
+        } else {
+            var run = InvestigateRun()
+            run.question = investigateQuestion
+            change(&run)
+            let item = TimelineItem(.investigate(run))
+            investigateItem = item.id
+            items.append(item)
+        }
+    }
+
     private func finishTurn() {
+        panelItem = nil
+        if let id = investigateItem, let index = items.firstIndex(where: { $0.id == id }),
+           case .investigate(var run) = items[index].kind, !run.finished {
+            run.finished = true
+            run.verdict = run.verdict ?? InvestigateRun.verdictLine(nil)
+            items[index].kind = .investigate(run)
+        }
+        investigateItem = nil
         isRunning = false
         isThinking = false
         streamingItem = nil
@@ -375,6 +467,76 @@ public final class SessionViewModel {
         } catch {
             append(.error(text: "Could not compact: \(error.localizedDescription)"))
         }
+    }
+
+    /// Make sure this conversation exists on the server, for a panel or
+    /// a run started before any message.
+    private func ensureSession() async throws -> String {
+        if let id = sessionId { return id }
+        let id = try await client.createSession()
+        sessionId = id
+        host?.sessionCreated(id)
+        connect(joining: false)
+        return id
+    }
+
+    private func report(_ error: Error) {
+        isRunning = false
+        if let api = error as? APIError, api.isNoWorkspace {
+            append(.error(text: "Choose a workspace folder first."))
+            host?.needsWorkspace()
+        } else if let api = error as? APIError, api.status == 501 {
+            append(.error(text: api.localizedDescription))
+        } else {
+            append(.error(text: error.localizedDescription))
+        }
+    }
+
+    /// Launch a review panel on `body`. A person launches it; nothing a
+    /// model says can.
+    public func startPanel(label: String, body: String, lenses: [String]) async {
+        guard !isRunning else { return }
+        isRunning = true
+        do {
+            let id = try await ensureSession()
+            try await client.startPanel(id: id, label: label, body: body, lenses: lenses)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Run the bolt on `question`: pre-registered attempts, then a write-up.
+    public func startInvestigate(question: String, prereg: Preregistration?, askAtCheckpoints: Bool) async {
+        guard !isRunning else { return }
+        append(.user(text: question))
+        investigateQuestion = question
+        isRunning = true
+        do {
+            let id = try await ensureSession()
+            try await client.startInvestigate(id: id, question: question, prereg: prereg, askAtCheckpoints: askAtCheckpoints)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Let the running attempt finish and be written up, then stop. One
+    /// way only.
+    public func stopAfterAttempt() async {
+        guard let id = sessionId else { return }
+        do {
+            try await client.stopAfterAttempt(id: id)
+            append(.notice(text: "Winding down after this attempt. It will be recorded and written up."))
+        } catch {
+            append(.error(text: error.localizedDescription))
+        }
+    }
+
+    /// The most recent answer, the default thing a panel reviews.
+    public var lastAnswer: String? {
+        for item in items.reversed() {
+            if case .assistant(let text, false, _) = item.kind { return text }
+        }
+        return nil
     }
 
     public var contextFraction: Double? {
