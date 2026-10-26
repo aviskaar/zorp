@@ -40,7 +40,13 @@ resulting artifact, deliver it in the right form.
   guessed body is how sending a message once failed with a bare NSURL error.
   The API key lives in the login keychain and is handed to the server's
   memory at launch, never written to the settings file. A login shell `PATH`
-  repair runs at launch. CI's desktop job builds the bridge, runs `swift test`
+  repair runs at launch. The bridge turns on every `zorp-web` feature by
+  default (`research`, `voice`, `recall`, `memory`, `search`, `train`), so the
+  DMG has the bolt, voice input, conversation search and memory, web search
+  and Developer Mode without a source build; each still reports itself at
+  its own status route and still needs what it needs at run time. The bridge
+  is built for macOS 14 (`MACOSX_DEPLOYMENT_TARGET` in `build-bridge.sh`), the
+  app's own minimum. CI's desktop job builds the bridge, runs `swift test`
   and packages the DMG. See `docs/DECISIONS.md` (2026-09-12, 2026-10-26).
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
   records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),

@@ -34,6 +34,20 @@ public final class AppState: SessionHost {
     public var wantsSettings = false
     /// Bumped whenever the Files pane should list again.
     public private(set) var filesGeneration = 0
+    /// Whether the Files pane is open, and the file it should show.
+    public var showFiles = false
+    public var fileToOpen: String?
+
+    // What this build of the server can do. Each is read from the server
+    // rather than assumed, so a feature that was compiled out says so.
+    public private(set) var voice: VoiceStatus?
+    public private(set) var recall: RecallStatus?
+    public private(set) var investigate: InvestigateStatus?
+    public private(set) var webSearch: ToolAvailability?
+    public private(set) var skillListing: SkillListing?
+    public private(set) var agentListing: AgentListing?
+    /// The agent the next new chat starts under, chosen before it answers.
+    public var pendingAgent: String?
 
     public init(baseURL: URL) {
         client = ZorpClient(baseURL: baseURL)
@@ -67,11 +81,79 @@ public final class AppState: SessionHost {
         if let settings, settings.configured {
             await loadModels(baseURL: settings.baseURL)
         }
+        await refreshCapabilities()
+    }
+
+    public func refreshCapabilities() async {
+        voice = try? await client.voiceStatus()
+        recall = try? await client.recallStatus()
+        investigate = try? await client.investigateStatus()
+        webSearch = (try? await client.capabilities())?.webSearch
+        skillListing = try? await client.skills()
+        agentListing = try? await client.agents()
+    }
+
+    // MARK: agents
+
+    /// Run the current conversation under `agent`, or under the default
+    /// with nil. A conversation that has answered keeps the agent it had;
+    /// branching is how it changes.
+    public func chooseAgent(_ agent: String?) async {
+        guard let id = current.sessionId else {
+            pendingAgent = agent
+            return
+        }
+        do {
+            try await client.setSessionAgent(id: id, agent: agent)
+            pendingAgent = agent
+        } catch let error as APIError where error.status == 409 {
+            banner = "This conversation has already answered under its agent. Branch it to change the agent."
+        } catch {
+            banner = "Could not change the agent: \(error.localizedDescription)"
+        }
+    }
+
+    public func trust(agent: AgentSummary) async {
+        do {
+            try await client.trustAgent(scope: agent.scope, name: agent.name)
+            agentListing = try? await client.agents()
+        } catch {
+            banner = "Could not trust \(agent.name): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: data
+
+    public func clearAllConversations() async {
+        do {
+            try await client.clearAllSessions()
+            newChat()
+            await refreshSessions()
+        } catch {
+            banner = "Could not clear conversations: \(error.localizedDescription)"
+        }
+    }
+
+    public func deleteSearchIndex() async {
+        do { try await client.deleteRecallIndex() } catch {
+            banner = "Could not delete the search index: \(error.localizedDescription)"
+        }
+        recall = try? await client.recallStatus()
+    }
+
+    public func resetSettings() async {
+        do {
+            try await client.resetSettings()
+            await refreshSettings()
+        } catch {
+            banner = "Could not reset settings: \(error.localizedDescription)"
+        }
     }
 
     // MARK: sessions
 
     public func newChat() {
+        pendingAgent = nil
         current.close()
         current = SessionViewModel(client: client)
         current.host = self
@@ -231,7 +313,17 @@ public final class AppState: SessionHost {
 
     public func sessionCreated(_ id: String) {
         selectedSessionId = id
-        Task { await refreshSessions() }
+        let agent = pendingAgent
+        Task {
+            if let agent { try? await client.setSessionAgent(id: id, agent: agent) }
+            await refreshSessions()
+        }
+    }
+
+    public func openFile(_ path: String) {
+        fileToOpen = path
+        showFiles = true
+        filesGeneration += 1
     }
 
     public func sessionsChanged() {

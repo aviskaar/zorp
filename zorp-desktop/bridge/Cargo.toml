@@ -9,6 +9,21 @@ license = "MIT"
 name = "zorp_desktop_bridge"
 crate-type = ["staticlib", "rlib"]
 
+# The desktop app ships every capability the browser build can have, so a
+# person who downloads the DMG gets the bolt, voice, conversation search
+# and memory, web search and Developer Mode without building anything.
+# Each still reports itself at /api/capabilities and its own status route,
+# and each still needs what it needs at run time: a local Ollama for
+# search and memory, the voice runtime, a search provider key.
+[features]
+default = ["research", "voice", "recall", "memory", "search", "train"]
+research = ["zorp-web/research"]
+voice = ["zorp-web/voice"]
+recall = ["zorp-web/recall"]
+memory = ["zorp-web/memory"]
+search = ["zorp-web/search"]
+train = ["zorp-web/train"]
+
 [dependencies]
 zorp-web = { path = "../../zorp-web" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }

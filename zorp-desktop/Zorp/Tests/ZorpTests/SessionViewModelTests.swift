@@ -12,10 +12,11 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var sent: [(method: String, path: String, body: [String: Any])] = []
     static let lock = NSLock()
 
+    /// Add routes. Suites run side by side, so this never clears what
+    /// another test set up; each test uses session ids of its own.
     static func reset(_ table: [String: (Int, String)]) {
         lock.lock(); defer { lock.unlock() }
-        routes = table
-        sent = []
+        routes.merge(table) { _, new in new }
     }
 
     static func bodies(for path: String) -> [[String: Any]] {

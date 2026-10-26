@@ -30,8 +30,17 @@ public final class SSEStream: @unchecked Sendable {
         self.session = URLSession(configuration: config)
     }
 
-    public func events(onStatus: @escaping @Sendable (StreamStatus) -> Void = { _ in }) -> AsyncStream<ServerEvent> {
+    /// What the stream hands its reader: a frame, or a change in whether
+    /// it is connected. One channel for both, so the reader needs no
+    /// callback reaching back into it from another thread.
+    public enum Item: Sendable {
+        case event(ServerEvent)
+        case status(StreamStatus)
+    }
+
+    public func items() -> AsyncStream<Item> {
         AsyncStream { continuation in
+            let onStatus: @Sendable (StreamStatus) -> Void = { continuation.yield(.status($0)) }
             let task = Task {
                 var lastSeq: UInt64?
                 var delay: UInt64 = 500_000_000
@@ -62,7 +71,7 @@ public final class SSEStream: @unchecked Sendable {
                                 // complete object is a complete event.
                                 if let event = ServerEvent.parse(Data(data.utf8)) {
                                     lastSeq = event.seq
-                                    continuation.yield(event)
+                                    continuation.yield(.event(event))
                                     data = ""
                                 }
                             }

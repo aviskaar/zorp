@@ -20,6 +20,11 @@ public struct TimelineItem: Identifiable, Equatable, Sendable {
         case compacting(messages: Int)
         case compaction(messages: Int, tokensBefore: Int64, tokensAfter: Int64, summary: String?, ok: Bool, reason: String?)
         case memory(citations: [MemoryCitation], unavailable: String?)
+        /// A review panel: one row per reviewer as it reports, and the
+        /// agreement counted in code once it is done.
+        case panel(PanelRun)
+        /// A bolt run: the phase in a sentence, the ledger as recorded.
+        case investigate(InvestigateRun)
     }
 
     public let id: UUID
@@ -68,5 +73,61 @@ extension TimelineItem {
         }
         markers(upTo: Int.max)
         return items
+    }
+}
+
+public struct PanelReviewer: Equatable, Sendable {
+    public enum State: Equatable, Sendable { case running, finished, failed }
+    public let lens: String
+    public var state: State
+    public var findings: [PanelFindingFrame]
+    public var answer: String
+    public var why: String?
+}
+
+public struct PanelRun: Equatable, Sendable {
+    public var reviewers: [PanelReviewer] = []
+    public var target: String?
+    public var lensesRequested: Int?
+    public var verdicts: Int?
+    public var complete: Bool?
+    public var agreements: [AgreementFrame] = []
+
+    public var isDone: Bool { target != nil }
+}
+
+public struct InvestigateRun: Equatable, Sendable {
+    public var question: String?
+    public var line: String = "Starting."
+    public var attempt: Int?
+    public var of: Int?
+    public var ledger: LedgerFrame?
+    public var verdict: String?
+    public var artifact: String?
+    public var needsPrereg = false
+    public var finished = false
+
+    /// What the run is doing, in a sentence. The server sends a phase from
+    /// a closed set and the words are chosen here, as `web/src/zorp-mode.ts`
+    /// chooses them for the browser.
+    public static func phaseLine(_ phase: String, attempt: Int?, of: Int?) -> String {
+        let a = attempt.map(String.init) ?? "?"
+        let n = of.map(String.init) ?? "?"
+        switch phase {
+        case "prereg": return "Committing the pre-registration. It cannot be changed after this."
+        case "attempt-started": return "Attempt \(a) of \(n)."
+        case "attempt-finished": return "Attempt \(a) of \(n) finished and is recorded."
+        case "write-up": return "The attempts are done. Writing the track up."
+        case "critique": return "Auditing the draft against what the attempts recorded."
+        default: return "Running."
+        }
+    }
+
+    public static func verdictLine(_ approved: Bool?) -> String {
+        switch approved {
+        case true?: return "The attempt finished and the track stays active."
+        case false?: return "The attempt finished and the track was killed. Either the pre-registered kill threshold was breached, or the checkpoint said no."
+        case nil: return "The attempt did not finish. Whatever it recorded before it stopped is below."
+        }
     }
 }
