@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct AppCommands: Commands {
     let app: AppState
+    @Environment(\.openWindow) private var openWindow
 
     public init(app: AppState) {
         self.app = app
@@ -23,6 +24,10 @@ public struct AppCommands: Commands {
             Divider()
             Button("Choose Workspace…") { app.wantsWorkspacePicker = true }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
+        }
+        CommandGroup(after: .windowArrangement) {
+            Button("Developer Mode") { openWindow(id: "developer") }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
         }
     }
 }

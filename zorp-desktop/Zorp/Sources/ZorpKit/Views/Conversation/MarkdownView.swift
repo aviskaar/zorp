@@ -153,14 +153,79 @@ public enum MarkdownBlock: Equatable, Sendable {
 }
 
 /// Inline Markdown as attributed text: bold, italic, code spans and links.
-func inline(_ text: String) -> AttributedString {
+///
+/// A code span or a relative link that names a file the workspace listing
+/// knows becomes a link that opens it in the Files pane, as
+/// `web/src/file-links.ts` does in the browser. The listing is the only
+/// thing that decides what is a file, so a name it does not know stays
+/// plain text and nothing in an answer leads out of the workspace.
+func inline(_ text: String, files: Set<String> = []) -> AttributedString {
     let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    var result = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    // Collected first: the string is changed below, which would invalidate
+    // a live view of its runs.
+    let runs = result.runs.map { ($0.range, $0.link, $0.inlinePresentationIntent) }
+    for (range, link, intent) in runs {
+        if let link {
+            switch link.scheme {
+            case nil:
+                // A relative link is a file in the workspace or it is nothing.
+                result[range].link = FileLink.known(link.relativeString, in: files).flatMap(FileLink.url)
+            case "http"?, "https"?, "mailto"?:
+                break
+            default:
+                // A link to anywhere else on this machine is not followed.
+                result[range].link = nil
+            }
+        } else if intent?.contains(.code) == true,
+                  let path = FileLink.known(String(result[range].characters), in: files) {
+            result[range].link = FileLink.url(path)
+        }
+    }
+    return result
+}
+
+/// Links from an answer to a file in the workspace.
+public enum FileLink {
+    public static let scheme = "zorp-file"
+
+    static func known(_ raw: String, in files: Set<String>) -> String? {
+        var candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.hasPrefix("./") { candidate.removeFirst(2) }
+        candidate = candidate.removingPercentEncoding ?? candidate
+        return files.contains(candidate) ? candidate : nil
+    }
+
+    static func url(_ path: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.path = path
+        return components.url
+    }
+
+    /// The workspace path a `zorp-file:` link names, or nil for any other.
+    public static func path(of url: URL) -> String? {
+        guard url.scheme == scheme else { return nil }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?.path
+    }
+}
+
+private struct WorkspaceFilesKey: EnvironmentKey {
+    static let defaultValue: Set<String> = []
+}
+
+extension EnvironmentValues {
+    /// The workspace listing's paths, for turning file names into links.
+    public var workspaceFiles: Set<String> {
+        get { self[WorkspaceFilesKey.self] }
+        set { self[WorkspaceFilesKey.self] = newValue }
+    }
 }
 
 public struct MarkdownView: View {
     public let text: String
     private let blocks: [MarkdownBlock]
+    @Environment(\.workspaceFiles) private var files
 
     public init(_ text: String) {
         self.text = text
@@ -181,17 +246,17 @@ public struct MarkdownView: View {
     private func view(for block: MarkdownBlock) -> some View {
         switch block {
         case .heading(let level, let text):
-            Text(inline(text))
+            Text(inline(text, files: files))
                 .font(level == 1 ? .title2 : level == 2 ? .title3 : .headline)
                 .padding(.top, 4)
         case .paragraph(let text):
-            Text(inline(text)).lineSpacing(3)
+            Text(inline(text, files: files)).lineSpacing(3)
         case .bullet(let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("•").foregroundStyle(.secondary)
-                        Text(inline(item))
+                        Text(inline(item, files: files))
                     }
                 }
             }
@@ -200,14 +265,14 @@ public struct MarkdownView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(start + offset).").foregroundStyle(.secondary).monospacedDigit()
-                        Text(inline(item))
+                        Text(inline(item, files: files))
                     }
                 }
             }
         case .quote(let text):
             HStack(spacing: 10) {
                 Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 3)
-                Text(inline(text)).foregroundStyle(.secondary)
+                Text(inline(text, files: files)).foregroundStyle(.secondary)
             }
         case .code(let language, let text):
             CodeBlockView(language: language, text: text)
@@ -259,20 +324,21 @@ struct CodeBlockView: View {
 struct TableBlockView: View {
     let header: [String]
     let rows: [[String]]
+    @Environment(\.workspaceFiles) private var files
 
     var body: some View {
         ScrollView(.horizontal) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                 GridRow {
                     ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
-                        Text(inline(cell)).bold()
+                        Text(inline(cell, files: files)).bold()
                     }
                 }
                 Divider()
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                            Text(inline(cell))
+                            Text(inline(cell, files: files))
                         }
                     }
                 }

@@ -37,6 +37,9 @@ public final class AppState: SessionHost {
     /// Whether the Files pane is open, and the file it should show.
     public var showFiles = false
     public var fileToOpen: String?
+    /// Every path the workspace listing has, so an answer that names one
+    /// can link to it. Nothing else decides what counts as a file.
+    public private(set) var knownFiles: Set<String> = []
 
     // What this build of the server can do. Each is read from the server
     // rather than assumed, so a feature that was compiled out says so.
@@ -82,6 +85,7 @@ public final class AppState: SessionHost {
             await loadModels(baseURL: settings.baseURL)
         }
         await refreshCapabilities()
+        await refreshKnownFiles()
     }
 
     public func refreshCapabilities() async {
@@ -254,6 +258,7 @@ public final class AppState: SessionHost {
             workspace = try await client.setWorkspace(path: path)
             banner = nil
             filesGeneration += 1
+            await refreshKnownFiles()
             if settings?.configured != true { wantsSettings = true }
             return true
         } catch {
@@ -336,5 +341,12 @@ public final class AppState: SessionHost {
 
     public func turnFinished() {
         filesGeneration += 1
+        Task { await refreshKnownFiles() }
+    }
+
+    public func refreshKnownFiles() async {
+        if let listing = try? await client.listArtifacts() {
+            knownFiles = Set(listing.files.map(\.path))
+        }
     }
 }

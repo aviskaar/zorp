@@ -50,6 +50,14 @@ public struct ConversationView: View {
             Divider()
             ComposerView(app: app, session: session)
         }
+        .environment(\.workspaceFiles, app.knownFiles)
+        .environment(\.openURL, OpenURLAction { url in
+            if let path = FileLink.path(of: url) {
+                app.openFile(path)
+                return .handled
+            }
+            return .systemAction
+        })
     }
 }
 

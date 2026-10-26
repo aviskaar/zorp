@@ -54,20 +54,34 @@ public final class ZorpClient: Sendable {
     // MARK: plumbing
 
     func url(_ path: String, query: [URLQueryItem] = []) -> URL {
+        let encoded = "/" + path.split(separator: "/").map { Self.segment(String($0)) }.joined(separator: "/")
+        return url(encodedPath: encoded, query: query)
+    }
+
+    /// A URL whose path is already percent-encoded, for a segment that
+    /// must carry a slash, such as a checkpoint directory.
+    func url(encodedPath: String, query: [URLQueryItem] = []) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        components.path = "/" + path.split(separator: "/").map {
-            String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0)
-        }.joined(separator: "/")
+        components.percentEncodedPath = encodedPath
         components.queryItems = query.isEmpty ? nil : query
         return components.url!
+    }
+
+    /// One path segment, with everything but unreserved characters encoded,
+    /// a slash included. `encodeURIComponent` does the same in the browser.
+    static func segment(_ raw: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
     }
 
     @discardableResult
     func send(
         _ method: String, _ path: String, query: [URLQueryItem] = [],
-        body: Data? = nil, contentType: String = "application/json"
+        body: Data? = nil, contentType: String = "application/json",
+        encodedPath: String? = nil
     ) async throws -> Data {
-        var request = URLRequest(url: url(path, query: query))
+        var request = URLRequest(url: encodedPath.map { url(encodedPath: $0, query: query) } ?? url(path, query: query))
         request.httpMethod = method
         if let body {
             request.httpBody = body
