@@ -11,6 +11,7 @@ To add one, copy the last file, take the next number, and add a row below.
 
 | # | Date | Decision | Status |
 |---|------|----------|--------|
+| 0140 | 2026-10-26 | [The Mac app is native and speaks the browser's API](0140-the-mac-app-is-native-and-speaks-the-browser-s-api.md) | accepted |
 | 0139 | 2026-10-26 | [Windows runs commands under Git Bash, in a job object](0139-windows-runs-commands-under-git-bash-in-a-job-object.md) | accepted |
 | 0138 | 2026-10-04 | [Decisions are one ADR per file](0138-decisions-are-one-adr-per-file.md) | accepted |
 | 0137 | 2026-10-01 | [one loopback guard, in a crate of its own](0137-one-loopback-guard-in-a-crate-of-its-own.md) | accepted |

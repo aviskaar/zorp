@@ -710,5 +710,19 @@ jobs:
           bash zorp-desktop/scripts/build-bridge.sh
           cd zorp-desktop/Zorp
           swift test
+      # The release workflow is the only other thing that runs
+      # package-dmg.sh, so a broken image would otherwise first show up on a
+      # tag. Opening the image must show the app beside a link to
+      # /Applications, the window a person drags from.
+      - name: Package the DMG and check its contents
+        if: steps.filter.outputs.run_desktop == 'true'
+        run: |
+          bash zorp-desktop/scripts/package-dmg.sh
+          dmg=$(ls zorp-desktop/build/*.dmg)
+          mount=$(hdiutil attach -readonly -nobrowse "$dmg" | awk -F '\t' '/\/Volumes\// { print $NF; exit }')
+          ls -la "$mount"
+          test -d "$mount/Zorp.app"
+          test "$(readlink "$mount/Applications")" = "/Applications"
+          hdiutil detach "$mount"
 
 

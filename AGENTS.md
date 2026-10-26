@@ -25,17 +25,23 @@ resulting artifact, deliver it in the right form.
   code. Read `docs/UPSTREAM_QUECTO_README.md` before assuming behavior;
   it documents the original design intent under the old `quecto-*` names
   (mentally substitute `zorp-*`).
-- `zorp-desktop/` is zorp's native Mac desktop app: `Zorp.app`, bundled into
-  a universal `.dmg` using Tauri v2. It links `zorp-web` and `zorp-agent` as
-  path dependencies and runs the server in-process on a background Tokio
-  runtime, binding loopback port 7777 (falling back to ephemeral port 0 if
-  occupied). It is deliberately excluded from the Cargo workspace
-  (`exclude = ["zorp-desktop"]` in root `Cargo.toml`) with its own
-  `Cargo.lock` so desktop GUI dependencies (`wry`, `tao`, `objc2`) do not
-  slow down Linux CI or break `cargo test --workspace`. Native chrome uses
-  overlay title bars with inset traffic lights, window state persistence, and
-  an automatic login shell `PATH` repair at launch. See `docs/DECISIONS.md`
-  (2026-09-12).
+- `zorp-desktop/` is zorp's native Mac desktop app: `Zorp.app`, a SwiftUI
+  app in `zorp-desktop/Zorp` bundled into a universal `.dmg`. It links
+  `zorp-web` through a small Rust static library (`zorp-desktop/bridge`) and
+  runs the server in-process on a background Tokio runtime, binding loopback
+  port 7777 (falling back to an ephemeral port if occupied). It is
+  deliberately excluded from the Cargo workspace (`exclude = ["zorp-desktop"]`
+  in root `Cargo.toml`) with its own `Cargo.lock`. The UI is native and talks
+  to that server over the same HTTP API the browser uses:
+  `ZorpKit/Network/ZorpClient.swift` mirrors `web/src/api.ts` route for route
+  and `ZorpKit/Models` mirrors the server's JSON, so a field renamed in
+  `zorp-web` has to be renamed in both clients. `Tests/ZorpTests` decodes the
+  server's real frames and checks the request bodies the app sends, because a
+  guessed body is how sending a message once failed with a bare NSURL error.
+  The API key lives in the login keychain and is handed to the server's
+  memory at launch, never written to the settings file. A login shell `PATH`
+  repair runs at launch. CI's desktop job builds the bridge, runs `swift test`
+  and packages the DMG. See `docs/DECISIONS.md` (2026-09-12, 2026-10-26).
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
   records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
   built, not inherited. The four capabilities (validate, investigate,
