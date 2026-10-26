@@ -29,6 +29,10 @@ struct ZorpApp: App {
         }
         .commands { AppCommands(app: app) }
 
+        Window("Developer Mode", id: "developer") {
+            DeveloperModeView(app: app)
+        }
+
         Settings {
             SettingsView(app: app)
         }
