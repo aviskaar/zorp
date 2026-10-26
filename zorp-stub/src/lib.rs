@@ -455,6 +455,7 @@ fn serve(framing: Framing, reply: Reply, mut socket: TcpStream) {
 /// SO_LINGER at zero turns the close into an RST. The pause first lets the
 /// client read what was already sent, so the reset lands on the read after
 /// the last delta and not on the delta itself.
+#[cfg(unix)]
 fn reset(socket: TcpStream) {
     use std::os::fd::AsRawFd;
     std::thread::sleep(Duration::from_millis(50));
@@ -471,6 +472,32 @@ fn reset(socket: TcpStream) {
             libc::SO_LINGER,
             (&linger as *const libc::linger).cast(),
             std::mem::size_of::<libc::linger>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(rc, 0, "SO_LINGER: {}", std::io::Error::last_os_error());
+    drop(socket);
+}
+
+/// The same reset through Winsock, whose `setsockopt` takes the socket
+/// handle and a `LINGER` with Windows field names.
+#[cfg(windows)]
+fn reset(socket: TcpStream) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{setsockopt, LINGER, SOL_SOCKET, SO_LINGER};
+    std::thread::sleep(Duration::from_millis(50));
+    let linger = LINGER {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    // SAFETY: the handle is a live socket owned by `socket`, and the option
+    // value is a `LINGER` that outlives the call, of the length given.
+    let rc = unsafe {
+        setsockopt(
+            socket.as_raw_socket() as _,
+            SOL_SOCKET,
+            SO_LINGER,
+            (&linger as *const LINGER).cast(),
+            std::mem::size_of::<LINGER>() as i32,
         )
     };
     assert_eq!(rc, 0, "SO_LINGER: {}", std::io::Error::last_os_error());

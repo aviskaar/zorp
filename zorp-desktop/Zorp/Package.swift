@@ -54,6 +54,8 @@ let package = Package(
                 .unsafeFlags([
                     "-L\(packageRoot)/Frameworks",
                     "-lzorp_desktop_bridge",
+                    // DuckDB, under the research feature, is C++.
+                    "-lc++",
                     "-framework", "Security",
                     "-framework", "SystemConfiguration",
                     "-framework", "WebKit",
@@ -69,6 +71,8 @@ let package = Package(
                 .unsafeFlags([
                     "-L\(packageRoot)/Frameworks",
                     "-lzorp_desktop_bridge",
+                    // DuckDB, under the research feature, is C++.
+                    "-lc++",
                     "-framework", "Security",
                     "-framework", "SystemConfiguration",
                     "-framework", "WebKit",
@@ -82,7 +86,7 @@ let package = Package(
             path: "Tests/ZorpTests",
             swiftSettings: testSwiftSettings,
             linkerSettings: [
-                .unsafeFlags(["-L\(packageRoot)/Frameworks", "-lzorp_desktop_bridge"] + testLinkerFlags)
+                .unsafeFlags(["-L\(packageRoot)/Frameworks", "-lzorp_desktop_bridge", "-lc++"] + testLinkerFlags)
             ]
         )
     ]

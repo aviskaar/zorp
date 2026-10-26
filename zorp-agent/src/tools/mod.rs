@@ -1,6 +1,7 @@
 // Background process handling needs setpgid in pre_exec and killpg to
-// take the whole group down. Same reasoning as sandbox/mod.rs: no safe
-// std equivalent, so the lint is off for this module only.
+// take the whole group down, or a job object on Windows; that lives in
+// sandbox::ProcessGroup. The tests below still signal a pid directly, so
+// the lint stays off for this module.
 #![allow(unsafe_code)]
 
 pub mod fs;
@@ -12,7 +13,7 @@ pub mod shell;
 pub mod subagent;
 
 use crate::model::ToolCall;
-use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
+use crate::sandbox::{CancelToken, CommandOutput, ProcessGroup, Sandbox};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -119,6 +120,9 @@ pub struct Context {
     sandbox: Sandbox,
     changes: Vec<FileChange>,
     pub background_processes: HashMap<u32, (String, Child)>,
+    /// The group each background process leads, keyed like
+    /// `background_processes`, so a kill reaches what it started too.
+    background_groups: HashMap<u32, ProcessGroup>,
 }
 
 impl Context {
@@ -129,6 +133,7 @@ impl Context {
             repo_root,
             changes: Vec::new(),
             background_processes: HashMap::new(),
+            background_groups: HashMap::new(),
         }
     }
 
@@ -243,41 +248,42 @@ impl Context {
     }
 
     pub fn start_background_process(&mut self, command: &str) -> Result<u32, ToolError> {
-        let mut cmd = std::process::Command::new("/bin/sh");
+        let shell = crate::sandbox::shell().map_err(|e| ToolError::new(format!("spawn: {e}")))?;
+        let mut cmd = std::process::Command::new(shell);
         cmd.arg("-c")
             .arg(command)
             .current_dir(&self.repo_root)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        ProcessGroup::prepare(&mut cmd);
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::setpgid(0, 0) == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| ToolError::new(format!("spawn: {e}")))?;
+        let group = match ProcessGroup::adopt(&child) {
+            Ok(group) => group,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ToolError::new(format!("adopt process group: {e}")));
+            }
+        };
         let pid = child.id();
         self.background_processes
             .insert(pid, (command.to_string(), child));
+        self.background_groups.insert(pid, group);
         Ok(pid)
     }
 
     pub fn kill_background_process(&mut self, pid: u32) -> Result<(), ToolError> {
         if let Some((_, mut child)) = self.background_processes.remove(&pid) {
-            // The child leads its own group (setpgid in start), so the
-            // group id is its pid. Reap before reporting a kill failure so
-            // an error never leaves a zombie behind.
-            let killed = crate::sandbox::kill_process_group(pid as i32);
+            // The child leads its own group, adopted in start. Reap before
+            // reporting a kill failure so an error never leaves a zombie
+            // behind.
+            let killed = match self.background_groups.remove(&pid) {
+                Some(group) => group.kill(),
+                None => Ok(()),
+            };
             let _ = child.kill();
             let _ = child.wait();
             killed.map_err(|e| ToolError::new(format!("kill process group: {e}")))
@@ -291,6 +297,9 @@ impl Context {
     pub fn background_process_count(&mut self) -> usize {
         self.background_processes
             .retain(|_, (_, child)| matches!(child.try_wait(), Ok(None)));
+        let alive = &self.background_processes;
+        self.background_groups
+            .retain(|pid, _| alive.contains_key(pid));
         self.background_processes.len()
     }
 
@@ -304,6 +313,9 @@ impl Context {
                 }
                 _ => false,
             });
+        let running = &self.background_processes;
+        self.background_groups
+            .retain(|pid, _| running.contains_key(pid));
         if alive.is_empty() {
             "No background processes running.".to_string()
         } else {
@@ -623,6 +635,7 @@ mod tests {
     /// Killing a background process takes its whole group down, not just
     /// the shell: a grandchild the shell started must be gone too. Killing
     /// only the shell would leave the `sleep` running, reparented to init.
+    #[cfg(unix)]
     #[test]
     fn kill_background_process_kills_the_whole_group() {
         let dir = tempdir().unwrap();
@@ -660,6 +673,33 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        assert_eq!(cx.background_process_count(), 0);
+    }
+
+    /// The same guarantee on Windows, where the group is a job object and
+    /// an MSYS `$!` is not a Windows pid, so the test watches for the work
+    /// the grandchild would have done instead of signalling it.
+    #[cfg(windows)]
+    #[test]
+    fn kill_background_process_kills_the_whole_group() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let pid = cx
+            .start_background_process("touch started; (sleep 2; touch survived) & wait")
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !dir.path().join("started").exists() {
+            assert!(std::time::Instant::now() < deadline, "shell never started");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        cx.kill_background_process(pid).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert!(
+            !dir.path().join("survived").exists(),
+            "background process group survived kill"
+        );
         assert_eq!(cx.background_process_count(), 0);
     }
 
