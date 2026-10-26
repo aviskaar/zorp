@@ -46,3 +46,18 @@ import Testing
     #expect(url.absoluteString == "http://127.0.0.1:7777/api/dev/models/%2Ftmp%2Fr/serve")
 }
 #endif
+
+#if canImport(Testing)
+@Test func aKnownFileInAnAnswerBecomesALink() {
+    let files: Set<String> = ["scratch/report.md"]
+    let text = inline("See `scratch/report.md` and `missing.md`, [the report](./scratch/report.md), [x](file:///etc/passwd).", files: files)
+    let links = text.runs.compactMap { $0.link }
+    #expect(links.count == 2)
+    #expect(links.allSatisfy { FileLink.path(of: $0) == "scratch/report.md" })
+}
+
+@Test func anUnknownRelativeLinkIsPlainText() {
+    let text = inline("[gone](notes/old.md)", files: [])
+    #expect(text.runs.allSatisfy { $0.link == nil })
+}
+#endif
