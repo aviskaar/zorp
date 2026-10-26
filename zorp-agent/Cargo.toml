@@ -88,6 +88,9 @@ required-features = ["research"]
 name = "ensemble_cli"
 required-features = ["ensemble"]
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 # The scripted provider these tests run against, shared with zorp-eval's

@@ -47,6 +47,35 @@ jobs:
       - name: Test conversation search
         run: cargo test -p zorp-web -p zorp-recall --features zorp-web/recall --locked
 
+  # Windows is a release target with one platform specific piece: the
+  # shell sandbox, which runs commands under Git Bash inside a job object
+  # instead of /bin/sh inside a process group. This job builds what ships
+  # and runs that piece's tests. The rest of the suite still assumes a
+  # Unix host, so a green run here says the shipped binaries build and the
+  # sandbox works, not that every test passes on Windows.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the shipped binaries
+        run: cargo build --locked -p zorp -p zorp-agent -p zorp-web
+
+      - name: Test the sandbox under Git Bash
+        run: "cargo test --locked -p zorp-agent --lib -- sandbox:: tools::tests::kill_background_process_kills_the_whole_group"
+
+      - name: Smoke test the agent binary
+        shell: bash
+        run: |
+          target/debug/zorp-agent --version
+          target/debug/zorp-agent --help > /dev/null
+
   msrv:
     # `rust-version` in the root manifest is a promise, and until this job
     # existed nothing checked it. Every other job here installs `stable`, so
@@ -681,5 +710,19 @@ jobs:
           bash zorp-desktop/scripts/build-bridge.sh
           cd zorp-desktop/Zorp
           swift test
+      # The release workflow is the only other thing that runs
+      # package-dmg.sh, so a broken image would otherwise first show up on a
+      # tag. Opening the image must show the app beside a link to
+      # /Applications, the window a person drags from.
+      - name: Package the DMG and check its contents
+        if: steps.filter.outputs.run_desktop == 'true'
+        run: |
+          bash zorp-desktop/scripts/package-dmg.sh
+          dmg=$(ls zorp-desktop/build/*.dmg)
+          mount=$(hdiutil attach -readonly -nobrowse "$dmg" | awk -F '\t' '/\/Volumes\// { print $NF; exit }')
+          ls -la "$mount"
+          test -d "$mount/Zorp.app"
+          test "$(readlink "$mount/Applications")" = "/Applications"
+          hdiutil detach "$mount"
 
 

@@ -58,6 +58,9 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
+# Job objects, so a Windows shell and everything it starts die together,
+# and Winsock for the scripted provider's connection reset.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_System_JobObjects"] }
 sha2 = "0.10"
 toml = "0.8"
 tempfile = "3"

@@ -11,6 +11,11 @@ workspace = true
 
 [dependencies]
 serde_json = { workspace = true }
+
 # One `setsockopt` for SO_LINGER, so a socket can die with a reset rather
 # than a close handshake. The standard library has not stabilised it.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
