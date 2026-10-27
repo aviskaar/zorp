@@ -69,6 +69,26 @@ pub struct TrainingJobConfig {
     pub dataset_path: Option<String>,
 }
 
+/// A fine-tuning run over a dataset built from work logs. A base model
+/// (a registry checkpoint id or a local open-weight model the person points
+/// at), a method, and the dataset path, which is required: a fine-tune with
+/// no data is refused, never run on nothing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FineTuneJobConfig {
+    pub run_id: String,
+    /// `lora`, `sft` or `dpo`.
+    pub method: String,
+    /// A registry checkpoint id, or a path to a local open-weight model.
+    pub base_model: String,
+    /// The dataset the builder wrote, as JSONL. Never guessed.
+    pub dataset_path: String,
+    pub learning_rate: f64,
+    pub batch_size: usize,
+    pub iters: usize,
+    pub lora_layers: usize,
+    pub checkpoint_every_steps: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CheckpointMetadata {
     pub run_id: String,

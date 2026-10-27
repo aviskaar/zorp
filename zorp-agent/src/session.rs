@@ -2,6 +2,7 @@ use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, ToolCal
 use crate::tools::FileChange;
 use crate::BoxErr;
 use rusqlite::{Connection, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -68,6 +69,17 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rl_work_log (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    tool_calls TEXT,
+    feedback TEXT,
+    edited_answer TEXT,
+    created INTEGER NOT NULL
 );";
 
 // No per-session index for `compactions`: its primary key already leads
@@ -79,7 +91,55 @@ CREATE TABLE IF NOT EXISTS projects (
 const INDEXES: &str = "\
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, seq);
-CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);";
+CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);
+CREATE INDEX IF NOT EXISTS idx_rl_work_log_session ON rl_work_log(session_id, created);";
+
+/// One tool call an RL Studio turn made, with the status derived in code
+/// from the result, never from the model's description of it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkLogToolCall {
+    pub name: String,
+    /// `ok`, `error`, or `cancelled`, derived from the stored result.
+    pub status: String,
+}
+
+/// A work-log entry to record: a prompt and the verbatim answer that the
+/// person may later give feedback on. The feedback starts empty; a model
+/// never fills it.
+#[derive(Clone, Debug)]
+pub struct WorkLogEntry {
+    pub id: String,
+    pub session_id: String,
+    pub model: String,
+    pub prompt: String,
+    pub answer: String,
+    pub tool_calls: Vec<WorkLogToolCall>,
+}
+
+/// A stored work-log entry, with whatever feedback a person has added.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkLogRow {
+    pub id: String,
+    pub session_id: String,
+    pub model: String,
+    pub prompt: String,
+    pub answer: String,
+    pub tool_calls: Vec<WorkLogToolCall>,
+    /// `None`, `Some("up")` or `Some("down")`: the person's thumbs.
+    pub feedback: Option<String>,
+    /// The person's edited "better answer", when they wrote one.
+    pub edited_answer: Option<String>,
+    pub created: i64,
+}
+
+/// The counts the RL Studio page shows, all derived in code from the rows.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkLogCounts {
+    pub total: usize,
+    pub thumbs_up: usize,
+    pub thumbs_down: usize,
+    pub edited: usize,
+}
 
 /// A stored session's header row.
 #[derive(Clone)]
@@ -528,6 +588,106 @@ impl Store {
             (id, status, now()),
         )?;
         Ok(())
+    }
+
+    /// Record one RL Studio work-log entry: a prompt, the answer, the tool
+    /// calls with their code-derived status, verbatim.
+    ///
+    /// **This table is never evidence.** Nothing that feeds a model reads it:
+    /// not `recall::index_one` (it reads `messages` and `task`), not the
+    /// memory block, not titling, not branching. It is training material a
+    /// person builds a dataset from, and the feedback on it comes from the
+    /// person or from code, never from a model grading its own work (ADR
+    /// 0063). A model-authored answer is stored as what it is and labelled as
+    /// such wherever it surfaces.
+    pub fn record_work_log(&self, entry: &WorkLogEntry) -> Result<(), BoxErr> {
+        let tool_calls = serde_json::to_string(&entry.tool_calls)?;
+        self.conn.execute(
+            "INSERT INTO rl_work_log \
+             (id, session_id, model, prompt, answer, tool_calls, feedback, edited_answer, created) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7)",
+            (
+                &entry.id,
+                &entry.session_id,
+                &entry.model,
+                &entry.prompt,
+                &entry.answer,
+                &tool_calls,
+                now(),
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Set the person's feedback on a work-log entry: a thumbs direction, an
+    /// edited "better answer", or both. The only writers of the signal are a
+    /// person's click and this call; no model reaches it.
+    pub fn set_work_log_feedback(
+        &self,
+        id: &str,
+        feedback: Option<&str>,
+        edited_answer: Option<&str>,
+    ) -> Result<(), BoxErr> {
+        if let Some(f) = feedback {
+            if !matches!(f, "up" | "down") {
+                return Err(format!("feedback must be 'up' or 'down', not {f:?}").into());
+            }
+        }
+        self.conn.execute(
+            "UPDATE rl_work_log SET feedback = ?2, edited_answer = ?3 WHERE id = ?1",
+            (id, feedback, edited_answer),
+        )?;
+        Ok(())
+    }
+
+    /// Every work-log entry, newest first, up to `limit`.
+    pub fn list_work_log(&self, limit: usize) -> Result<Vec<WorkLogRow>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, model, prompt, answer, tool_calls, feedback, edited_answer, created \
+             FROM rl_work_log ORDER BY created DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            let tool_calls: Option<String> = row.get(5)?;
+            Ok(WorkLogRow {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                model: row.get(2)?,
+                prompt: row.get(3)?,
+                answer: row.get(4)?,
+                tool_calls: tool_calls
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default(),
+                feedback: row.get(6)?,
+                edited_answer: row.get(7)?,
+                created: row.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Counts for the RL Studio page: how many entries, and how many carry
+    /// each kind of signal. All code-derived; no model is consulted.
+    pub fn work_log_counts(&self) -> Result<WorkLogCounts, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT \
+                COUNT(*), \
+                COALESCE(SUM(feedback = 'up'), 0), \
+                COALESCE(SUM(feedback = 'down'), 0), \
+                COALESCE(SUM(edited_answer IS NOT NULL), 0) \
+             FROM rl_work_log",
+        )?;
+        let mut rows = stmt.query([])?;
+        let row = rows.next()?.ok_or("no count row")?;
+        Ok(WorkLogCounts {
+            total: row.get::<_, i64>(0)? as usize,
+            thumbs_up: row.get::<_, i64>(1)? as usize,
+            thumbs_down: row.get::<_, i64>(2)? as usize,
+            edited: row.get::<_, i64>(3)? as usize,
+        })
     }
 
     pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
@@ -1304,6 +1464,53 @@ CREATE TABLE file_changes (
                 arguments: json!({"path": "a.rs"}),
             }],
         )
+    }
+
+    #[test]
+    fn work_log_records_feedback_and_keeps_it_out_of_messages() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store
+            .record_work_log(&WorkLogEntry {
+                id: "w1".into(),
+                session_id: "s1".into(),
+                model: "my-finetune".into(),
+                prompt: "do the thing".into(),
+                answer: "here is the thing".into(),
+                tool_calls: vec![WorkLogToolCall {
+                    name: "run_command".into(),
+                    status: "ok".into(),
+                }],
+            })
+            .unwrap();
+
+        let rows = store.list_work_log(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].answer, "here is the thing");
+        assert_eq!(rows[0].tool_calls[0].status, "ok");
+        assert!(rows[0].feedback.is_none());
+
+        // A person's thumbs and edit are the only signal, and they are
+        // code-validated.
+        store
+            .set_work_log_feedback("w1", Some("down"), Some("the better thing"))
+            .unwrap();
+        let rows = store.list_work_log(10).unwrap();
+        assert_eq!(rows[0].feedback.as_deref(), Some("down"));
+        assert_eq!(rows[0].edited_answer.as_deref(), Some("the better thing"));
+        assert!(store
+            .set_work_log_feedback("w1", Some("meh"), None)
+            .is_err());
+
+        let counts = store.work_log_counts().unwrap();
+        assert_eq!(counts.total, 1);
+        assert_eq!(counts.thumbs_down, 1);
+        assert_eq!(counts.edited, 1);
+
+        // The work-log answer never leaks into `messages`, which is what the
+        // recall feed and the memory block read. Nothing was recorded there.
+        let messages = store.load_messages("s1").unwrap();
+        assert!(messages.is_empty(), "work log must not write messages");
     }
 
     #[test]

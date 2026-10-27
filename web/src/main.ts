@@ -11,6 +11,8 @@ import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { AnswerCount, branchButton } from "./branch";
+import { feedbackControls } from "./rl-feedback";
+import { recordWorkLog, setWorkLogFeedback } from "./api";
 import { artifactTree } from "./artifact-tree";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
@@ -131,6 +133,7 @@ import {
   type ModelDetail,
   type Preregistration,
   type RecallStatus,
+  type Capabilities,
   type Settings,
   type SettingsSource,
   type SettingsUpdate,
@@ -464,6 +467,12 @@ let autoApprove = false;
 /** The last settings the server reported. Null until the first successful
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
+/** The last capabilities the server reported, so the per-answer feedback
+ * controls appear only when RL Studio is present. Null until first fetched. */
+let currentCapabilities: Capabilities | null = null;
+/** The most recent user message, so a work-log entry can record the prompt
+ * its answer replied to. Verbatim, exactly what the person typed. */
+let lastUserText = "";
 /**
  * The directory the server says it is working in. Null until the first
  * successful `GET /api/workspace`, and null again if the server ever says
@@ -964,7 +973,7 @@ function showAgentMode(): void {
   dom.devShell.hidden = true;
   dom.chatShell.hidden = false;
   dom.devToggleBtn.classList.remove("active");
-  dom.devToggleLabel.textContent = "Dev Mode";
+  dom.devToggleLabel.textContent = "RL Studio";
 }
 
 function toggleDeveloperMode(): void {
@@ -2062,6 +2071,9 @@ function appendMessage(role: "user" | "assistant", text: string): void {
   // came back looking like something they did not write.
   if (role === "user") {
     renderRichText(body, text);
+    // Remember the prompt so a work-log entry can record what its answer
+    // replied to.
+    lastUserText = text;
   } else {
     renderMarkdown(body, text);
     // A file the answer names is worth a click rather than a hunt through the
@@ -2101,6 +2113,22 @@ function answerControls(text: string, ordinal: number | null): HTMLElement {
     // tool is, starts the way `setTurnRunning` would leave it.
     branch.disabled = turnRunning;
     row.append(branch);
+  }
+  // RL Studio feedback: thumbs and a better-answer control, shown only when
+  // the build has RL Studio. A person's click is the only signal recorded.
+  if (currentCapabilities?.rl_studio?.available) {
+    row.append(
+      feedbackControls(
+        document,
+        {
+          sessionId,
+          model: currentSettings?.model ?? "",
+          prompt: lastUserText,
+          answer: text,
+        },
+        { record: recordWorkLog, setFeedback: setWorkLogFeedback },
+      ),
+    );
   }
   return row;
 }
@@ -3022,6 +3050,7 @@ function closeWorkspacePicker(): void {
 async function refreshCapabilities(): Promise<void> {
   try {
     const capabilities = await getCapabilities();
+    currentCapabilities = capabilities;
     renderSearchIndicator(searchIndicator, capabilities.web_search);
     // Absent from a server built before skills were reported, and `null`
     // and absent are both drawn as no pill. A count that appeared while

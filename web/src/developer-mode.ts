@@ -18,7 +18,14 @@ import {
   type TrainEvent,
 } from "./api.ts";
 
-export type DevTab = "datasets" | "tokenizer" | "architecture" | "pretrain" | "registry";
+export type DevTab =
+  | "datasets"
+  | "tokenizer"
+  | "architecture"
+  | "pretrain"
+  | "finetune"
+  | "feedback"
+  | "registry";
 
 /// What the init event said this run is training on. A loss curve over
 /// synthetic tokens looks exactly like a loss curve over text, so this is
@@ -89,8 +96,8 @@ export class DeveloperModeView {
                 : ""
             }
             <div class="dev-mode-title-wrap">
-              <span class="dev-mode-badge">DEV</span>
-              <h2>Developer Mode &mdash; Pretraining</h2>
+              <span class="dev-mode-badge">RL</span>
+              <h2>RL Studio</h2>
             </div>
           </div>
           <nav class="dev-mode-nav">
@@ -98,6 +105,8 @@ export class DeveloperModeView {
             <button class="nav-btn ${this.currentTab === "tokenizer" ? "active" : ""}" data-tab="tokenizer">Tokenizer</button>
             <button class="nav-btn ${this.currentTab === "architecture" ? "active" : ""}" data-tab="architecture">Architecture</button>
             <button class="nav-btn ${this.currentTab === "pretrain" ? "active" : ""}" data-tab="pretrain">Pretrain</button>
+            <button class="nav-btn ${this.currentTab === "finetune" ? "active" : ""}" data-tab="finetune">Fine-tune</button>
+            <button class="nav-btn ${this.currentTab === "feedback" ? "active" : ""}" data-tab="feedback">Feedback</button>
             <button class="nav-btn ${this.currentTab === "registry" ? "active" : ""}" data-tab="registry">Model Registry</button>
           </nav>
         </header>
@@ -144,9 +153,136 @@ export class DeveloperModeView {
       await this.renderArchitectureTab(body);
     } else if (this.currentTab === "pretrain") {
       this.renderPretrainTab(body);
+    } else if (this.currentTab === "finetune") {
+      await this.renderFineTuneTab(body);
+    } else if (this.currentTab === "feedback") {
+      await this.renderFeedbackTab(body);
     } else if (this.currentTab === "registry") {
       await this.renderRegistryTab(body);
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Feedback Tab: the work log a person's thumbs and edits built.      */
+  /* ------------------------------------------------------------------ */
+
+  private async renderFeedbackTab(body: Element): Promise<void> {
+    body.innerHTML = `
+      <section class="dev-section">
+        <h3>Work logs and feedback</h3>
+        <p class="dev-hint">
+          Every thumbs-up, thumbs-down, and "better answer" you give under an
+          answer is recorded here, verbatim, on this machine. Nothing a model
+          wrote is ever read back as a label: the signal is yours. Build a
+          dataset from it on the Fine-tune tab.
+        </p>
+        <div id="feedback-counts" class="dev-metric-row">Loading…</div>
+        <div id="feedback-rows"></div>
+      </section>
+    `;
+    const counts = body.querySelector("#feedback-counts");
+    const rowsHost = body.querySelector("#feedback-rows");
+    try {
+      const { getWorkLog } = await import("./api");
+      const log = await getWorkLog();
+      if (counts) {
+        counts.textContent = `${log.counts.total} recorded · ${log.counts.thumbs_up} up · ${log.counts.thumbs_down} down · ${log.counts.edited} edited`;
+      }
+      if (rowsHost) {
+        rowsHost.replaceChildren();
+        for (const row of log.rows.slice(0, 50)) {
+          const card = document.createElement("div");
+          card.className = "dev-worklog-row";
+          const prompt = document.createElement("div");
+          prompt.className = "dev-worklog-prompt";
+          // Model-authored and person-typed text alike goes through
+          // textContent; this page never assembles it into markup.
+          prompt.textContent = row.prompt;
+          const answer = document.createElement("div");
+          answer.className = "dev-worklog-answer";
+          answer.textContent = row.edited_answer ?? row.answer;
+          const tag = document.createElement("span");
+          tag.className = "dev-worklog-tag";
+          tag.textContent = row.edited_answer
+            ? "edited"
+            : row.feedback
+              ? row.feedback
+              : "recorded";
+          card.append(tag, prompt, answer);
+          rowsHost.append(card);
+        }
+      }
+    } catch (error) {
+      if (counts) counts.textContent = `Could not load work logs: ${String(error)}`;
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Fine-tune Tab: build a dataset from feedback and train a round.    */
+  /* ------------------------------------------------------------------ */
+
+  private async renderFineTuneTab(body: Element): Promise<void> {
+    body.innerHTML = `
+      <section class="dev-section">
+        <h3>Fine-tune on your feedback</h3>
+        <p class="dev-hint">
+          Turn the work log into a dataset and run a round. SFT trains on the
+          answers you kept or improved; DPO trains on the pairs where you wrote
+          a better answer. The run reports what it trained on, and a build with
+          no examples is refused rather than run on nothing. Fine-tuning needs
+          mlx-lm on an Apple Silicon machine.
+        </p>
+        <div class="dev-field">
+          <label>Base model (a registry checkpoint id, or a local model path)</label>
+          <input type="text" id="ft-base-model" placeholder="my-checkpoint" />
+        </div>
+        <div class="dev-field">
+          <label>Method</label>
+          <select id="ft-method">
+            <option value="lora">LoRA (adapters)</option>
+            <option value="sft">SFT</option>
+            <option value="dpo">DPO (preference pairs)</option>
+          </select>
+        </div>
+        <div id="ft-dataset-preview" class="dev-metric-row">Loading dataset…</div>
+        <div class="dev-field">
+          <button class="btn btn-allow" id="ft-start">Build dataset and start round</button>
+        </div>
+        <p class="dev-result" id="ft-result"></p>
+      </section>
+    `;
+    const preview = body.querySelector("#ft-dataset-preview");
+    const result = body.querySelector("#ft-result");
+    const api = await import("./api");
+    try {
+      const built = await api.previewDataset();
+      if (preview) {
+        preview.textContent = `${built.sft_count} SFT examples · ${built.preference_count} preference pairs`;
+      }
+    } catch (error) {
+      if (preview) preview.textContent = `Could not build dataset: ${String(error)}`;
+    }
+    const startBtn = body.querySelector("#ft-start");
+    startBtn?.addEventListener("click", async () => {
+      const base = (body.querySelector("#ft-base-model") as HTMLInputElement | null)?.value.trim() ?? "";
+      const method = (body.querySelector("#ft-method") as HTMLSelectElement | null)?.value ?? "lora";
+      if (!base) {
+        if (result) result.textContent = "Name a base model first.";
+        return;
+      }
+      if (result) result.textContent = "Starting…";
+      try {
+        const res = await api.startFineTune({ base_model: base, method });
+        if (result) {
+          result.textContent =
+            res.status === "ok"
+              ? `Started on ${res.examples} examples. Watch the Pretrain tab's stream for progress.`
+              : `Error: ${res.error ?? "unknown"}`;
+        }
+      } catch (error) {
+        if (result) result.textContent = `Error: ${String(error)}`;
+      }
+    });
   }
 
   /* ------------------------------------------------------------------ */

@@ -270,6 +270,12 @@ async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> 
             "available": installed > 0,
             "count": installed,
         },
+        // Whether this build has RL Studio (the `train` feature). The browser
+        // shows the feedback controls under answers only when it does, so a
+        // thumbs-up never writes to a store a default build cannot read back.
+        "rl_studio": {
+            "available": cfg!(feature = "train"),
+        },
     }))
 }
 

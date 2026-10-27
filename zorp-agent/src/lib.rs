@@ -39,6 +39,7 @@ mod reasoning;
 pub mod recall;
 mod recorder;
 mod render;
+pub mod rl_dataset;
 mod sandbox;
 #[cfg(feature = "search")]
 mod search_tool;
@@ -113,7 +114,7 @@ pub use render::{
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
 pub use session::{
     new_session_id, render_change_summary, Compaction, ProjectRow, SessionRow, SetAgent,
-    SetProject, Store, MAX_PROJECT_NAME,
+    SetProject, Store, WorkLogCounts, WorkLogEntry, WorkLogRow, WorkLogToolCall, MAX_PROJECT_NAME,
 };
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};

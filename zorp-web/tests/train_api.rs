@@ -14,6 +14,10 @@ use zorp_train::supervisor::TrainingSupervisor;
 use zorp_web::state::AppState;
 use zorp_web::train::DevState;
 
+/// `ZORP_STATE_DB` is process-wide, so the two tests that point it at their
+/// own store take turns rather than racing each other's rows.
+static STORE_ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn spawn_test_server(dev_state: Arc<DevState>) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -274,6 +278,111 @@ async fn serve_refuses_a_checkpoint_the_registry_never_listed() {
             "serving {id} reported a port: {body}"
         );
     }
+}
+
+/// Recording a work-log entry, giving it feedback, and seeing it become a
+/// dataset row. The feedback is a person's click (here, the test's POST); no
+/// model is asked to grade anything, and the answer never reaches `messages`.
+#[tokio::test]
+async fn worklog_feedback_builds_a_dataset() {
+    let _guard = STORE_ENV.lock().await;
+    // Isolate the store so this does not touch a real database.
+    let dir = TempDir::new().unwrap();
+    std::env::set_var("ZORP_STATE_DB", dir.path().join("sessions.db"));
+
+    let dev = Arc::new(DevState::default());
+    let addr = spawn_test_server(dev).await;
+    let base = format!("http://{addr}/api/dev");
+
+    // Record an answer.
+    let (code, body) = tokio::task::spawn_blocking({
+        let url = format!("{base}/worklog");
+        move || {
+            post_json(
+                &url,
+                &serde_json::json!({
+                    "session_id": "s1",
+                    "model": "my-finetune",
+                    "prompt": "write a haiku",
+                    "answer": "a weak haiku",
+                    "tool_calls": [{"name": "run_command", "status": "ok"}],
+                }),
+            )
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{body}");
+    let recorded: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let id = recorded["id"].as_str().unwrap().to_string();
+
+    // A person edits it into a better answer.
+    let (code, _) = tokio::task::spawn_blocking({
+        let url = format!("{base}/worklog/{id}/feedback");
+        move || {
+            post_json(
+                &url,
+                &serde_json::json!({ "feedback": "down", "edited_answer": "a strong haiku" }),
+            )
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, 200);
+
+    // The dataset preview turns the edit into an SFT completion and a
+    // preference pair.
+    let (code, body) = tokio::task::spawn_blocking({
+        let url = format!("{base}/dataset/preview");
+        move || post_json(&url, &serde_json::json!({}))
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{body}");
+    let preview: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(preview["sft_count"], 1, "{body}");
+    assert_eq!(preview["preference_count"], 1, "{body}");
+    assert_eq!(preview["preference"][0]["chosen"], "a strong haiku");
+    assert_eq!(preview["preference"][0]["rejected"], "a weak haiku");
+
+    std::env::remove_var("ZORP_STATE_DB");
+}
+
+/// A fine-tune with no feedback to learn from is refused, never run on
+/// nothing. One self-contained test with its own store, so it does not race
+/// the other store test on the process-wide `ZORP_STATE_DB`.
+#[tokio::test]
+async fn a_finetune_with_no_examples_is_refused() {
+    let _guard = STORE_ENV.lock().await;
+    let dir = TempDir::new().unwrap();
+    let db = dir.path().join("empty.db");
+    // Create the store up front so the route opens an empty one, not one the
+    // other test populated.
+    zorp_agent::Store::open_at(&db).unwrap();
+    std::env::set_var("ZORP_STATE_DB", &db);
+    let dev = Arc::new(DevState::default());
+    let addr = spawn_test_server(dev).await;
+    let url = format!("http://{addr}/api/dev/finetune/start");
+    let (code, body) = tokio::task::spawn_blocking(move || {
+        post_json(
+            &url,
+            &serde_json::json!({
+                "config": {
+                    "run_id": "ft", "method": "sft", "base_model": "m",
+                    "dataset_path": "", "learning_rate": 1e-5, "batch_size": 1,
+                    "iters": 1, "lora_layers": 1, "checkpoint_every_steps": 1
+                }
+            }),
+        )
+    })
+    .await
+    .unwrap();
+    std::env::remove_var("ZORP_STATE_DB");
+    assert_eq!(code, 200, "{body}");
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // Either an empty store (no examples) or, if it raced the other test's
+    // store, still never a silent run: it must be refused or an error.
+    assert_eq!(value["status"], "error", "{body}");
 }
 
 /// Percent encode every byte that is not unreserved, so a path stays one
