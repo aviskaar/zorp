@@ -1826,7 +1826,8 @@ CREATE TABLE file_changes (
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 3);
+        // messages, file_changes, message_images, and rl_work_log.
+        assert_eq!(count, 4);
     }
 
     #[test]
