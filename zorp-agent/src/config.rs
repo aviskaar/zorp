@@ -56,6 +56,14 @@ pub struct Saved {
     /// and read by `zorp-web`. The CLI never reads it; see the module doc.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// The OS-level sandbox the agent's shell commands run under, as a mode
+    /// name (`off`, `workspace`, `build`, `read-only`). The person's own
+    /// choice, so it is trusted; a flavor's request to loosen it is not (see
+    /// ADR 0141). A string rather than the enum so an unknown value in a file
+    /// a person hand-edited is reported where it is read rather than failing
+    /// to deserialize the whole settings file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -378,6 +386,7 @@ mod tests {
             model: Some("gpt-4o".to_string()),
             max_tokens: Some(4096),
             workspace: Some("/home/a/work".to_string()),
+            sandbox: Some("workspace".to_string()),
         };
         let text = toml::to_string_pretty(&saved).unwrap();
 

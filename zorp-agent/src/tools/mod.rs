@@ -137,6 +137,17 @@ impl Context {
         }
     }
 
+    /// Run every shell command this context spawns under `mode`. Set by the
+    /// surface that resolved it; the model never reaches this.
+    pub fn set_sandbox_mode(&mut self, mode: crate::sandbox::SandboxMode) {
+        self.sandbox.set_mode(mode);
+    }
+
+    /// The OS-level sandbox mode this context's commands run under.
+    pub fn sandbox_mode(&self) -> crate::sandbox::SandboxMode {
+        self.sandbox.mode()
+    }
+
     pub fn run_command(&self, command: &str) -> ToolResult {
         let output = self.sandbox.run(command)?;
         let summary = if output.cancelled {
