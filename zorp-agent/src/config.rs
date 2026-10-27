@@ -56,6 +56,14 @@ pub struct Saved {
     /// and read by `zorp-web`. The CLI never reads it; see the module doc.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// The text-to-speech model and voice, the way the chat model is a
+    /// setting. Both surfaces share the file; today only the browser speaks,
+    /// but the fields live here so the terminal could later. Phonon is the
+    /// only model as of this writing, but it is selectable on purpose.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_voice: Option<String>,
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -378,6 +386,8 @@ mod tests {
             model: Some("gpt-4o".to_string()),
             max_tokens: Some(4096),
             workspace: Some("/home/a/work".to_string()),
+            speech_model: Some("phonon".to_string()),
+            speech_voice: Some("default".to_string()),
         };
         let text = toml::to_string_pretty(&saved).unwrap();
 

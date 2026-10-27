@@ -11,6 +11,7 @@ import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { AnswerCount, branchButton } from "./branch";
+import { SpeechPlayer, speakerButton } from "./speech-output";
 import { artifactTree } from "./artifact-tree";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
 import { autoApproveView, renderAutoApprove, type AutoApproveView } from "./approval-mode";
@@ -131,6 +132,7 @@ import {
   type ModelDetail,
   type Preregistration,
   type RecallStatus,
+  type Capabilities,
   type Settings,
   type SettingsSource,
   type SettingsUpdate,
@@ -256,6 +258,11 @@ interface Elements {
   settingsApiKeyField: HTMLElement;
   settingsApiKey: HTMLInputElement;
   settingsApiKeySource: HTMLElement;
+  settingsSpeechModel: HTMLInputElement;
+  settingsSpeechModelSource: HTMLElement;
+  settingsSpeechVoice: HTMLSelectElement;
+  settingsSpeechVoiceSource: HTMLElement;
+  settingsSpeechHint: HTMLElement;
   settingsTest: HTMLButtonElement;
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
@@ -447,6 +454,7 @@ const pendingApprovals = new Map<string, PendingApproval>();
 let pendingCheckpoint: { settle(outcome: CheckpointOutcome): void } | null = null;
 const approvalMode: AutoApproveView = autoApproveView(document);
 const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
+const speechPlayer = new SpeechPlayer();
 const skills: SkillsView = skillsView(document);
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
@@ -464,6 +472,9 @@ let autoApprove = false;
 /** The last settings the server reported. Null until the first successful
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
+/** The last capabilities the server reported, so the Settings voice picker
+ * can list the voices the speech model offers. `null` until first fetched. */
+let currentCapabilities: Capabilities | null = null;
 /**
  * The directory the server says it is working in. Null until the first
  * successful `GET /api/workspace`, and null again if the server ever says
@@ -504,6 +515,7 @@ function start(): void {
   wireOnboarding();
   wireArtifacts();
   wireApprovalMode();
+  wireReadAloud();
   wireZorpMode();
   paintApprovalMode();
   showEmptyState();
@@ -701,6 +713,11 @@ function collectElements(): Elements {
     settingsApiKeyField: byId("settings-api-key-field"),
     settingsApiKey: byId<HTMLInputElement>("settings-api-key"),
     settingsApiKeySource: byId("settings-api-key-source"),
+    settingsSpeechModel: byId<HTMLInputElement>("settings-speech-model"),
+    settingsSpeechModelSource: byId("settings-speech-model-source"),
+    settingsSpeechVoice: byId<HTMLSelectElement>("settings-speech-voice"),
+    settingsSpeechVoiceSource: byId("settings-speech-voice-source"),
+    settingsSpeechHint: byId("settings-speech-hint"),
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     onboardOverlay: byId("onboard-overlay"),
@@ -1057,6 +1074,37 @@ function wireOnboarding(): void {
 
 function wireApprovalMode(): void {
   approvalMode.button.addEventListener("click", () => void changeApprovalMode(!autoApprove));
+}
+
+/** The read-aloud toggle: a person's switch for speaking answers. */
+function wireReadAloud(): void {
+  const button = document.getElementById("read-aloud-btn");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    const on = button.getAttribute("aria-pressed") !== "true";
+    speechPlayer.setReadAloud(on);
+    paintReadAloud(on);
+  });
+}
+
+function paintReadAloud(on: boolean): void {
+  const button = document.getElementById("read-aloud-btn");
+  const label = document.getElementById("read-aloud-label");
+  if (!button) return;
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  if (label) {
+    label.textContent = on ? "Read aloud on" : "Read aloud off";
+  }
+}
+
+/** Show the read-aloud toggle only when the local runtime can speak. */
+function updateReadAloudVisibility(): void {
+  const button = document.getElementById("read-aloud-btn");
+  if (!button) return;
+  button.hidden = !speechPlayer.available();
+  if (!speechPlayer.available()) {
+    paintReadAloud(false);
+  }
 }
 
 /** Draw the mode, and keep the empty state from contradicting it. */
@@ -2034,6 +2082,12 @@ const streamed = new StreamedMessage(
     // else. A file the answer named opens in the pane from here.
     linkFiles(row, knownArtifacts, openArtifactFromAnswer);
     row.append(answerControls(text, answers.next(text, finishKept)));
+    // Read-aloud speaks a live answer as it finishes. Only here, the live
+    // streaming path, so reopening a conversation does not read its history
+    // aloud. Speaking is only ever rendered answer text.
+    if (speechPlayer.isReadAloud()) {
+      void speechPlayer.speak(text);
+    }
   },
 );
 
@@ -2102,6 +2156,9 @@ function answerControls(text: string, ordinal: number | null): HTMLElement {
     branch.disabled = turnRunning;
     row.append(branch);
   }
+  // Hidden unless the local speech runtime is available; speaking is the
+  // person's to start, never the model's.
+  row.append(speakerButton(document, speechPlayer, () => text));
   return row;
 }
 
@@ -2884,6 +2941,8 @@ const SETTINGS_ENV_VARS: Record<string, string> = {
   model: "ZORP_MODEL",
   api_key: "ZORP_API_KEY",
   max_tokens: "ZORP_MAX_TOKENS",
+  speech_model: "ZORP_SPEECH_MODEL",
+  speech_voice: "ZORP_SPEECH_VOICE",
 };
 
 type RightPane = "artifacts" | "settings" | "agents";
@@ -3022,15 +3081,23 @@ function closeWorkspacePicker(): void {
 async function refreshCapabilities(): Promise<void> {
   try {
     const capabilities = await getCapabilities();
+    currentCapabilities = capabilities;
     renderSearchIndicator(searchIndicator, capabilities.web_search);
     // Absent from a server built before skills were reported, and `null`
     // and absent are both drawn as no pill. A count that appeared while
     // the answer was in flight would be a guess.
     renderSkillsIndicator(skills, capabilities.skills ?? null);
     voiceInput.observe(capabilities.voice);
+    speechPlayer.observe(capabilities.speech ?? null);
+    updateReadAloudVisibility();
+    if (currentSettings) {
+      applySpeechToForm(currentSettings);
+    }
   } catch {
     renderSearchIndicator(searchIndicator, null);
     renderSkillsIndicator(skills, null);
+    speechPlayer.observe(null);
+    updateReadAloudVisibility();
   }
 }
 
@@ -3143,7 +3210,51 @@ function applySettingsToForm(settings: Settings): void {
   dom.settingsApiKeySource.textContent = settings.has_api_key
     ? sourceLabel("api_key", settings.api_key_source)
     : "";
+  applySpeechToForm(settings);
   updateApiKeyVisibility(name);
+}
+
+/**
+ * Fill the speech model and voice pickers. The voice list comes from the
+ * capabilities answer (the model's own `/api/show`), with the configured
+ * voice kept selectable even when the list has not arrived yet.
+ */
+function applySpeechToForm(settings: Settings): void {
+  dom.settingsSpeechModel.value =
+    settings.speech_model_source === "default" ? "" : settings.speech_model;
+  dom.settingsSpeechModel.placeholder = settings.speech_model || "phonon";
+  dom.settingsSpeechModelSource.textContent = sourceLabel("speech_model", settings.speech_model_source);
+  dom.settingsSpeechVoiceSource.textContent = sourceLabel("speech_voice", settings.speech_voice_source);
+
+  const speech = currentCapabilities?.speech ?? null;
+  const voices = speech?.voices ?? [];
+  const chosen = settings.speech_voice;
+  dom.settingsSpeechVoice.replaceChildren();
+  const option = (value: string, text: string) => {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = text;
+    return opt;
+  };
+  // The default voice is always offered, then whatever the model reported.
+  const seen = new Set<string>();
+  for (const voice of ["default", ...voices, chosen]) {
+    if (!voice || seen.has(voice)) continue;
+    seen.add(voice);
+    dom.settingsSpeechVoice.append(option(voice, voice));
+  }
+  dom.settingsSpeechVoice.value = chosen || "default";
+
+  if (speech && !speech.available) {
+    dom.settingsSpeechHint.hidden = false;
+    dom.settingsSpeechHint.textContent = speech.detail;
+  } else if (speech && (!speech.runtime_reachable || !speech.model_present)) {
+    dom.settingsSpeechHint.hidden = false;
+    dom.settingsSpeechHint.textContent = speech.detail;
+  } else {
+    dom.settingsSpeechHint.hidden = true;
+    dom.settingsSpeechHint.textContent = "";
+  }
 }
 
 function sourceLabel(field: string, source: SettingsSource): string {
@@ -3255,6 +3366,9 @@ function formToUpdate(): SettingsUpdate {
   if (apiKey) {
     update.api_key = apiKey;
   }
+  // Always sent, so clearing the field back to empty resets to the default.
+  update.speech_model = dom.settingsSpeechModel.value.trim();
+  update.speech_voice = dom.settingsSpeechVoice.value;
   return update;
 }
 

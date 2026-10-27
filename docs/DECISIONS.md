@@ -9,6 +9,7 @@ This table maps each date to its record so those references still resolve.
 
 | Date | Record |
 |------|--------|
+| 2026-10-27 | [0142](decisions/0142-text-to-speech-is-loopback-only-and-a-person-turns-it-on.md) text to speech is loopback-only, and a person turns it on |
 | 2026-10-26 | [0140](decisions/0140-the-mac-app-is-native-and-speaks-the-browser-s-api.md) The Mac app is native and speaks the browser's API |
 | 2026-10-26 | [0139](decisions/0139-windows-runs-commands-under-git-bash-in-a-job-object.md) Windows runs commands under Git Bash, in a job object |
 | 2026-10-04 | [0138](decisions/0138-decisions-are-one-adr-per-file.md) Decisions are one ADR per file |

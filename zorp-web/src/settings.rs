@@ -74,6 +74,10 @@ pub struct PutSettings {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub api_key: Option<String>,
+    /// The text-to-speech model and voice. Empty strings clear them back to
+    /// the defaults.
+    pub speech_model: Option<String>,
+    pub speech_voice: Option<String>,
 }
 
 /// Everything the server knows about the model to use beyond the env vars
@@ -98,6 +102,9 @@ pub struct SettingsState {
     /// not a field on `PutSettings`: a workspace is validated before it is
     /// stored, and `PUT /api/workspace` is the one door that does it.
     pub workspace: Option<String>,
+    /// The saved text-to-speech model and voice. The browser's alone today.
+    pub speech_model: Option<String>,
+    pub speech_voice: Option<String>,
     /// The context window each model's listing stated, keyed by endpoint and
     /// id, from the last time `/api/models` fetched that endpoint.
     ///
@@ -186,6 +193,12 @@ impl SettingsState {
         if self.workspace.is_none() {
             self.workspace = persisted.workspace;
         }
+        if self.speech_model.is_none() {
+            self.speech_model = persisted.speech_model;
+        }
+        if self.speech_voice.is_none() {
+            self.speech_voice = persisted.speech_voice;
+        }
     }
 
     /// The shape written to disk. Deliberately cannot carry `api_key`: that
@@ -197,6 +210,8 @@ impl SettingsState {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             workspace: self.workspace.clone(),
+            speech_model: self.speech_model.clone(),
+            speech_voice: self.speech_voice.clone(),
         }
     }
 
@@ -229,7 +244,23 @@ impl SettingsState {
             self.api_key = (!api_key.is_empty()).then(|| api_key.clone());
             self.api_key_from_ui = true;
         }
+        if let Some(model) = &put.speech_model {
+            self.speech_model = (!model.trim().is_empty()).then(|| model.trim().to_string());
+        }
+        if let Some(voice) = &put.speech_voice {
+            self.speech_voice = (!voice.trim().is_empty()).then(|| voice.trim().to_string());
+        }
         Ok(())
+    }
+
+    /// The saved TTS model and voice, each `None` when unset so the caller
+    /// falls through to `ZORP_SPEECH_*` and then the defaults.
+    pub fn speech_model_saved(&self) -> Option<String> {
+        self.speech_model.clone()
+    }
+
+    pub fn speech_voice_saved(&self) -> Option<String> {
+        self.speech_voice.clone()
     }
 
     fn core_fields(&self) -> CoreFields {
@@ -299,6 +330,8 @@ impl SettingsState {
         let fields = self.core_fields();
         let (has_api_key, api_key_source) = self.api_key_provenance();
         let configured = Self::configured(&fields, has_api_key);
+        let (speech_model, speech_model_source) = self.speech_model_resolved();
+        let (speech_voice, speech_voice_source) = self.speech_voice_resolved();
         Resolved {
             provider: fields.provider,
             provider_source: fields.provider_source,
@@ -311,6 +344,33 @@ impl SettingsState {
             has_api_key,
             api_key_source,
             configured,
+            speech_model,
+            speech_model_source,
+            speech_voice,
+            speech_voice_source,
+        }
+    }
+
+    /// The effective TTS model and its source: saved, then `ZORP_SPEECH_MODEL`,
+    /// then the phonon default.
+    pub fn speech_model_resolved(&self) -> (String, Source) {
+        match &self.speech_model {
+            Some(v) => (v.clone(), Source::Ui),
+            None => match non_empty_env("ZORP_SPEECH_MODEL") {
+                Some(v) => (v, Source::Env),
+                None => (DEFAULT_SPEECH_MODEL.to_string(), Source::Default),
+            },
+        }
+    }
+
+    /// The effective TTS voice and its source, resolved the same way.
+    pub fn speech_voice_resolved(&self) -> (String, Source) {
+        match &self.speech_voice {
+            Some(v) => (v.clone(), Source::Ui),
+            None => match non_empty_env("ZORP_SPEECH_VOICE") {
+                Some(v) => (v, Source::Env),
+                None => (DEFAULT_SPEECH_VOICE.to_string(), Source::Default),
+            },
         }
     }
 
@@ -335,6 +395,12 @@ fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|s| !s.is_empty())
 }
 
+/// The TTS defaults, matching `zorp_voice`'s constants. Spelled here rather
+/// than imported so `settings` does not depend on the `voice` feature just to
+/// name a default string.
+const DEFAULT_SPEECH_MODEL: &str = "phonon";
+const DEFAULT_SPEECH_VOICE: &str = "default";
+
 /// What `GET`/`PUT /api/settings` answer with: the effective configuration
 /// plus enough provenance for the UI to explain it (e.g. "from ZORP_MODEL").
 /// `api_key` itself is never a field here; only `has_api_key` is.
@@ -351,6 +417,12 @@ pub struct Resolved {
     pub has_api_key: bool,
     pub api_key_source: Source,
     pub configured: bool,
+    /// The effective text-to-speech model and voice, for the Settings
+    /// pickers, with where each came from.
+    pub speech_model: String,
+    pub speech_model_source: Source,
+    pub speech_voice: String,
+    pub speech_voice_source: Source,
 }
 
 /// What `turn::run_agent` builds `HttpModel` from. Carries the real API key

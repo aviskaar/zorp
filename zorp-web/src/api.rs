@@ -161,6 +161,10 @@ fn api_router(state: AppState) -> Router {
             post(crate::voice::transcribe)
                 .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
         )
+        .route("/api/speech/status", get(crate::speech::status))
+        .route("/api/speech/voices", get(crate::speech::voices))
+        .route("/api/speech/chunks", post(crate::speech::chunks))
+        .route("/api/speech", post(crate::speech::speak))
         .route("/api/sessions/:id/investigate", post(start_investigate))
         .route("/api/investigate/status", get(investigate_status))
         .route("/api/investigate/ledger", get(investigate_ledger))
@@ -253,6 +257,7 @@ async fn health() -> Json<serde_json::Value> {
 async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
     let web_search = zorp_agent::web_search_availability(&turn::policy(state.own_port));
     let voice = crate::voice::status_value().await;
+    let speech = crate::speech::status_value(&state.settings).await;
     let installed = discover_skills(state.workspace_root().as_deref()).0.len();
     Json(json!({
         "web_search": {
@@ -260,6 +265,7 @@ async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> 
             "detail": web_search.detail,
         },
         "voice": voice,
+        "speech": speech,
         // A count, not a list. The page draws a pill from it and asks
         // `/api/skills` when somebody opens the pill, which keeps a
         // capabilities call from carrying every description on the machine.
