@@ -158,16 +158,49 @@ impl TrainingSupervisor {
         std::fs::write(&config_path, full_cfg.to_string()).map_err(|e| e.to_string())?;
 
         let py = env.python_path();
-        let mut child = Command::new(py)
-            .arg(&script_path)
-            .arg("--config")
-            .arg(&config_path)
-            .env("PYTHONUNBUFFERED", "1")
-            .kill_on_drop(true)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn mlx_train: {e}"))?;
+        let spawn_once = || {
+            Command::new(&py)
+                .arg(&script_path)
+                .arg("--config")
+                .arg(&config_path)
+                .env("PYTHONUNBUFFERED", "1")
+                .kill_on_drop(true)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        };
+        // "Text file busy" (ETXTBSY, errno 26) on spawn is a race, not a real
+        // failure: a sibling thread's fork can briefly hold a write handle on
+        // a just-written executable, and exec sees it as busy until that fd
+        // closes on exec. It clears in milliseconds, so a couple of quick
+        // retries turn a flaky spawn into a reliable one rather than a red CI
+        // run. Anything else fails immediately.
+        let mut child = None;
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            match spawn_once() {
+                Ok(c) => {
+                    child = Some(c);
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        let mut child = child.ok_or_else(|| {
+            format!(
+                "failed to spawn mlx_train: {}",
+                last_err
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".into())
+            )
+        })?;
 
         let pid = child.id().ok_or("failed to get child pid")?;
         {
