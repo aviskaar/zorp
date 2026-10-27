@@ -415,11 +415,21 @@ mod tests {
 
     #[test]
     fn workspace_writes_the_workspace_and_scratch_and_opens_no_network() {
-        let json = settings_json(SandboxMode::Workspace, std::path::Path::new("/ws")).unwrap();
+        let ws = std::path::Path::new("/ws");
+        let json = settings_json(SandboxMode::Workspace, ws).unwrap();
         let writes = json["filesystem"]["allowWrite"].as_array().unwrap();
-        let writes: Vec<&str> = writes.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(writes.contains(&"/ws"), "{writes:?}");
-        assert!(writes.contains(&"/ws/scratch"), "{writes:?}");
+        let writes: Vec<String> = writes
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        // Built with `join` so the separator matches the platform the test
+        // runs on; the Windows sandbox job runs these too.
+        let scratch = ws.join("scratch").to_string_lossy().into_owned();
+        assert!(
+            writes.contains(&ws.to_string_lossy().into_owned()),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&scratch), "{writes:?}");
         assert!(json["network"]["allowedDomains"]
             .as_array()
             .unwrap()
@@ -468,8 +478,15 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        assert!(deny.iter().any(|p| p == "/home/someone/.ssh"), "{deny:?}");
-        assert!(deny.iter().any(|p| p == "/home/someone/.aws"), "{deny:?}");
+        // `join` so the expected separator matches the platform under test.
+        let expect = |rel: &str| {
+            std::path::Path::new("/home/someone")
+                .join(rel)
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert!(deny.contains(&expect(".ssh")), "{deny:?}");
+        assert!(deny.contains(&expect(".aws")), "{deny:?}");
         match previous {
             Some(p) => std::env::set_var("HOME", p),
             None => std::env::remove_var("HOME"),
