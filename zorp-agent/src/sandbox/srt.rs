@@ -58,8 +58,11 @@ pub enum SandboxMode {
     /// Reads allowed except credential stores, writes to the workspace and
     /// its `scratch`, no network.
     Workspace,
-    /// No writes and no network, for panel and ensemble reviewers, which
-    /// already get read-only tools.
+    /// No writes and no network: the strictest mode, and the floor a review
+    /// run would use. Panel and ensemble reviewers already get a read-only
+    /// tool set in code; this mode is the OS-level equivalent for a run that
+    /// opts into it, and wiring the reviewers to it is a separate choice, not
+    /// something this mode applies on its own.
     ReadOnly,
 }
 
