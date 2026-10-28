@@ -188,11 +188,35 @@ pub enum AcceptOutcome {
 /// under `flavor_dir`, which is untrusted until somebody trusts its hash, the
 /// same as any project flavor the model could write. The flavor carries only
 /// a `description`: it grants nothing on its own.
+///
+/// Only a `new` suggestion can be accepted. The surfaces look a suggestion up
+/// in any state, so without this a second accept (a double click, a stale
+/// card, a repeated CLI invocation) would create a second project or rewrite
+/// the flavor. Accepting a suggestion that is already accepted or dismissed is
+/// refused and changes nothing.
 pub fn accept(
     store: &mut Store,
     suggestion: &SuggestionRow,
     flavor_dir: &Path,
 ) -> Result<AcceptOutcome, crate::BoxErr> {
+    // Guard on the stored state, not the state of the row the caller handed
+    // in: a caller can hold a stale `new` row it read before an earlier
+    // accept, and operating on that would create a second project or rewrite
+    // the flavor. The stored row is the truth.
+    match store.suggestion(&suggestion.id)? {
+        Some(current) if current.state == "new" => {}
+        Some(current) => {
+            return Err(format!(
+                "suggestion {} is already {}, so there is nothing to accept",
+                short(&suggestion.id),
+                current.state
+            )
+            .into());
+        }
+        None => {
+            return Err(format!("no suggestion {}", short(&suggestion.id)).into());
+        }
+    }
     let outcome = match suggestion.kind.as_str() {
         "unfiled_cluster" => {
             let name = format!("dream-{}", short(&suggestion.id));
@@ -469,6 +493,63 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Monday report"));
+        assert!(!flavor.wants_privilege());
+    }
+
+    #[test]
+    fn a_suggestion_can_only_be_accepted_once() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("a", "topic x", "/r", "m").unwrap();
+        store.create_session("b", "topic x", "/r", "m").unwrap();
+        store
+            .record_suggestion(&SuggestionDraft {
+                id: "g1".into(),
+                kind: "unfiled_cluster".into(),
+                evidence_ids: vec!["a".into(), "b".into()],
+                wording: "file these together?".into(),
+            })
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let first = store.suggestion("g1").unwrap().unwrap();
+        accept(&mut store, &first, dir.path()).unwrap();
+
+        // The stored row is now `accepted`. A second accept, even with the
+        // same (now stale) row we still hold, is refused and creates no
+        // second project.
+        let before = store.projects().unwrap().len();
+        let stale = store.suggestion("g1").unwrap().unwrap();
+        assert_eq!(stale.state, "accepted");
+        assert!(accept(&mut store, &stale, dir.path()).is_err());
+        assert!(accept(&mut store, &first, dir.path()).is_err());
+        assert_eq!(store.projects().unwrap().len(), before, "no second project");
+    }
+
+    #[test]
+    fn a_flavor_description_with_a_backslash_or_bracket_stays_one_key() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .record_suggestion(&SuggestionDraft {
+                id: "g3".into(),
+                kind: "recurring_request".into(),
+                evidence_ids: vec!["a".into()],
+                // A backslash, a quote, and TOML-structural characters that
+                // would break the file or inject a second key if unescaped.
+                wording: "fix C:\\path \"now\" ] [inject] = evil".into(),
+            })
+            .unwrap();
+        let suggestion = store.suggestion("g3").unwrap().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = match accept(&mut store, &suggestion, dir.path()).unwrap() {
+            AcceptOutcome::Flavor { path } => path,
+            other => panic!("expected a flavor, got {other:?}"),
+        };
+        let body = std::fs::read_to_string(&path).unwrap();
+        let flavor = crate::flavor::Flavor::parse(&body).unwrap();
+        // The whole wording is the description and nothing leaked into a
+        // second key: the brackets and `=` are inside the quoted string.
+        let description = flavor.description.as_deref().unwrap();
+        assert!(description.contains("[inject]"));
+        assert!(description.contains("C:\\path"));
         assert!(!flavor.wants_privilege());
     }
 
