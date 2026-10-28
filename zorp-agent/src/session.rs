@@ -622,6 +622,13 @@ impl Store {
     /// Set the person's feedback on a work-log entry: a thumbs direction, an
     /// edited "better answer", or both. The only writers of the signal are a
     /// person's click and this call; no model reaches it.
+    ///
+    /// Each field is updated only when given. The surfaces send one signal at a
+    /// time (a thumb, or an edit), so writing both columns unconditionally would
+    /// let the second click `NULL` out the first: a 👎 after a "better answer"
+    /// would wipe the edit, which is the single most valuable signal the feature
+    /// collects. `COALESCE` keeps the stored value when an argument is `None`.
+    /// Clearing a value is not a thing any caller needs, so it is not offered.
     pub fn set_work_log_feedback(
         &self,
         id: &str,
@@ -634,7 +641,9 @@ impl Store {
             }
         }
         self.conn.execute(
-            "UPDATE rl_work_log SET feedback = ?2, edited_answer = ?3 WHERE id = ?1",
+            "UPDATE rl_work_log \
+             SET feedback = COALESCE(?2, feedback), edited_answer = COALESCE(?3, edited_answer) \
+             WHERE id = ?1",
             (id, feedback, edited_answer),
         )?;
         Ok(())
@@ -1511,6 +1520,66 @@ CREATE TABLE file_changes (
         // recall feed and the memory block read. Nothing was recorded there.
         let messages = store.load_messages("s1").unwrap();
         assert!(messages.is_empty(), "work log must not write messages");
+    }
+
+    /// A partial feedback update must not wipe the other signal. The surfaces
+    /// send one at a time, so a 👎 after a "better answer" (or the reverse)
+    /// must keep both: dropping the edit would destroy a preference pair.
+    #[test]
+    fn partial_feedback_updates_keep_the_other_signal() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store
+            .record_work_log(&WorkLogEntry {
+                id: "w1".into(),
+                session_id: "s1".into(),
+                model: "m".into(),
+                prompt: "do the thing".into(),
+                answer: "first answer".into(),
+                tool_calls: vec![],
+            })
+            .unwrap();
+
+        // An edit lands first (a "better answer", no thumb).
+        store
+            .set_work_log_feedback("w1", None, Some("the better thing"))
+            .unwrap();
+        // Then a thumbs-down on the same row, with no edit in the call.
+        store
+            .set_work_log_feedback("w1", Some("down"), None)
+            .unwrap();
+
+        let rows = store.list_work_log(10).unwrap();
+        assert_eq!(rows[0].feedback.as_deref(), Some("down"));
+        assert_eq!(
+            rows[0].edited_answer.as_deref(),
+            Some("the better thing"),
+            "the edit must survive a later thumbs-only update"
+        );
+
+        // And the reverse order on a fresh row: thumb first, then edit.
+        store
+            .record_work_log(&WorkLogEntry {
+                id: "w2".into(),
+                session_id: "s1".into(),
+                model: "m".into(),
+                prompt: "again".into(),
+                answer: "second answer".into(),
+                tool_calls: vec![],
+            })
+            .unwrap();
+        store.set_work_log_feedback("w2", Some("up"), None).unwrap();
+        store
+            .set_work_log_feedback("w2", None, Some("even better"))
+            .unwrap();
+        let w2 = store
+            .list_work_log(10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "w2")
+            .unwrap();
+        assert_eq!(w2.feedback.as_deref(), Some("up"));
+        assert_eq!(w2.edited_answer.as_deref(), Some("even better"));
     }
 
     #[test]
