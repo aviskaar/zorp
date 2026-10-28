@@ -5248,3 +5248,33 @@ html.desktop .app[data-sidebar="collapsed"] .topbar {
 }
 
 
+
+/* RL Studio per-answer feedback controls and work-log rows. */
+.answer-feedback {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.answer-feedback .answer-action[aria-pressed="true"] {
+  color: var(--accent, #6a8);
+}
+.dev-worklog-row {
+  border: 1px solid var(--line, #ccc);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 8px 0;
+}
+.dev-worklog-tag {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-faint, #888);
+}
+.dev-worklog-prompt {
+  font-weight: 600;
+  margin: 4px 0;
+}
+.dev-worklog-answer {
+  white-space: pre-wrap;
+  color: var(--text-faint, #666);
+}

@@ -1,7 +1,31 @@
 use zorp_train::manifest::{
-    ArchitectureRecipe, CheckpointMetadata, DatasetManifest, TokenizerConfig, TrainEvent,
-    TrainingJobConfig,
+    ArchitectureRecipe, CheckpointMetadata, DatasetManifest, FineTuneJobConfig, TokenizerConfig,
+    TrainEvent, TrainingJobConfig,
 };
+
+#[test]
+fn fine_tune_config_round_trips_and_requires_a_dataset() {
+    let config = FineTuneJobConfig {
+        run_id: "ft-1".into(),
+        method: "lora".into(),
+        base_model: "my-checkpoint".into(),
+        dataset_path: "/tmp/ds.jsonl".into(),
+        learning_rate: 1e-5,
+        batch_size: 2,
+        iters: 200,
+        lora_layers: 8,
+        checkpoint_every_steps: 50,
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    let back: FineTuneJobConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(config, back);
+    // dataset_path is not optional: the type has no way to express a
+    // fine-tune with no data, which is the point.
+    assert!(serde_json::from_str::<FineTuneJobConfig>(
+        r#"{"run_id":"x","method":"lora","base_model":"m","learning_rate":1e-5,"batch_size":1,"iters":1,"lora_layers":1,"checkpoint_every_steps":1}"#
+    )
+    .is_err());
+}
 
 #[test]
 fn test_architecture_recipe_serde() {

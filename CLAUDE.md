@@ -601,15 +601,17 @@ resulting artifact, deliver it in the right form.
   more exposed than the shell the agent already runs, which is why a
   non-loopback bind still needs a token. See `docs/DECISIONS.md`
   (2026-09-05).
-- `zorp-train/` is zorp's developer mode: dataset manifests, a BPE
+- `zorp-train/` is **RL Studio** (renamed from Developer Mode, ADR 0143):
+  dataset manifests, a BPE
   tokenizer trainer, Qwen style architecture recipes with a parameter
   calculator, a pretraining loop on Apple Metal through MLX, and a model
   registry that serves a finished checkpoint back on loopback so "Open in
   Zorp" puts a model you trained into the model picker. It supervises an
   isolated Python environment at `~/.zorp/training-env` and talks to it over
   stdout as JSON lines. `zorp-web` exposes it behind the non-default
-  `train` feature at `/api/dev/*`, token gated like every other route, and
-  `web/src/developer-mode.ts` draws the five tabs.
+  `train` feature at `/api/dev/*` (the prefix is kept through the rename),
+  token gated like every other route, and
+  `web/src/developer-mode.ts` draws the tabs.
   Three things are not negotiable. A run trains on a real corpus or it says
   it did not: `tokenizer_dir` and `dataset_path` are optional, the supervisor
   forwards them exactly as given and guesses nothing, and with either missing
@@ -640,6 +642,28 @@ resulting artifact, deliver it in the right form.
   `no_tool_trains_a_model_or_serves_a_checkpoint` in `zorp-agent/src/agent.rs`
   is what says so. See `docs/DECISIONS.md` (2026-09-19)
   and `docs/superpowers/plans/2026-09-14-zorp-developer-mode-pretraining.md`.
+  RL Studio adds fine-tuning and a feedback loop on top (ADR 0143,
+  `docs/superpowers/specs/2026-10-27-rl-studio-design.md`). A fine-tune round
+  (LoRA, SFT or DPO through `mlx-lm`, `mlx_finetune.py`) trains on a dataset
+  built from a work log, on the same event stream and the same "what did this
+  train on" report; an empty build is refused, never run on nothing. The
+  feedback signal is the person's or code's and never the model grading
+  itself (ADR 0063): a person's thumbs, a "better answer" they typed, and
+  tool status derived in code. Those are recorded in a new `rl_work_log`
+  table in the session store, which **nothing reads as evidence**, not
+  `recall::index_one`, the memory block, titling or branching, and which is
+  cleared with the conversations (`state.rs`).
+  `zorp_agent::rl_dataset::build` turns the log into an SFT set and a
+  preference set in code (a thumbs-down with no edit produces nothing,
+  because it says the answer was wrong, not what the right one was). The new
+  routes `/api/dev/worklog*`, `/api/dev/dataset/preview` and
+  `/api/dev/finetune/start` are behind the same `train` feature, the
+  per-answer feedback controls are gated on the `rl_studio` capability, and
+  no tool reaches any of it. The Mac app's RL Studio routes are a follow-up.
+  Fine-tune execution needs Apple Silicon, so its Rust plumbing is tested at
+  the manifest level and the run itself is verified on Metal. Run `cargo test
+  -p zorp-train` and `cargo test -p zorp-web --features train` whenever it
+  changes.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's

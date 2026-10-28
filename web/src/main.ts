@@ -11,6 +11,8 @@ import { renderMarkdown } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { AnswerCount, branchButton } from "./branch";
+import { feedbackControls } from "./rl-feedback";
+import { recordWorkLog, setWorkLogFeedback } from "./api";
 import { SpeechPlayer, speakerButton } from "./speech-output";
 import { artifactTree } from "./artifact-tree";
 import { clearMeter, showMeter, type MeterElements } from "./context-meter";
@@ -482,12 +484,16 @@ let autoApprove = false;
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
 /**
- * The last capabilities the server reported, kept so the Settings voice picker
- * can list the voices the speech model offers and the settings dialog can warn
- * when a chosen sandbox mode cannot actually run. `null` until the first
- * `GET /api/capabilities` answers.
+ * The last capabilities the server reported. Drives several things: the
+ * per-answer feedback controls appear only when RL Studio is present, the
+ * Settings voice picker lists the speech model's voices, and the settings
+ * dialog warns when a chosen sandbox mode cannot actually run. `null` until
+ * the first `GET /api/capabilities` answers.
  */
 let currentCapabilities: Capabilities | null = null;
+/** The most recent user message, so a work-log entry can record the prompt
+ * its answer replied to. Verbatim, exactly what the person typed. */
+let lastUserText = "";
 /**
  * The directory the server says it is working in. Null until the first
  * successful `GET /api/workspace`, and null again if the server ever says
@@ -997,7 +1003,7 @@ function showAgentMode(): void {
   dom.devShell.hidden = true;
   dom.chatShell.hidden = false;
   dom.devToggleBtn.classList.remove("active");
-  dom.devToggleLabel.textContent = "Dev Mode";
+  dom.devToggleLabel.textContent = "RL Studio";
 }
 
 function toggleDeveloperMode(): void {
@@ -2132,6 +2138,9 @@ function appendMessage(role: "user" | "assistant", text: string): void {
   // came back looking like something they did not write.
   if (role === "user") {
     renderRichText(body, text);
+    // Remember the prompt so a work-log entry can record what its answer
+    // replied to.
+    lastUserText = text;
   } else {
     renderMarkdown(body, text);
     // A file the answer names is worth a click rather than a hunt through the
@@ -2171,6 +2180,22 @@ function answerControls(text: string, ordinal: number | null): HTMLElement {
     // tool is, starts the way `setTurnRunning` would leave it.
     branch.disabled = turnRunning;
     row.append(branch);
+  }
+  // RL Studio feedback: thumbs and a better-answer control, shown only when
+  // the build has RL Studio. A person's click is the only signal recorded.
+  if (currentCapabilities?.rl_studio?.available) {
+    row.append(
+      feedbackControls(
+        document,
+        {
+          sessionId,
+          model: currentSettings?.model ?? "",
+          prompt: lastUserText,
+          answer: text,
+        },
+        { record: recordWorkLog, setFeedback: setWorkLogFeedback },
+      ),
+    );
   }
   // Hidden unless the local speech runtime is available; speaking is the
   // person's to start, never the model's.

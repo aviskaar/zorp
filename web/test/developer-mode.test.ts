@@ -15,7 +15,7 @@ test("DeveloperModeView renders header, navigation tabs, and default pretrain ta
   assert.ok(container.querySelector(".dev-mode-shell"));
   assert.ok(container.querySelector(".dev-mode-header"));
   const navBtns = container.querySelectorAll(".nav-btn");
-  assert.equal(navBtns.length, 5);
+  assert.equal(navBtns.length, 7);
 
   const tabLabels = Array.from(navBtns).map((b) => b.textContent?.trim());
   assert.deepEqual(tabLabels, [
@@ -23,8 +23,12 @@ test("DeveloperModeView renders header, navigation tabs, and default pretrain ta
     "Tokenizer",
     "Architecture",
     "Pretrain",
+    "Fine-tune",
+    "Feedback",
     "Model Registry",
   ]);
+  // Renamed from Developer Mode.
+  assert.match(container.querySelector(".dev-mode-title-wrap h2")?.textContent ?? "", /RL Studio/);
 
   // Default tab is pretrain
   assert.ok(container.querySelector(".pretrain-dashboard"));
