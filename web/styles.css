@@ -1029,6 +1029,20 @@ button {
   display: none;
 }
 
+/* Same trap again, and spelled out on its own selector so the sandbox pill
+   cannot start claiming a mode that is not running just because the shared
+   rule above was renamed. */
+.sandbox-indicator[hidden] {
+  display: none;
+}
+
+/* A sandbox mode the server said cannot actually run: the pill is still shown
+   so the person knows a command will refuse, but it reads as a warning. */
+.sandbox-indicator[data-warn] {
+  color: var(--warn, #b4690e);
+  border-color: var(--warn, #b4690e);
+}
+
 .context-bar {
   display: block;
   width: 34px;

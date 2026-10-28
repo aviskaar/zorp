@@ -431,6 +431,29 @@ resulting artifact, deliver it in the right form.
   denylist, and is never sent automatically. Run `cargo test -p zorp-web
   --features voice` and `cargo test -p zorp-voice` whenever it changes. See
   `docs/DECISIONS.md` (2026-08-24) first.
+- Text to speech is the other half of voice: `zorp-voice`'s `OllamaSpeech`
+  speaks text through a local Ollama server's OpenAI-compatible
+  `POST /v1/audio/speech` with the `phonon` model, and lists a model's voices
+  from `POST /api/show`. `zorp-web` exposes it behind the same non-default
+  `voice` feature at `GET /api/speech/status`, `GET /api/speech/voices`,
+  `POST /api/speech/chunks` and `POST /api/speech`, registered in every build
+  and answering 501 without it, the way the voice routes do. The browser gets
+  a speaker button under every answer, a read-aloud toggle, and model and
+  voice pickers in Settings; the TTS model and voice are saved in `config.rs`,
+  resolved like the chat model. Three rules are not negotiable. The text goes
+  to a loopback address or nowhere, the same boundary as recorded audio and
+  recall (`zorp-loopback`, redirects off, proxy off, no cloud fallback), and a
+  connection-counting canary in `zorp-voice/tests/no_remote.rs` proves it.
+  Speaking is something a person turns on: no tool starts or stops it, and the
+  speaker button and read-aloud toggle are the only starts. And spoken text is
+  only ever the rendered answer, taken from the live streaming path so
+  reopening a conversation does not read its history aloud. The TTS model is a
+  setting, not a hardcoded `phonon`, and long text is split on sentence
+  boundaries under the per-request limit by the one chunker,
+  `zorp_voice::chunk_for_speech`, exposed at `/api/speech/chunks`. Run `cargo
+  test -p zorp-voice` and `cargo test -p zorp-web --features voice` whenever it
+  changes. The Mac app routes and a fully hands-free speaking mode are
+  follow-ups. See `docs/DECISIONS.md` (2026-10-27).
 - `memory` (`zorp-web/src/memory.rs`, non-default `memory` feature, which
   turns on `recall`) is the second way that index gets read: not into the
   sidebar, into a live turn. Every finished turn indexes its own session, so
@@ -754,6 +777,30 @@ resulting artifact, deliver it in the right form.
   language would need a second denylist. The `windows` CI job builds the
   shipped binaries and runs the sandbox's tests, not the whole suite. See
   `docs/DECISIONS.md` (2026-10-26).
+- A run can wrap every shell command in
+  [`srt`](https://github.com/anthropics/sandbox-runtime) (`zorp-agent/src/sandbox/srt.rs`),
+  chosen by `SandboxMode`: `off` (the default, unchanged), `workspace` (writes
+  only to the workspace and its `scratch`, reads allowed except credential
+  stores, no network), `build` (`workspace` plus a network allowlist of
+  crates.io, npm, PyPI and GitHub) and `read-only` (no writes, no network, for
+  panel and ensemble reviewers). The mode is resolved through the config chain,
+  `--sandbox`, then `ZORP_SANDBOX`, then the flavor, then the saved setting,
+  then off, and threaded onto the agent with `with_sandbox_mode`. Four things
+  are not negotiable. `ProcessGroup` stays the one platform-specific type:
+  `srt` is wrapped inside the group as `srt --settings <file> -- <shell> -c
+  <cmd>`, and the timeout, cancel, capture and kill are unchanged. A mode
+  narrows and never loosens: the `srt` settings are generated in code per run
+  and never read from a file the model can write, and a flavor's `sandbox`
+  field is privileged whenever it is set to anything looser than the strictest
+  mode (`read-only`), gated behind the same content-hash trust as `base_url`
+  and `provider` (ADR 0123). Asked for and missing is loud: a mode other than
+  off with `srt`, `bwrap` (Linux) or `ripgrep` missing refuses the command
+  rather than running it unsandboxed, and `doctor` and `GET /api/capabilities`
+  report it by running the real binaries. And the network is denied by default
+  so the agent cannot reach zorp-web's loopback from the sandbox (ADR 0053),
+  which `build` keeps true by allowing only the named registries. The DMG does
+  not bundle `srt`; the Mac app asks the person to install it. See
+  `docs/DECISIONS.md` (2026-10-27).
 - `zorp::http_agent` is the one HTTP agent for model traffic and the one
   place timeouts are set: 30 seconds to connect, `ZORP_HTTP_TIMEOUT_SECS`
   to read, defaulting to 900. Anything in the workspace that talks to a

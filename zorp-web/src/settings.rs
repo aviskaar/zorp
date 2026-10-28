@@ -74,6 +74,14 @@ pub struct PutSettings {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub api_key: Option<String>,
+    /// The text-to-speech model and voice. Empty strings clear them back to
+    /// the defaults.
+    pub speech_model: Option<String>,
+    pub speech_voice: Option<String>,
+    /// The OS-level sandbox mode for the agent's shell commands. An empty
+    /// string clears it (back to the default `off`). The person's own
+    /// choice, so it is trusted the way the other saved fields are.
+    pub sandbox: Option<String>,
 }
 
 /// Everything the server knows about the model to use beyond the env vars
@@ -98,6 +106,14 @@ pub struct SettingsState {
     /// not a field on `PutSettings`: a workspace is validated before it is
     /// stored, and `PUT /api/workspace` is the one door that does it.
     pub workspace: Option<String>,
+    /// The saved text-to-speech model and voice. The browser's alone today.
+    pub speech_model: Option<String>,
+    pub speech_voice: Option<String>,
+    /// The saved OS-level sandbox mode, the lowest-precedence source after
+    /// the flag (which the browser does not have) and `ZORP_SANDBOX`. A
+    /// string rather than the enum so an unknown value in a hand-edited file
+    /// is reported where it is read, not by failing to load the whole file.
+    pub sandbox: Option<String>,
     /// The context window each model's listing stated, keyed by endpoint and
     /// id, from the last time `/api/models` fetched that endpoint.
     ///
@@ -186,6 +202,15 @@ impl SettingsState {
         if self.workspace.is_none() {
             self.workspace = persisted.workspace;
         }
+        if self.speech_model.is_none() {
+            self.speech_model = persisted.speech_model;
+        }
+        if self.speech_voice.is_none() {
+            self.speech_voice = persisted.speech_voice;
+        }
+        if self.sandbox.is_none() {
+            self.sandbox = persisted.sandbox;
+        }
     }
 
     /// The shape written to disk. Deliberately cannot carry `api_key`: that
@@ -197,6 +222,9 @@ impl SettingsState {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             workspace: self.workspace.clone(),
+            speech_model: self.speech_model.clone(),
+            speech_voice: self.speech_voice.clone(),
+            sandbox: self.sandbox.clone(),
         }
     }
 
@@ -229,7 +257,34 @@ impl SettingsState {
             self.api_key = (!api_key.is_empty()).then(|| api_key.clone());
             self.api_key_from_ui = true;
         }
+        if let Some(model) = &put.speech_model {
+            self.speech_model = (!model.trim().is_empty()).then(|| model.trim().to_string());
+        }
+        if let Some(voice) = &put.speech_voice {
+            self.speech_voice = (!voice.trim().is_empty()).then(|| voice.trim().to_string());
+        }
+        if let Some(sandbox) = &put.sandbox {
+            if sandbox.trim().is_empty() {
+                self.sandbox = None;
+            } else {
+                // Validate here, where the value is about to be stored, so a
+                // bad mode is a readable 400 rather than a setting that only
+                // fails when a command runs. Store the canonical spelling.
+                let mode = zorp_agent::SandboxMode::parse(sandbox)?;
+                self.sandbox = Some(mode.as_str().to_string());
+            }
+        }
         Ok(())
+    }
+
+    /// The saved TTS model and voice, each `None` when unset so the caller
+    /// falls through to `ZORP_SPEECH_*` and then the defaults.
+    pub fn speech_model_saved(&self) -> Option<String> {
+        self.speech_model.clone()
+    }
+
+    pub fn speech_voice_saved(&self) -> Option<String> {
+        self.speech_voice.clone()
     }
 
     fn core_fields(&self) -> CoreFields {
@@ -299,6 +354,9 @@ impl SettingsState {
         let fields = self.core_fields();
         let (has_api_key, api_key_source) = self.api_key_provenance();
         let configured = Self::configured(&fields, has_api_key);
+        let (speech_model, speech_model_source) = self.speech_model_resolved();
+        let (speech_voice, speech_voice_source) = self.speech_voice_resolved();
+        let (sandbox, sandbox_source) = self.sandbox_resolved();
         Resolved {
             provider: fields.provider,
             provider_source: fields.provider_source,
@@ -311,7 +369,56 @@ impl SettingsState {
             has_api_key,
             api_key_source,
             configured,
+            speech_model,
+            speech_model_source,
+            speech_voice,
+            speech_voice_source,
+            sandbox,
+            sandbox_source,
         }
+    }
+
+    /// The effective TTS model and its source: saved, then `ZORP_SPEECH_MODEL`,
+    /// then the phonon default.
+    pub fn speech_model_resolved(&self) -> (String, Source) {
+        match &self.speech_model {
+            Some(v) => (v.clone(), Source::Ui),
+            None => match non_empty_env("ZORP_SPEECH_MODEL") {
+                Some(v) => (v, Source::Env),
+                None => (DEFAULT_SPEECH_MODEL.to_string(), Source::Default),
+            },
+        }
+    }
+
+    /// The effective TTS voice and its source, resolved the same way.
+    pub fn speech_voice_resolved(&self) -> (String, Source) {
+        match &self.speech_voice {
+            Some(v) => (v.clone(), Source::Ui),
+            None => match non_empty_env("ZORP_SPEECH_VOICE") {
+                Some(v) => (v, Source::Env),
+                None => (DEFAULT_SPEECH_VOICE.to_string(), Source::Default),
+            },
+        }
+    }
+
+    /// The effective sandbox mode name and its source, for the picker. The
+    /// environment wins over the saved value, because the browser cannot set
+    /// the environment and must not appear to override it. The flavor is not
+    /// consulted here: it is per-conversation and resolved at turn time.
+    pub fn sandbox_resolved(&self) -> (String, Source) {
+        match non_empty_env("ZORP_SANDBOX") {
+            Some(v) => (v, Source::Env),
+            None => match &self.sandbox {
+                Some(v) => (v.clone(), Source::Ui),
+                None => ("off".to_string(), Source::Default),
+            },
+        }
+    }
+
+    /// The saved sandbox mode, the lowest-precedence source a turn resolves
+    /// from after the environment. `None` means the default.
+    pub fn sandbox_saved(&self) -> Option<String> {
+        self.sandbox.clone()
     }
 
     /// What the turn actually builds `HttpModel` from, api key included.
@@ -335,6 +442,12 @@ fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|s| !s.is_empty())
 }
 
+/// The TTS defaults, matching `zorp_voice`'s constants. Spelled here rather
+/// than imported so `settings` does not depend on the `voice` feature just to
+/// name a default string.
+const DEFAULT_SPEECH_MODEL: &str = "phonon";
+const DEFAULT_SPEECH_VOICE: &str = "default";
+
 /// What `GET`/`PUT /api/settings` answer with: the effective configuration
 /// plus enough provenance for the UI to explain it (e.g. "from ZORP_MODEL").
 /// `api_key` itself is never a field here; only `has_api_key` is.
@@ -351,6 +464,18 @@ pub struct Resolved {
     pub has_api_key: bool,
     pub api_key_source: Source,
     pub configured: bool,
+    /// The effective text-to-speech model and voice, for the Settings
+    /// pickers, with where each came from.
+    pub speech_model: String,
+    pub speech_model_source: Source,
+    pub speech_voice: String,
+    pub speech_voice_source: Source,
+    /// The effective sandbox mode name (`off` when unset), and where it came
+    /// from. The browser's picker reflects this; the flag and `ZORP_SANDBOX`
+    /// are not browser-settable, so a mode set there shows as `Env` and the
+    /// picker says so rather than letting the browser appear to override it.
+    pub sandbox: String,
+    pub sandbox_source: Source,
 }
 
 /// What `turn::run_agent` builds `HttpModel` from. Carries the real API key
@@ -710,6 +835,36 @@ mod tests {
             .unwrap();
         assert!(state.api_key.is_none());
         assert!(state.api_key_from_ui);
+    }
+
+    #[test]
+    fn a_sandbox_put_validates_canonicalizes_and_persists() {
+        let mut state = SettingsState::default();
+        // `readonly` is accepted and stored as the canonical `read-only`.
+        state
+            .apply(&PutSettings {
+                sandbox: Some("readonly".to_string()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        assert_eq!(state.sandbox.as_deref(), Some("read-only"));
+        assert_eq!(state.to_persisted().sandbox.as_deref(), Some("read-only"));
+        // An empty string clears it back to the default.
+        state
+            .apply(&PutSettings {
+                sandbox: Some(String::new()),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        assert!(state.sandbox.is_none());
+        // A bad mode is a readable error, not a silently ignored setting.
+        let err = SettingsState::default()
+            .apply(&PutSettings {
+                sandbox: Some("loose".to_string()),
+                ..PutSettings::default()
+            })
+            .unwrap_err();
+        assert!(err.contains("sandbox mode"), "{err}");
     }
 
     #[test]
