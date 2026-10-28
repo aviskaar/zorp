@@ -431,6 +431,29 @@ resulting artifact, deliver it in the right form.
   denylist, and is never sent automatically. Run `cargo test -p zorp-web
   --features voice` and `cargo test -p zorp-voice` whenever it changes. See
   `docs/DECISIONS.md` (2026-08-24) first.
+- Text to speech is the other half of voice: `zorp-voice`'s `OllamaSpeech`
+  speaks text through a local Ollama server's OpenAI-compatible
+  `POST /v1/audio/speech` with the `phonon` model, and lists a model's voices
+  from `POST /api/show`. `zorp-web` exposes it behind the same non-default
+  `voice` feature at `GET /api/speech/status`, `GET /api/speech/voices`,
+  `POST /api/speech/chunks` and `POST /api/speech`, registered in every build
+  and answering 501 without it, the way the voice routes do. The browser gets
+  a speaker button under every answer, a read-aloud toggle, and model and
+  voice pickers in Settings; the TTS model and voice are saved in `config.rs`,
+  resolved like the chat model. Three rules are not negotiable. The text goes
+  to a loopback address or nowhere, the same boundary as recorded audio and
+  recall (`zorp-loopback`, redirects off, proxy off, no cloud fallback), and a
+  connection-counting canary in `zorp-voice/tests/no_remote.rs` proves it.
+  Speaking is something a person turns on: no tool starts or stops it, and the
+  speaker button and read-aloud toggle are the only starts. And spoken text is
+  only ever the rendered answer, taken from the live streaming path so
+  reopening a conversation does not read its history aloud. The TTS model is a
+  setting, not a hardcoded `phonon`, and long text is split on sentence
+  boundaries under the per-request limit by the one chunker,
+  `zorp_voice::chunk_for_speech`, exposed at `/api/speech/chunks`. Run `cargo
+  test -p zorp-voice` and `cargo test -p zorp-web --features voice` whenever it
+  changes. The Mac app routes and a fully hands-free speaking mode are
+  follow-ups. See `docs/DECISIONS.md` (2026-10-27).
 - `memory` (`zorp-web/src/memory.rs`, non-default `memory` feature, which
   turns on `recall`) is the second way that index gets read: not into the
   sidebar, into a live turn. Every finished turn indexes its own session, so
@@ -613,15 +636,17 @@ resulting artifact, deliver it in the right form.
   more exposed than the shell the agent already runs, which is why a
   non-loopback bind still needs a token. See `docs/DECISIONS.md`
   (2026-09-05).
-- `zorp-train/` is zorp's developer mode: dataset manifests, a BPE
+- `zorp-train/` is **RL Studio** (renamed from Developer Mode, ADR 0143):
+  dataset manifests, a BPE
   tokenizer trainer, Qwen style architecture recipes with a parameter
   calculator, a pretraining loop on Apple Metal through MLX, and a model
   registry that serves a finished checkpoint back on loopback so "Open in
   Zorp" puts a model you trained into the model picker. It supervises an
   isolated Python environment at `~/.zorp/training-env` and talks to it over
   stdout as JSON lines. `zorp-web` exposes it behind the non-default
-  `train` feature at `/api/dev/*`, token gated like every other route, and
-  `web/src/developer-mode.ts` draws the five tabs.
+  `train` feature at `/api/dev/*` (the prefix is kept through the rename),
+  token gated like every other route, and
+  `web/src/developer-mode.ts` draws the tabs.
   Three things are not negotiable. A run trains on a real corpus or it says
   it did not: `tokenizer_dir` and `dataset_path` are optional, the supervisor
   forwards them exactly as given and guesses nothing, and with either missing
@@ -652,6 +677,28 @@ resulting artifact, deliver it in the right form.
   `no_tool_trains_a_model_or_serves_a_checkpoint` in `zorp-agent/src/agent.rs`
   is what says so. See `docs/DECISIONS.md` (2026-09-19)
   and `docs/superpowers/plans/2026-09-14-zorp-developer-mode-pretraining.md`.
+  RL Studio adds fine-tuning and a feedback loop on top (ADR 0143,
+  `docs/superpowers/specs/2026-10-27-rl-studio-design.md`). A fine-tune round
+  (LoRA, SFT or DPO through `mlx-lm`, `mlx_finetune.py`) trains on a dataset
+  built from a work log, on the same event stream and the same "what did this
+  train on" report; an empty build is refused, never run on nothing. The
+  feedback signal is the person's or code's and never the model grading
+  itself (ADR 0063): a person's thumbs, a "better answer" they typed, and
+  tool status derived in code. Those are recorded in a new `rl_work_log`
+  table in the session store, which **nothing reads as evidence**, not
+  `recall::index_one`, the memory block, titling or branching, and which is
+  cleared with the conversations (`state.rs`).
+  `zorp_agent::rl_dataset::build` turns the log into an SFT set and a
+  preference set in code (a thumbs-down with no edit produces nothing,
+  because it says the answer was wrong, not what the right one was). The new
+  routes `/api/dev/worklog*`, `/api/dev/dataset/preview` and
+  `/api/dev/finetune/start` are behind the same `train` feature, the
+  per-answer feedback controls are gated on the `rl_studio` capability, and
+  no tool reaches any of it. The Mac app's RL Studio routes are a follow-up.
+  Fine-tune execution needs Apple Silicon, so its Rust plumbing is tested at
+  the manifest level and the run itself is verified on Metal. Run `cargo test
+  -p zorp-train` and `cargo test -p zorp-web --features train` whenever it
+  changes.
 - `erbga/` is a standalone, zero-dependency implementation of published
   prior work (Rao, Janikow, Bhatia, Climer, MWAIS 2018): a genetic
   algorithm for graph community detection, validated against that work's
@@ -765,6 +812,30 @@ resulting artifact, deliver it in the right form.
   language would need a second denylist. The `windows` CI job builds the
   shipped binaries and runs the sandbox's tests, not the whole suite. See
   `docs/DECISIONS.md` (2026-10-26).
+- A run can wrap every shell command in
+  [`srt`](https://github.com/anthropics/sandbox-runtime) (`zorp-agent/src/sandbox/srt.rs`),
+  chosen by `SandboxMode`: `off` (the default, unchanged), `workspace` (writes
+  only to the workspace and its `scratch`, reads allowed except credential
+  stores, no network), `build` (`workspace` plus a network allowlist of
+  crates.io, npm, PyPI and GitHub) and `read-only` (no writes, no network, for
+  panel and ensemble reviewers). The mode is resolved through the config chain,
+  `--sandbox`, then `ZORP_SANDBOX`, then the flavor, then the saved setting,
+  then off, and threaded onto the agent with `with_sandbox_mode`. Four things
+  are not negotiable. `ProcessGroup` stays the one platform-specific type:
+  `srt` is wrapped inside the group as `srt --settings <file> -- <shell> -c
+  <cmd>`, and the timeout, cancel, capture and kill are unchanged. A mode
+  narrows and never loosens: the `srt` settings are generated in code per run
+  and never read from a file the model can write, and a flavor's `sandbox`
+  field is privileged whenever it is set to anything looser than the strictest
+  mode (`read-only`), gated behind the same content-hash trust as `base_url`
+  and `provider` (ADR 0123). Asked for and missing is loud: a mode other than
+  off with `srt`, `bwrap` (Linux) or `ripgrep` missing refuses the command
+  rather than running it unsandboxed, and `doctor` and `GET /api/capabilities`
+  report it by running the real binaries. And the network is denied by default
+  so the agent cannot reach zorp-web's loopback from the sandbox (ADR 0053),
+  which `build` keeps true by allowing only the named registries. The DMG does
+  not bundle `srt`; the Mac app asks the person to install it. See
+  `docs/DECISIONS.md` (2026-10-27).
 - `zorp::http_agent` is the one HTTP agent for model traffic and the one
   place timeouts are set: 30 seconds to connect, `ZORP_HTTP_TIMEOUT_SECS`
   to read, defaulting to 900. Anything in the workspace that talks to a

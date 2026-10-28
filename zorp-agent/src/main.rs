@@ -195,6 +195,12 @@ struct Cli {
     /// what is asked about, not what is refused. See --yes.
     #[arg(long, global = true)]
     approval: Option<String>,
+    /// Run shell commands under an OS-level sandbox: off, workspace, build or
+    /// read-only. Needs `srt` (and on Linux `bwrap` and `ripgrep`) installed;
+    /// a requested mode with those missing refuses rather than running
+    /// unsandboxed. Defaults to off.
+    #[arg(long, global = true, value_name = "MODE")]
+    sandbox: Option<String>,
     /// Connect to an MCP server. Format: stdio:name:command[:arg1:arg2...]
     /// or streamable_http:name:url  or  sse:name:url (legacy).
     /// Can be specified multiple times. Requires --features mcp build.
@@ -219,6 +225,7 @@ struct Overrides {
     max_tokens: Option<u32>,
     max_steps: Option<usize>,
     approval: Option<String>,
+    sandbox: Option<String>,
     #[cfg(feature = "mcp")]
     mcp: Vec<String>,
 }
@@ -486,6 +493,7 @@ fn main() {
         max_tokens: cli.max_tokens,
         max_steps: cli.max_steps,
         approval: cli.approval.clone(),
+        sandbox: cli.sandbox.clone(),
         #[cfg(feature = "mcp")]
         mcp: cli.mcp,
     };
@@ -1753,6 +1761,24 @@ fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
         Check::off("web_search", search.detail)
     });
 
+    // The sandbox, probed the way the real path probes it. The resolved mode
+    // is reported, and whether `srt` could actually run it. A requested mode
+    // whose tools are missing is a fault, because a command asking for that
+    // mode will refuse; an `off` build with no `srt` is not, because nothing
+    // will ask for it.
+    let mode = sandbox_mode(overrides, &merged);
+    let srt = zorp_agent::srt::detect();
+    report.checks.push(if mode.is_off() {
+        Check::note("sandbox", format!("off ({})", srt.detail()))
+    } else if srt.usable() {
+        Check::ok("sandbox", format!("{mode} ({})", srt.detail()))
+    } else {
+        Check::bad(
+            "sandbox",
+            format!("{mode} requested but cannot run: {}", srt.detail()),
+        )
+    });
+
     // The model is never called: registration does not touch it, and this
     // agent exists only to be asked what it registered.
     let agent = Agent::new(
@@ -2256,6 +2282,29 @@ fn resolve_max_tokens(overrides: &Overrides, merged: &Flavor) -> Option<u32> {
         .or_else(|| zorp_agent::config::load().and_then(|s| s.max_tokens))
 }
 
+/// The OS-level sandbox mode a turn runs under, resolved through the config
+/// chain: `--sandbox`, then `ZORP_SANDBOX`, then the flavor, then the saved
+/// settings, then off. `flavor` is the gated flavor, so an untrusted project
+/// agent's loosening `sandbox` field has already been dropped before it
+/// reaches here. A bad value warns and falls back to off rather than aborting
+/// the run, the way a bad reasoning mode does.
+fn sandbox_mode(overrides: &Overrides, flavor: &zorp_agent::Flavor) -> zorp_agent::SandboxMode {
+    let env = std::env::var(zorp_agent::srt::SANDBOX_VAR)
+        .ok()
+        .filter(|s| !s.is_empty());
+    let saved = zorp_agent::config::load().and_then(|s| s.sandbox);
+    zorp_agent::srt::resolve(
+        overrides.sandbox.as_deref(),
+        env.as_deref(),
+        flavor.sandbox,
+        saved.as_deref(),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("zorp-agent: {e}; running with the sandbox off");
+        zorp_agent::SandboxMode::Off
+    })
+}
+
 fn run(
     task: String,
     images: &[PathBuf],
@@ -2314,7 +2363,8 @@ fn run(
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -2489,7 +2539,8 @@ fn ensemble(instruction: &str, auto_approve: bool, no_verify: bool, overrides: &
         approval.clone(),
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
     main = attach_mcp_tools(main, overrides, true);
     main = attach_verifier(main, no_verify, &gated);
     let recorder_store = open_store();
@@ -2617,7 +2668,8 @@ fn validate(question: &str, auto_approve: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -2726,7 +2778,8 @@ fn investigate(
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -2859,7 +2912,8 @@ fn co_write(question: &str, auto_approve: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -2986,7 +3040,8 @@ fn critique(
         approval,
     )
     .register_builtins_filtered(Some(CRITIQUE_TOOLS))
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
 
     let project = match zorp_track::Project::open(&cwd) {
         Ok(p) => p,
@@ -3104,7 +3159,8 @@ fn deliver(question: &str, auto_approve: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd));
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated));
 
     agent = attach_mcp_tools(agent, overrides, true);
 
@@ -3344,6 +3400,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated))
     .with_renderer(if color {
         chat_spinner_renderer(spinner_verbs)
     } else {
@@ -4756,6 +4813,7 @@ fn resume(wanted: Option<&str>, auto_approve: bool, no_verify: bool, overrides: 
     .with_context_budget(budget)
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated, &cwd))
+    .with_sandbox_mode(sandbox_mode(overrides, &gated))
     .with_message_records(plan.records);
 
     agent = attach_mcp_tools(agent, overrides, false);

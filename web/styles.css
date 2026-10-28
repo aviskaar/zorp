@@ -1173,6 +1173,20 @@ button {
   display: none;
 }
 
+/* Same trap again, and spelled out on its own selector so the sandbox pill
+   cannot start claiming a mode that is not running just because the shared
+   rule above was renamed. */
+.sandbox-indicator[hidden] {
+  display: none;
+}
+
+/* A sandbox mode the server said cannot actually run: the pill is still shown
+   so the person knows a command will refuse, but it reads as a warning. */
+.sandbox-indicator[data-warn] {
+  color: var(--warn, #b4690e);
+  border-color: var(--warn, #b4690e);
+}
+
 .context-bar {
   display: block;
   width: 34px;
@@ -5378,3 +5392,33 @@ html.desktop .app[data-sidebar="collapsed"] .topbar {
 }
 
 
+
+/* RL Studio per-answer feedback controls and work-log rows. */
+.answer-feedback {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.answer-feedback .answer-action[aria-pressed="true"] {
+  color: var(--accent, #6a8);
+}
+.dev-worklog-row {
+  border: 1px solid var(--line, #ccc);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 8px 0;
+}
+.dev-worklog-tag {
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-faint, #888);
+}
+.dev-worklog-prompt {
+  font-weight: 600;
+  margin: 4px 0;
+}
+.dev-worklog-answer {
+  white-space: pre-wrap;
+  color: var(--text-faint, #666);
+}

@@ -1,5 +1,5 @@
 use crate::environment::TrainingEnvironment;
-use crate::manifest::{TrainEvent, TrainingJobConfig};
+use crate::manifest::{FineTuneJobConfig, TrainEvent, TrainingJobConfig};
 use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
@@ -9,6 +9,7 @@ use tokio::process::Command;
 use tokio::sync::broadcast;
 
 const MLX_TRAIN_PY: &str = include_str!("../python/mlx_train.py");
+const MLX_FINETUNE_PY: &str = include_str!("../python/mlx_finetune.py");
 
 pub type TrainingHandle = tokio::task::JoinHandle<()>;
 
@@ -128,15 +129,6 @@ impl TrainingSupervisor {
         run_dir: &Path,
         recipe_json: serde_json::Value,
     ) -> Result<TrainingHandle, String> {
-        if self.is_running() {
-            return Err("a training job is already running".to_string());
-        }
-
-        std::fs::create_dir_all(run_dir).map_err(|e| e.to_string())?;
-        let script_path = run_dir.join("mlx_train.py");
-        std::fs::write(&script_path, MLX_TRAIN_PY).map_err(|e| e.to_string())?;
-
-        let config_path = run_dir.join("job_config.json");
         let mut full_cfg = serde_json::json!({
             "run_dir": run_dir.to_str().unwrap_or("."),
             "batch_size": config.batch_size,
@@ -155,19 +147,104 @@ impl TrainingSupervisor {
         if let Some(path) = config.dataset_path.as_deref() {
             full_cfg["dataset_path"] = serde_json::json!(path);
         }
+        self.launch(env, run_dir, "mlx_train.py", MLX_TRAIN_PY, full_cfg)
+            .await
+    }
+
+    /// Fine-tune a base model (LoRA, SFT or DPO) through `mlx-lm` on the
+    /// dataset the person built from their work logs. Same event stream, same
+    /// "what did this train on" report: the init event names the dataset and
+    /// how many examples it held. A missing dataset is an error, never a
+    /// silent fall back to training on nothing, because a fine-tune that
+    /// trained on no data and said it did is the same failure the pretraining
+    /// rule guards against (ADR 0133).
+    pub async fn start_finetune(
+        &self,
+        env: &TrainingEnvironment,
+        config: &FineTuneJobConfig,
+        run_dir: &Path,
+    ) -> Result<TrainingHandle, String> {
+        let full_cfg = serde_json::json!({
+            "run_dir": run_dir.to_str().unwrap_or("."),
+            "method": config.method,
+            "base_model": config.base_model,
+            "dataset_path": config.dataset_path,
+            "learning_rate": config.learning_rate,
+            "batch_size": config.batch_size,
+            "iters": config.iters,
+            "lora_layers": config.lora_layers,
+            "checkpoint_every_steps": config.checkpoint_every_steps,
+        });
+        self.launch(env, run_dir, "mlx_finetune.py", MLX_FINETUNE_PY, full_cfg)
+            .await
+    }
+
+    /// Write a script and its config under `run_dir`, spawn it, and stream its
+    /// JSON-line events. Shared by `start_job` and `start_finetune` so the two
+    /// cannot drift in how they monitor, reap and report a child.
+    async fn launch(
+        &self,
+        env: &TrainingEnvironment,
+        run_dir: &Path,
+        script_name: &str,
+        script_src: &str,
+        full_cfg: serde_json::Value,
+    ) -> Result<TrainingHandle, String> {
+        if self.is_running() {
+            return Err("a training job is already running".to_string());
+        }
+
+        std::fs::create_dir_all(run_dir).map_err(|e| e.to_string())?;
+        let script_path = run_dir.join(script_name);
+        std::fs::write(&script_path, script_src).map_err(|e| e.to_string())?;
+
+        let config_path = run_dir.join("job_config.json");
         std::fs::write(&config_path, full_cfg.to_string()).map_err(|e| e.to_string())?;
 
         let py = env.python_path();
-        let mut child = Command::new(py)
-            .arg(&script_path)
-            .arg("--config")
-            .arg(&config_path)
-            .env("PYTHONUNBUFFERED", "1")
-            .kill_on_drop(true)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("failed to spawn mlx_train: {e}"))?;
+        let spawn_once = || {
+            Command::new(&py)
+                .arg(&script_path)
+                .arg("--config")
+                .arg(&config_path)
+                .env("PYTHONUNBUFFERED", "1")
+                .kill_on_drop(true)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        };
+        // "Text file busy" (ETXTBSY, errno 26) on spawn is a race, not a real
+        // failure: a sibling thread's fork can briefly hold a write handle on
+        // a just-written executable, and exec sees it as busy until that fd
+        // closes on exec. It clears in milliseconds, so a couple of quick
+        // retries turn a flaky spawn into a reliable one rather than a red CI
+        // run. Anything else fails immediately.
+        let mut child = None;
+        let mut last_err = None;
+        for attempt in 0..3u32 {
+            match spawn_once() {
+                Ok(c) => {
+                    child = Some(c);
+                    break;
+                }
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50 * (attempt as u64 + 1)));
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        let mut child = child.ok_or_else(|| {
+            format!(
+                "failed to spawn {script_name}: {}",
+                last_err
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".into())
+            )
+        })?;
 
         let pid = child.id().ok_or("failed to get child pid")?;
         {

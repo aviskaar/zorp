@@ -152,6 +152,19 @@ export interface Settings {
   max_tokens_source: SettingsSource;
   has_api_key: boolean;
   api_key_source: SettingsSource;
+  /** The text-to-speech model and voice, with where each came from. */
+  speech_model: string;
+  speech_model_source: SettingsSource;
+  speech_voice: string;
+  speech_voice_source: SettingsSource;
+  /**
+   * The OS-level sandbox the agent's shell commands run under: one of `off`,
+   * `workspace`, `build` or `read-only`. `sandbox_source` says where it came
+   * from; a mode set through `ZORP_SANDBOX` reports `env`, and the picker
+   * then shows that the browser cannot override it.
+   */
+  sandbox: string;
+  sandbox_source: SettingsSource;
   /**
    * False only when nothing at all is configured anywhere: no setting saved
    * through this panel, no `ZORP_*` env var, and no API key. That is exactly
@@ -172,6 +185,11 @@ export interface SettingsUpdate {
   model?: string;
   max_tokens?: number;
   api_key?: string;
+  /** TTS model/voice names, or empty strings to clear them to the default. */
+  speech_model?: string;
+  speech_voice?: string;
+  /** A sandbox mode name, or the empty string to clear it back to `off`. */
+  sandbox?: string;
 }
 
 /**
@@ -244,6 +262,41 @@ export interface Capabilities {
   voice: VoiceStatus;
   /** Absent from a server built before skills were reported. */
   skills?: SkillAvailability;
+  /** Whether this build has RL Studio (the `train` feature). */
+  rl_studio?: { available: boolean };
+  /** Absent from a server built before speech was reported. */
+  speech?: SpeechStatus;
+  /** Absent from a server built before the sandbox was reported. */
+  sandbox?: SandboxCapability;
+}
+
+/**
+ * What `GET /api/speech/status` answers with, and the `speech` field of
+ * capabilities. `available` is whether the build has the feature;
+ * `runtime_reachable` and `model_present` are whether a local Ollama speech
+ * runtime and the model are actually there. Speech can be used only when all
+ * three hold.
+ */
+export interface SpeechStatus {
+  available: boolean;
+  runtime_reachable: boolean;
+  model_present: boolean;
+  endpoint: string | null;
+  model: string | null;
+  voice: string | null;
+  voices: string[];
+  detail: string;
+}
+
+/**
+ * The effective sandbox mode and whether it could actually run. `available`
+ * is observed by running `srt`, so a mode the page would show as active but
+ * a command would refuse reports `false` with the reason in `detail`.
+ */
+export interface SandboxCapability {
+  mode: string;
+  available: boolean;
+  detail: string;
 }
 
 /**
@@ -1229,10 +1282,187 @@ export async function startPanel(
  */
 export async function getCapabilities(): Promise<Capabilities> {
   const body = await request<Partial<Record<string, unknown>>>("GET", "/api/capabilities");
+  const rl = (body?.["rl_studio"] ?? {}) as Record<string, unknown>;
   return {
     web_search: toolAvailability(body?.["web_search"]),
     voice: voiceStatus(body?.["voice"]),
+    speech: speechStatus(body?.["speech"]),
+    rl_studio: { available: rl["available"] === true },
   };
+}
+
+/** One tool call a recorded answer made, with code-derived status. */
+export interface WorkLogToolCall {
+  name: string;
+  status: string;
+}
+
+/** A recorded work-log entry with whatever feedback a person has added. */
+export interface WorkLogRow {
+  id: string;
+  session_id: string;
+  model: string;
+  prompt: string;
+  answer: string;
+  tool_calls: WorkLogToolCall[];
+  feedback: string | null;
+  edited_answer: string | null;
+  created: number;
+}
+
+export interface WorkLogCounts {
+  total: number;
+  thumbs_up: number;
+  thumbs_down: number;
+  edited: number;
+}
+
+export interface WorkLog {
+  counts: WorkLogCounts;
+  rows: WorkLogRow[];
+}
+
+/** The RL Studio work log and its counts. */
+export async function getWorkLog(): Promise<WorkLog> {
+  const body = await request<Record<string, unknown>>("GET", "/api/dev/worklog");
+  const counts = (body?.["counts"] ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+  return {
+    counts: {
+      total: num(counts["total"]),
+      thumbs_up: num(counts["thumbs_up"]),
+      thumbs_down: num(counts["thumbs_down"]),
+      edited: num(counts["edited"]),
+    },
+    rows: Array.isArray(body?.["rows"]) ? (body["rows"] as WorkLogRow[]) : [],
+  };
+}
+
+/** Record one answer and the person's feedback on it. Returns its id. */
+export async function recordWorkLog(entry: {
+  session_id: string;
+  model: string;
+  prompt: string;
+  answer: string;
+  tool_calls: WorkLogToolCall[];
+}): Promise<string> {
+  const body = await request<{ id?: string }>("POST", "/api/dev/worklog", entry);
+  return typeof body?.id === "string" ? body.id : "";
+}
+
+/** Add a thumbs direction and/or an edited better answer to an entry. */
+export async function setWorkLogFeedback(
+  id: string,
+  feedback: { feedback?: string; edited_answer?: string },
+): Promise<void> {
+  await request("POST", `/api/dev/worklog/${encodeURIComponent(id)}/feedback`, feedback);
+}
+
+export interface DatasetPreview {
+  sft_count: number;
+  preference_count: number;
+  sft: { prompt: string; completion: string }[];
+  preference: { prompt: string; chosen: string; rejected: string }[];
+}
+
+/** Build the SFT and preference datasets from the work log, without training. */
+export async function previewDataset(): Promise<DatasetPreview> {
+  const body = await request<Record<string, unknown>>("POST", "/api/dev/dataset/preview", {});
+  const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+  return {
+    sft_count: num(body?.["sft_count"]),
+    preference_count: num(body?.["preference_count"]),
+    sft: Array.isArray(body?.["sft"]) ? (body["sft"] as DatasetPreview["sft"]) : [],
+    preference: Array.isArray(body?.["preference"])
+      ? (body["preference"] as DatasetPreview["preference"])
+      : [],
+  };
+}
+
+/** Start a fine-tune round over a dataset built from the work log. */
+export async function startFineTune(opts: {
+  base_model: string;
+  method: string;
+}): Promise<{ status: string; error?: string; examples?: number }> {
+  return await request("POST", "/api/dev/finetune/start", {
+    config: {
+      run_id: `ft-${Date.now()}`,
+      method: opts.method,
+      base_model: opts.base_model,
+      dataset_path: "",
+      learning_rate: 1e-5,
+      batch_size: 1,
+      iters: 200,
+      lora_layers: 8,
+      checkpoint_every_steps: 50,
+    },
+  });
+}
+
+function speechStatus(value: unknown): SpeechStatus {
+  const record = (value ?? {}) as Record<string, unknown>;
+  const voices = Array.isArray(record["voices"])
+    ? (record["voices"] as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return {
+    available: record["available"] === true,
+    runtime_reachable: record["runtime_reachable"] === true,
+    model_present: record["model_present"] === true,
+    endpoint: typeof record["endpoint"] === "string" ? record["endpoint"] : null,
+    model: typeof record["model"] === "string" ? record["model"] : null,
+    voice: typeof record["voice"] === "string" ? record["voice"] : null,
+    voices,
+    detail: typeof record["detail"] === "string" ? record["detail"] : "Speech is unavailable.",
+  };
+}
+
+export async function getSpeechStatus(): Promise<SpeechStatus> {
+  return speechStatus(await request<unknown>("GET", "/api/speech/status"));
+}
+
+/** The voices a speech model offers, from `/api/speech/voices`. */
+export async function getSpeechVoices(model?: string): Promise<string[]> {
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const body = await request<{ voices?: unknown }>("GET", `/api/speech/voices${query}`);
+  return Array.isArray(body?.voices)
+    ? body.voices.filter((v): v is string => typeof v === "string")
+    : [];
+}
+
+/** Split text into speakable chunks server-side, reusing the one chunker. */
+export async function speechChunks(text: string): Promise<string[]> {
+  const body = await request<{ chunks?: unknown }>("POST", "/api/speech/chunks", { text });
+  return Array.isArray(body?.chunks)
+    ? body.chunks.filter((c): c is string => typeof c === "string")
+    : [];
+}
+
+/**
+ * Synthesize one chunk of text and hand back the audio. A binary body, so it
+ * does not go through `request`, which expects JSON. The text stays on
+ * loopback: the server refuses any endpoint that is not on this machine.
+ */
+export async function speak(text: string, model?: string, voice?: string): Promise<Blob> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const token = apiToken();
+  if (token) {
+    headers["authorization"] = `Bearer ${token}`;
+  }
+  let response: Response;
+  try {
+    response = await fetch(url("/api/speech"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text, model, voice }),
+    });
+  } catch {
+    throw new ApiError(0, "cannot reach the zorp server to speak");
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim();
+    throw new ApiError(response.status, detail || `speech failed with ${response.status}`);
+  }
+  return await response.blob();
 }
 
 function toolAvailability(value: unknown): ToolAvailability {

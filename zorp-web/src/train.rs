@@ -54,7 +54,170 @@ where
         .route("/models", get(list_models))
         .route("/models/:id/serve", post(serve_model))
         .route("/train/stream", get(train_stream))
+        // RL Studio: the work log a person's feedback builds, the dataset it
+        // becomes, and the fine-tune round that trains on it.
+        .route("/worklog", get(list_worklog).post(record_worklog))
+        .route("/worklog/:id/feedback", post(worklog_feedback))
+        .route("/dataset/preview", post(dataset_preview))
+        .route("/finetune/start", post(start_finetune))
         .with_state(state)
+}
+
+/// Record one work-log entry. A person's feedback action is what calls this;
+/// no model reaches it. The answer is stored verbatim and labelled
+/// model-authored wherever it surfaces; it never reaches `messages`, the
+/// recall index, or the memory block (ADR 0063).
+async fn record_worklog(Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let field = |k: &str| {
+        body.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let tool_calls: Vec<zorp_agent::WorkLogToolCall> = body
+        .get("tool_calls")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let entry = zorp_agent::WorkLogEntry {
+        id: zorp_agent::new_session_id(),
+        session_id: field("session_id"),
+        model: field("model"),
+        prompt: field("prompt"),
+        answer: field("answer"),
+        tool_calls,
+    };
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    match store.record_work_log(&entry) {
+        Ok(()) => Json(serde_json::json!({ "status": "ok", "id": entry.id })),
+        Err(e) => Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    }
+}
+
+/// Set the person's thumbs and/or edited "better answer" on an entry.
+async fn worklog_feedback(
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let feedback = body.get("feedback").and_then(|v| v.as_str());
+    let edited = body.get("edited_answer").and_then(|v| v.as_str());
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    match store.set_work_log_feedback(&id, feedback, edited) {
+        Ok(()) => Json(serde_json::json!({ "status": "ok" })),
+        Err(e) => Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    }
+}
+
+/// The work log and its counts, for the RL Studio page to read before
+/// building a dataset.
+async fn list_worklog() -> Json<serde_json::Value> {
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let rows = store.list_work_log(500).unwrap_or_default();
+    let counts = store.work_log_counts().unwrap_or_default();
+    Json(serde_json::json!({ "status": "ok", "counts": counts, "rows": rows }))
+}
+
+/// Build the SFT and preference datasets from the work log, so the person can
+/// read every row before training on any of it. Nothing is written or
+/// trained here; this only previews.
+async fn dataset_preview() -> Json<serde_json::Value> {
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let rows = store.list_work_log(100_000).unwrap_or_default();
+    let build = zorp_agent::rl_dataset::build(&rows);
+    Json(serde_json::json!({
+        "status": "ok",
+        "sft_count": build.sft_count(),
+        "preference_count": build.preference_count(),
+        "sft": build.sft,
+        "preference": build.preference,
+    }))
+}
+
+/// Start a fine-tune round over a dataset built from the work log. The
+/// dataset is written to disk first and its path handed to the supervisor,
+/// never guessed; a build with no examples refuses rather than training on
+/// nothing.
+async fn start_finetune(
+    State(state): State<Arc<DevState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    use zorp_train::manifest::FineTuneJobConfig;
+    let run_dir = PathBuf::from(
+        body.get("run_dir")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".zorp/training/finetune"),
+    );
+    let config: FineTuneJobConfig = match body.get("config") {
+        Some(c) => match serde_json::from_value(c.clone()) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                return Json(serde_json::json!({
+                    "status": "error",
+                    "error": format!("invalid fine-tune config: {e}")
+                }))
+            }
+        },
+        None => return Json(serde_json::json!({ "status": "error", "error": "missing config" })),
+    };
+    // Build the dataset the config names from the current work log and write
+    // it to disk, so a run always trains on what the page showed.
+    let store = match zorp_agent::Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+    };
+    let rows = store.list_work_log(100_000).unwrap_or_default();
+    let build = zorp_agent::rl_dataset::build(&rows);
+    let examples = if config.method == "dpo" {
+        serde_json::to_value(&build.preference).unwrap_or_default()
+    } else {
+        serde_json::to_value(&build.sft).unwrap_or_default()
+    };
+    let count = examples.as_array().map(|a| a.len()).unwrap_or(0);
+    if count == 0 {
+        return Json(serde_json::json!({
+            "status": "error",
+            "error": "no examples to fine-tune on: give feedback on some answers first"
+        }));
+    }
+    if let Err(e) = std::fs::create_dir_all(&run_dir) {
+        return Json(serde_json::json!({ "status": "error", "error": e.to_string() }));
+    }
+    let dataset_path = run_dir.join("dataset.jsonl");
+    let mut jsonl = String::new();
+    if let Some(array) = examples.as_array() {
+        for row in array {
+            jsonl.push_str(&row.to_string());
+            jsonl.push('\n');
+        }
+    }
+    if let Err(e) = std::fs::write(&dataset_path, jsonl) {
+        return Json(serde_json::json!({ "status": "error", "error": e.to_string() }));
+    }
+    let mut config = config;
+    config.dataset_path = dataset_path.to_string_lossy().into_owned();
+    match state
+        .supervisor
+        .start_finetune(&state.env, &config, &run_dir)
+        .await
+    {
+        Ok(_) => Json(serde_json::json!({
+            "status": "ok",
+            "dataset_path": config.dataset_path,
+            "examples": count
+        })),
+        Err(e) => Json(serde_json::json!({ "status": "error", "error": e })),
+    }
 }
 
 async fn get_status(State(state): State<Arc<DevState>>) -> Json<serde_json::Value> {

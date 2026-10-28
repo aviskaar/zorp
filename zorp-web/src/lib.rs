@@ -25,6 +25,7 @@ pub mod prereg_infer;
 pub mod recall;
 pub mod renderer;
 pub mod settings;
+pub mod speech;
 pub mod state;
 pub mod title;
 pub mod tool_safety;

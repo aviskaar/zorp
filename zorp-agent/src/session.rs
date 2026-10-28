@@ -77,6 +77,17 @@ CREATE TABLE IF NOT EXISTS suggestions (
     wording TEXT NOT NULL,
     state TEXT NOT NULL,
     created INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rl_work_log (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    tool_calls TEXT,
+    feedback TEXT,
+    edited_answer TEXT,
+    created INTEGER NOT NULL
 );";
 
 // No per-session index for `compactions`: its primary key already leads
@@ -89,7 +100,8 @@ const INDEXES: &str = "\
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);
-CREATE INDEX IF NOT EXISTS idx_suggestions_state ON suggestions(state, created);";
+CREATE INDEX IF NOT EXISTS idx_suggestions_state ON suggestions(state, created);
+CREATE INDEX IF NOT EXISTS idx_rl_work_log_session ON rl_work_log(session_id, created);";
 
 /// The three states a Dreaming-mode suggestion can be in. A suggestion is a
 /// proposal: `New` until a person acts, then `Accepted` (the real object was
@@ -124,6 +136,53 @@ pub struct SuggestionRow {
     pub wording: String,
     pub state: String,
     pub created: i64,
+}
+
+/// One tool call an RL Studio turn made, with the status derived in code
+/// from the result, never from the model's description of it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkLogToolCall {
+    pub name: String,
+    /// `ok`, `error`, or `cancelled`, derived from the stored result.
+    pub status: String,
+}
+
+/// A work-log entry to record: a prompt and the verbatim answer that the
+/// person may later give feedback on. The feedback starts empty; a model
+/// never fills it.
+#[derive(Clone, Debug)]
+pub struct WorkLogEntry {
+    pub id: String,
+    pub session_id: String,
+    pub model: String,
+    pub prompt: String,
+    pub answer: String,
+    pub tool_calls: Vec<WorkLogToolCall>,
+}
+
+/// A stored work-log entry, with whatever feedback a person has added.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WorkLogRow {
+    pub id: String,
+    pub session_id: String,
+    pub model: String,
+    pub prompt: String,
+    pub answer: String,
+    pub tool_calls: Vec<WorkLogToolCall>,
+    /// `None`, `Some("up")` or `Some("down")`: the person's thumbs.
+    pub feedback: Option<String>,
+    /// The person's edited "better answer", when they wrote one.
+    pub edited_answer: Option<String>,
+    pub created: i64,
+}
+
+/// The counts the RL Studio page shows, all derived in code from the rows.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkLogCounts {
+    pub total: usize,
+    pub thumbs_up: usize,
+    pub thumbs_down: usize,
+    pub edited: usize,
 }
 
 /// A stored session's header row.
@@ -609,6 +668,35 @@ impl Store {
         Ok(())
     }
 
+    /// Record one RL Studio work-log entry: a prompt, the answer, the tool
+    /// calls with their code-derived status, verbatim.
+    ///
+    /// **This table is never evidence.** Nothing that feeds a model reads it:
+    /// not `recall::index_one` (it reads `messages` and `task`), not the
+    /// memory block, not titling, not branching. It is training material a
+    /// person builds a dataset from, and the feedback on it comes from the
+    /// person or from code, never from a model grading its own work (ADR
+    /// 0063). A model-authored answer is stored as what it is and labelled as
+    /// such wherever it surfaces.
+    pub fn record_work_log(&self, entry: &WorkLogEntry) -> Result<(), BoxErr> {
+        let tool_calls = serde_json::to_string(&entry.tool_calls)?;
+        self.conn.execute(
+            "INSERT INTO rl_work_log \
+             (id, session_id, model, prompt, answer, tool_calls, feedback, edited_answer, created) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7)",
+            (
+                &entry.id,
+                &entry.session_id,
+                &entry.model,
+                &entry.prompt,
+                &entry.answer,
+                &tool_calls,
+                now(),
+            ),
+        )?;
+        Ok(())
+    }
+
     /// Move a suggestion to `accepted` or `dismissed`. A person's action, and
     /// the only writer of this column.
     pub fn set_suggestion_state(&self, id: &str, state: &str) -> Result<(), BoxErr> {
@@ -667,6 +755,65 @@ impl Store {
         Ok(out)
     }
 
+    /// Set the person's feedback on a work-log entry: a thumbs direction, an
+    /// edited "better answer", or both. The only writers of the signal are a
+    /// person's click and this call; no model reaches it.
+    ///
+    /// Each field is updated only when given. The surfaces send one signal at a
+    /// time (a thumb, or an edit), so writing both columns unconditionally would
+    /// let the second click `NULL` out the first: a 👎 after a "better answer"
+    /// would wipe the edit, which is the single most valuable signal the feature
+    /// collects. `COALESCE` keeps the stored value when an argument is `None`.
+    /// Clearing a value is not a thing any caller needs, so it is not offered.
+    pub fn set_work_log_feedback(
+        &self,
+        id: &str,
+        feedback: Option<&str>,
+        edited_answer: Option<&str>,
+    ) -> Result<(), BoxErr> {
+        if let Some(f) = feedback {
+            if !matches!(f, "up" | "down") {
+                return Err(format!("feedback must be 'up' or 'down', not {f:?}").into());
+            }
+        }
+        self.conn.execute(
+            "UPDATE rl_work_log \
+             SET feedback = COALESCE(?2, feedback), edited_answer = COALESCE(?3, edited_answer) \
+             WHERE id = ?1",
+            (id, feedback, edited_answer),
+        )?;
+        Ok(())
+    }
+
+    /// Every work-log entry, newest first, up to `limit`.
+    pub fn list_work_log(&self, limit: usize) -> Result<Vec<WorkLogRow>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, model, prompt, answer, tool_calls, feedback, edited_answer, created \
+             FROM rl_work_log ORDER BY created DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            let tool_calls: Option<String> = row.get(5)?;
+            Ok(WorkLogRow {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                model: row.get(2)?,
+                prompt: row.get(3)?,
+                answer: row.get(4)?,
+                tool_calls: tool_calls
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default(),
+                feedback: row.get(6)?,
+                edited_answer: row.get(7)?,
+                created: row.get(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// The signatures of suggestions already recorded, in any state, as
     /// `"<kind>:<sorted evidence ids>"`. The dream pass skips a pattern whose
     /// signature is already here, so a dismissed suggestion is not raised
@@ -687,6 +834,27 @@ impl Store {
             keys.insert(suggestion_key(&kind, &ids));
         }
         Ok(keys)
+    }
+
+    /// Counts for the RL Studio page: how many entries, and how many carry
+    /// each kind of signal. All code-derived; no model is consulted.
+    pub fn work_log_counts(&self) -> Result<WorkLogCounts, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT \
+                COUNT(*), \
+                COALESCE(SUM(feedback = 'up'), 0), \
+                COALESCE(SUM(feedback = 'down'), 0), \
+                COALESCE(SUM(edited_answer IS NOT NULL), 0) \
+             FROM rl_work_log",
+        )?;
+        let mut rows = stmt.query([])?;
+        let row = rows.next()?.ok_or("no count row")?;
+        Ok(WorkLogCounts {
+            total: row.get::<_, i64>(0)? as usize,
+            thumbs_up: row.get::<_, i64>(1)? as usize,
+            thumbs_down: row.get::<_, i64>(2)? as usize,
+            edited: row.get::<_, i64>(3)? as usize,
+        })
     }
 
     pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
@@ -1502,6 +1670,113 @@ CREATE TABLE file_changes (
     }
 
     #[test]
+    fn work_log_records_feedback_and_keeps_it_out_of_messages() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store
+            .record_work_log(&WorkLogEntry {
+                id: "w1".into(),
+                session_id: "s1".into(),
+                model: "my-finetune".into(),
+                prompt: "do the thing".into(),
+                answer: "here is the thing".into(),
+                tool_calls: vec![WorkLogToolCall {
+                    name: "run_command".into(),
+                    status: "ok".into(),
+                }],
+            })
+            .unwrap();
+
+        let rows = store.list_work_log(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].answer, "here is the thing");
+        assert_eq!(rows[0].tool_calls[0].status, "ok");
+        assert!(rows[0].feedback.is_none());
+
+        // A person's thumbs and edit are the only signal, and they are
+        // code-validated.
+        store
+            .set_work_log_feedback("w1", Some("down"), Some("the better thing"))
+            .unwrap();
+        let rows = store.list_work_log(10).unwrap();
+        assert_eq!(rows[0].feedback.as_deref(), Some("down"));
+        assert_eq!(rows[0].edited_answer.as_deref(), Some("the better thing"));
+        assert!(store
+            .set_work_log_feedback("w1", Some("meh"), None)
+            .is_err());
+
+        let counts = store.work_log_counts().unwrap();
+        assert_eq!(counts.total, 1);
+        assert_eq!(counts.thumbs_down, 1);
+        assert_eq!(counts.edited, 1);
+
+        // The work-log answer never leaks into `messages`, which is what the
+        // recall feed and the memory block read. Nothing was recorded there.
+        let messages = store.load_messages("s1").unwrap();
+        assert!(messages.is_empty(), "work log must not write messages");
+    }
+
+    /// A partial feedback update must not wipe the other signal. The surfaces
+    /// send one at a time, so a 👎 after a "better answer" (or the reverse)
+    /// must keep both: dropping the edit would destroy a preference pair.
+    #[test]
+    fn partial_feedback_updates_keep_the_other_signal() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        store
+            .record_work_log(&WorkLogEntry {
+                id: "w1".into(),
+                session_id: "s1".into(),
+                model: "m".into(),
+                prompt: "do the thing".into(),
+                answer: "first answer".into(),
+                tool_calls: vec![],
+            })
+            .unwrap();
+
+        // An edit lands first (a "better answer", no thumb).
+        store
+            .set_work_log_feedback("w1", None, Some("the better thing"))
+            .unwrap();
+        // Then a thumbs-down on the same row, with no edit in the call.
+        store
+            .set_work_log_feedback("w1", Some("down"), None)
+            .unwrap();
+
+        let rows = store.list_work_log(10).unwrap();
+        assert_eq!(rows[0].feedback.as_deref(), Some("down"));
+        assert_eq!(
+            rows[0].edited_answer.as_deref(),
+            Some("the better thing"),
+            "the edit must survive a later thumbs-only update"
+        );
+
+        // And the reverse order on a fresh row: thumb first, then edit.
+        store
+            .record_work_log(&WorkLogEntry {
+                id: "w2".into(),
+                session_id: "s1".into(),
+                model: "m".into(),
+                prompt: "again".into(),
+                answer: "second answer".into(),
+                tool_calls: vec![],
+            })
+            .unwrap();
+        store.set_work_log_feedback("w2", Some("up"), None).unwrap();
+        store
+            .set_work_log_feedback("w2", None, Some("even better"))
+            .unwrap();
+        let w2 = store
+            .list_work_log(10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "w2")
+            .unwrap();
+        assert_eq!(w2.feedback.as_deref(), Some("up"));
+        assert_eq!(w2.edited_answer.as_deref(), Some("even better"));
+    }
+
+    #[test]
     fn messages_round_trip_with_tool_calls() {
         let mut store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
@@ -1814,8 +2089,8 @@ CREATE TABLE file_changes (
                 |r| r.get(0),
             )
             .unwrap();
-        // messages, file_changes, message_images, and suggestions.
-        assert_eq!(count, 4);
+        // messages, file_changes, message_images, suggestions, and rl_work_log.
+        assert_eq!(count, 5);
     }
 
     #[test]

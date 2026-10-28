@@ -49,6 +49,12 @@ pub struct Flavor {
     pub reasoning_mode: Option<crate::reasoning::ReasoningMode>,
     pub auto_verify: Option<bool>,
     pub auto_approve: Option<bool>,
+    /// The OS-level sandbox the agent's shell commands run under. A flavor may
+    /// tighten the sandbox freely, but setting anything looser than the
+    /// strictest mode is privileged: an untrusted project file the model can
+    /// write must not be able to widen the sandbox the surface asked for (see
+    /// `wants_privilege` and ADR 0141).
+    pub sandbox: Option<crate::sandbox::SandboxMode>,
     pub system_prompt: Option<String>,
     pub system_prompt_file: Option<String>,
     #[serde(default)]
@@ -149,6 +155,7 @@ impl Flavor {
             reasoning_mode: or(self.reasoning_mode, over.reasoning_mode),
             auto_verify: or(self.auto_verify, over.auto_verify),
             auto_approve: or(self.auto_approve, over.auto_approve),
+            sandbox: or(self.sandbox, over.sandbox),
             system_prompt: or(self.system_prompt, over.system_prompt),
             system_prompt_file: or(self.system_prompt_file, over.system_prompt_file),
             tools: ToolsSection {
@@ -194,6 +201,23 @@ impl Flavor {
             || approval_loosens(&self.approval)
             || self.base_url.is_some()
             || self.provider.is_some()
+            || self.sandbox_loosens()
+    }
+
+    /// Whether this flavor's `sandbox` field could weaken the sandbox.
+    ///
+    /// `ReadOnly` is the strictest mode, so a flavor that sets it is only
+    /// tightening and is never gated, the way an approval section that only
+    /// restricts is not. Any other value (`off`, `build`, `workspace`) could
+    /// be looser than the mode the surface would otherwise run, and the
+    /// surface has no way to know which here, so it is treated as privileged
+    /// and gated behind trust. The cost is a trust click when a project agent
+    /// wants to name a specific non-maximal sandbox; the alternative is a
+    /// project file quietly turning the sandbox down, which is the one
+    /// outcome the gate exists to stop. See ADR 0141.
+    pub fn sandbox_loosens(&self) -> bool {
+        self.sandbox
+            .is_some_and(|m| m != crate::sandbox::SandboxMode::ReadOnly)
     }
 
     /// Human-readable lines describing what a trust prompt would grant.
@@ -215,6 +239,11 @@ impl Flavor {
         }
         if let Some(provider) = &self.provider {
             lines.push(format!("speak to it as: {provider:?}"));
+        }
+        if self.sandbox_loosens() {
+            if let Some(mode) = self.sandbox {
+                lines.push(format!("set the command sandbox to: {mode}"));
+            }
         }
         lines
     }
@@ -714,5 +743,42 @@ system_prompt = "base""#,
         assert!(lines.contains("cargo test"));
         assert!(lines.contains("cargo clippy"));
         assert!(lines.to_lowercase().contains("approval"));
+    }
+
+    /// A flavor that sets a non-maximal sandbox could be loosening the mode
+    /// the surface would otherwise run, so it is privileged and gated behind
+    /// trust. `read-only`, the strictest mode, is only ever a tightening and
+    /// is never gated. See ADR 0141.
+    #[test]
+    fn a_loosening_sandbox_wants_privilege_but_read_only_does_not() {
+        for mode in ["off", "build", "workspace"] {
+            let f = Flavor::parse(&format!("sandbox = \"{mode}\"")).unwrap();
+            assert!(f.wants_privilege(), "{mode} should want privilege");
+            assert!(f
+                .privilege_summary()
+                .join("\n")
+                .to_lowercase()
+                .contains("sandbox"));
+        }
+        let read_only = Flavor::parse("sandbox = \"read-only\"").unwrap();
+        assert!(
+            !read_only.wants_privilege(),
+            "tightening to read-only is not privilege"
+        );
+        let none = Flavor::parse("model = \"m\"").unwrap();
+        assert!(!none.wants_privilege());
+    }
+
+    #[test]
+    fn sandbox_parses_and_merges() {
+        let f = Flavor::parse("sandbox = \"workspace\"").unwrap();
+        assert_eq!(f.sandbox, Some(crate::sandbox::SandboxMode::Workspace));
+        // `over` wins on merge, like every other scalar.
+        let base = Flavor::parse("sandbox = \"build\"").unwrap();
+        let over = Flavor::parse("sandbox = \"read-only\"").unwrap();
+        assert_eq!(
+            base.merge(over).sandbox,
+            Some(crate::sandbox::SandboxMode::ReadOnly)
+        );
     }
 }

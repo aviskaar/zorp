@@ -161,6 +161,10 @@ fn api_router(state: AppState) -> Router {
             post(crate::voice::transcribe)
                 .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
         )
+        .route("/api/speech/status", get(crate::speech::status))
+        .route("/api/speech/voices", get(crate::speech::voices))
+        .route("/api/speech/chunks", post(crate::speech::chunks))
+        .route("/api/speech", post(crate::speech::speak))
         .route("/api/sessions/:id/investigate", post(start_investigate))
         .route("/api/investigate/status", get(investigate_status))
         .route("/api/investigate/ledger", get(investigate_ledger))
@@ -262,13 +266,29 @@ async fn health() -> Json<serde_json::Value> {
 async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
     let web_search = zorp_agent::web_search_availability(&turn::policy(state.own_port));
     let voice = crate::voice::status_value().await;
+    let speech = crate::speech::status_value(&state.settings).await;
     let installed = discover_skills(state.workspace_root().as_deref()).0.len();
+    // The sandbox, observed the way the endpoint probe observes the model
+    // endpoint: `srt::detect` runs the real binaries, so the page cannot be
+    // told a mode is usable when a command under it would refuse. The mode
+    // shown is the resolved one (env over saved), not whatever a flavor might
+    // ask for in one conversation.
+    let sandbox_mode = state.settings.lock().unwrap().sandbox_resolved().0;
+    let srt = zorp_agent::srt::detect();
     Json(json!({
         "web_search": {
             "available": web_search.available,
             "detail": web_search.detail,
         },
         "voice": voice,
+        "speech": speech,
+        "sandbox": {
+            "mode": sandbox_mode,
+            // Whether a non-off mode could actually run right now. `off`
+            // needs nothing, so it is usable whatever `srt` reports.
+            "available": sandbox_mode == "off" || srt.usable(),
+            "detail": srt.detail(),
+        },
         // A count, not a list. The page draws a pill from it and asks
         // `/api/skills` when somebody opens the pill, which keeps a
         // capabilities call from carrying every description on the machine.
@@ -278,6 +298,12 @@ async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> 
         "skills": {
             "available": installed > 0,
             "count": installed,
+        },
+        // Whether this build has RL Studio (the `train` feature). The browser
+        // shows the feedback controls under answers only when it does, so a
+        // thumbs-up never writes to a store a default build cannot read back.
+        "rl_studio": {
+            "available": cfg!(feature = "train"),
         },
     }))
 }

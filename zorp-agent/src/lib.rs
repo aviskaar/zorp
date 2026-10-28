@@ -40,6 +40,7 @@ mod reasoning;
 pub mod recall;
 mod recorder;
 mod render;
+pub mod rl_dataset;
 mod sandbox;
 #[cfg(feature = "search")]
 mod search_tool;
@@ -111,11 +112,11 @@ pub use render::{
     chat_spinner_renderer, parse_spinner_verbs, render_assistant_text, stderr_renderer,
     LineRenderer, Renderer,
 };
-pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
+pub use sandbox::{cancel_token, srt, CancelToken, CommandOutput, Sandbox, SandboxMode, SrtStatus};
 pub use session::{
     new_session_id, render_change_summary, suggestion_key, Compaction, ProjectRow, SessionRow,
-    SetAgent, SetProject, Store, SuggestionDraft, SuggestionRow, MAX_PROJECT_NAME,
-    SUGGESTION_STATES,
+    SetAgent, SetProject, Store, SuggestionDraft, SuggestionRow, WorkLogCounts, WorkLogEntry,
+    WorkLogRow, WorkLogToolCall, MAX_PROJECT_NAME, SUGGESTION_STATES,
 };
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
