@@ -259,6 +259,13 @@ async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> 
     let voice = crate::voice::status_value().await;
     let speech = crate::speech::status_value(&state.settings).await;
     let installed = discover_skills(state.workspace_root().as_deref()).0.len();
+    // The sandbox, observed the way the endpoint probe observes the model
+    // endpoint: `srt::detect` runs the real binaries, so the page cannot be
+    // told a mode is usable when a command under it would refuse. The mode
+    // shown is the resolved one (env over saved), not whatever a flavor might
+    // ask for in one conversation.
+    let sandbox_mode = state.settings.lock().unwrap().sandbox_resolved().0;
+    let srt = zorp_agent::srt::detect();
     Json(json!({
         "web_search": {
             "available": web_search.available,
@@ -266,6 +273,13 @@ async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> 
         },
         "voice": voice,
         "speech": speech,
+        "sandbox": {
+            "mode": sandbox_mode,
+            // Whether a non-off mode could actually run right now. `off`
+            // needs nothing, so it is usable whatever `srt` reports.
+            "available": sandbox_mode == "off" || srt.usable(),
+            "detail": srt.detail(),
+        },
         // A count, not a list. The page draws a pill from it and asks
         // `/api/skills` when somebody opens the pill, which keeps a
         // capabilities call from carrying every description on the machine.

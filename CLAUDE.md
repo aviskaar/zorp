@@ -753,6 +753,30 @@ resulting artifact, deliver it in the right form.
   language would need a second denylist. The `windows` CI job builds the
   shipped binaries and runs the sandbox's tests, not the whole suite. See
   `docs/DECISIONS.md` (2026-10-26).
+- A run can wrap every shell command in
+  [`srt`](https://github.com/anthropics/sandbox-runtime) (`zorp-agent/src/sandbox/srt.rs`),
+  chosen by `SandboxMode`: `off` (the default, unchanged), `workspace` (writes
+  only to the workspace and its `scratch`, reads allowed except credential
+  stores, no network), `build` (`workspace` plus a network allowlist of
+  crates.io, npm, PyPI and GitHub) and `read-only` (no writes, no network, for
+  panel and ensemble reviewers). The mode is resolved through the config chain,
+  `--sandbox`, then `ZORP_SANDBOX`, then the flavor, then the saved setting,
+  then off, and threaded onto the agent with `with_sandbox_mode`. Four things
+  are not negotiable. `ProcessGroup` stays the one platform-specific type:
+  `srt` is wrapped inside the group as `srt --settings <file> -- <shell> -c
+  <cmd>`, and the timeout, cancel, capture and kill are unchanged. A mode
+  narrows and never loosens: the `srt` settings are generated in code per run
+  and never read from a file the model can write, and a flavor's `sandbox`
+  field is privileged whenever it is set to anything looser than the strictest
+  mode (`read-only`), gated behind the same content-hash trust as `base_url`
+  and `provider` (ADR 0123). Asked for and missing is loud: a mode other than
+  off with `srt`, `bwrap` (Linux) or `ripgrep` missing refuses the command
+  rather than running it unsandboxed, and `doctor` and `GET /api/capabilities`
+  report it by running the real binaries. And the network is denied by default
+  so the agent cannot reach zorp-web's loopback from the sandbox (ADR 0053),
+  which `build` keeps true by allowing only the named registries. The DMG does
+  not bundle `srt`; the Mac app asks the person to install it. See
+  `docs/DECISIONS.md` (2026-10-27).
 - `zorp::http_agent` is the one HTTP agent for model traffic and the one
   place timeouts are set: 30 seconds to connect, `ZORP_HTTP_TIMEOUT_SECS`
   to read, defaulting to 900. Anything in the workspace that talks to a

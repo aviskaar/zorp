@@ -22,6 +22,11 @@ import {
   type SearchIndicatorView,
 } from "./search-indicator";
 import {
+  renderSandboxIndicator,
+  sandboxIndicatorView,
+  type SandboxIndicatorView,
+} from "./sandbox-indicator";
+import {
   renderSkillsIndicator,
   renderSkillsPanel,
   skillsView,
@@ -128,11 +133,11 @@ import {
   type Artifact,
   type EventStream,
   type MemoryEvent,
+  type Capabilities,
   type Message,
   type ModelDetail,
   type Preregistration,
   type RecallStatus,
-  type Capabilities,
   type Settings,
   type SettingsSource,
   type SettingsUpdate,
@@ -263,6 +268,9 @@ interface Elements {
   settingsSpeechVoice: HTMLSelectElement;
   settingsSpeechVoiceSource: HTMLElement;
   settingsSpeechHint: HTMLElement;
+  settingsSandbox: HTMLSelectElement;
+  settingsSandboxSource: HTMLElement;
+  settingsSandboxHint: HTMLElement;
   settingsTest: HTMLButtonElement;
   settingsSave: HTMLButtonElement;
   settingsResult: HTMLElement;
@@ -455,6 +463,7 @@ let pendingCheckpoint: { settle(outcome: CheckpointOutcome): void } | null = nul
 const approvalMode: AutoApproveView = autoApproveView(document);
 const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
 const speechPlayer = new SpeechPlayer();
+const sandboxIndicator: SandboxIndicatorView = sandboxIndicatorView(document);
 const skills: SkillsView = skillsView(document);
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
@@ -472,8 +481,12 @@ let autoApprove = false;
 /** The last settings the server reported. Null until the first successful
  * `GET /api/settings`, which happens once the server is known reachable. */
 let currentSettings: Settings | null = null;
-/** The last capabilities the server reported, so the Settings voice picker
- * can list the voices the speech model offers. `null` until first fetched. */
+/**
+ * The last capabilities the server reported, kept so the Settings voice picker
+ * can list the voices the speech model offers and the settings dialog can warn
+ * when a chosen sandbox mode cannot actually run. `null` until the first
+ * `GET /api/capabilities` answers.
+ */
 let currentCapabilities: Capabilities | null = null;
 /**
  * The directory the server says it is working in. Null until the first
@@ -718,6 +731,9 @@ function collectElements(): Elements {
     settingsSpeechVoice: byId<HTMLSelectElement>("settings-speech-voice"),
     settingsSpeechVoiceSource: byId("settings-speech-voice-source"),
     settingsSpeechHint: byId("settings-speech-hint"),
+    settingsSandbox: byId<HTMLSelectElement>("settings-sandbox"),
+    settingsSandboxSource: byId("settings-sandbox-source"),
+    settingsSandboxHint: byId("settings-sandbox-hint"),
     settingsTest: byId<HTMLButtonElement>("settings-test"),
     settingsSave: byId<HTMLButtonElement>("settings-save"),
     onboardOverlay: byId("onboard-overlay"),
@@ -3083,6 +3099,7 @@ async function refreshCapabilities(): Promise<void> {
     const capabilities = await getCapabilities();
     currentCapabilities = capabilities;
     renderSearchIndicator(searchIndicator, capabilities.web_search);
+    renderSandboxIndicator(sandboxIndicator, capabilities.sandbox ?? null);
     // Absent from a server built before skills were reported, and `null`
     // and absent are both drawn as no pill. A count that appeared while
     // the answer was in flight would be a guess.
@@ -3090,11 +3107,15 @@ async function refreshCapabilities(): Promise<void> {
     voiceInput.observe(capabilities.voice);
     speechPlayer.observe(capabilities.speech ?? null);
     updateReadAloudVisibility();
+    // The settings dialog, if open, shows the speech pickers and whether the
+    // chosen sandbox mode can run, which only the capabilities answer knows.
     if (currentSettings) {
       applySpeechToForm(currentSettings);
+      applySandboxToForm(currentSettings);
     }
   } catch {
     renderSearchIndicator(searchIndicator, null);
+    renderSandboxIndicator(sandboxIndicator, null);
     renderSkillsIndicator(skills, null);
     speechPlayer.observe(null);
     updateReadAloudVisibility();
@@ -3211,6 +3232,7 @@ function applySettingsToForm(settings: Settings): void {
     ? sourceLabel("api_key", settings.api_key_source)
     : "";
   applySpeechToForm(settings);
+  applySandboxToForm(settings);
   updateApiKeyVisibility(name);
 }
 
@@ -3254,6 +3276,31 @@ function applySpeechToForm(settings: Settings): void {
   } else {
     dom.settingsSpeechHint.hidden = true;
     dom.settingsSpeechHint.textContent = "";
+  }
+}
+
+/**
+ * Reflect the resolved sandbox mode. A mode set through `ZORP_SANDBOX` wins
+ * server-side, so the picker is disabled and says so rather than letting the
+ * browser appear to override the environment.
+ */
+function applySandboxToForm(settings: Settings): void {
+  dom.settingsSandbox.value = settings.sandbox || "off";
+  dom.settingsSandboxSource.textContent = sourceLabel("sandbox", settings.sandbox_source);
+  const fromEnv = settings.sandbox_source === "env";
+  dom.settingsSandbox.disabled = fromEnv;
+  const caps = currentCapabilities?.sandbox;
+  if (fromEnv) {
+    dom.settingsSandboxHint.hidden = false;
+    dom.settingsSandboxHint.textContent = "Set by ZORP_SANDBOX; unset it to choose here.";
+  } else if (caps && settings.sandbox !== "off" && !caps.available) {
+    // The server observed that srt cannot run the chosen mode; a command
+    // under it will refuse, so say so here rather than at command time.
+    dom.settingsSandboxHint.hidden = false;
+    dom.settingsSandboxHint.textContent = `This mode cannot run: ${caps.detail}.`;
+  } else {
+    dom.settingsSandboxHint.hidden = true;
+    dom.settingsSandboxHint.textContent = "";
   }
 }
 
@@ -3369,6 +3416,12 @@ function formToUpdate(): SettingsUpdate {
   // Always sent, so clearing the field back to empty resets to the default.
   update.speech_model = dom.settingsSpeechModel.value.trim();
   update.speech_voice = dom.settingsSpeechVoice.value;
+  // Only when the browser owns the value: a mode set through ZORP_SANDBOX is
+  // shown disabled, and sending it back would try to override the
+  // environment the server reads live.
+  if (!dom.settingsSandbox.disabled) {
+    update.sandbox = dom.settingsSandbox.value;
+  }
   return update;
 }
 

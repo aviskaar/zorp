@@ -59,6 +59,7 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         reasoning_mode: None,
         auto_verify: None,
         auto_approve: None,
+        sandbox: None,
         system_prompt: None,
         system_prompt_file: None,
         tools: ToolsSection::default(),

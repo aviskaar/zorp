@@ -362,6 +362,19 @@
             <span id="search-indicator-text"></span>
           </div>
           <!--
+            The OS-level sandbox the agent's shell commands run under. A div
+            and not a button for the same reason as the search pill: it
+            reports the mode chosen in Settings or the environment and hands
+            nobody a switch. `off` draws nothing. The wording comes from
+            web/src/sandbox-indicator.ts.
+          -->
+          <div class="search-indicator sandbox-indicator" id="sandbox-indicator" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6z" />
+            </svg>
+            <span id="sandbox-indicator-text"></span>
+          </div>
+          <!--
             How many skills this server can see. A button, unlike the search
             pill beside it, because there is something to read behind it:
             the names and descriptions of what is installed. It is still a
@@ -924,6 +937,18 @@
                 <select id="settings-speech-voice"></select>
                 <span class="settings-source" id="settings-speech-voice-source"></span>
                 <p class="settings-hint" id="settings-speech-hint" hidden></p>
+              </div>
+
+              <div class="settings-field" id="settings-sandbox-field">
+                <label for="settings-sandbox">Command sandbox</label>
+                <select id="settings-sandbox">
+                  <option value="off">Off (no sandbox)</option>
+                  <option value="workspace">Workspace (writes to the workspace, no network)</option>
+                  <option value="build">Build (workspace plus package registries)</option>
+                  <option value="read-only">Read-only (no writes, no network)</option>
+                </select>
+                <span class="settings-source" id="settings-sandbox-source"></span>
+                <p class="settings-hint" id="settings-sandbox-hint" hidden></p>
               </div>
 
               <div class="settings-actions">
