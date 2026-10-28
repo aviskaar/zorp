@@ -152,6 +152,14 @@ impl OllamaSpeech {
         self.url.as_str()
     }
 
+    /// The base URL with any single trailing slash removed, so joining a path
+    /// that starts with `/` does not produce a `//`. Ollama tolerates the
+    /// double slash, but a configured `ZORP_SPEECH_URL` ending in `/` should
+    /// not change the request we make.
+    fn base(&self) -> &str {
+        self.url.as_str().trim_end_matches('/')
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -222,7 +230,7 @@ impl OllamaSpeech {
             "input": text,
             "voice": voice,
         });
-        let endpoint = format!("{}/v1/audio/speech", self.url.as_str());
+        let endpoint = format!("{}/v1/audio/speech", self.base());
         let response = request_result(self.agent.post(&endpoint).send_json(body), &self.url)?;
         let media_type = response
             .header("content-type")
@@ -245,7 +253,7 @@ impl OllamaSpeech {
     }
 
     fn get_text(&self, path: &str) -> Result<String, SpeechError> {
-        let endpoint = format!("{}{path}", self.url.as_str());
+        let endpoint = format!("{}{path}", self.base());
         request_result(self.agent.get(&endpoint).call(), &self.url)?
             .into_string()
             .map_err(|error| SpeechError::Malformed {
@@ -254,7 +262,7 @@ impl OllamaSpeech {
     }
 
     fn post_text(&self, path: &str, body: serde_json::Value) -> Result<String, SpeechError> {
-        let endpoint = format!("{}{path}", self.url.as_str());
+        let endpoint = format!("{}{path}", self.base());
         request_result(self.agent.post(&endpoint).send_json(body), &self.url)?
             .into_string()
             .map_err(|error| SpeechError::Malformed {
@@ -460,6 +468,14 @@ fn non_empty(var: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_trailing_slash_on_the_base_does_not_double_the_path_separator() {
+        let with = OllamaSpeech::at("http://127.0.0.1:11434/", "phonon").unwrap();
+        assert_eq!(with.base(), "http://127.0.0.1:11434");
+        let without = OllamaSpeech::at("http://127.0.0.1:11434", "phonon").unwrap();
+        assert_eq!(without.base(), "http://127.0.0.1:11434");
+    }
 
     #[test]
     fn model_presence_matches_bare_and_tagged_names() {
