@@ -153,6 +153,26 @@
           <ul class="recall-results" id="recall-results" hidden></ul>
         </div>
 
+        <!--
+          While you were away: suggestions Dreaming mode drew from your own
+          conversations. Each one is a proposal backed by the exact threads it
+          came from and does nothing until you accept it. The wording is the
+          one model-authored string here and goes on the page through
+          `textContent`, labelled as a suggestion.
+
+          Hidden until there is something to show. The background pass is off
+          unless the server was started with `ZORP_DREAM`, so the "Look now"
+          button runs one by hand.
+        -->
+        <section class="dreams" id="dreams" hidden>
+          <div class="dreams-head">
+            <span class="sidebar-label">While you were away</span>
+            <button class="dreams-run" id="dreams-run" type="button">Look now</button>
+          </div>
+          <p class="dreams-status" id="dreams-status" role="status"></p>
+          <ul class="dreams-list" id="dreams-list"></ul>
+        </section>
+
         <div class="sidebar-label">Sessions</div>
         <!--
           The scroller, not the list. With projects there is one list per

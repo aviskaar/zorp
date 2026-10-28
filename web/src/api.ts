@@ -2237,3 +2237,60 @@ export async function serveDevModel(id: string): Promise<DevServeResponse> {
   return request<DevServeResponse>("POST", `/api/dev/models/${segment(id)}/serve`, {});
 }
 
+/**
+ * One Dreaming-mode suggestion: a proposal drawn from the person's own
+ * conversations, doing nothing until they accept it.
+ *
+ * `wording` is the one model-authored field and is labelled as such; the page
+ * puts it on through `textContent` like every other string a model wrote.
+ * `evidence_ids` are the conversations it came from, which the card links to.
+ */
+export interface DreamSuggestion {
+  id: string;
+  kind: string;
+  /** Model-authored. Rendered through `textContent`, never as HTML. */
+  wording: string;
+  evidence_ids: string[];
+  created: number;
+}
+
+/** What `GET /api/dreams` answers. */
+export interface DreamList {
+  available: boolean;
+  /** Whether the automatic background pass is on (`ZORP_DREAM`). */
+  enabled: boolean;
+  suggestions: DreamSuggestion[];
+}
+
+/** The open suggestions, newest first. In every build. */
+export async function listDreams(): Promise<DreamList> {
+  const body = await request<DreamList>("GET", "/api/dreams");
+  return {
+    available: Boolean(body?.available),
+    enabled: Boolean(body?.enabled),
+    suggestions: Array.isArray(body?.suggestions) ? body.suggestions : [],
+  };
+}
+
+/** Run one pass now and report how many suggestions it added. */
+export async function runDreamPass(): Promise<{ recorded: number }> {
+  const body = await request<{ recorded?: number }>("POST", "/api/dreams/run", {});
+  return { recorded: typeof body?.recorded === "number" ? body.recorded : 0 };
+}
+
+/**
+ * Accept a suggestion: create the project or flavor it proposes. A 409 means
+ * a flavor accept needs a workspace and none is chosen; a 404 means the
+ * suggestion is gone.
+ */
+export async function acceptDream(
+  id: string,
+): Promise<{ created: string; name?: string; filed?: number; path?: string; trusted?: boolean }> {
+  return request("POST", `/api/dreams/${segment(id)}/accept`, {});
+}
+
+/** Dismiss a suggestion so its pattern is not raised again. */
+export async function dismissDream(id: string): Promise<void> {
+  await request<void>("POST", `/api/dreams/${segment(id)}/dismiss`, {});
+}
+

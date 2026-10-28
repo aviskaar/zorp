@@ -91,7 +91,7 @@ pub fn files() -> Vec<StateFile> {
     vec![
         StateFile::new(
             "conversations",
-            "every conversation both surfaces have had, with its messages and file changes",
+            "every conversation both surfaces have had, with its messages, file changes and the Dreaming-mode suggestions drawn from them",
             crate::session::Store::default_path(),
             Some("ZORP_STATE_DB"),
         ),

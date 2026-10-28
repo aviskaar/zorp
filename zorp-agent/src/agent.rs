@@ -4600,6 +4600,35 @@ mod tests {
         }
     }
 
+    /// A dream pass reads a person's whole conversation history and writes
+    /// suggestions that, once accepted, create a project or write a flavor
+    /// file. Detection is code and a pass is a person doing it, from the CLI
+    /// or the browser, never a turn. A tool that ran a pass would be a turn
+    /// reading every conversation on the machine; a tool that accepted a
+    /// suggestion would be a turn filing conversations or writing a flavor it
+    /// could then ask to have trusted. So nothing sets any of it.
+    #[test]
+    fn no_tool_starts_a_dream_pass() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "dream",
+            "dreams",
+            "run_dream",
+            "dream_pass",
+            "start_dream",
+            "accept_suggestion",
+            "dismiss_suggestion",
+            "record_suggestion",
+            "list_suggestions",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// The ensemble's reviewer gets the read tools plus a shell and nothing
     /// that launches a run, a review or a subagent, and nothing that
     /// writes. Code launches every run. Same shape as the panel test above.

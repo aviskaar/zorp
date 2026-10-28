@@ -1,15 +1,20 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-27
 ---
 
 # Dreaming mode: detection is code, and a suggestion is a proposal, never a memory
 
-**Status is `proposed`, not `accepted`.** This is the spec-and-ADR-first step
-the issue asks for (#296): the design is written down and waiting on a
-person's approval before any code. Nothing in this PR implements it.
+**Status is `accepted`.** The design below was written spec-and-ADR-first
+(#296) and approved before any code; it is now built. The one departure from
+the original sketch is that the default phraser writes the suggestion from the
+pattern's own code-derived summary with no model call (`TemplatePhraser`), so
+Dreaming mode works offline and on a build with no model configured. A
+model-backed phraser is a drop-in behind the same `Phraser` trait and frames
+the evidence with the fenced, nonce-marked block described below; the trait is
+the seam, and nothing about the rules changes with it.
 
-**Decision (proposed):** add a Dreaming mode. While zorp is idle, a background
+**Decision:** add a Dreaming mode. While zorp is idle, a background
 worker looks over how a person has worked and comes back with suggestions that
 would improve their experience: a flavor for a report they ask for every
 Monday, filing three conversations about one project together, the fix they
@@ -60,8 +65,15 @@ pass, accepts a suggestion, or dismisses one; a test pins that, the way the
 training and investigate guards do. It is listed in `zorp-agent/src/state.rs`
 so it can be seen and cleared.
 
-**Why proposed and not built here.** Storing anything a model wrote about the
-person is the one move zorp has refused from the start, so turning it on is a
-person's call before any code exists to make the suggestions. See
-`docs/superpowers/specs/2026-10-27-dreaming-mode-design.md` for the shape this
-would take if accepted.
+**How it is built.** The detectors and the pass live in
+`zorp-agent/src/dream/`; the `suggestions` table and its methods are in
+`zorp-agent/src/session.rs`. The CLI is `zorp-agent dreams` (list, `run`,
+`accept <id>`, `dismiss <id>`). `zorp-web` exposes `GET /api/dreams`,
+`POST /api/dreams/run`, and `/api/dreams/:id/{accept,dismiss}` in every build,
+with the "While you were away" card in the sidebar (`web/src/dreams.ts`); the
+automatic pass is a worker beside the recall sweep, off unless `ZORP_DREAM` is
+set, with `ZORP_DREAM_SWEEP_SECS` for its interval. `no_tool_starts_a_dream_pass`
+in `zorp-agent/src/agent.rs` pins that no model tool reaches any of it, and
+`zorp-agent/tests/dream_isolation.rs` pins that the wording never lands in
+`messages`, `task`, or the recall/memory code. See
+`docs/superpowers/specs/2026-10-27-dreaming-mode-design.md` for the design.
