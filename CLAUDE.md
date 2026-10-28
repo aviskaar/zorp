@@ -431,6 +431,29 @@ resulting artifact, deliver it in the right form.
   denylist, and is never sent automatically. Run `cargo test -p zorp-web
   --features voice` and `cargo test -p zorp-voice` whenever it changes. See
   `docs/DECISIONS.md` (2026-08-24) first.
+- Text to speech is the other half of voice: `zorp-voice`'s `OllamaSpeech`
+  speaks text through a local Ollama server's OpenAI-compatible
+  `POST /v1/audio/speech` with the `phonon` model, and lists a model's voices
+  from `POST /api/show`. `zorp-web` exposes it behind the same non-default
+  `voice` feature at `GET /api/speech/status`, `GET /api/speech/voices`,
+  `POST /api/speech/chunks` and `POST /api/speech`, registered in every build
+  and answering 501 without it, the way the voice routes do. The browser gets
+  a speaker button under every answer, a read-aloud toggle, and model and
+  voice pickers in Settings; the TTS model and voice are saved in `config.rs`,
+  resolved like the chat model. Three rules are not negotiable. The text goes
+  to a loopback address or nowhere, the same boundary as recorded audio and
+  recall (`zorp-loopback`, redirects off, proxy off, no cloud fallback), and a
+  connection-counting canary in `zorp-voice/tests/no_remote.rs` proves it.
+  Speaking is something a person turns on: no tool starts or stops it, and the
+  speaker button and read-aloud toggle are the only starts. And spoken text is
+  only ever the rendered answer, taken from the live streaming path so
+  reopening a conversation does not read its history aloud. The TTS model is a
+  setting, not a hardcoded `phonon`, and long text is split on sentence
+  boundaries under the per-request limit by the one chunker,
+  `zorp_voice::chunk_for_speech`, exposed at `/api/speech/chunks`. Run `cargo
+  test -p zorp-voice` and `cargo test -p zorp-web --features voice` whenever it
+  changes. The Mac app routes and a fully hands-free speaking mode are
+  follow-ups. See `docs/DECISIONS.md` (2026-10-27).
 - `memory` (`zorp-web/src/memory.rs`, non-default `memory` feature, which
   turns on `recall`) is the second way that index gets read: not into the
   sidebar, into a live turn. Every finished turn indexes its own session, so

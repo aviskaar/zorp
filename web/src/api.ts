@@ -152,6 +152,11 @@ export interface Settings {
   max_tokens_source: SettingsSource;
   has_api_key: boolean;
   api_key_source: SettingsSource;
+  /** The text-to-speech model and voice, with where each came from. */
+  speech_model: string;
+  speech_model_source: SettingsSource;
+  speech_voice: string;
+  speech_voice_source: SettingsSource;
   /**
    * The OS-level sandbox the agent's shell commands run under: one of `off`,
    * `workspace`, `build` or `read-only`. `sandbox_source` says where it came
@@ -180,6 +185,9 @@ export interface SettingsUpdate {
   model?: string;
   max_tokens?: number;
   api_key?: string;
+  /** TTS model/voice names, or empty strings to clear them to the default. */
+  speech_model?: string;
+  speech_voice?: string;
   /** A sandbox mode name, or the empty string to clear it back to `off`. */
   sandbox?: string;
 }
@@ -254,8 +262,28 @@ export interface Capabilities {
   voice: VoiceStatus;
   /** Absent from a server built before skills were reported. */
   skills?: SkillAvailability;
+  /** Absent from a server built before speech was reported. */
+  speech?: SpeechStatus;
   /** Absent from a server built before the sandbox was reported. */
   sandbox?: SandboxCapability;
+}
+
+/**
+ * What `GET /api/speech/status` answers with, and the `speech` field of
+ * capabilities. `available` is whether the build has the feature;
+ * `runtime_reachable` and `model_present` are whether a local Ollama speech
+ * runtime and the model are actually there. Speech can be used only when all
+ * three hold.
+ */
+export interface SpeechStatus {
+  available: boolean;
+  runtime_reachable: boolean;
+  model_present: boolean;
+  endpoint: string | null;
+  model: string | null;
+  voice: string | null;
+  voices: string[];
+  detail: string;
 }
 
 /**
@@ -1255,7 +1283,74 @@ export async function getCapabilities(): Promise<Capabilities> {
   return {
     web_search: toolAvailability(body?.["web_search"]),
     voice: voiceStatus(body?.["voice"]),
+    speech: speechStatus(body?.["speech"]),
   };
+}
+
+function speechStatus(value: unknown): SpeechStatus {
+  const record = (value ?? {}) as Record<string, unknown>;
+  const voices = Array.isArray(record["voices"])
+    ? (record["voices"] as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
+  return {
+    available: record["available"] === true,
+    runtime_reachable: record["runtime_reachable"] === true,
+    model_present: record["model_present"] === true,
+    endpoint: typeof record["endpoint"] === "string" ? record["endpoint"] : null,
+    model: typeof record["model"] === "string" ? record["model"] : null,
+    voice: typeof record["voice"] === "string" ? record["voice"] : null,
+    voices,
+    detail: typeof record["detail"] === "string" ? record["detail"] : "Speech is unavailable.",
+  };
+}
+
+export async function getSpeechStatus(): Promise<SpeechStatus> {
+  return speechStatus(await request<unknown>("GET", "/api/speech/status"));
+}
+
+/** The voices a speech model offers, from `/api/speech/voices`. */
+export async function getSpeechVoices(model?: string): Promise<string[]> {
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const body = await request<{ voices?: unknown }>("GET", `/api/speech/voices${query}`);
+  return Array.isArray(body?.voices)
+    ? body.voices.filter((v): v is string => typeof v === "string")
+    : [];
+}
+
+/** Split text into speakable chunks server-side, reusing the one chunker. */
+export async function speechChunks(text: string): Promise<string[]> {
+  const body = await request<{ chunks?: unknown }>("POST", "/api/speech/chunks", { text });
+  return Array.isArray(body?.chunks)
+    ? body.chunks.filter((c): c is string => typeof c === "string")
+    : [];
+}
+
+/**
+ * Synthesize one chunk of text and hand back the audio. A binary body, so it
+ * does not go through `request`, which expects JSON. The text stays on
+ * loopback: the server refuses any endpoint that is not on this machine.
+ */
+export async function speak(text: string, model?: string, voice?: string): Promise<Blob> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const token = apiToken();
+  if (token) {
+    headers["authorization"] = `Bearer ${token}`;
+  }
+  let response: Response;
+  try {
+    response = await fetch(url("/api/speech"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text, model, voice }),
+    });
+  } catch {
+    throw new ApiError(0, "cannot reach the zorp server to speak");
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim();
+    throw new ApiError(response.status, detail || `speech failed with ${response.status}`);
+  }
+  return await response.blob();
 }
 
 function toolAvailability(value: unknown): ToolAvailability {

@@ -422,6 +422,26 @@
             </svg>
             <span id="auto-approve-label">Auto-approve off</span>
           </button>
+          <!--
+            Read-aloud mode: when on, each answer is spoken as it finishes.
+            A person turns it on; no model does. Hidden until the local speech
+            runtime reports itself ready, so it never offers a control that
+            would do nothing. Wording comes from web/src/main.ts.
+          -->
+          <button
+            class="model-btn read-aloud-btn"
+            id="read-aloud-btn"
+            type="button"
+            aria-pressed="false"
+            hidden
+            title="Read each answer aloud as it finishes. Click to turn off."
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 9v6h4l5 4V5L8 9H4z" />
+              <path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8 8 0 0 1 0 12" />
+            </svg>
+            <span id="read-aloud-label">Read aloud off</span>
+          </button>
           <div class="status" id="status" data-state="idle">
             <span class="status-dot" aria-hidden="true"></span>
             <span id="status-text">idle</span>
@@ -902,6 +922,22 @@
                 never written to disk. Set <code>ZORP_API_KEY</code> in the server's environment to make it
                 persist across restarts.
               </p>
+
+              <div class="settings-field" id="settings-speech-field">
+                <label for="settings-speech-model">Speech model (text to speech)</label>
+                <input
+                  id="settings-speech-model"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="phonon"
+                />
+                <span class="settings-source" id="settings-speech-model-source"></span>
+                <label for="settings-speech-voice">Voice</label>
+                <select id="settings-speech-voice"></select>
+                <span class="settings-source" id="settings-speech-voice-source"></span>
+                <p class="settings-hint" id="settings-speech-hint" hidden></p>
+              </div>
 
               <div class="settings-field" id="settings-sandbox-field">
                 <label for="settings-sandbox">Command sandbox</label>

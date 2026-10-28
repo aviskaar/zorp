@@ -161,6 +161,10 @@ fn api_router(state: AppState) -> Router {
             post(crate::voice::transcribe)
                 .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
         )
+        .route("/api/speech/status", get(crate::speech::status))
+        .route("/api/speech/voices", get(crate::speech::voices))
+        .route("/api/speech/chunks", post(crate::speech::chunks))
+        .route("/api/speech", post(crate::speech::speak))
         .route("/api/sessions/:id/investigate", post(start_investigate))
         .route("/api/investigate/status", get(investigate_status))
         .route("/api/investigate/ledger", get(investigate_ledger))
@@ -253,6 +257,7 @@ async fn health() -> Json<serde_json::Value> {
 async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
     let web_search = zorp_agent::web_search_availability(&turn::policy(state.own_port));
     let voice = crate::voice::status_value().await;
+    let speech = crate::speech::status_value(&state.settings).await;
     let installed = discover_skills(state.workspace_root().as_deref()).0.len();
     // The sandbox, observed the way the endpoint probe observes the model
     // endpoint: `srt::detect` runs the real binaries, so the page cannot be
@@ -267,6 +272,7 @@ async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> 
             "detail": web_search.detail,
         },
         "voice": voice,
+        "speech": speech,
         "sandbox": {
             "mode": sandbox_mode,
             // Whether a non-off mode could actually run right now. `off`
