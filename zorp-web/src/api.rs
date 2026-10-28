@@ -217,6 +217,15 @@ fn api_router(state: AppState) -> Router {
             post(recall_index).delete(delete_recall_index),
         )
         .route("/api/recall/search", get(recall_search))
+        // Dreaming mode: the "While you were away" suggestions and the two
+        // actions on one. In every build, because a suggestion is a row in the
+        // session store the way a project is, and detection is local code. No
+        // route reaches a model, and the automatic pass is off until a person
+        // sets `ZORP_DREAM`. See the `dream` bullet in `CLAUDE.md`.
+        .route("/api/dreams", get(crate::dream::list))
+        .route("/api/dreams/run", post(crate::dream::run))
+        .route("/api/dreams/:id/accept", post(crate::dream::accept))
+        .route("/api/dreams/:id/dismiss", post(crate::dream::dismiss))
         .nest("/api/dev", dev_routes)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

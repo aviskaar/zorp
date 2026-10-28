@@ -256,6 +256,18 @@ enum ProjectAction {
 }
 
 #[derive(Subcommand)]
+enum DreamAction {
+    /// Run a dream pass now: detect patterns over your conversations and
+    /// record new suggestions. Off by default otherwise; this is one way a
+    /// person starts it.
+    Run,
+    /// Accept a suggestion, creating the real object it proposes.
+    Accept { id: String },
+    /// Dismiss a suggestion, so the same pattern is not raised again.
+    Dismiss { id: String },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Start an interactive chat session.
     Chat,
@@ -348,6 +360,16 @@ enum Command {
     Projects {
         #[command(subcommand)]
         action: Option<ProjectAction>,
+    },
+    /// Dreaming mode: suggestions zorp drew from how you have worked.
+    ///
+    /// With no subcommand it lists the open suggestions, each with the
+    /// conversations it came from, and changes nothing. Detection is code;
+    /// a suggestion is a proposal that does nothing until you accept or
+    /// dismiss it. Off by default: `dreams run` is one way to start a pass.
+    Dreams {
+        #[command(subcommand)]
+        action: Option<DreamAction>,
     },
     /// Say what this build can do and whether it can reach anything.
     ///
@@ -502,6 +524,7 @@ fn main() {
         }) => panel_command(path, label, lenses, list_lenses, full, &overrides),
         Some(Command::Config { action }) => config(action, &overrides),
         Some(Command::Projects { action }) => projects(action),
+        Some(Command::Dreams { action }) => dreams(action),
         Some(Command::Doctor) => doctor(&overrides),
         Some(Command::Data {
             clear_conversations,
@@ -1474,6 +1497,118 @@ fn resolve_project<'a>(
         return Some(named[0]);
     }
     None
+}
+
+/// `zorp-agent dreams`.
+///
+/// Detection is code and a suggestion is a proposal: this surface lists,
+/// runs a pass, or acts on a suggestion a person chose. No model starts a
+/// pass here; `dreams run` is a person doing it.
+fn dreams(action: Option<DreamAction>) {
+    use zorp_agent::dream;
+    let mut store = match open_store() {
+        Some(s) => s,
+        None => std::process::exit(1),
+    };
+    match action {
+        None => {
+            let rows = store.list_suggestions(Some("new"), 50).unwrap_or_default();
+            if rows.is_empty() {
+                println!("No suggestions yet. Run `zorp-agent dreams run` to look for some.");
+                return;
+            }
+            for row in &rows {
+                // The wording is model-authored; scrub it before a terminal
+                // line the way a title is, so it cannot reorder the listing.
+                println!("{}  [{}]", zorp_agent::sessions::short(&row.id), row.kind);
+                println!("  {}", zorp_agent::title::scrub(&row.wording));
+                let from: Vec<String> = row
+                    .evidence_ids
+                    .iter()
+                    .map(|i| zorp_agent::sessions::short(i))
+                    .collect();
+                println!("  from: {}", from.join(", "));
+            }
+            println!(
+                "\nAccept with `zorp-agent dreams accept <id>`, dismiss with \
+                 `zorp-agent dreams dismiss <id>`."
+            );
+        }
+        Some(DreamAction::Run) => {
+            let records = dream::gather(&store, 1000).unwrap_or_default();
+            match dream::run_pass(
+                &store,
+                &records,
+                &dream::TemplatePhraser,
+                dream::DEFAULT_MAX_SUGGESTIONS,
+            ) {
+                Ok(recorded) => println!(
+                    "Recorded {} new suggestion(s). See `zorp-agent dreams`.",
+                    recorded.len()
+                ),
+                Err(e) => {
+                    eprintln!("zorp-agent: dream pass failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(DreamAction::Accept { id }) => {
+            let Some(row) = resolve_suggestion(&store, &id) else {
+                std::process::exit(1);
+            };
+            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            let flavor_dir = cwd.join(".zorp").join("flavors");
+            match dream::accept(&mut store, &row, &flavor_dir) {
+                Ok(dream::AcceptOutcome::Project { name, filed }) => {
+                    println!("Filed {filed} conversation(s) into a new project \"{name}\".")
+                }
+                Ok(dream::AcceptOutcome::Flavor { path }) => println!(
+                    "Wrote a flavor at {}. It is untrusted until you trust it in the agents pane.",
+                    path.display()
+                ),
+                Err(e) => {
+                    eprintln!("zorp-agent: could not accept: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(DreamAction::Dismiss { id }) => {
+            let Some(row) = resolve_suggestion(&store, &id) else {
+                std::process::exit(1);
+            };
+            match store.set_suggestion_state(&row.id, "dismissed") {
+                Ok(()) => println!("Dismissed. The same pattern will not be raised again."),
+                Err(e) => {
+                    eprintln!("zorp-agent: could not dismiss: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+/// Find a suggestion by a unique id prefix, the way `resume` resolves a
+/// session. An ambiguous or missing prefix prints why and the caller exits.
+fn resolve_suggestion(
+    store: &zorp_agent::Store,
+    prefix: &str,
+) -> Option<zorp_agent::SuggestionRow> {
+    let rows = store.list_suggestions(None, 100_000).unwrap_or_default();
+    let matches: Vec<zorp_agent::SuggestionRow> = rows
+        .into_iter()
+        .filter(|r| r.id.starts_with(prefix))
+        .collect();
+    match matches.len() {
+        1 => Some(matches.into_iter().next().unwrap()),
+        0 => {
+            eprintln!("zorp-agent: no suggestion whose id starts with {prefix:?}");
+            None
+        }
+        n => {
+            eprintln!("zorp-agent: {n} suggestions start with {prefix:?}; use a longer id");
+            None
+        }
+    }
 }
 
 /// `zorp-agent projects`.

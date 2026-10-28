@@ -92,7 +92,8 @@ pub fn files() -> Vec<StateFile> {
         StateFile::new(
             "conversations",
             "every conversation both surfaces have had, with its messages, file changes, \
-             and the RL Studio work log of answers and the feedback you gave them",
+             the RL Studio work log of answers and the feedback you gave them, and the \
+             Dreaming-mode suggestions drawn from them",
             crate::session::Store::default_path(),
             Some("ZORP_STATE_DB"),
         ),

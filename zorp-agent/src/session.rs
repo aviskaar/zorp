@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS projects (
     name TEXT NOT NULL,
     created INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS suggestions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    evidence_ids TEXT NOT NULL,
+    wording TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rl_work_log (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -92,7 +100,43 @@ const INDEXES: &str = "\
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_file_changes_session ON file_changes(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_message_images_session ON message_images(session_id, message_seq);
+CREATE INDEX IF NOT EXISTS idx_suggestions_state ON suggestions(state, created);
 CREATE INDEX IF NOT EXISTS idx_rl_work_log_session ON rl_work_log(session_id, created);";
+
+/// The three states a Dreaming-mode suggestion can be in. A suggestion is a
+/// proposal: `New` until a person acts, then `Accepted` (the real object was
+/// created) or `Dismissed` (recorded so it is not raised again).
+pub const SUGGESTION_STATES: [&str; 3] = ["new", "accepted", "dismissed"];
+
+/// A suggestion to record: a kind, the ids of the conversations it is drawn
+/// from (references, never copied text), and the model-authored wording.
+#[derive(Clone, Debug)]
+pub struct SuggestionDraft {
+    pub id: String,
+    pub kind: String,
+    pub evidence_ids: Vec<String>,
+    pub wording: String,
+}
+
+/// A stored Dreaming-mode suggestion.
+///
+/// **This row is never evidence.** `wording` is model-authored text, and
+/// nothing that feeds a model reads this table: not `recall::index_one`
+/// (reads `messages`/`task`), not the memory block, not titling, not
+/// branching. It is kept apart the way `sessions.display_title` is from
+/// `task` (ADR 0069). `evidence_ids` are references to the conversations the
+/// suggestion came from, so the person can read the real messages; the
+/// suggestion text itself is a proposal, shown and then accepted or
+/// dismissed, and acted on through the same code paths a person uses.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SuggestionRow {
+    pub id: String,
+    pub kind: String,
+    pub evidence_ids: Vec<String>,
+    pub wording: String,
+    pub state: String,
+    pub created: i64,
+}
 
 /// One tool call an RL Studio turn made, with the status derived in code
 /// from the result, never from the model's description of it.
@@ -294,6 +338,27 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// A suggestion's dedup signature: its kind and the sorted evidence ids. Two
+/// patterns with the same signature are the same suggestion, so one being
+/// dismissed keeps the other from being raised.
+pub fn suggestion_key(kind: &str, evidence_ids: &[String]) -> String {
+    let mut ids: Vec<&str> = evidence_ids.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    format!("{kind}:{}", ids.join(","))
+}
+
+fn suggestion_from_row(row: &rusqlite::Row<'_>) -> Result<SuggestionRow, BoxErr> {
+    let evidence: String = row.get(2)?;
+    Ok(SuggestionRow {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        evidence_ids: serde_json::from_str(&evidence).unwrap_or_default(),
+        wording: row.get(3)?,
+        state: row.get(4)?,
+        created: row.get(5)?,
+    })
 }
 
 /// A time-ordered, process-unique session id.
@@ -590,6 +655,19 @@ impl Store {
         Ok(())
     }
 
+    /// Record a Dreaming-mode suggestion in the `new` state. The wording is
+    /// model-authored and the evidence is references; neither is ever read
+    /// back as evidence (see `SuggestionRow`).
+    pub fn record_suggestion(&self, draft: &SuggestionDraft) -> Result<(), BoxErr> {
+        let evidence = serde_json::to_string(&draft.evidence_ids)?;
+        self.conn.execute(
+            "INSERT INTO suggestions (id, kind, evidence_ids, wording, state, created) \
+             VALUES (?1, ?2, ?3, ?4, 'new', ?5)",
+            (&draft.id, &draft.kind, &evidence, &draft.wording, now()),
+        )?;
+        Ok(())
+    }
+
     /// Record one RL Studio work-log entry: a prompt, the answer, the tool
     /// calls with their code-derived status, verbatim.
     ///
@@ -617,6 +695,64 @@ impl Store {
             ),
         )?;
         Ok(())
+    }
+
+    /// Move a suggestion to `accepted` or `dismissed`. A person's action, and
+    /// the only writer of this column.
+    pub fn set_suggestion_state(&self, id: &str, state: &str) -> Result<(), BoxErr> {
+        if !SUGGESTION_STATES.contains(&state) {
+            return Err(format!("unknown suggestion state {state:?}").into());
+        }
+        self.conn.execute(
+            "UPDATE suggestions SET state = ?2 WHERE id = ?1",
+            (id, state),
+        )?;
+        Ok(())
+    }
+
+    /// One suggestion by id, or `None`.
+    pub fn suggestion(&self, id: &str) -> Result<Option<SuggestionRow>, BoxErr> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, evidence_ids, wording, state, created FROM suggestions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(suggestion_from_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Suggestions, newest first. With `state`, only that state; without, all.
+    pub fn list_suggestions(
+        &self,
+        state: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SuggestionRow>, BoxErr> {
+        let mut out = Vec::new();
+        match state {
+            Some(state) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, kind, evidence_ids, wording, state, created FROM suggestions \
+                     WHERE state = ?1 ORDER BY created DESC, id DESC LIMIT ?2",
+                )?;
+                let rows =
+                    stmt.query_map((state, limit as i64), |row| Ok(suggestion_from_row(row)))?;
+                for row in rows {
+                    out.push(row??);
+                }
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, kind, evidence_ids, wording, state, created FROM suggestions \
+                     ORDER BY created DESC, id DESC LIMIT ?1",
+                )?;
+                let rows = stmt.query_map([limit as i64], |row| Ok(suggestion_from_row(row)))?;
+                for row in rows {
+                    out.push(row??);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Set the person's feedback on a work-log entry: a thumbs direction, an
@@ -676,6 +812,28 @@ impl Store {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// The signatures of suggestions already recorded, in any state, as
+    /// `"<kind>:<sorted evidence ids>"`. The dream pass skips a pattern whose
+    /// signature is already here, so a dismissed suggestion is not raised
+    /// again and a still-open one is not duplicated.
+    pub fn existing_suggestion_keys(&self) -> Result<std::collections::HashSet<String>, BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, evidence_ids FROM suggestions")?;
+        let rows = stmt.query_map([], |row| {
+            let kind: String = row.get(0)?;
+            let evidence: String = row.get(1)?;
+            Ok((kind, evidence))
+        })?;
+        let mut keys = std::collections::HashSet::new();
+        for row in rows {
+            let (kind, evidence) = row?;
+            let ids: Vec<String> = serde_json::from_str(&evidence).unwrap_or_default();
+            keys.insert(suggestion_key(&kind, &ids));
+        }
+        Ok(keys)
     }
 
     /// Counts for the RL Studio page: how many entries, and how many carry
@@ -1476,6 +1634,42 @@ CREATE TABLE file_changes (
     }
 
     #[test]
+    fn suggestions_record_accept_and_dismiss_without_touching_messages() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session("s1", "the Monday report please", "/r", "m")
+            .unwrap();
+        store
+            .record_suggestion(&SuggestionDraft {
+                id: "g1".into(),
+                kind: "recurring_request".into(),
+                evidence_ids: vec!["s1".into(), "s2".into()],
+                wording: "you ask for this report every Monday, want a flavor for it?".into(),
+            })
+            .unwrap();
+
+        let new_ones = store.list_suggestions(Some("new"), 10).unwrap();
+        assert_eq!(new_ones.len(), 1);
+        assert_eq!(new_ones[0].evidence_ids, vec!["s1", "s2"]);
+
+        // A dismissed suggestion's signature blocks the same pattern from
+        // being raised again.
+        store.set_suggestion_state("g1", "dismissed").unwrap();
+        assert!(store.list_suggestions(Some("new"), 10).unwrap().is_empty());
+        let keys = store.existing_suggestion_keys().unwrap();
+        assert!(keys.contains(&suggestion_key(
+            "recurring_request",
+            &["s2".to_string(), "s1".to_string()]
+        )));
+        assert!(store.set_suggestion_state("g1", "bogus").is_err());
+
+        // The wording never reached `messages`, which is what recall and the
+        // memory block read. The one message is the person's task only.
+        let messages = store.load_messages("s1").unwrap();
+        assert!(messages.iter().all(|m| !m.text().contains("want a flavor")));
+    }
+
+    #[test]
     fn work_log_records_feedback_and_keeps_it_out_of_messages() {
         let store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
@@ -1895,8 +2089,8 @@ CREATE TABLE file_changes (
                 |r| r.get(0),
             )
             .unwrap();
-        // messages, file_changes, message_images, and rl_work_log.
-        assert_eq!(count, 4);
+        // messages, file_changes, message_images, suggestions, and rl_work_log.
+        assert_eq!(count, 5);
     }
 
     #[test]

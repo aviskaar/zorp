@@ -378,6 +378,150 @@ button {
   color: var(--text-faint);
 }
 
+/* Dreaming mode's "While you were away" card. It sits above the session list
+   like the search box, because its suggestions are ways into those
+   conversations. A proposal with its evidence and two buttons, never a model
+   surface. */
+.dreams {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.dreams-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dreams-head .sidebar-label {
+  margin-bottom: 6px;
+}
+
+.dreams-run {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.dreams-run:hover {
+  border-color: var(--accent-dim);
+}
+
+.dreams-run:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dreams-status {
+  margin: 2px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-faint);
+}
+
+.dreams-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.dream-item {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.dream-lead {
+  margin: 0 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.dream-wording {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.dream-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.dream-evidence-label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.dream-open {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dream-open:hover {
+  border-color: var(--accent-dim);
+}
+
+.dream-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dream-accept,
+.dream-dismiss {
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.dream-accept:hover,
+.dream-dismiss:hover {
+  border-color: var(--accent-dim);
+}
+
+.dream-accept:disabled,
+.dream-dismiss:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dream-feedback {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.dream-feedback-fail {
+  color: var(--danger, #c0392b);
+}
+
 .recall-button {
   display: flex;
   flex-direction: column;

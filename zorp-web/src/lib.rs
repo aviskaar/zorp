@@ -11,6 +11,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod compaction;
 pub mod documents;
+pub mod dream;
 pub mod event;
 #[cfg(feature = "research")]
 pub mod investigate;
@@ -153,6 +154,10 @@ pub async fn serve(options: ServeOptions) -> Result<Running, ServeError> {
     {
         state = state.with_recall_indexer(Some(recall::IndexerHandle::start_from_env()));
     }
+
+    // The background dream pass, beside the recall sweep. A no-op unless
+    // `ZORP_DREAM` turns it on, so the default server starts no such worker.
+    dream::spawn_worker();
 
     let router = api::router_with_ui(state, ui);
     let handle = tokio::spawn(async move { axum::serve(listener, router).await });

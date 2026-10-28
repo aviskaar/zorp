@@ -19,6 +19,7 @@ pub mod critique;
 #[cfg(feature = "research")]
 pub mod deliver;
 pub mod doctor;
+pub mod dream;
 mod embed;
 #[cfg(feature = "ensemble")]
 pub mod ensemble;
@@ -113,8 +114,9 @@ pub use render::{
 };
 pub use sandbox::{cancel_token, srt, CancelToken, CommandOutput, Sandbox, SandboxMode, SrtStatus};
 pub use session::{
-    new_session_id, render_change_summary, Compaction, ProjectRow, SessionRow, SetAgent,
-    SetProject, Store, WorkLogCounts, WorkLogEntry, WorkLogRow, WorkLogToolCall, MAX_PROJECT_NAME,
+    new_session_id, render_change_summary, suggestion_key, Compaction, ProjectRow, SessionRow,
+    SetAgent, SetProject, Store, SuggestionDraft, SuggestionRow, WorkLogCounts, WorkLogEntry,
+    WorkLogRow, WorkLogToolCall, MAX_PROJECT_NAME, SUGGESTION_STATES,
 };
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};

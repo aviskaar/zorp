@@ -74,6 +74,7 @@ import {
 } from "./workspace";
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
+import { DreamsView } from "./dreams";
 import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
 import { activityGroup as newActivityGroup, type ActivityGroup } from "./activity-group";
 import { approvalCard, type ApprovalOutcome } from "./approval-card";
@@ -193,6 +194,10 @@ interface Elements {
   recallStatus: HTMLElement;
   recallResults: HTMLElement;
   recallProject: HTMLSelectElement;
+  dreams: HTMLElement;
+  dreamsRun: HTMLButtonElement;
+  dreamsStatus: HTMLElement;
+  dreamsList: HTMLElement;
   newChat: HTMLButtonElement;
   newProject: HTMLButtonElement;
   projectForm: HTMLFormElement;
@@ -345,6 +350,23 @@ const zorpView = new ZorpModeView(document, dom.transcript, {
   stopAfter: () => void endAfterAttempt(),
   refresh: () => void showZorpLedger(),
 });
+/**
+ * The "While you were away" card. One per page; it reads the local store and
+ * opens a cited conversation the same way the recall results do.
+ */
+const dreamsView = new DreamsView(
+  {
+    section: dom.dreams,
+    runButton: dom.dreamsRun,
+    status: dom.dreamsStatus,
+    list: dom.dreamsList,
+  },
+  (id) => {
+    const known = sessions.find((session) => session.id === id);
+    void openSession(known ?? { id, title: "", updated_at: "" });
+    closeSidebar();
+  },
+);
 /**
  * The two places a workspace gets picked: the first-run flow's first step,
  * and the overlay behind the top bar pill.
@@ -660,6 +682,10 @@ function collectElements(): Elements {
     recallStatus: byId("recall-status"),
     recallResults: byId("recall-results"),
     recallProject: byId<HTMLSelectElement>("recall-project"),
+    dreams: byId("dreams"),
+    dreamsRun: byId<HTMLButtonElement>("dreams-run"),
+    dreamsStatus: byId("dreams-status"),
+    dreamsList: byId("dreams-list"),
     newChat: byId<HTMLButtonElement>("new-chat"),
     newProject: byId<HTMLButtonElement>("new-project"),
     projectForm: byId<HTMLFormElement>("project-form"),
@@ -2647,6 +2673,11 @@ async function refreshSessions(): Promise<void> {
   }
   renderProjectOptions();
   renderSessions();
+
+  // The "While you were away" card reads the same store. Refreshed here so it
+  // catches up whenever the sidebar does, including after a turn feeds a new
+  // conversation to the next pass.
+  void dreamsView.refresh();
 
   // The server names a session from its first message, so the heading catches
   // up once the list has been read back.

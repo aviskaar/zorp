@@ -9,6 +9,7 @@ This table maps each date to its record so those references still resolve.
 
 | Date | Record |
 |------|--------|
+| 2026-10-27 | [0144](decisions/0144-dreaming-mode-detection-is-code-and-a-suggestion-is-a-proposal.md) Dreaming mode: detection is code, and a suggestion is a proposal, never a memory |
 | 2026-10-27 | [0143](decisions/0143-developer-mode-becomes-rl-studio-and-the-feedback-signal-is-the-persons.md) Developer Mode becomes RL Studio, and the feedback signal is the person's |
 | 2026-10-27 | [0142](decisions/0142-text-to-speech-is-loopback-only-and-a-person-turns-it-on.md) text to speech is loopback-only, and a person turns it on |
 | 2026-10-27 | [0141](decisions/0141-the-agent-s-shell-commands-run-under-srt-in-chosen-modes.md) the agent's shell commands run under srt, in modes zorp generates |

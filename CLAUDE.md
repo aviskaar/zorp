@@ -474,6 +474,41 @@ resulting artifact, deliver it in the right form.
   Retrieval is per message and off by default, and the model cannot ask for
   it. Run `cargo test -p zorp-web --features memory` whenever any of it
   changes. See `docs/DECISIONS.md` (2026-08-22) first.
+- Dreaming mode (`zorp-agent/src/dream/`, the `suggestions` table in
+  `zorp-agent/src/session.rs`) looks over how a person has worked and comes
+  back with suggestions: a flavor for a request they keep making, a project
+  for threads about one topic, a saved fix for a command that keeps failing.
+  It is built around the one rule the whole repo is (ADR 0063, 0144): zorp
+  stores no sentence a model composed about the person, because the agent's
+  guesses must never become its own evidence. Four things are not negotiable.
+  Detection is code: the detectors in `dream/detectors.rs` run over
+  code-derived columns (the verbatim first message, project membership, the
+  code-derived status of the commands a conversation ran) and return evidence
+  rows, never prose, the same split `critique` and the aryabhatta detectors
+  use. The model only words a pattern, and even that is optional: the default
+  `TemplatePhraser` uses no model, and a model-backed `Phraser` frames the
+  evidence inside the fenced, nonce-marked `user` block `phrase_prompt` builds,
+  the shape `memory` and `title` use. A suggestion is a proposal: it is shown
+  with links to the exact conversations and does nothing until a person accepts
+  it; accepting creates an ordinary object through the same path a person uses
+  (an unfiled cluster becomes a project, a recurring request or repeated
+  failure becomes a flavor that is untrusted until trusted, ADR 0123), and a
+  dismissed one's signature blocks the same pattern from being raised again.
+  And a suggestion never reaches `messages`, `task`, the recall index or the
+  memory block: it lives in its own `suggestions` table (kind, evidence ids,
+  model-authored wording, state `new`/`accepted`/`dismissed`), the way
+  `display_title` is kept from `task` (ADR 0069), and
+  `zorp-agent/tests/dream_isolation.rs` pins that the wording never lands in
+  any of them. It is local and off by default: the CLI `zorp-agent dreams`
+  (`run`, `accept`, `dismiss`) and the browser's "While you were away" card
+  (`web/src/dreams.ts`, `GET /api/dreams`, `POST /api/dreams/run` and
+  `/api/dreams/:id/{accept,dismiss}`, in every build) run a pass by hand, and
+  the background worker beside the recall sweep runs only when `ZORP_DREAM` is
+  set (`ZORP_DREAM_SWEEP_SECS` for the interval). No model tool turns it on,
+  runs a pass, or acts on a suggestion; `no_tool_starts_a_dream_pass` in
+  `zorp-agent/src/agent.rs` says so, and it is listed in
+  `zorp-agent/src/state.rs` so it can be seen and cleared. See
+  `docs/DECISIONS.md` (2026-10-27) before changing any of it.
 - Projects (`projects` in the session store, `sessions.project_id`,
   `/api/projects` and `PUT /api/sessions/:id/project`) group conversations
   in the sidebar and scope what they read. A project is a name a person
