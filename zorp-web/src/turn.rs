@@ -833,6 +833,28 @@ fn run_agent(
         });
     }
 
+    // The OS-level sandbox the shell commands run under, resolved through the
+    // config chain. The browser has no flag, so it is `ZORP_SANDBOX`, then the
+    // flavor (already gated, so an untrusted project agent's loosening sandbox
+    // has been dropped), then the saved setting, then off. A bad value is a
+    // notice and a fall back to off, never a refused turn.
+    let sandbox_mode = {
+        let saved = settings.lock().unwrap().sandbox_saved();
+        let env = std::env::var(zorp_agent::srt::SANDBOX_VAR)
+            .ok()
+            .filter(|s| !s.is_empty());
+        zorp_agent::srt::resolve(
+            None,
+            env.as_deref(),
+            flavor.as_ref().and_then(|f| f.sandbox),
+            saved.as_deref(),
+        )
+        .unwrap_or_else(|e| {
+            renderer.notice(&format!("sandbox: {e}; running with the sandbox off"));
+            zorp_agent::SandboxMode::Off
+        })
+    };
+
     // The same token the session holds. The agent checks it between steps and
     // around every tool call, and hands it to the tool context, whose sandbox
     // kills the process group of a command that is already running. That is
@@ -849,6 +871,7 @@ fn run_agent(
     // Before the builtins, because registering the `skill` tool is where the
     // offer is decided and this is one of the facts it reads.
     .with_listed_context_window(listed_window)
+    .with_sandbox_mode(sandbox_mode)
     // An agent can only narrow. `register_builtins_filtered` picks from
     // what this build has and cannot add a tool it lacks, so an agent
     // asking for `web_search` in a build without the `search` feature gets

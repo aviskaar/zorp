@@ -110,7 +110,7 @@ pub use render::{
     chat_spinner_renderer, parse_spinner_verbs, render_assistant_text, stderr_renderer,
     LineRenderer, Renderer,
 };
-pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
+pub use sandbox::{cancel_token, srt, CancelToken, CommandOutput, Sandbox, SandboxMode, SrtStatus};
 pub use session::{
     new_session_id, render_change_summary, Compaction, ProjectRow, SessionRow, SetAgent,
     SetProject, Store, MAX_PROJECT_NAME,

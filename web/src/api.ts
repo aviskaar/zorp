@@ -153,6 +153,14 @@ export interface Settings {
   has_api_key: boolean;
   api_key_source: SettingsSource;
   /**
+   * The OS-level sandbox the agent's shell commands run under: one of `off`,
+   * `workspace`, `build` or `read-only`. `sandbox_source` says where it came
+   * from; a mode set through `ZORP_SANDBOX` reports `env`, and the picker
+   * then shows that the browser cannot override it.
+   */
+  sandbox: string;
+  sandbox_source: SettingsSource;
+  /**
    * False only when nothing at all is configured anywhere: no setting saved
    * through this panel, no `ZORP_*` env var, and no API key. That is exactly
    * the shape that used to fail silently on the first message, so the
@@ -172,6 +180,8 @@ export interface SettingsUpdate {
   model?: string;
   max_tokens?: number;
   api_key?: string;
+  /** A sandbox mode name, or the empty string to clear it back to `off`. */
+  sandbox?: string;
 }
 
 /**
@@ -244,6 +254,19 @@ export interface Capabilities {
   voice: VoiceStatus;
   /** Absent from a server built before skills were reported. */
   skills?: SkillAvailability;
+  /** Absent from a server built before the sandbox was reported. */
+  sandbox?: SandboxCapability;
+}
+
+/**
+ * The effective sandbox mode and whether it could actually run. `available`
+ * is observed by running `srt`, so a mode the page would show as active but
+ * a command would refuse reports `false` with the reason in `detail`.
+ */
+export interface SandboxCapability {
+  mode: string;
+  available: boolean;
+  detail: string;
 }
 
 /**

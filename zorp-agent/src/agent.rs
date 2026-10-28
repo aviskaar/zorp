@@ -447,6 +447,14 @@ impl Agent {
         self
     }
 
+    /// Run every shell command under `mode`. The surface resolves it from the
+    /// flag, the environment, the flavor and the saved settings; no tool
+    /// reaches it. `Off` is the default and changes nothing.
+    pub fn with_sandbox_mode(mut self, mode: crate::sandbox::SandboxMode) -> Self {
+        self.cx.set_sandbox_mode(mode);
+        self
+    }
+
     /// Which skills this agent's model is offered, and why, under `choice`.
     ///
     /// The same function every surface that reports the offer calls, over

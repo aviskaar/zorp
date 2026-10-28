@@ -7,10 +7,12 @@
 
 mod capture;
 mod group;
+pub mod srt;
 
 use crate::tools::ToolError;
 use capture::{capture_stream, render_capture};
 pub(crate) use group::{shell, ProcessGroup};
+pub use srt::{SandboxMode, SrtStatus};
 use std::collections::HashSet;
 #[cfg(unix)]
 use std::io;
@@ -35,10 +37,18 @@ pub struct Sandbox {
     timeout: Duration,
     output_cap: usize,
     reader_finalize_delay: Duration,
+    /// Which OS-level sandbox the command runs under. `Off` is today's
+    /// behavior and the default; any other mode wraps the command in `srt`.
+    /// Set by the surface that resolved it, never by the model.
+    mode: SandboxMode,
     /// Secret snapshot, taken lazily on the first `run` and reused for the
     /// sandbox's lifetime. Per instance rather than process-wide so tests
     /// that mutate the environment before building a sandbox stay honest.
     secrets: OnceLock<Arc<Vec<Vec<u8>>>>,
+    /// Whether `srt` and its dependencies are present, probed once and
+    /// reused for the sandbox's lifetime the way `secrets` is. Only ever
+    /// consulted when `mode` is not `Off`.
+    srt_status: OnceLock<SrtStatus>,
 }
 
 #[derive(Debug)]
@@ -74,8 +84,29 @@ impl Sandbox {
             timeout: Duration::from_secs(120),
             output_cap: crate::tools::RUN_COMMAND_OUTPUT_CAP,
             reader_finalize_delay: Duration::ZERO,
+            mode: SandboxMode::Off,
             secrets: OnceLock::new(),
+            srt_status: OnceLock::new(),
         }
+    }
+
+    /// Run every command under `mode`. The surface resolves the mode from the
+    /// flag, the environment, the flavor and the saved settings; the model
+    /// never sets it. `Off` is the default and leaves `run` exactly as it was.
+    pub fn with_mode(mut self, mode: SandboxMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// The mode this sandbox runs commands under.
+    pub fn mode(&self) -> SandboxMode {
+        self.mode
+    }
+
+    /// Set the mode on an already-built sandbox, for callers that hold one by
+    /// `&mut` (the tool `Context` does).
+    pub fn set_mode(&mut self, mode: SandboxMode) {
+        self.mode = mode;
     }
 
     #[cfg(test)]
@@ -101,10 +132,26 @@ impl Sandbox {
             .secrets
             .get_or_init(|| Arc::new(secret_values()))
             .clone();
-        let mut cmd = Command::new(shell().map_err(|e| ToolError::new(format!("spawn: {e}")))?);
-        cmd.arg("-c")
-            .arg(command)
-            .current_dir(&self.repo_root)
+        let shell = shell().map_err(|e| ToolError::new(format!("spawn: {e}")))?;
+        // Hold the generated `srt` settings file for the whole run; it is
+        // removed when this guard drops. `None` when the mode is `Off`, which
+        // runs the shell directly exactly as before. A mode that is on but
+        // whose tools are missing refuses here, loudly, and never falls back
+        // to running unsandboxed.
+        let settings = self.srt_settings()?;
+        let mut cmd = match &settings {
+            Some(settings) => {
+                let mut cmd = Command::new(srt::SRT_BIN);
+                cmd.args(srt::wrap(settings.path(), &shell, command));
+                cmd
+            }
+            None => {
+                let mut cmd = Command::new(&shell);
+                cmd.arg("-c").arg(command);
+                cmd
+            }
+        };
+        cmd.current_dir(&self.repo_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         ProcessGroup::prepare(&mut cmd);
@@ -191,13 +238,86 @@ impl Sandbox {
             .join()
             .map_err(|_| ToolError::new("stderr reader panicked"))?
             .map_err(|e| ToolError::new(format!("read stderr: {e}")))?;
+        // Drop the settings file now that the command is reaped. Named so it
+        // is obvious the lifetime was deliberate and not an unused binding.
+        drop(settings);
+        let mut stderr = render_capture(&stderr, self.output_cap);
+        // A sandbox refusal reads as a filesystem or network error from the
+        // command's point of view. When the command failed under a mode,
+        // name the rule that most likely fired so the model can correct the
+        // command rather than retry the same shape (ADR 0095).
+        if !self.mode.is_off() && status != Some(0) && !timed_out && !cancelled {
+            if let Some(denial) = srt::denial_from_output(self.mode, &stderr) {
+                stderr = format!("{denial}\n{stderr}");
+            }
+        }
         Ok(CommandOutput {
             status,
             stdout: render_capture(&stdout, self.output_cap),
-            stderr: render_capture(&stderr, self.output_cap),
+            stderr,
             timed_out,
             cancelled,
         })
+    }
+
+    /// The `srt` settings file for this run, or `None` when the mode is
+    /// `Off`. Refuses loudly when a mode is on but `srt` or a dependency is
+    /// missing: the one thing this must never do is run a command that asked
+    /// for a sandbox without one.
+    fn srt_settings(&self) -> Result<Option<SettingsFile>, ToolError> {
+        if self.mode.is_off() {
+            return Ok(None);
+        }
+        let status = self.srt_status.get_or_init(srt::detect);
+        if !status.usable() {
+            return Err(ToolError::new(format!(
+                "sandbox mode {} was requested but cannot run: {}. Install the missing \
+                 tools, or set the sandbox to off.",
+                self.mode,
+                status.detail()
+            )));
+        }
+        let json = srt::settings_json(self.mode, &self.repo_root)
+            .ok_or_else(|| ToolError::new("sandbox: no settings for an active mode"))?;
+        SettingsFile::write(&json).map(Some)
+    }
+}
+
+/// A generated `srt` settings file, removed when dropped. Written under the
+/// system temp directory with a unique name per run, so two commands running
+/// at once never share one.
+struct SettingsFile {
+    path: PathBuf,
+}
+
+impl SettingsFile {
+    fn write(json: &serde_json::Value) -> Result<SettingsFile, ToolError> {
+        use std::sync::atomic::AtomicU64;
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let seq = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "zorp-srt-{}-{nanos}-{seq}.json",
+            std::process::id()
+        ));
+        let body = serde_json::to_vec(json)
+            .map_err(|e| ToolError::new(format!("sandbox settings: {e}")))?;
+        std::fs::write(&path, body)
+            .map_err(|e| ToolError::new(format!("sandbox settings: {e}")))?;
+        Ok(SettingsFile { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for SettingsFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -662,5 +782,97 @@ mod tests {
             .run("sleep 10")
             .unwrap();
         assert!(out.cancelled);
+    }
+
+    /// Whether a sandboxed command could actually run here. The enforcement
+    /// tests below only mean anything when it can, so they skip when it
+    /// cannot rather than failing on a machine with no `srt` installed.
+    fn srt_usable() -> bool {
+        srt::detect().usable()
+    }
+
+    /// The one thing a sandbox must never do: silently run a command that
+    /// asked for a wall without one. With `srt` missing, a mode is a loud
+    /// refusal naming what is missing, and never a fall back to running
+    /// unsandboxed. Only asserts when `srt` is actually absent.
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_srt_refuses_rather_than_running_unsandboxed() {
+        if srt_usable() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let err = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_mode(SandboxMode::Workspace)
+            .run("printf hi")
+            .unwrap_err();
+        let text = err.message;
+        assert!(text.contains("sandbox mode workspace"), "{text}");
+        assert!(text.contains("srt"), "{text}");
+    }
+
+    /// `off` is unchanged: no `srt`, no refusal, the shell runs directly.
+    #[cfg(unix)]
+    #[test]
+    fn off_mode_runs_the_shell_directly_even_without_srt() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_mode(SandboxMode::Off)
+            .run("printf ok")
+            .unwrap();
+        assert_eq!(out.stdout, "ok");
+    }
+
+    /// A write inside the workspace succeeds under `workspace`. Skipped when
+    /// `srt` is not installed.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_mode_allows_a_write_inside_the_workspace() {
+        if !srt_usable() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_timeout(Duration::from_secs(10))
+            .with_mode(SandboxMode::Workspace)
+            .run("printf data > inside.txt && cat inside.txt")
+            .unwrap();
+        assert_eq!(out.status, Some(0), "stderr: {}", out.stderr);
+        assert_eq!(out.stdout.trim(), "data");
+    }
+
+    /// Reading a credential store is refused under `workspace`, and the
+    /// refusal names the rule. Skipped when `srt` is not installed.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_mode_refuses_reading_a_credential_store() {
+        if !srt_usable() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_timeout(Duration::from_secs(10))
+            .with_mode(SandboxMode::Workspace)
+            .run(&format!("cat '{home}/.ssh/id_rsa'"))
+            .unwrap();
+        assert_ne!(out.status, Some(0), "reading ~/.ssh should fail");
+    }
+
+    /// The network is denied under `workspace`, so a curl to any host fails.
+    /// Skipped when `srt` is not installed.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_mode_refuses_the_network() {
+        if !srt_usable() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_timeout(Duration::from_secs(10))
+            .with_mode(SandboxMode::Workspace)
+            .run("curl -sS --max-time 5 https://example.com")
+            .unwrap();
+        assert_ne!(out.status, Some(0), "the network should be denied");
     }
 }
