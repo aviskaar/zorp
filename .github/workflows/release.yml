@@ -31,7 +31,7 @@ jobs:
     # the build on workflow_dispatch.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The logic lives in scripts/check-release-version.sh, not inline
       # here, so that tests/release_version_check.rs can run it on every
@@ -83,7 +83,7 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v4
         with:
