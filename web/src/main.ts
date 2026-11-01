@@ -88,6 +88,12 @@ import {
   type Pane,
 } from "./artifact-view";
 import {
+  slashMenuView,
+  handleSlashKeydown,
+  closeSlashMenu,
+  type SlashMenuView,
+} from "./slash-menu";
+import {
   ApiError,
   NothingRunningError,
   TurnBusyError,
@@ -121,6 +127,7 @@ import {
   startPanel,
   startInvestigate,
   getInvestigateStatus,
+  type SkillSummary,
   getLedger,
   resolveCheckpoint,
   stopAfterAttempt,
@@ -489,6 +496,12 @@ const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
 const speechPlayer = new SpeechPlayer();
 const sandboxIndicator: SandboxIndicatorView = sandboxIndicatorView(document);
 const skills: SkillsView = skillsView(document);
+/** The slash menu for skill picker. */
+const slashMenu: SlashMenuView = slashMenuView(document);
+/** Skills listing, loaded once at startup for the slash menu and later for the pill. */
+let skillsListing: SkillSummary[] = [];
+/** The skill selected through the slash menu, or null when none is pending. */
+let slashSkillName: string | null = null;
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
 const messageQueue: string[] = [];
@@ -845,6 +858,18 @@ function wireComposer(): void {
   });
 
   dom.input.addEventListener("keydown", (event) => {
+    // Slash menu handles / and its own navigation keys.
+    if (
+      handleSlashKeydown(event, slashMenu, skillsListing, (name) => {
+        // On selection, insert /name at cursor. We also need to tell
+        // submitMessage which skill was chosen.
+        slashSkillName = name;
+      },
+      dom.input,
+    )
+    ) {
+      return;
+    }
     // Enter sends. Shift+Enter is a newline. An open IME composition owns the
     // key and must be left alone.
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
@@ -855,6 +880,14 @@ function wireComposer(): void {
   });
 
   dom.input.addEventListener("input", autoGrowInput);
+  // Close the slash menu when focus leaves the composer.
+  dom.input.addEventListener("blur", () => {
+    if (!slashMenu.container.hidden) {
+      closeSlashMenu(slashMenu, dom.input);
+    }
+  });
+  // Attach the slash menu container to the document for positioning.
+  document.body.appendChild(slashMenu.container);
   autoGrowInput();
 }
 
@@ -1283,7 +1316,7 @@ function paintQueue(): void {
   });
 }
 
-async function sendMessage(message: string): Promise<void> {
+async function sendMessage(message: string, skillOverride: string | null = null): Promise<void> {
   clearEmptyState();
   appendMessage("user", message);
   scrollToBottomIfFollowing(true);
@@ -1321,7 +1354,9 @@ async function sendMessage(message: string): Promise<void> {
     await ensureStream(sessionId);
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
-    await sendTurn(sessionId, message, dom.useMemory.checked);
+    const skill = skillOverride ?? slashSkillName;
+    slashSkillName = null;
+    await sendTurn(sessionId, message, dom.useMemory.checked, skill || undefined);
     dom.useMemory.checked = false;
   } catch (error) {
     setTurnRunning(false);
@@ -1345,6 +1380,21 @@ async function sendMessage(message: string): Promise<void> {
 let zorpQuestion: string | null = null;
 /** Whether the running turn is a Zorp mode attempt rather than a turn. */
 let zorpRunning = false;
+
+/**
+ * Extract a skill name from a message that was selected through the slash
+ * menu, or null when there is no leading slash-skill token.
+ */
+function extractSkill(message: string): string | null {
+  const text = message.trimStart();
+  if (!text.startsWith("/")) return null;
+  const afterSlash = text.slice(1);
+  const spaceIdx = afterSlash.indexOf(" ");
+  const raw = spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
+  // Validate: same rules the server applies. Lowercase and single path component.
+  if (/^[a-z][a-z0-9_-]*$/.test(raw)) return raw;
+  return null;
+}
 
 /**
  * The question waiting on a pre-registration typed by hand.
@@ -1991,7 +2041,8 @@ function finishTurn(): void {
   const next = messageQueue.shift();
   if (next !== undefined) {
     paintQueue();
-    void sendMessage(next);
+    const skill = extractSkill(next);
+    void sendMessage(next, skill);
   }
 }
 
@@ -3216,6 +3267,8 @@ function wireSkills(): void {
           }
         }
         renderSkillsPanel(document, skills.panel, installed, live);
+        // Keep the listing for the slash menu too.
+        skillsListing = installed.skills;
       } catch (error) {
         // The server's own words. A page that said "could not list skills"
         // would be hiding the reason it already has.

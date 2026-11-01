@@ -4192,6 +4192,35 @@ fn handle_chat_command(
                 }
             }
         }
+        ChatCommand::Skill(name, prompt) => {
+            if name.is_empty() {
+                out.notice("usage: /skill <name> <prompt>");
+            } else if !zorp_skill::is_valid_skill_name(&name) {
+                out.notice(&format!("unknown skill: invalid name '{name}'"));
+            } else {
+                let scopes = zorp_skill::scope_dirs_from_env(cwd);
+                let (registry, warnings) = zorp_skill::SkillRegistry::discover(&scopes);
+                for warning in &warnings {
+                    out.notice(warning);
+                }
+                if registry.get(&name).is_none() {
+                    out.notice(&format!("unknown skill: '{name}' is not installed"));
+                } else {
+                    let instruction = format!(
+                        "The person chose the skill `{name}` for this message. \
+                         Load it with the `skill` tool before doing anything else."
+                    );
+                    let combined = if let Some(p) = prompt {
+                        format!("{instruction}\n\n{p}")
+                    } else {
+                        // No prompt text given: use the skill instructions alone.
+                        instruction
+                    };
+                    run_and_render(agent, &combined, out);
+                    feed_recall(session_id);
+                }
+            }
+        }
         ChatCommand::LoadCapsule(name) => {
             if name.is_empty() {
                 out.notice("usage: /load <capsule_name>");

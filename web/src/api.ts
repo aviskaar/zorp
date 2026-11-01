@@ -1180,9 +1180,18 @@ export async function branchSession(id: string, answer: number): Promise<string>
  * conversations, tool results and fetched pages included, in front of the
  * model. That is a thing to choose each time, not a mode to leave on.
  */
-export async function sendTurn(id: string, message: string, memory = false): Promise<void> {
+export async function sendTurn(
+  id: string,
+  message: string,
+  memory = false,
+  skill?: string,
+): Promise<void> {
   try {
-    await request<void>("POST", `/api/sessions/${segment(id)}/turn`, { message, memory });
+    const body: { message: string; memory: boolean; skill?: string } = { message, memory };
+    if (skill) {
+      body.skill = skill;
+    }
+    await request<void>("POST", `/api/sessions/${segment(id)}/turn`, body);
   } catch (error) {
     throw startFailure(error);
   }

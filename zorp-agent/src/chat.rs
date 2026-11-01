@@ -55,6 +55,10 @@ pub enum ChatCommand {
     /// as every other tool call is. A person typing this wants to know what
     /// the model has to choose from.
     Skills,
+    /// Load a skill for the next message: `/skill <name> <prompt>`. If there
+    /// is no prompt the skill's instructions are sent with whatever the
+    /// REPL line has.
+    Skill(String, Option<String>),
     LoadCapsule(String),
     UnloadCapsule(String),
     InvokeCapsule {
@@ -89,6 +93,7 @@ pub const COMMANDS: &[&str] = &[
     "tools",
     "reasoning",
     "capsules",
+    "skill",
     "load",
     "unload",
     "capsule-create",
@@ -145,6 +150,12 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "project" => ChatCommand::Project((!remainder.is_empty()).then(|| remainder.to_string())),
         "capsules" => ChatCommand::Capsules,
         "skills" => ChatCommand::Skills,
+        "skill" => {
+            let mut split = remainder.splitn(2, char::is_whitespace);
+            let name = split.next().unwrap_or("").to_string();
+            let prompt = split.next().map(str::to_string);
+            ChatCommand::Skill(name, prompt)
+        }
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),
         "capsule-create" => {
@@ -402,6 +413,22 @@ mod tests {
                 name: "foo".to_string(),
                 description: "does the thing".to_string()
             }
+        );
+    }
+
+    #[test]
+    fn skill_parse_renames_and_prompt() {
+        assert_eq!(
+            parse_command("/skill my-skill do the thing", &[]),
+            ChatCommand::Skill("my-skill".to_string(), Some("do the thing".to_string()))
+        );
+    }
+
+    #[test]
+    fn skill_parse_with_no_prompt() {
+        assert_eq!(
+            parse_command("/skill my-skill", &[]),
+            ChatCommand::Skill("my-skill".to_string(), None)
         );
     }
 }
