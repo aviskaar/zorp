@@ -77,7 +77,7 @@ impl BoundedCapture {
 pub(super) fn capture_stream(
     mut reader: impl Read,
     cap: usize,
-    secrets: Arc<Vec<Vec<u8>>>,
+    secrets: Arc<Vec<String>>,
     eof: Arc<AtomicBool>,
     finalize_delay: Duration,
 ) -> io::Result<BoundedCapture> {
@@ -85,7 +85,7 @@ pub(super) fn capture_stream(
     let mut pending = Vec::new();
     let overlap = secrets
         .iter()
-        .map(Vec::len)
+        .map(|s| s.len())
         .max()
         .unwrap_or(1)
         .saturating_sub(1);
@@ -93,7 +93,8 @@ pub(super) fn capture_stream(
     // set, so runs of non-matching bytes skip the per-secret scan.
     let mut first_bytes = [false; 256];
     for secret in secrets.iter() {
-        if let Some(&byte) = secret.first() {
+        let bytes = secret.as_bytes();
+        if let Some(&byte) = bytes.first() {
             first_bytes[byte as usize] = true;
         }
     }
@@ -131,7 +132,7 @@ pub(super) fn capture_stream(
 fn redact_pending(
     pending: &mut Vec<u8>,
     process_len: usize,
-    secrets: &[Vec<u8>],
+    secrets: &[String],
     first_bytes: &[bool; 256],
     capture: &mut BoundedCapture,
 ) {
@@ -139,10 +140,9 @@ fn redact_pending(
     let mut run_start = 0;
     while position < process_len {
         if first_bytes[pending[position] as usize] {
-            if let Some(secret) = secrets
-                .iter()
-                .find(|secret| !secret.is_empty() && pending[position..].starts_with(secret))
-            {
+            if let Some(secret) = secrets.iter().find(|secret| {
+                !secret.is_empty() && pending[position..].starts_with(secret.as_bytes())
+            }) {
                 if run_start < position {
                     capture.push(&pending[run_start..position]);
                 }
@@ -253,7 +253,7 @@ mod tests {
         input.extend(std::iter::repeat_n(b'y', 4096));
         let expected_redacted_len =
             input.len() - b"cross-boundary-secret".len() + b"[REDACTED]".len();
-        let secrets = Arc::new(vec![b"cross-boundary-secret".to_vec()]);
+        let secrets = Arc::new(vec!["cross-boundary-secret".to_string()]);
         let eof = Arc::new(AtomicBool::new(false));
 
         let capture =
@@ -274,7 +274,7 @@ mod tests {
         // 1 MiB of a byte that never starts any secret; the whole stream
         // must be copied through untouched with nothing redacted.
         let input = vec![b'x'; 1 << 20];
-        let secrets = Arc::new(vec![b"secret-value".to_vec(), b"token-value".to_vec()]);
+        let secrets = Arc::new(vec!["secret-value".to_string(), "token-value".to_string()]);
         let eof = Arc::new(AtomicBool::new(false));
 
         let capture = capture_stream(
@@ -296,7 +296,7 @@ mod tests {
         let mut input = vec![b'x'; 100_000];
         input.extend_from_slice(b"secret-value");
         input.extend(vec![b'y'; 100_000]);
-        let secrets = Arc::new(vec![b"secret-value".to_vec()]);
+        let secrets = Arc::new(vec!["secret-value".to_string()]);
         let eof = Arc::new(AtomicBool::new(false));
 
         let capture = capture_stream(
