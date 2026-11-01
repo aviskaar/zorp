@@ -58,7 +58,7 @@ hypothesis are all the same shape of problem to zorp. It's built by
 | Pillar | What it does |
 |---|---|
 | **Run** | Connect any OpenAI-compatible model, self-hosted or cloud, and put it to work. |
-| **Remember** | Local memory that stays on your machine—conversations, context, and evidence you can always reach. |
+| **Remember** | Local memory that stays on your machine, conversations, context, and evidence you can always reach. |
 | **Investigate** | Staged, pre-registered evidence gathering with an immutable record every claim traces back to. |
 | **Measure** | Confidence calibration, kill thresholds, and evaluation so the output is accountable to numbers, not just language. |
 | **Improve** | Retraining and fine-tuning on your own usage logs; the next model is trained on how you actually use it. |
