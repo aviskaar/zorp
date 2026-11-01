@@ -245,16 +245,21 @@ jobs:
               unsandboxed. `zorp-agent doctor` reports what is missing.
             - **Speech output** (read answers aloud through a local Ollama
               `phonon` model) is behind the `voice` feature. **RL Studio** is
-              Developer Mode renamed, and its pretraining already shipped in
-              v0.7.1; new in this release are its fine-tuning and feedback
-              loop. All of RL Studio is behind the `train` feature. Neither
-              `voice` nor `train` is compiled into the prebuilt tarballs here,
-              which build with default features. Get them from the macOS
-              `Zorp.dmg`, whose bridge turns every feature on, or from a source
-              build: `cargo build -p zorp-web --features voice` or
-              `--features train` (the features live on `zorp-web`, not the root
-              package). Speech needs a local Ollama runtime at run time;
-              fine-tuning needs Apple Silicon (MLX).
+              Developer Mode renamed; its pretraining already shipped in
+              v0.7.1, and new in this release are its fine-tuning and feedback
+              loop, behind the `train` feature. To use either capability
+              today, build from source and open the browser UI:
+              `cargo build -p zorp-web --features voice` or `--features train`
+              (the features live on `zorp-web`, not the root package). Neither
+              is usable from a download yet: the prebuilt tarballs build with
+              default features, so their bundled browser UI reports both as
+              off; and while the macOS `Zorp.dmg` compiles both features into
+              its in-process server, its native app has no read-aloud or
+              fine-tuning screens yet and does not serve the browser UI, so it
+              surfaces only voice input and pretraining (both of which predate
+              this release). The Mac app screens for speech output and
+              fine-tuning are tracked follow-ups. Speech needs a local Ollama
+              runtime at run time; fine-tuning needs Apple Silicon (MLX).
 
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
