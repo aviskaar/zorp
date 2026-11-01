@@ -230,6 +230,27 @@ jobs:
             For macOS users, a standalone native desktop app (`Zorp.dmg`) is
             also attached to this release.
 
+            ### New since v0.7.1, and which builds carry it
+
+            Four capabilities merged after v0.7.1. Which build has each one
+            depends on how it is feature-gated.
+
+            - **Dreaming mode** (`zorp-agent dreams`, the browser's "While you
+              were away" card) and the **`srt` command sandbox** (`--sandbox`,
+              `ZORP_SANDBOX`) are in every build, including the prebuilt
+              tarballs here. The sandbox is off by default and its non-off
+              modes need the `srt` binary installed; `zorp-agent doctor`
+              reports whether it is there.
+            - **Speech output** (read answers aloud through a local Ollama
+              `phonon` model) is behind the `voice` feature, and **RL Studio**
+              (pretraining plus the fine-tuning and feedback loop) is behind
+              the `train` feature. Neither is compiled into the prebuilt
+              tarballs here, which build with default features. Get them from
+              the macOS `Zorp.dmg`, whose bridge turns every feature on, or
+              from a source build: `--features voice` and `--features train`.
+              Speech needs a local Ollama runtime at run time; fine-tuning
+              needs Apple Silicon (MLX).
+
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
             behind the `research` feature and require building from source.
