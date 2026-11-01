@@ -232,24 +232,29 @@ jobs:
 
             ### New since v0.7.1, and which builds carry it
 
-            Four capabilities merged after v0.7.1. Which build has each one
+            What merged after v0.7.1, and which build has each one, which
             depends on how it is feature-gated.
 
             - **Dreaming mode** (`zorp-agent dreams`, the browser's "While you
               were away" card) and the **`srt` command sandbox** (`--sandbox`,
               `ZORP_SANDBOX`) are in every build, including the prebuilt
-              tarballs here. The sandbox is off by default and its non-off
-              modes need the `srt` binary installed; `zorp-agent doctor`
-              reports whether it is there.
+              tarballs here. The sandbox is off by default, and a non-off mode
+              needs its helper binaries on `PATH`: `srt` and `ripgrep` on every
+              platform, plus `bwrap` on Linux. A mode other than off refuses
+              every command until they are there rather than running it
+              unsandboxed. `zorp-agent doctor` reports what is missing.
             - **Speech output** (read answers aloud through a local Ollama
-              `phonon` model) is behind the `voice` feature, and **RL Studio**
-              (pretraining plus the fine-tuning and feedback loop) is behind
-              the `train` feature. Neither is compiled into the prebuilt
-              tarballs here, which build with default features. Get them from
-              the macOS `Zorp.dmg`, whose bridge turns every feature on, or
-              from a source build: `--features voice` and `--features train`.
-              Speech needs a local Ollama runtime at run time; fine-tuning
-              needs Apple Silicon (MLX).
+              `phonon` model) is behind the `voice` feature. **RL Studio** is
+              Developer Mode renamed, and its pretraining already shipped in
+              v0.7.1; new in this release are its fine-tuning and feedback
+              loop. All of RL Studio is behind the `train` feature. Neither
+              `voice` nor `train` is compiled into the prebuilt tarballs here,
+              which build with default features. Get them from the macOS
+              `Zorp.dmg`, whose bridge turns every feature on, or from a source
+              build: `cargo build -p zorp-web --features voice` or
+              `--features train` (the features live on `zorp-web`, not the root
+              package). Speech needs a local Ollama runtime at run time;
+              fine-tuning needs Apple Silicon (MLX).
 
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
