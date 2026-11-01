@@ -1660,6 +1660,12 @@ struct TurnBody {
     /// it is a thing to choose each time and not a mode to leave on.
     #[serde(default)]
     memory: bool,
+    /// The skill the person chose for this message, or absent.
+    ///
+    /// The message itself still carries `/name` verbatim; this field tells
+    /// the server to seed the turn with the instruction to load it.
+    #[serde(default)]
+    skill: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2018,6 +2024,36 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
+    // Validate the skill name before the turn starts.
+    // The name is a key into the skill registry, not a path, so it must
+    // be a single ordinary path component and resolve to an installed skill.
+    if let Some(ref skill_name) = body.skill {
+        if !zorp_skill::is_valid_skill_name(skill_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unknown skill: invalid name '{skill_name}'"),
+            )
+                .into_response();
+        }
+        let (skills, _warnings) = zorp_skill::SkillRegistry::discover(
+            &zorp_skill::scope_dirs_from_env(workspace.as_ref()),
+        );
+        if skills.is_empty() {
+            // No skills installed at all: even a valid name matches nothing.
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unknown skill: '{skill_name}' is not installed"),
+            )
+                .into_response();
+        }
+        if skills.get(skill_name).is_none() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unknown skill: '{skill_name}' is not installed"),
+            )
+                .into_response();
+        }
+    }
     #[cfg(feature = "recall")]
     let recall_indexer = state.recall_indexer.clone();
     #[cfg(not(feature = "recall"))]
@@ -2027,6 +2063,7 @@ async fn start_turn(
         id,
         body.message,
         body.memory,
+        body.skill,
         workspace,
         state.settings.clone(),
         state.own_port,

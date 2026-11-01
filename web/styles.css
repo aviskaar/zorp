@@ -5422,3 +5422,57 @@ html.desktop .app[data-sidebar="collapsed"] .topbar {
   white-space: pre-wrap;
   color: var(--text-faint, #666);
 }
+
+/* Slash menu for skill picker */
+.slash-menu {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  max-height: calc(var(--visible-items, 7) * 44px);
+  overflow-y: auto;
+  z-index: 50;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  padding: 4px 0;
+}
+
+.slash-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.slash-menu-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 16px;
+  cursor: pointer;
+  min-height: var(--item-height, 44px);
+  justify-content: center;
+}
+
+.slash-menu-item.selected {
+  background: var(--bg-elevated);
+}
+
+.slash-menu-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.slash-menu-description {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.slash-menu-empty {
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+  list-style: none;
+  text-align: center;
+}
