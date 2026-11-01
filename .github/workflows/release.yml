@@ -230,6 +230,37 @@ jobs:
             For macOS users, a standalone native desktop app (`Zorp.dmg`) is
             also attached to this release.
 
+            ### New since v0.7.1, and which builds carry it
+
+            What merged after v0.7.1, and which build has each one, which
+            depends on how it is feature-gated.
+
+            - **Dreaming mode** (`zorp-agent dreams`, the browser's "While you
+              were away" card) and the **`srt` command sandbox** (`--sandbox`,
+              `ZORP_SANDBOX`) are in every build, including the prebuilt
+              tarballs here. The sandbox is off by default, and a non-off mode
+              needs its helper binaries on `PATH`: `srt` and `ripgrep` on every
+              platform, plus `bwrap` on Linux. A mode other than off refuses
+              every command until they are there rather than running it
+              unsandboxed. `zorp-agent doctor` reports what is missing.
+            - **Speech output** (read answers aloud through a local Ollama
+              `phonon` model) is behind the `voice` feature. **RL Studio** is
+              Developer Mode renamed; its pretraining already shipped in
+              v0.7.1, and new in this release are its fine-tuning and feedback
+              loop, behind the `train` feature. To use either capability
+              today, build from source and open the browser UI:
+              `cargo build -p zorp-web --features voice` or `--features train`
+              (the features live on `zorp-web`, not the root package). Neither
+              is usable from a download yet: the prebuilt tarballs build with
+              default features, so their bundled browser UI reports both as
+              off; and while the macOS `Zorp.dmg` compiles both features into
+              its in-process server, its native app has no read-aloud or
+              fine-tuning screens yet and does not serve the browser UI, so it
+              surfaces only voice input and pretraining (both of which predate
+              this release). The Mac app screens for speech output and
+              fine-tuning are tracked follow-ups. Speech needs a local Ollama
+              runtime at run time; fine-tuning needs Apple Silicon (MLX).
+
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
             behind the `research` feature and require building from source.
