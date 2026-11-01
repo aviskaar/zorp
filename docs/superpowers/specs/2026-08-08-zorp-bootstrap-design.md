@@ -6,7 +6,7 @@
 ## Purpose
 
 Stand up the `zorp` repo (part of the Aviskaar monorepo, dedicated domain
-`zorp.dev`) as a research agent for scientific discovery, using
+`zorp.dev`) as a project for intelligence and research, using
 [quecto](https://github.com/adityak74/quecto) (MIT) as the base execution
 harness. [AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) is
 pulled in as local-only reference/inspiration while designing zorp's
@@ -33,8 +33,7 @@ That comes later, once the base harness is in place.
    repo; it stays local-only, for inspiration.
 
 3. **New top-level docs**
-   - `README.md` — zorp positioning (research agent for scientific
-     discovery, built on quecto, part of Aviskaar, zorp.dev), quick start,
+   - `README.md` — zorp positioning (own your intelligence, built on quecto, part of Aviskaar, zorp.dev), quick start,
      status (early/pre-alpha).
    - `CLAUDE.md` — Claude Code working instructions for this repo (Rust
      workspace conventions, quecto-inherited vs. zorp-specific code,
