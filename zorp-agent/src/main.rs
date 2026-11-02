@@ -1816,6 +1816,30 @@ fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
         Check::off("web_search", search.detail)
     });
 
+    // System One decision models, when this build has the tool. Reports the
+    // resolved endpoint and whether Ollama answers and is new enough (0.35+),
+    // through its own short-timeout probe. No key is read or printed.
+    #[cfg(feature = "systemone")]
+    {
+        let base = zorp_agent::systemone::resolve_base();
+        let root = zorp_agent::systemone::ollama_root(&base);
+        let timeout = std::time::Duration::from_secs(PROBE_TIMEOUT_SECS);
+        report.checks.push(
+            match zorp_agent::systemone::ollama_version(&base, timeout) {
+                Ok(version) if zorp_agent::systemone::version_at_least(&version, 0, 35) => {
+                    Check::ok("systemone", format!("Ollama {version} at {root}"))
+                }
+                Ok(version) => Check::bad(
+                    "systemone",
+                    format!(
+                        "Ollama {version} at {root} is older than 0.35, which System One needs"
+                    ),
+                ),
+                Err(e) => Check::bad("systemone", format!("{root} did not answer: {e}")),
+            },
+        );
+    }
+
     // The sandbox, probed the way the real path probes it. The resolved mode
     // is reported, and whether `srt` could actually run it. A requested mode
     // whose tools are missing is a fault, because a command asking for that

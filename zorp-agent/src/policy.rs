@@ -217,6 +217,10 @@ impl Policy {
             // A search leaves the machine with the user's question in it.
             // Gated like an MCP tool, not allowed like a local read.
             "web_search" => Decision::Ask,
+            // A decision call sends the `state` (which can hold the person's
+            // files) to the System One endpoint, so it is gated like a search,
+            // not allowed like a local read. #279.
+            "decide" => Decision::Ask,
             name if name.starts_with("mcp__") => Decision::Ask,
             _ => Decision::Deny(format!(
                 "tool '{}' is not permitted by the built-in policy",
@@ -919,6 +923,20 @@ mod tests {
         ));
         assert!(matches!(
             p.decide(&call("run_command", json!({"command":"cargo test"}))),
+            Decision::Ask
+        ));
+    }
+
+    #[test]
+    fn networked_tools_ask_before_the_state_leaves() {
+        let p = Policy::default();
+        assert!(matches!(
+            p.decide(&call("web_search", json!({"query": "x"}))),
+            Decision::Ask
+        ));
+        // A decision call sends the state out, so it is gated like a search.
+        assert!(matches!(
+            p.decide(&call("decide", json!({"state": "x", "questions": {}}))),
             Decision::Ask
         ));
     }

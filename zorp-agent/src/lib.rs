@@ -51,6 +51,7 @@ pub mod skill_routing;
 mod skill_tool;
 pub mod state;
 pub mod streaming;
+pub mod systemone;
 pub mod title;
 mod tools;
 mod trust;

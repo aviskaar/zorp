@@ -9,6 +9,7 @@ This table maps each date to its record so those references still resolve.
 
 | Date | Record |
 |------|--------|
+| 2026-11-02 | [0150](decisions/0150-a-system-one-decision-model-is-a-tool-the-model-reads-not-a-gate.md) a System One decision model is a tool the model reads, not a gate code reads |
 | 2026-11-02 | [0149](decisions/0149-emoji-standard-expand-at-send-custom-draw-on-the-way-back.md) emoji: standard ones expand at send, custom ones draw on the way back |
 | 2026-11-02 | [0148](decisions/0148-the-speed-dial-is-nine-saved-slots-and-a-press-is-a-settings-save.md) the speed dial is nine saved slots, and a press is a settings save |
 | 2026-11-02 | [0147](decisions/0147-the-composer-names-a-skill-never-its-body.md) the composer names a skill, never its body |

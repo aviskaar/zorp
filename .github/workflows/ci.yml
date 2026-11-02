@@ -285,8 +285,17 @@ jobs:
       # all three: they are independent optional dependencies, and three
       # separate compiles of the same crate would cost three times as much to
       # catch a combination nobody ships.
-      - name: Clippy zorp-agent (otel, search, clipboard)
-        run: cargo clippy -p zorp-agent --features otel,search,clipboard --all-targets --locked -- -D warnings
+      - name: Clippy zorp-agent (otel, search, clipboard, systemone)
+        run: cargo clippy -p zorp-agent --features otel,search,clipboard,systemone --all-targets --locked -- -D warnings
+
+      # System One (#279) gates the `decide` tool's registration and a doctor
+      # probe behind the `systemone` feature; the client itself is always
+      # compiled and covered by the default build-and-test job. The clippy step
+      # above sees the feature-gated code under `-D warnings`; this runs its
+      # tests, the way the memory step below does for recall. No network: the
+      # client tests drive a local one-shot server and spend no real model.
+      - name: Test zorp-agent (systemone)
+        run: cargo test -p zorp-agent --features systemone --locked
 
       # test rather than clippy, because these four do have tests of their
       # own and those tests are the point. `capabilities.rs` pins what the

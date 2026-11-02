@@ -75,6 +75,11 @@ clipboard = ["dep:arboard"]
 # findings go back. Off by default. It is a harness experiment and a plain
 # run should not carry it.
 ensemble = []
+# The `decide` built-in: a local System One decision model over Ollama's
+# /v1/systemone. A networked built-in like `web_search`, so it is off by
+# default and registered only when this is on. The client itself is always
+# compiled and tested; this gates whether the agent is offered the tool.
+systemone = []
 
 [[bin]]
 name = "stub_search_mcp_server"

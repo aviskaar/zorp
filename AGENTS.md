@@ -262,6 +262,28 @@ resulting artifact, deliver it in the right form.
   zorp-search`, `cargo test -p zorp-agent --features search` and `cargo
   test -p zorp-web --features search` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-21, 2026-09-18) before changing either.
+- System One decision models (`zorp-agent/src/systemone.rs`, non-default
+  `systemone` feature, issue #279, `docs/DECISIONS.md` 2026-11-02) are
+  Ollama's `POST /v1/systemone`: a model takes a `state` plus typed questions
+  (`choice`, `noul`, `score`) and returns a probability per option. It is one
+  non-streaming request through `zorp::http_agent` and `zorp::send_json`, no
+  new transport, under the usual retry rule. It is exposed as the `decide`
+  built-in, a networked built-in gated like `web_search`, because of the one
+  rule that shapes it: a probability a model returns is model-authored, so
+  nothing that decides may read it (detection is code, a model only
+  interprets). So it is a tool the model calls and reads back, never a gate
+  whose numbers code consumes; the answers reach the transcript as a tool
+  result and no detector, recall, memory or title path sees them. The endpoint
+  resolves `ZORP_SYSTEMONE_URL`, then `ZORP_BASE_URL`, then the saved config,
+  then the loopback default, from the environment and the saved file only and
+  never a flavor (the search-provider rule: a workspace file must not move
+  where a person's `state` is sent); the model is `ZORP_SYSTEMONE_MODEL` or the
+  tool's `model` arg, with no default, and decision models never appear in the
+  chat picker. `doctor` reports whether Ollama answers and is 0.35 or newer
+  without printing a key. The client is always compiled and tested; a live
+  call against a real GGUF model and a `zorp-eval harness` TOML case are still
+  open (see the ADR). Run `cargo test -p zorp-agent` and `cargo test -p
+  zorp-agent --features systemone` whenever it changes.
 - `zorp-skill/` is zorp's own skill capability: discovery and parsing
   for Claude Code compatible skills (`SKILL.md` in a directory, YAML
   frontmatter plus a markdown body). Like `zorp-search` it depends on no
