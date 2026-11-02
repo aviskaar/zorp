@@ -250,6 +250,8 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, testing, and PR
 guidelines, and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community
 expectations.
 
+Questions and discussion: [Discussions › Q&A](https://github.com/aviskaar/zorp/discussions/categories/q-a).
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md) for third-party
