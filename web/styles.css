@@ -2165,6 +2165,7 @@ button {
 }
 
 .composer-box {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 8px;
@@ -2175,6 +2176,51 @@ button {
   border: 1px solid var(--line);
   border-radius: 16px;
   transition: border-color 130ms ease, box-shadow 130ms ease;
+}
+
+/*
+ * The `/` skill picker (#252). Anchored to the composer box and floated
+ * above the textarea. It lists names and descriptions only, never a body.
+ */
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+  z-index: 20;
+}
+
+.slash-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.slash-menu-item.selected {
+  background: var(--accent-glow);
+}
+
+.slash-menu-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.slash-menu-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-box:focus-within {

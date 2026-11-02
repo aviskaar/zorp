@@ -348,6 +348,9 @@ pub fn spawn_turn(
     session_id: String,
     message: String,
     use_memory: UseMemory,
+    // An installed skill the person chose for this one message, already
+    // checked against the registry by the handler. A name, never a body.
+    chosen_skill: Option<String>,
     // The directory this turn works in, resolved by the handler before the
     // session was occupied. A turn never resolves it for itself and never
     // falls back to the current directory.
@@ -416,6 +419,7 @@ pub fn spawn_turn(
                 session_id: &session_id,
                 message: &message,
                 recalled,
+                chosen_skill,
             },
             workspace,
             Box::new(renderer),
@@ -579,6 +583,11 @@ struct Ask<'a> {
     /// Earlier conversations, framed and fenced, or `None` when this turn
     /// did not ask for any.
     recalled: Option<String>,
+    /// A skill the person chose for this message, by name, or `None`. The
+    /// server put it here after checking it against the registry; the run
+    /// puts one zorp-authored sentence on the seed asking the model to load
+    /// it, and never carries the body.
+    chosen_skill: Option<String>,
 }
 
 /// The agent a conversation runs under, by name, and its flavor with
@@ -678,6 +687,7 @@ fn run_agent(
         session_id,
         message,
         recalled,
+        chosen_skill,
     } = ask;
     // The agent this conversation runs under, resolved before anything is
     // built from the settings, because it may replace some of them.
@@ -816,6 +826,23 @@ fn run_agent(
     // one channel recalled text must never occupy.
     if let (Some(plan), Some(block)) = (seed.as_mut(), recalled) {
         plan.records.push(zorp_agent::Message::user(block).into());
+    }
+
+    // The skill the person chose, as one sentence on the seed in the same
+    // position and by the same mechanism as the recalled block: a `user`
+    // message appended to `plan.records`, which the agent counts as already
+    // persisted and so never writes to the store. The sentence is zorp's own
+    // and names the skill; it carries nothing from the file. The model then
+    // calls the `skill` tool, gated as every tool call is, and the body
+    // travels the one way it already travels. See issue #252.
+    if let (Some(plan), Some(name)) = (seed.as_mut(), chosen_skill.as_deref()) {
+        plan.records.push(
+            zorp_agent::Message::user(format!(
+                "The person chose the skill `{name}` for this message. \
+                 Load it with the `skill` tool before doing anything else."
+            ))
+            .into(),
+        );
     }
 
     // Say what compaction took before the turn starts, not after, so it reads

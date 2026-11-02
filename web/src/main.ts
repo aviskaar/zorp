@@ -34,6 +34,13 @@ import {
   skillsView,
   type SkillsView,
 } from "./skills-view";
+import {
+  SlashMenu,
+  applyPick,
+  filterSkills,
+  leadingSkill,
+  slashQuery,
+} from "./slash-menu";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -133,6 +140,7 @@ import {
   waitForVoiceModel,
   transcribeVoice,
   type ActiveSkillListing,
+  type SkillSummary,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -489,6 +497,19 @@ const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
 const speechPlayer = new SpeechPlayer();
 const sandboxIndicator: SandboxIndicatorView = sandboxIndicatorView(document);
 const skills: SkillsView = skillsView(document);
+/**
+ * The installed skills, cached for the composer's `/` picker (#252).
+ *
+ * The same listing the toolbar pill shows, held so the picker and the
+ * leading-token check do not each refetch. Populated at startup and
+ * refreshed whenever the pill fetches. Names only ever reach the model as a
+ * `skill` field the server rechecks; a body never travels through here.
+ */
+let installedSkills: SkillSummary[] = [];
+/** The skill the current turn was sent with, for the "did not load" note. */
+let turnSkill: string | null = null;
+/** Whether this turn called the `skill` tool for `turnSkill`. */
+let turnSkillLoaded = false;
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
 const messageQueue: string[] = [];
@@ -844,6 +865,44 @@ function wireComposer(): void {
     void submitInvestigate(dom.input.value.trim(), null);
   });
 
+  // The `/` skill picker (#252). Its element lives in the composer box,
+  // positioned above the textarea by the stylesheet. The menu names skills
+  // and never carries a body; picking one writes `/name ` into the composer
+  // as plain text.
+  slashMenu = new SlashMenu(document);
+  (dom.input.parentElement ?? dom.input).append(slashMenu.element());
+
+  // This keydown is added before the Enter-sends one below, so while the
+  // menu is open it handles the navigation keys first and stops the send.
+  dom.input.addEventListener("keydown", (event) => {
+    if (!slashMenu || !slashMenu.open || event.isComposing) {
+      return;
+    }
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        slashMenu.move(1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        slashMenu.move(-1);
+        break;
+      case "Enter":
+      case "Tab":
+        // Take the key: Enter would otherwise send, Tab would move focus.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        slashMenu.pick();
+        break;
+      case "Escape":
+        event.preventDefault();
+        slashMenu.close();
+        break;
+      default:
+        break;
+    }
+  });
+
   dom.input.addEventListener("keydown", (event) => {
     // Enter sends. Shift+Enter is a newline. An open IME composition owns the
     // key and must be left alone.
@@ -854,8 +913,44 @@ function wireComposer(): void {
     void submitMessage();
   });
 
-  dom.input.addEventListener("input", autoGrowInput);
+  dom.input.addEventListener("input", () => {
+    autoGrowInput();
+    refreshSlashMenu();
+  });
+  // Moving the caret with the keyboard or mouse can open or close the menu
+  // without changing the text, so recompute on selection changes too.
+  dom.input.addEventListener("keyup", refreshSlashMenu);
+  dom.input.addEventListener("click", refreshSlashMenu);
+  dom.input.addEventListener("blur", () => slashMenu?.close());
   autoGrowInput();
+}
+
+/** The composer's slash picker, created in `wireComposer`. */
+let slashMenu: SlashMenu | null = null;
+
+/**
+ * Open, filter, or close the `/` picker from the composer's current text and
+ * caret. The menu opens only for a `/` at the start of a line (see
+ * `slashQuery`); picking rewrites the token to `/name ` as plain text.
+ */
+function refreshSlashMenu(): void {
+  if (!slashMenu) {
+    return;
+  }
+  const caret = dom.input.selectionStart ?? dom.input.value.length;
+  const query = slashQuery(dom.input.value, caret);
+  if (query === null) {
+    slashMenu.close();
+    return;
+  }
+  slashMenu.show(filterSkills(query, installedSkills), (name) => {
+    const at = dom.input.selectionStart ?? dom.input.value.length;
+    const next = applyPick(dom.input.value, at, name);
+    dom.input.value = next.text;
+    dom.input.setSelectionRange(next.caret, next.caret);
+    autoGrowInput();
+    dom.input.focus();
+  });
 }
 
 function wireSidebar(): void {
@@ -1216,6 +1311,8 @@ async function refreshApprovalMode(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 async function submitMessage(): Promise<void> {
+  // Sending ends any open `/` picker: the message is going out as typed.
+  slashMenu?.close();
   const message = dom.input.value.trim();
   if (!message) {
     return;
@@ -1319,9 +1416,19 @@ async function sendMessage(message: string): Promise<void> {
     // water mark: seq climbs for the life of the session, and resetting it
     // here would let a reconnect mid-turn render the backlog twice.
     await ensureStream(sessionId);
+    // The leading `/name` token, when it is a real installed skill, is sent
+    // as the `skill` field for the server to recheck; a path or an unknown
+    // name is left as plain text and no field is sent. The message itself is
+    // sent verbatim, `/name` included, so what is stored is what was typed.
+    const chosenSkill = leadingSkill(
+      message,
+      new Set(installedSkills.map((s) => s.name)),
+    );
+    turnSkill = chosenSkill;
+    turnSkillLoaded = false;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
-    await sendTurn(sessionId, message, dom.useMemory.checked);
+    await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
     dom.useMemory.checked = false;
   } catch (error) {
     setTurnRunning(false);
@@ -1754,6 +1861,14 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool_started":
+      // The person chose a skill for this turn and the model called the
+      // `skill` tool, which is the only way a skill loads. The event carries
+      // the tool name but not its arguments, so this records that a skill
+      // was loaded, which is what the "did not load" note below asks: a turn
+      // that named a skill and made no `skill` call did not load it.
+      if (event.name === "skill") {
+        turnSkillLoaded = true;
+      }
       // Two starts with no result between them cannot happen while tools run
       // one at a time; if it ever does, the first must not spin forever.
       abandonPendingTool("This call never reported a result");
@@ -1983,6 +2098,15 @@ function finishTurn(): void {
     pendingCheckpoint = null;
   }
   turnStopped = false;
+  // The person chose a skill for this turn and the model never called the
+  // `skill` tool. Said in a line under the answer, derived in code from the
+  // turn's tool events, so the person can see whether what they asked for
+  // happened. The note goes through `textContent` like every other line.
+  if (turnSkill && !turnSkillLoaded) {
+    appendActivity(noticeLine(`The model did not load \`${turnSkill}\``));
+  }
+  turnSkill = null;
+  turnSkillLoaded = false;
   void refreshSessions();
   // Forced past the poll interval: this is the last chance to notice what the
   // run wrote, and a file written in the final second is the interesting one.
@@ -3160,6 +3284,16 @@ async function refreshCapabilities(): Promise<void> {
     // and absent are both drawn as no pill. A count that appeared while
     // the answer was in flight would be a guess.
     renderSkillsIndicator(skills, capabilities.skills ?? null);
+    // Prime the composer's `/` picker with the installed listing, so it
+    // works before the pill is ever opened. Best effort and the same listing
+    // the pill fetches; a failure leaves the picker empty, not broken.
+    if ((capabilities.skills?.count ?? 0) > 0) {
+      void fetchSkills()
+        .then((listing) => {
+          installedSkills = listing.skills;
+        })
+        .catch(() => {});
+    }
     voiceInput.observe(capabilities.voice);
     speechPlayer.observe(capabilities.speech ?? null);
     updateReadAloudVisibility();
@@ -3207,6 +3341,8 @@ function wireSkills(): void {
         // has no such route at all. A page that lost the whole panel to
         // that would be worse than one that shows the half it has.
         const installed = await fetchSkills();
+        // Keep the composer picker's list in step with what the pill shows.
+        installedSkills = installed.skills;
         let live: ActiveSkillListing | null = null;
         if (sessionId) {
           try {

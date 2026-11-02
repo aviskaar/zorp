@@ -325,3 +325,59 @@ async fn the_listing_says_which_skills_the_model_is_offered_and_why() {
         std::env::remove_var(var);
     }
 }
+
+/// A turn that names a skill the server does not have is refused with 400,
+/// and the refusal names the skill. The name is a lookup key checked
+/// against the same registry the listing is built from, never a search and
+/// never joined onto a path; an unknown one does not quietly start a run.
+/// See issue #252.
+#[tokio::test]
+async fn a_turn_naming_an_unknown_skill_is_refused() {
+    let _env = ENV.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let env_skills = dir.path().join("env-skills");
+    write_skill(
+        &env_skills,
+        "tidy-notes",
+        "Tidy rough notes.",
+        "Group by subject.",
+    );
+    std::env::set_var("ZORP_SKILLS_DIR", &env_skills);
+    std::env::set_var("ZORP_WORKSPACE", dir.path());
+
+    let addr = spawn().await;
+
+    // A session has to exist before a turn can name a skill on it.
+    let create = format!("http://{addr}/api/sessions");
+    let id = tokio::task::spawn_blocking(move || {
+        let body: serde_json::Value = ureq::post(&create)
+            .send_json(ureq::json!({}))
+            .unwrap()
+            .into_json()
+            .unwrap();
+        body["id"].as_str().unwrap().to_string()
+    })
+    .await
+    .unwrap();
+
+    let url = format!("http://{addr}/api/sessions/{id}/turn");
+    let (status, body) = tokio::task::spawn_blocking(move || {
+        match ureq::post(&url).send_json(ureq::json!({"message": "hi", "skill": "nope"})) {
+            Ok(r) => (r.status(), r.into_string().unwrap()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap()),
+            Err(e) => panic!("unexpected transport error: {e}"),
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(status, 400, "an unknown skill should be a 400: {body}");
+    assert!(
+        body.contains("nope"),
+        "the refusal should name the skill: {body}"
+    );
+
+    for var in ["ZORP_SKILLS_DIR", "ZORP_WORKSPACE"] {
+        std::env::remove_var(var);
+    }
+}

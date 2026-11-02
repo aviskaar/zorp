@@ -1660,6 +1660,14 @@ struct TurnBody {
     /// it is a thing to choose each time and not a mode to leave on.
     #[serde(default)]
     memory: bool,
+    /// An installed skill the person chose for this one message.
+    ///
+    /// A name, never a body: the server checks it against the registry and
+    /// puts one sentence on the seed asking the model to load it with the
+    /// `skill` tool. There is no route that loads a skill, and this does not
+    /// become one. Absent means the person named none.
+    #[serde(default)]
+    skill: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2018,6 +2026,26 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
+    // A chosen skill is a name, checked here against the same registry the
+    // agent registers before the turn starts. An unknown name is a 400 that
+    // names it, never a search and never joined onto a path. The body is
+    // never carried: the turn asks the model to load the skill, it does not
+    // load one itself.
+    let chosen_skill = match body.skill {
+        Some(name) if !name.is_empty() => {
+            let installed = discover_skills(Some(workspace.as_path())).0;
+            if !zorp_skill::is_valid_skill_name(&name) || !installed.iter().any(|s| s.name == name)
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("no installed skill named {name:?}"),
+                )
+                    .into_response();
+            }
+            Some(name)
+        }
+        _ => None,
+    };
     #[cfg(feature = "recall")]
     let recall_indexer = state.recall_indexer.clone();
     #[cfg(not(feature = "recall"))]
@@ -2027,6 +2055,7 @@ async fn start_turn(
         id,
         body.message,
         body.memory,
+        chosen_skill,
         workspace,
         state.settings.clone(),
         state.own_port,

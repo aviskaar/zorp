@@ -329,6 +329,22 @@ resulting artifact, deliver it in the right form.
   listing carries no skill body either, so a `SKILL.md` cannot reach the
   page at all; the strings that do reach it are a file zorp did not write
   and go on through `textContent` like model output.
+  Typing `/` in the browser composer picks an installed skill for one
+  message (`web/src/slash-menu.ts`): the picker shows the same names and
+  descriptions the pill fetched and never a body, picking writes `/name ` as
+  plain text the person can see and delete, and the turn request carries a
+  `skill` name the server rechecks against the registry (400 for an unknown
+  one, `is_valid_skill_name` and never a path) and turns into one
+  zorp-authored sentence on the seed asking the model to load it with the
+  `skill` tool. It names a skill and never loads one: there is still no route
+  that does, the body still travels only the one way it did, and the sentence
+  reaches the model and never the store, the same mechanism and position the
+  memory block uses. The 2026-09-10 decision left a composer slash command
+  out because a control that pasted a body into the composer makes untrusted
+  text look like the person's; this moves a name, not a body, which that
+  objection does not reach. A turn that named a skill and made no `skill`
+  call gets a "did not load" line under the answer, derived in code from the
+  turn's tool events. See `docs/DECISIONS.md` (2026-11-02) and issue #252.
 - An agent is a flavor with a description, not a new format.
   `zorp-agent/src/agents.rs` reads the same two `flavors/` directories
   `--flavor` reads, `sessions.agent` holds the name a person picked, and
