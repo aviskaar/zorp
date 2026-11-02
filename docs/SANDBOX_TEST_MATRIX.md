@@ -4,8 +4,9 @@ This document maps each `srt` sandbox mode against the attack vectors the
 sandbox is meant to limit, and states for each one what was observed, what
 was not, and what it would take to observe it. It builds on the
 [threat model](THREAT_MODEL.md), which describes the operating modes and the
-trust boundaries in prose; this document is the test-by-test backing for the
-sandbox row of that model.
+trust boundaries in prose; this document is where the sandbox row of that
+model is checked against the tests, including, honestly, the cells no
+automated test backs yet.
 
 The sandbox is `srt`
 ([anthropics/sandbox-runtime](https://github.com/anthropics/sandbox-runtime)),
@@ -150,7 +151,7 @@ column names the layer that does the work, from the five layers above.
 | Write a file outside the workspace | full | blocked | blocked | blocked (no writes at all) | srt |
 | Read a credential directory (`~/.ssh`, `~/.aws`, ...) | full | blocked | blocked | blocked | srt |
 | Open the network to an arbitrary host | full | registries only | blocked | blocked | srt |
-| Reach zorp's own loopback server | code (zorp-web); not blocked on bare CLI | code + srt net wall | code + srt net wall | code + srt net wall | own-server deny under zorp-web; srt network wall in non-off modes |
+| Reach zorp's own loopback server | code (zorp-web); not blocked on bare CLI | srt net wall (+ code under zorp-web) | srt net wall (+ code under zorp-web) | srt net wall (+ code under zorp-web) | own-server deny under zorp-web; srt network wall in non-off modes |
 | Destructive command (e.g. `rm -rf`) outside the workspace | full | blocked (write-confined) | blocked (write-confined) | blocked (no writes) | srt |
 | Destructive command inside the workspace | full | confined to workspace | confined to workspace | blocked (no writes) | srt write-confinement; denylist and approvals above it |
 | Background / descendant process outlives the command | reaped | reaped | reaped | reaped | process supervision |
@@ -164,12 +165,14 @@ The evidence splits into three groups: what runs and asserts everywhere,
 what runs here because `srt` is absent, and what is gated on `srt` being
 installed and so was not exercised.
 
-### Observed without `srt`, here and in CI
+### Observed without `srt`
 
 These are unit tests over the settings generation and the supervision and
-capture layers. They do not need `srt` installed. Run with
-`cargo test -p zorp-agent --lib sandbox::`. Each named test below asserted
-and passed in this container. One other member of `sandbox::tests`,
+capture layers. They do not need `srt` installed, and CI's build-and-test
+job runs the `sandbox::` filter on every pull request. Each named test below
+asserted and passed in this container; use the exact command in the
+Reproducing section at the end, which skips the one environment-dependent
+test. One other member of `sandbox::tests`,
 `output_below_cap_is_not_dropped_after_head_fills`, fails here for a reason
 that is about output redaction and this container's environment, not about
 any `srt` mode; it is not in the list below, and it is analyzed in full at
