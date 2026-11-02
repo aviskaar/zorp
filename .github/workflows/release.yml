@@ -214,6 +214,11 @@ jobs:
             2>&1 | tee "dist/$safe.smoke.txt"
 
       - uses: actions/upload-artifact@v4
+        # always(), so a failing smoke test still uploads its log (and the
+        # manifest and archive) as a run artifact to debug from. On a passing
+        # tag the publish job turns these into release assets; on a failure
+        # there is no release, but the log is the thing you most want then.
+        if: always()
         with:
           name: zorp-${{ matrix.target }}
           path: |

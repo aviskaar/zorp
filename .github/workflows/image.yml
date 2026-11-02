@@ -110,5 +110,5 @@ jobs:
           if docker pull "$img" && docker run --rm "$img" --version; then
             echo "anonymous pull OK: the image is public"
           else
-            echo "::warning title=Image not anonymously pullable::Could not pull $img without credentials. The ghcr package is probably private. A maintainer should set it public under the package settings (Packages -> zorp -> Package settings -> Change visibility). Until then, 'docker run ghcr.io/aviskaar/zorp' needs a login."
+            echo "::warning title=Image not anonymously pullable::Could not pull $img without credentials. Most likely the ghcr package is private; it can also be a transient registry or network error. If it persists, a maintainer should confirm the package is public under its settings (Packages -> zorp -> Package settings -> Change visibility). Until it pulls anonymously, 'docker run ghcr.io/aviskaar/zorp' needs a login."
           fi

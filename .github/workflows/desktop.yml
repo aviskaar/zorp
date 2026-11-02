@@ -29,9 +29,13 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Check Release Version
+        env:
+          # Through env, not inline, so a ref name cannot break the shell.
+          TAG: ${{ inputs.tag || github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ -n "${{ inputs.tag }}" ]; then
+          tag="$TAG"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ -n "$INPUT_TAG" ]; then
             sh scripts/check-release-version.sh "$tag"
           else
             echo "Not a tag push or explicit release tag; skipping version check"
@@ -107,8 +111,10 @@ jobs:
         if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
         env:
           GH_TOKEN: ${{ github.token }}
+          # Through env, not inline, so a ref name cannot break the shell.
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$TAG"
           for i in 1 2 3 4 5; do
             if gh release view "$tag" >/dev/null 2>&1; then
               break
