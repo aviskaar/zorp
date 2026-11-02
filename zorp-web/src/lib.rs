@@ -12,6 +12,7 @@ pub mod auth;
 pub mod compaction;
 pub mod documents;
 pub mod dream;
+pub mod emoji;
 pub mod event;
 #[cfg(feature = "research")]
 pub mod investigate;

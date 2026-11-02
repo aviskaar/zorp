@@ -515,6 +515,25 @@
               aria-pressed are set from script. While recording a red dot
               pulses on its corner, so the state reads from across the room.
             -->
+            <!--
+              The emoji picker opens beside the microphone (#243). Its popover
+              is appended next to the textarea from script, and clicking a cell
+              inserts the character (or :name: for a custom emoji) at the caret.
+            -->
+            <button
+              class="emoji-btn"
+              id="emoji-btn"
+              type="button"
+              aria-label="Insert emoji"
+              title="Insert emoji"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" />
+                <circle cx="9" cy="10" r="1" />
+                <circle cx="15" cy="10" r="1" />
+                <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" />
+              </svg>
+            </button>
             <button
               class="voice-mic"
               id="voice-mic"
@@ -990,6 +1009,33 @@
             </p>
             <div class="dial-rows" id="settings-dial-rows"></div>
             <p class="settings-result" id="settings-dial-result"></p>
+          </section>
+
+          <section class="settings-section" id="settings-section-emoji">
+            <h3 class="settings-section-title">Custom emoji</h3>
+            <p class="settings-section-desc">
+              Images you add, used as <code>:name:</code> in a message. A name
+              is lowercase letters, digits, <code>_</code>, <code>+</code> or
+              <code>-</code>. PNG, GIF, WebP or SVG, up to 256 KiB.
+            </p>
+            <div class="emoji-settings-list" id="settings-emoji-list"></div>
+            <div class="emoji-settings-add">
+              <input
+                type="text"
+                id="settings-emoji-name"
+                class="settings-input"
+                placeholder="name"
+                aria-label="Custom emoji name"
+              />
+              <input
+                type="file"
+                id="settings-emoji-file"
+                accept="image/png,image/gif,image/webp,image/svg+xml"
+                aria-label="Custom emoji file"
+              />
+              <button type="button" class="settings-btn" id="settings-emoji-add">Add</button>
+            </div>
+            <p class="settings-result" id="settings-emoji-result"></p>
           </section>
 
           <section class="settings-section" id="settings-section-workspace">

@@ -11,6 +11,7 @@ To add one, copy the last file, take the next number, and add a row below.
 
 | # | Date | Decision | Status |
 |---|------|----------|--------|
+| 0149 | 2026-11-02 | [emoji: standard ones expand at send, custom ones draw on the way back](0149-emoji-standard-expand-at-send-custom-draw-on-the-way-back.md) | accepted |
 | 0148 | 2026-11-02 | [the speed dial is nine saved slots, and a press is a settings save](0148-the-speed-dial-is-nine-saved-slots-and-a-press-is-a-settings-save.md) | accepted |
 | 0147 | 2026-11-02 | [the composer names a skill, never its body](0147-the-composer-names-a-skill-never-its-body.md) | accepted |
 | 0146 | 2026-11-02 | [the vector library is deleted, because the retrieval future chose SQLite](0146-the-vector-library-is-deleted-the-retrieval-future-chose-sq.md) | accepted |

@@ -152,6 +152,15 @@ fn config_dir() -> PathBuf {
         .join("zorp")
 }
 
+/// The directory custom emoji live in, `<config>/emoji/`, beside `zorp.toml`.
+///
+/// A person drops `<name>.{png,gif,webp,svg}` here, or the browser's settings
+/// pane writes one. The name is the key a `:name:` in a message looks up; the
+/// server scans this directory and never joins a path from a message onto it.
+pub fn emoji_dir() -> PathBuf {
+    config_dir().join("emoji")
+}
+
 /// Where the settings are written.
 ///
 /// `ZORP_CONFIG` wins, then the old `ZORP_WEB_CONFIG` so an existing setup

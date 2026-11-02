@@ -61,7 +61,7 @@
   --ok: #4ade80;
 
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, "Helvetica Neue",
-    Arial, sans-serif;
+    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
   /* Display only, for the wordmark and headings. Body text stays on the
      system sans, which is what the landing site does too. */
   --display: "Poppins", ui-sans-serif, system-ui, sans-serif;
@@ -5523,4 +5523,155 @@ html.desktop .app[data-sidebar="collapsed"] .topbar {
 .dev-worklog-answer {
   white-space: pre-wrap;
   color: var(--text-faint, #666);
+}
+
+/* --- Emoji (#243) ------------------------------------------------------- */
+
+/* A custom emoji drawn inline in an answer or the composer picker: sized to
+   the surrounding line so it sits like a character, not a figure. */
+.custom-emoji {
+  height: 1.25em;
+  width: auto;
+  vertical-align: -0.2em;
+  object-fit: contain;
+}
+
+/* The emoji button beside the microphone. Same footprint as .voice-mic. */
+.emoji-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text-dim);
+  background: var(--bg-inset);
+  cursor: pointer;
+}
+.emoji-btn:hover {
+  color: var(--text);
+  border-color: var(--accent-dim);
+}
+.emoji-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+/* The autocomplete row glyph sits before the name. */
+.emoji-complete-glyph {
+  display: inline-block;
+  width: 1.4em;
+  text-align: center;
+  margin-right: 6px;
+}
+
+/* The picker popover, in the shape of the slash menu but a grid. */
+.emoji-picker {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  max-height: 340px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  padding: 8px;
+  z-index: 21;
+}
+.emoji-picker-search {
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+}
+.emoji-picker-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 6px;
+  overflow-x: auto;
+}
+.emoji-picker-tab {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.emoji-picker-tab:hover {
+  background: var(--bg-hover);
+  opacity: 1;
+}
+.emoji-picker-tab.selected {
+  background: var(--bg-hover);
+  opacity: 1;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.emoji-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  overflow-y: auto;
+}
+.emoji-picker-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  border: none;
+  background: transparent;
+  font-size: 1.3rem;
+  line-height: 1;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.emoji-picker-cell:hover {
+  background: var(--bg-hover);
+}
+.emoji-picker-empty {
+  grid-column: 1 / -1;
+  padding: 16px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+/* The settings pane's custom emoji list and add row. */
+.emoji-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.emoji-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.emoji-settings-name {
+  flex: 1 1 auto;
+  font-family: var(--mono, monospace);
+  color: var(--text-dim);
+}
+.emoji-settings-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
 }

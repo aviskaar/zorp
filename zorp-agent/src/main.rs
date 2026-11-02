@@ -3732,11 +3732,23 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                         crossterm::event::KeyCode::Tab => {
                             let flat = line.flat();
                             let names = capsules.registry().names();
-                            let candidates = zorp_agent::line_editor::complete(
-                                &flat,
-                                zorp_agent::CHAT_COMMANDS,
-                                &names,
-                            );
+                            // An open `:shortcode` at the end completes to the
+                            // emoji name, which Enter then expands; otherwise
+                            // Tab completes a leading slash command or capsule.
+                            let candidates = if let Some((before, prefix)) =
+                                zorp_agent::line_editor::emoji_token_suffix(&flat)
+                            {
+                                zorp_agent::emoji::names_with_prefix(prefix)
+                                    .iter()
+                                    .map(|name| format!("{before}{name}:"))
+                                    .collect()
+                            } else {
+                                zorp_agent::line_editor::complete(
+                                    &flat,
+                                    zorp_agent::CHAT_COMMANDS,
+                                    &names,
+                                )
+                            };
                             match candidates.len() {
                                 0 => {}
                                 1 => {
@@ -4431,6 +4443,12 @@ fn handle_chat_command(
         }
         ChatCommand::Say(text) => {
             if !text.is_empty() {
+                // Expand standard emoji shortcodes on the line as it is sent,
+                // so the message carries the character the way the browser's
+                // composer sends it. Code spans and unknown or custom names
+                // are left alone. This happens once, here, never over the
+                // stored transcript.
+                let text = zorp_agent::emoji::expand(&text);
                 run_and_render(agent, &text, out);
                 // After the answer, so the person has it before anything
                 // else is asked of the model, and only if this conversation

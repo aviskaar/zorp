@@ -23,8 +23,87 @@
  * is not a step towards typesetting and should not become one.
  */
 
+import { expandKnown } from "./emoji.ts";
+
 /** Schemes a link is allowed to have. Anything else renders as plain text. */
 const SAFE_SCHEMES = ["http://", "https://", "mailto:"];
+
+/**
+ * The custom emoji the server has listed, set by `main.ts` after it fetches
+ * `/api/emoji`. A `:name:` is drawn as an image only when its name is in here,
+ * so a name the text supplied that the server never scanned stays literal and
+ * makes no request. Empty until the listing arrives, which is the safe start.
+ */
+let customEmojiNames: ReadonlySet<string> = new Set();
+
+/** Tell the renderer which custom emoji names the server has. */
+export function setCustomEmoji(names: Iterable<string>): void {
+  customEmojiNames = new Set(names);
+}
+
+const SHORTCODE = /:([a-z0-9_+-]+):/g;
+
+/**
+ * Expand standard shortcodes and math in a run of plain text. Called only
+ * where a text node is made, so a code span and a link URL are already out of
+ * reach (see `math`). A custom emoji is not a character and is handled by
+ * `appendText`, which splits it out before this runs.
+ */
+function substitute(text: string): string {
+  return math(expandKnown(text));
+}
+
+/**
+ * Append `text` to `target`, drawing any custom emoji in it as an image and
+ * everything else as a text node with standard shortcodes and math expanded.
+ *
+ * The image is the one `<img>` this renderer makes, and it is made in code:
+ * its `src` is `/api/emoji/<name>` for a name that is in the server's listing,
+ * never a URL from the text. A `:name:` not in the listing is left in the text
+ * for `substitute`, where an unknown shortcode stays literal. This is why the
+ * `LINK` rule can still forbid every image the model points with a URL.
+ */
+function appendText(target: HTMLElement, text: string): void {
+  if (customEmojiNames.size === 0) {
+    target.append(document.createTextNode(substitute(text)));
+    return;
+  }
+  const re = new RegExp(SHORTCODE.source, "g");
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const name = match[1];
+    if (!customEmojiNames.has(name)) {
+      // Not a custom emoji. Leave it in the text so `substitute` can expand a
+      // standard shortcode or leave an unknown one literal.
+      continue;
+    }
+    const lead = text.slice(last, match.index);
+    if (lead) {
+      target.append(document.createTextNode(substitute(lead)));
+    }
+    target.append(customEmojiImage(name));
+    last = match.index + match[0].length;
+  }
+  const tail = text.slice(last);
+  if (tail) {
+    target.append(document.createTextNode(substitute(tail)));
+  }
+}
+
+/**
+ * An `<img>` for a listed custom emoji. The `src` is assembled in code from a
+ * name that is already known to be in the listing, so no URL from the message
+ * is ever used. `alt` and `title` are the name, set as text.
+ */
+function customEmojiImage(name: string): HTMLImageElement {
+  const img = document.createElement("img");
+  img.className = "custom-emoji";
+  img.src = `/api/emoji/${encodeURIComponent(name)}`;
+  img.alt = `:${name}:`;
+  img.title = name;
+  return img;
+}
 
 export function renderMarkdown(target: HTMLElement, source: string): void {
   const lines = (source ?? "").replace(/\r\n?/g, "\n").split("\n");
@@ -379,7 +458,7 @@ function renderLinks(target: HTMLElement, text: string): void {
     // not an image. It belongs to the text, not to the link.
     const lead = rest.slice(0, match.index) + before;
     if (lead) {
-      target.append(document.createTextNode(math(lead)));
+      appendText(target, lead);
     }
     if (isSafeHref(href)) {
       const anchor = document.createElement("a");
@@ -402,7 +481,7 @@ function renderLinks(target: HTMLElement, text: string): void {
     rest = rest.slice(match.index + whole.length);
   }
   if (rest) {
-    target.append(document.createTextNode(math(rest)));
+    appendText(target, rest);
   }
 }
 

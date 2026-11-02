@@ -7,7 +7,7 @@
  * answers. Nothing here approves anything on its own.
  */
 
-import { renderMarkdown } from "./markdown";
+import { renderMarkdown, setCustomEmoji } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { AnswerCount, branchButton } from "./branch";
@@ -41,6 +41,15 @@ import {
   leadingSkill,
   slashQuery,
 } from "./slash-menu";
+import { expandShortcodes } from "./emoji.ts";
+import {
+  EmojiComplete,
+  applyEmojiPick,
+  emojiQuery,
+  matchEmoji,
+  type EmojiMatch,
+} from "./emoji-complete.ts";
+import { EmojiPicker } from "./emoji-picker.ts";
 import {
   renderDialRows,
   slotByNumber,
@@ -111,6 +120,9 @@ import {
   setAutoApprove,
   fetchActiveSkills,
   fetchSkills,
+  fetchEmoji,
+  addEmoji,
+  deleteEmoji,
   getCapabilities,
   branchSession,
   clearAllSessions,
@@ -150,6 +162,7 @@ import {
   transcribeVoice,
   type ActiveSkillListing,
   type SkillSummary,
+  type CustomEmoji,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -287,6 +300,12 @@ interface Elements {
   settingsModelHint: HTMLElement;
   settingsDialRows: HTMLElement;
   settingsDialResult: HTMLElement;
+  emojiBtn: HTMLButtonElement;
+  settingsEmojiList: HTMLElement;
+  settingsEmojiName: HTMLInputElement;
+  settingsEmojiFile: HTMLInputElement;
+  settingsEmojiAdd: HTMLButtonElement;
+  settingsEmojiResult: HTMLElement;
   settingsRefreshModels: HTMLButtonElement;
   settingsApiKeyField: HTMLElement;
   settingsApiKey: HTMLInputElement;
@@ -615,10 +634,89 @@ function start(): void {
   wireApprovalMode();
   wireReadAloud();
   wireZorpMode();
+  wireCustomEmoji();
   paintApprovalMode();
   showEmptyState();
   setStatus("idle", "idle");
   void connectOrExplain();
+  // Load the custom emoji listing so the renderer and picker know the names.
+  void refreshCustomEmoji();
+}
+
+/** Wire the settings pane's custom emoji section. */
+function wireCustomEmoji(): void {
+  dom.settingsEmojiAdd?.addEventListener("click", () => void addCustomEmojiFromForm());
+}
+
+function renderCustomEmojiSettings(): void {
+  if (!dom.settingsEmojiList) {
+    return;
+  }
+  dom.settingsEmojiList.replaceChildren();
+  if (customEmoji.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-hint";
+    empty.textContent = "No custom emoji yet. Add one below, or copy a file into the emoji directory.";
+    dom.settingsEmojiList.append(empty);
+    return;
+  }
+  for (const entry of customEmoji) {
+    const row = document.createElement("div");
+    row.className = "emoji-settings-row";
+    const img = document.createElement("img");
+    img.className = "custom-emoji";
+    img.src = `/api/emoji/${encodeURIComponent(entry.name)}`;
+    img.alt = `:${entry.name}:`;
+    const name = document.createElement("span");
+    name.className = "emoji-settings-name";
+    name.textContent = `:${entry.name}:`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "emoji-settings-remove";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => void removeCustomEmoji(entry.name));
+    row.append(img, name, remove);
+    dom.settingsEmojiList.append(row);
+  }
+}
+
+async function addCustomEmojiFromForm(): Promise<void> {
+  if (!dom.settingsEmojiName || !dom.settingsEmojiFile) {
+    return;
+  }
+  const name = dom.settingsEmojiName.value.trim().toLowerCase();
+  const file = dom.settingsEmojiFile.files?.[0] ?? null;
+  if (!name || !file) {
+    setEmojiResult("A name and a file are both needed.", "fail");
+    return;
+  }
+  try {
+    await addEmoji(name, file);
+    dom.settingsEmojiName.value = "";
+    dom.settingsEmojiFile.value = "";
+    setEmojiResult(`Added :${name}:`, "ok");
+    await refreshCustomEmoji();
+  } catch (error) {
+    setEmojiResult(describeError(error), "fail");
+  }
+}
+
+async function removeCustomEmoji(name: string): Promise<void> {
+  try {
+    await deleteEmoji(name);
+    setEmojiResult(`Removed :${name}:`, "ok");
+    await refreshCustomEmoji();
+  } catch (error) {
+    setEmojiResult(describeError(error), "fail");
+  }
+}
+
+function setEmojiResult(text: string, state: "ok" | "fail"): void {
+  if (!dom.settingsEmojiResult) {
+    return;
+  }
+  dom.settingsEmojiResult.textContent = text;
+  dom.settingsEmojiResult.dataset.state = state;
 }
 
 /** Check there is a zorp server before offering a composer.
@@ -813,6 +911,12 @@ function collectElements(): Elements {
     settingsModelHint: byId("settings-model-hint"),
     settingsDialRows: byId("settings-dial-rows"),
     settingsDialResult: byId("settings-dial-result"),
+    emojiBtn: byId<HTMLButtonElement>("emoji-btn"),
+    settingsEmojiList: byId("settings-emoji-list"),
+    settingsEmojiName: byId<HTMLInputElement>("settings-emoji-name"),
+    settingsEmojiFile: byId<HTMLInputElement>("settings-emoji-file"),
+    settingsEmojiAdd: byId<HTMLButtonElement>("settings-emoji-add"),
+    settingsEmojiResult: byId("settings-emoji-result"),
     settingsRefreshModels: byId<HTMLButtonElement>("settings-refresh-models"),
     settingsApiKeyField: byId("settings-api-key-field"),
     settingsApiKey: byId<HTMLInputElement>("settings-api-key"),
@@ -930,6 +1034,24 @@ function wireComposer(): void {
   slashMenu = new SlashMenu(document, dom.input);
   (dom.input.parentElement ?? dom.input).append(slashMenu.element());
 
+  // Emoji autocomplete (#243): typing `:` and two or more characters opens a
+  // list. Its element lives beside the slash menu in the composer box.
+  emojiComplete = new EmojiComplete(document, dom.input);
+  (dom.input.parentElement ?? dom.input).append(emojiComplete.element());
+
+  // The emoji picker button and its popover. Clicking a cell inserts at the
+  // caret; the popover stays open so several can be inserted.
+  emojiPicker = new EmojiPicker(document);
+  emojiPicker.setCustom(customEmoji);
+  (dom.input.parentElement ?? dom.input).append(emojiPicker.element());
+  if (dom.emojiBtn) {
+    dom.emojiBtn.addEventListener("click", () => {
+      slashMenu?.close();
+      emojiComplete?.close();
+      emojiPicker?.toggle((text) => insertAtCaret(text));
+    });
+  }
+
   // This keydown is added before the Enter-sends one below, so while the
   // menu is open it handles the navigation keys first and stops the send.
   dom.input.addEventListener("keydown", (event) => {
@@ -973,6 +1095,45 @@ function wireComposer(): void {
     }
   });
 
+  // The emoji autocomplete owns the same navigation keys while it is open.
+  // Added after the slash handler and before the Enter-sends one, so a key it
+  // takes never reaches the send. The two never open together: the slash menu
+  // is only the leading `/token`, the emoji list only a `:token` after
+  // whitespace.
+  dom.input.addEventListener("keydown", (event) => {
+    if (!emojiComplete || !emojiComplete.open || event.isComposing) {
+      return;
+    }
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emojiComplete.move(1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emojiComplete.move(-1);
+        break;
+      case "Enter":
+      case "Tab":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emojiComplete.pick();
+        break;
+      case "Escape": {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const caret = dom.input.selectionStart ?? dom.input.value.length;
+        emojiDismissed = emojiQuery(dom.input.value, caret)?.query ?? null;
+        emojiComplete.close();
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
   dom.input.addEventListener("keydown", (event) => {
     // Enter sends. Shift+Enter is a newline. An open IME composition owns the
     // key and must be left alone.
@@ -986,22 +1147,99 @@ function wireComposer(): void {
   dom.input.addEventListener("input", () => {
     autoGrowInput();
     refreshSlashMenu();
+    refreshEmojiComplete();
   });
-  // Moving the caret with the keyboard or mouse can open or close the menu
+  // Moving the caret with the keyboard or mouse can open or close a menu
   // without changing the text, so recompute on selection changes too.
-  dom.input.addEventListener("keyup", refreshSlashMenu);
-  dom.input.addEventListener("click", refreshSlashMenu);
+  dom.input.addEventListener("keyup", () => {
+    refreshSlashMenu();
+    refreshEmojiComplete();
+  });
+  dom.input.addEventListener("click", () => {
+    refreshSlashMenu();
+    refreshEmojiComplete();
+  });
   dom.input.addEventListener("blur", () => {
     // Leaving the field forgets an Escape dismissal, so coming back to the
-    // same `/token` reopens the picker rather than finding it stuck closed.
+    // same token reopens the picker rather than finding it stuck closed.
     slashDismissedQuery = null;
+    emojiDismissed = null;
     slashMenu?.close();
+    emojiComplete?.close();
   });
   autoGrowInput();
 }
 
+/**
+ * Fetch the custom emoji listing and hand it to the renderer and the picker.
+ * The renderer draws a `:name:` as an image only for a name in here, so this
+ * is what makes custom emoji appear; the listing carries no body. Best effort:
+ * a failure leaves the set empty, which renders every `:name:` as literal text.
+ */
+async function refreshCustomEmoji(): Promise<void> {
+  try {
+    customEmoji = await fetchEmoji();
+  } catch {
+    customEmoji = [];
+  }
+  setCustomEmoji(customEmoji.map((c) => c.name));
+  emojiPicker?.setCustom(customEmoji);
+  renderCustomEmojiSettings();
+}
+
+/** Insert `text` at the composer's caret, replacing any selection. */
+function insertAtCaret(text: string): void {
+  const start = dom.input.selectionStart ?? dom.input.value.length;
+  const end = dom.input.selectionEnd ?? start;
+  const value = dom.input.value;
+  dom.input.value = value.slice(0, start) + text + value.slice(end);
+  const caret = start + text.length;
+  dom.input.setSelectionRange(caret, caret);
+  dom.input.focus();
+  autoGrowInput();
+}
+
+/**
+ * Open, update or close the emoji autocomplete from the caret. Mirrors
+ * `refreshSlashMenu`: the token under the caret decides, an Escape dismissal
+ * of the same query keeps it closed, and the matches include custom emoji.
+ */
+function refreshEmojiComplete(): void {
+  if (!emojiComplete) {
+    return;
+  }
+  const caret = dom.input.selectionStart ?? dom.input.value.length;
+  const found = emojiQuery(dom.input.value, caret);
+  if (!found) {
+    emojiComplete.close();
+    emojiDismissed = null;
+    return;
+  }
+  if (found.query === emojiDismissed) {
+    return;
+  }
+  emojiDismissed = null;
+  const names = customEmoji.map((c) => c.name);
+  const matches = matchEmoji(found.query, names);
+  emojiComplete.show(matches, (match: EmojiMatch) => {
+    const at = dom.input.selectionStart ?? dom.input.value.length;
+    const next = applyEmojiPick(dom.input.value, found.start, at, match.insert);
+    dom.input.value = next.text;
+    dom.input.setSelectionRange(next.caret, next.caret);
+    dom.input.focus();
+    autoGrowInput();
+  });
+}
+
 /** The composer's slash picker, created in `wireComposer`. */
 let slashMenu: SlashMenu | null = null;
+/** The composer's emoji autocomplete and picker, created in `wireComposer`. */
+let emojiComplete: EmojiComplete | null = null;
+let emojiPicker: EmojiPicker | null = null;
+/** The emoji query an Escape dismissed, so a keyup does not reopen it. */
+let emojiDismissed: string | null = null;
+/** The custom emoji the server has listed. Set by `refreshCustomEmoji`. */
+let customEmoji: CustomEmoji[] = [];
 
 /**
  * Open, filter, or close the `/` picker from the composer's current text and
@@ -1394,25 +1632,33 @@ async function refreshApprovalMode(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 async function submitMessage(): Promise<void> {
-  // Sending ends any open `/` picker: the message is going out as typed.
+  // Sending ends any open picker: the message is going out as typed.
   slashMenu?.close();
-  const message = dom.input.value.trim();
-  if (!message) {
+  emojiComplete?.close();
+  const raw = dom.input.value.trim();
+  if (!raw) {
     return;
   }
 
   // The one slash command there is. A `startsWith` check and not a command
   // table, because a table for one entry is a table nobody reads; build one
   // when there is a second.
-  if (message === "/compact" || message.startsWith("/compact ")) {
+  if (raw === "/compact" || raw.startsWith("/compact ")) {
     dom.input.value = "";
     autoGrowInput();
-    await runCompact(message.slice("/compact".length).trim());
+    await runCompact(raw.slice("/compact".length).trim());
     return;
   }
 
   dom.input.value = "";
   autoGrowInput();
+
+  // Expand standard emoji shortcodes once, here, so the message the model,
+  // the recall index and a later quote all see carries the character rather
+  // than a name. Code spans and unknown or custom names are left alone; a
+  // custom `:name:` stays for the renderer to draw. This never touches the
+  // stored transcript of earlier messages.
+  const message = expandShortcodes(raw);
 
   if (turnRunning) {
     messageQueue.push(message);

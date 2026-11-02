@@ -4632,6 +4632,29 @@ mod tests {
         }
     }
 
+    /// Custom emoji are files a person adds in the settings pane, and the
+    /// routes that add, remove and list them are a person's, not a turn's: a
+    /// tool that wrote one would be a turn putting a file on disk the renderer
+    /// then draws. So nothing the model can call reaches them. (#243)
+    #[test]
+    fn no_tool_manages_custom_emoji() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "emoji",
+            "add_emoji",
+            "custom_emoji",
+            "upload_emoji",
+            "delete_emoji",
+            "list_emoji",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// A dream pass reads a person's whole conversation history and writes
     /// suggestions that, once accepted, create a project or write a flavor
     /// file. Detection is code and a pass is a person doing it, from the CLI

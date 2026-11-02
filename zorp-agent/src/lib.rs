@@ -20,6 +20,8 @@ pub mod critique;
 pub mod deliver;
 pub mod doctor;
 pub mod dream;
+pub mod emoji;
+pub mod emoji_table;
 #[cfg(feature = "ensemble")]
 pub mod ensemble;
 mod flavor;
