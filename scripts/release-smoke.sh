@@ -41,28 +41,35 @@ fail() {
     exit 1
 }
 
-# A real release tag is `v<digit>...`; check-release-version.sh guarantees the
-# binary's version then equals the tag, so assert it. A workflow_dispatch
-# rehearsal passes a branch ref instead (e.g. `main`), which no binary reports,
-# so there require only that a version prints, the way default-version skips
-# its check off a tag. Never compare a binary's version to a branch name.
-strict=0
-case "$tag" in
-    v[0-9]*) strict=1 ;;
-esac
+# Whether to require the binary's version to equal the tag. The caller sets
+# ZORP_SMOKE_STRICT=1 only on a real tag push (github.ref_type == 'tag'), where
+# check-release-version.sh guarantees the two agree. It is deliberately not
+# inferred from the tag string: a branch named `v2-migration` is still a
+# rehearsal, not a release. Off, the version is still checked for shape, just
+# not compared to a ref that is a branch name.
+strict="${ZORP_SMOKE_STRICT:-0}"
 
-# Check one binary prints a version, and (on a real tag) that it is the tag's.
-# `zorp 0.8.0` -> field 2 is the number, compared exactly so v0.8.1 does not
-# accept 0.8.10.
+# Check a binary runs, prints a real version number, and (strict) that it is
+# the tag's. `zorp 0.8.0` -> field 2 is the number, compared exactly so v0.8.1
+# does not accept 0.8.10.
 check_version() {
     name="$1"
     bin="$2"
-    got="$("$bin" --version 2>&1 || true)"
+    if ! got="$("$bin" --version 2>&1)"; then
+        echo "$name: $got"
+        fail "$name --version exited non-zero"
+    fi
     echo "$name: $got"
     # shellcheck disable=SC2086
     set -- $got
     v="${2:-}"
-    [ -n "$v" ] || fail "$name printed no version"
+    # A real version starts with a digit; an error message ("sh: ...: not
+    # found", "dyld: ...") does not, so this catches a binary that does not
+    # actually run even when no equality is asserted.
+    case "$v" in
+        [0-9]*) : ;;
+        *) fail "$name --version did not print a version number: '$got'" ;;
+    esac
     if [ "$strict" = "1" ] && [ "$v" != "${tag#v}" ]; then
         fail "$name version '$v' is not '${tag#v}'"
     fi

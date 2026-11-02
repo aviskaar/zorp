@@ -66,9 +66,13 @@ jobs:
         # passes no --features), so the manifest cannot drift from the real
         # build the way a hardcoded list would. Published beside the DMG so a
         # download has a machine-readable answer to which build carries what.
+        env:
+          # Through env, not inline `${{ }}`, so an odd ref name cannot break
+          # the shell quoting on a workflow_dispatch rehearsal.
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$TAG"
           # A ref name can contain a slash on a workflow_dispatch rehearsal;
           # keep it out of the file path.
           safe_tag="$(printf '%s' "$tag" | tr '/' '-')"
