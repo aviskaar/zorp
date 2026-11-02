@@ -195,7 +195,7 @@ design specs live, and repo conventions.
 ## Status and roadmap
 
 - [x] Base execution harness (forked from quecto, renamed, fully tested)
-- [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB + LanceDB)
+- [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB)
 - [x] **validate**: is this question worth investigating (novelty and feasibility check)
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [x] **co-write**: zorp drafts the artifact, a human is always the author of record
