@@ -108,14 +108,20 @@ export function applyPick(
   while (start > 0 && !/\s/.test(text[start - 1])) {
     start -= 1;
   }
-  // The token also runs forward to the next whitespace, so picking while the
-  // caret is in the middle of a half-typed name replaces the whole name.
+  // The token runs forward to the next whitespace, so picking mid-name
+  // replaces the whole name.
   let end = caret;
   while (end < text.length && !/\s/.test(text[end])) {
     end += 1;
   }
+  // Absorb one run of following whitespace so the `/name ` we insert does
+  // not stack a second space on the one that was already there.
+  let after = end;
+  while (after < text.length && /\s/.test(text[after])) {
+    after += 1;
+  }
   const insert = `/${name} `;
-  const next = text.slice(0, start) + insert + text.slice(end);
+  const next = text.slice(0, start) + insert + text.slice(after);
   return { text: next, caret: start + insert.length };
 }
 
@@ -151,14 +157,28 @@ export class SlashMenu {
     return !this.el.hidden;
   }
 
-  /** Show `items`, select the first, and route a pick to `onpick`. */
+  /**
+   * Show `items`, routing a pick to `onpick`. The selection resets to the
+   * first item only when the list actually changed: a re-show with the same
+   * names (which happens on every keyup while the menu is open) must not
+   * snap the highlight back, or keyboard navigation could never leave the
+   * top row.
+   */
   show(items: SkillSummary[], onpick: (name: string) => void): void {
+    const sameList =
+      this.open &&
+      this.items.length === items.length &&
+      this.items.every((s, i) => s.name === items[i].name);
     this.items = items;
     this.onpick = onpick;
-    this.index = 0;
     if (items.length === 0) {
       this.close();
       return;
+    }
+    if (!sameList) {
+      this.index = 0;
+    } else {
+      this.index = Math.min(this.index, items.length - 1);
     }
     this.render();
     this.el.hidden = false;

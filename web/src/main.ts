@@ -141,6 +141,7 @@ import {
   transcribeVoice,
   type ActiveSkillListing,
   type SkillSummary,
+  type SkillListing,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -498,14 +499,19 @@ const speechPlayer = new SpeechPlayer();
 const sandboxIndicator: SandboxIndicatorView = sandboxIndicatorView(document);
 const skills: SkillsView = skillsView(document);
 /**
- * The installed skills, cached for the composer's `/` picker (#252).
+ * The skills the composer's `/` picker offers (#252).
  *
- * The same listing the toolbar pill shows, held so the picker and the
- * leading-token check do not each refetch. Populated at startup and
- * refreshed whenever the pill fetches. Names only ever reach the model as a
- * `skill` field the server rechecks; a body never travels through here.
+ * The installed listing minus the ones this conversation's model is not
+ * offered (`offer.withheld`): a skill the model's own `skill` tool cannot
+ * load is not one to let a person pick, or the seed would ask for a load
+ * that always fails. Held so the picker and the leading-token check do not
+ * each refetch; populated at startup and refreshed whenever the pill
+ * fetches. Names only ever reach the model as a `skill` field the server
+ * rechecks; a body never travels through here.
  */
-let installedSkills: SkillSummary[] = [];
+let pickableSkills: SkillSummary[] = [];
+/** The `/` query that was dismissed with Escape, kept closed until it changes. */
+let slashDismissedQuery: string | null = null;
 /** The skill the current turn was sent with, for the "did not load" note. */
 let turnSkill: string | null = null;
 /** Whether this turn called the `skill` tool for `turnSkill`. */
@@ -894,10 +900,15 @@ function wireComposer(): void {
         event.stopImmediatePropagation();
         slashMenu.pick();
         break;
-      case "Escape":
+      case "Escape": {
         event.preventDefault();
+        // Remember which query was dismissed so the keyup that follows does
+        // not reopen the same menu.
+        const caret = dom.input.selectionStart ?? dom.input.value.length;
+        slashDismissedQuery = slashQuery(dom.input.value, caret);
         slashMenu.close();
         break;
+      }
       default:
         break;
     }
@@ -940,10 +951,18 @@ function refreshSlashMenu(): void {
   const caret = dom.input.selectionStart ?? dom.input.value.length;
   const query = slashQuery(dom.input.value, caret);
   if (query === null) {
+    slashDismissedQuery = null;
     slashMenu.close();
     return;
   }
-  slashMenu.show(filterSkills(query, installedSkills), (name) => {
+  // Escape dismissed this exact query; keep it closed until the text or
+  // caret moves it to a different one, or Escape would be undone on keyup.
+  if (query === slashDismissedQuery) {
+    slashMenu.close();
+    return;
+  }
+  slashDismissedQuery = null;
+  slashMenu.show(filterSkills(query, pickableSkills), (name) => {
     const at = dom.input.selectionStart ?? dom.input.value.length;
     const next = applyPick(dom.input.value, at, name);
     dom.input.value = next.text;
@@ -951,6 +970,17 @@ function refreshSlashMenu(): void {
     autoGrowInput();
     dom.input.focus();
   });
+}
+
+/**
+ * The installed skills this conversation's model is actually offered: the
+ * listing minus `offer.withheld`. A withheld skill cannot be loaded by the
+ * model's `skill` tool, so the picker does not offer it and the server
+ * refuses it by name.
+ */
+function offeredSkills(listing: SkillListing): SkillSummary[] {
+  const withheld = new Set(listing.offer?.withheld ?? []);
+  return listing.skills.filter((s) => !withheld.has(s.name));
 }
 
 function wireSidebar(): void {
@@ -1416,19 +1446,24 @@ async function sendMessage(message: string): Promise<void> {
     // water mark: seq climbs for the life of the session, and resetting it
     // here would let a reconnect mid-turn render the backlog twice.
     await ensureStream(sessionId);
-    // The leading `/name` token, when it is a real installed skill, is sent
-    // as the `skill` field for the server to recheck; a path or an unknown
-    // name is left as plain text and no field is sent. The message itself is
-    // sent verbatim, `/name` included, so what is stored is what was typed.
+    // The leading `/name` token, when it is a skill this model is offered,
+    // is sent as the `skill` field for the server to recheck; a path or an
+    // unknown or withheld name is left as plain text and no field is sent.
+    // The message itself is sent verbatim, `/name` included, so what is
+    // stored is what was typed.
     const chosenSkill = leadingSkill(
       message,
-      new Set(installedSkills.map((s) => s.name)),
+      new Set(pickableSkills.map((s) => s.name)),
     );
-    turnSkill = chosenSkill;
+    // Cleared before the send so a failed start cannot leave a stale skill
+    // for a later turn's "did not load" note; set only once the turn is
+    // accepted.
+    turnSkill = null;
     turnSkillLoaded = false;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
     await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
+    turnSkill = chosenSkill;
     dom.useMemory.checked = false;
   } catch (error) {
     setTurnRunning(false);
@@ -3284,13 +3319,13 @@ async function refreshCapabilities(): Promise<void> {
     // and absent are both drawn as no pill. A count that appeared while
     // the answer was in flight would be a guess.
     renderSkillsIndicator(skills, capabilities.skills ?? null);
-    // Prime the composer's `/` picker with the installed listing, so it
-    // works before the pill is ever opened. Best effort and the same listing
-    // the pill fetches; a failure leaves the picker empty, not broken.
+    // Prime the composer's `/` picker with the offered listing, so it works
+    // before the pill is ever opened. Best effort and the same listing the
+    // pill fetches; a failure leaves the picker empty, not broken.
     if ((capabilities.skills?.count ?? 0) > 0) {
       void fetchSkills()
         .then((listing) => {
-          installedSkills = listing.skills;
+          pickableSkills = offeredSkills(listing);
         })
         .catch(() => {});
     }
@@ -3341,8 +3376,8 @@ function wireSkills(): void {
         // has no such route at all. A page that lost the whole panel to
         // that would be worse than one that shows the half it has.
         const installed = await fetchSkills();
-        // Keep the composer picker's list in step with what the pill shows.
-        installedSkills = installed.skills;
+        // Keep the composer picker's offered list in step with the pill.
+        pickableSkills = offeredSkills(installed);
         let live: ActiveSkillListing | null = null;
         if (sessionId) {
           try {

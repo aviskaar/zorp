@@ -2042,6 +2042,21 @@ async fn start_turn(
                 )
                     .into_response();
             }
+            // A skill the model is not offered (skill routing withholds it,
+            // e.g. `react-components` from a small model) cannot be loaded by
+            // its `skill` tool, so naming it would ask the seed for a load
+            // that always fails. Refuse it by name against the same offer the
+            // listing reports, so the picker and the server agree.
+            let (_, offer) =
+                turn::skill_offer_for(&state.settings, Some(workspace.as_path()), Some(&id));
+            let withheld = offer.withheld(installed.iter().map(|s| s.name.as_str()));
+            if withheld.contains(&name) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("skill {name:?} is not offered to this conversation's model"),
+                )
+                    .into_response();
+            }
             Some(name)
         }
         _ => None,

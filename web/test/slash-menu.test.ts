@@ -77,9 +77,11 @@ test("applyPick replaces the token with `/name ` and places the caret", () => {
   const r = applyPick("/re", 3, "review");
   assert.equal(r.text, "/review ");
   assert.equal(r.caret, "/review ".length);
-  // Mid-name pick replaces the whole name, keeps the rest.
+  // Mid-name pick replaces the whole name and absorbs the following space,
+  // so there is no double space before the rest.
   const mid = applyPick("/rev ok", 2, "review");
-  assert.equal(mid.text, "/review  ok");
+  assert.equal(mid.text, "/review ok");
+  assert.equal(mid.caret, "/review ".length);
 });
 
 test("SlashMenu shows rows through textContent and never builds HTML", () => {
@@ -116,4 +118,21 @@ test("SlashMenu stays closed for an empty list", () => {
   const menu = new SlashMenu(dom.window.document);
   menu.show([], () => {});
   assert.equal(menu.open, false);
+});
+
+test("SlashMenu keeps the selection when re-shown with the same items", () => {
+  // The composer re-shows the menu on every keyup, which must not snap the
+  // highlight back to the top, or arrow-key navigation could never move.
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const menu = new SlashMenu(dom.window.document);
+  dom.window.document.body.append(menu.element());
+  let picked = "";
+  const onpick = (name: string) => {
+    picked = name;
+  };
+  menu.show(SKILLS, onpick);
+  menu.move(1); // -> landing-page
+  menu.show(SKILLS, onpick); // same list, as a keyup would
+  menu.pick();
+  assert.equal(picked, "landing-page");
 });
