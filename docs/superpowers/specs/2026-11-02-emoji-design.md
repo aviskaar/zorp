@@ -81,14 +81,15 @@ skips one.
 
 `zorp-web/src/emoji.rs`, routes behind the token gate:
 
-- `GET /api/emoji` — names and types, from a scan of the directory.
-- `GET /api/emoji/:name` — the file, its own content type,
+- `GET /api/emoji`: names and types, from a scan of the directory.
+- `GET /api/emoji/:name`: the file, its own content type,
   `X-Content-Type-Options: nosniff`, a 256 KiB cap, and for an SVG the bare
   `Content-Security-Policy: sandbox` the artifact pane uses, because an SVG can
   carry script.
-- `POST /api/emoji` — multipart (name + file); refuses a bad name, a file over
-  the cap, or a type it does not serve.
-- `DELETE /api/emoji/:name` — removes it.
+- `POST /api/emoji?name=<name>`: the raw file as the body (the name in the
+  query); refuses a bad name, a file over the cap, or a type it does not serve.
+  The type is sniffed from the bytes, not trusted from the client.
+- `DELETE /api/emoji/:name`: removes it.
 
 The routes are for a person in the settings pane. No model tool adds, removes
 or lists custom emoji; `agent.rs` gets the usual `no_tool_*` test.

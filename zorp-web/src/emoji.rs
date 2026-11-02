@@ -256,7 +256,7 @@ pub fn delete_in(base: &std::path::Path, name: &str) -> Result<(), EmojiErr> {
     }
 }
 
-/// `GET /api/emoji` — the installed custom emoji, name and content type.
+/// `GET /api/emoji`: the installed custom emoji, name and content type.
 pub async fn list() -> impl IntoResponse {
     let items: Vec<_> = list_in(&dir())
         .into_iter()
@@ -265,7 +265,7 @@ pub async fn list() -> impl IntoResponse {
     Json(json!({ "emoji": items }))
 }
 
-/// `GET /api/emoji/:name` — serve the file with its own content type, a size
+/// `GET /api/emoji/:name`: serve the file with its own content type, a size
 /// cap, `nosniff`, and for an SVG the bare `sandbox` CSP, because an SVG can
 /// carry script.
 pub async fn serve(Path(name): Path<String>) -> axum::response::Response {
@@ -293,7 +293,7 @@ pub async fn serve(Path(name): Path<String>) -> axum::response::Response {
     }
 }
 
-/// `POST /api/emoji?name=<name>` — the raw file as the body. The type is
+/// `POST /api/emoji?name=<name>`: the raw file as the body. The type is
 /// sniffed, not trusted; a bad name, an oversize file, or a type this does not
 /// serve is refused. Any existing file for the name is replaced.
 pub async fn add(Query(query): Query<AddQuery>, body: Bytes) -> axum::response::Response {
@@ -307,7 +307,7 @@ pub async fn add(Query(query): Query<AddQuery>, body: Bytes) -> axum::response::
     }
 }
 
-/// `DELETE /api/emoji/:name` — remove the file for the name.
+/// `DELETE /api/emoji/:name`: remove the file for the name.
 pub async fn delete(Path(name): Path<String>) -> axum::response::Response {
     match delete_in(&dir(), &name) {
         Ok(()) => (StatusCode::OK, Json(json!({ "removed": name }))).into_response(),
