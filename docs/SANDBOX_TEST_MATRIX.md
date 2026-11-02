@@ -103,12 +103,17 @@ of the sandbox.
 ## Which layer stops which vector
 
 The issue's attack vectors are stopped, where they are stopped at all, by
-four different layers. Naming the layer for each one is the honest way to
+five different layers. Naming the layer for each one is the honest way to
 report this: `srt` does not stop all of them, and saying it does would be
 wrong.
 
 - **srt (OS filesystem and network):** writes outside the workspace,
   reading credential directories, and opening the network.
+- **In-code policy (denylist, approval gate, own-server deny):** the
+  `run_command` denylist and the approval preset decide what the model may
+  ask for in the first place, and the own-server deny refuses a call to
+  zorp's own loopback server (ADR 0053) whatever the sandbox says. This
+  layer sits above the sandbox and runs in every mode, `off` included.
 - **Process supervision (`ProcessGroup`, every build including Windows):**
   background and descendant processes, which are reaped with the group when
   the command finishes, is cancelled, or times out.
