@@ -150,7 +150,7 @@ column names the layer that does the work, from the five layers above.
 | Write a file outside the workspace | full | blocked | blocked | blocked (no writes at all) | srt |
 | Read a credential directory (`~/.ssh`, `~/.aws`, ...) | full | blocked | blocked | blocked | srt |
 | Open the network to an arbitrary host | full | registries only | blocked | blocked | srt |
-| Reach zorp's own loopback server | denied in code (zorp-web) | code + srt net wall | code + srt net wall | code + srt net wall | own-server deny under zorp-web; srt network wall in non-off modes |
+| Reach zorp's own loopback server | code (zorp-web); not blocked on bare CLI | code + srt net wall | code + srt net wall | code + srt net wall | own-server deny under zorp-web; srt network wall in non-off modes |
 | Destructive command (e.g. `rm -rf`) outside the workspace | full | blocked (write-confined) | blocked (write-confined) | blocked (no writes) | srt |
 | Destructive command inside the workspace | full | confined to workspace | confined to workspace | blocked (no writes) | srt write-confinement; denylist and approvals above it |
 | Background / descendant process outlives the command | reaped | reaped | reaped | reaped | process supervision |
@@ -255,9 +255,12 @@ redacts its value from command output. This container sets
 `1` is treated as a secret, the `1` in `12345678` is replaced with
 `[REDACTED]`, and the expanded output runs past the cap and is truncated.
 The test passes in an environment with no such short secret-named variable.
-This is a test-isolation and heuristic problem in `capture.rs`, unrelated to
-the sandbox modes this document is about; it is tracked as issue #327 and
-left out of this change to keep it to one subject.
+This is a test-isolation and heuristic problem in the capture layer: the
+heuristic (`secret_values` and its `KEY`/`TOKEN`/`SECRET`/`PASSWORD` name
+match) lives in `sandbox/mod.rs`, and `capture.rs` applies whatever secrets
+it is handed. It is unrelated to the sandbox modes this document is about,
+is tracked as issue #327, and is left out of this change to keep it to one
+subject.
 
 ## Gaps and remediation status
 
