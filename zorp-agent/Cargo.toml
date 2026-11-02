@@ -70,9 +70,6 @@ recall   = ["dep:zorp-recall"]
 # one puts it in front of a model. Turns on `recall`, the way `zorp-web`'s
 # feature of the same name does.
 memory   = ["recall"]
-# Opt-in vector store for validate's cited sources. Deliberately not
-# part of `research`: it drags in LanceDB's arrow stack at build time.
-library  = ["research", "zorp-track/library"]
 clipboard = ["dep:arboard"]
 # The review loop over free models: one model works, others test it, the
 # findings go back. Off by default. It is a harness experiment and a plain

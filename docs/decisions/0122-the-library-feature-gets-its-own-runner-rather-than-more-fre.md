@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-11
 ---
 
 # the library feature gets its own runner rather than more free disk
+
+**Superseded by** 0146 (2026-11-02): the `library` feature and this
+`research-library` job are both deleted.
 
 **Decision:** `cargo test -p zorp-track --features library` moved out of the
 `research` job into a `research-library` job of its own. Same trigger,

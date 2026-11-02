@@ -212,9 +212,8 @@ tamper-evidence machinery testable independently of any capability's
 logic.
 
 **Heavy dependencies are opt-in.** `zorp-track` bundles DuckDB
-[@raasveldt2019duckdb] and provisions LanceDB [@lancedb], which pulls
-in Arrow and DataFusion. Compiling these from a cold cache takes 20 to
-30 minutes, so `zorp-agent` depends on `zorp-track` behind an optional
+[@raasveldt2019duckdb], which compiles from source. A cold build takes
+tens of minutes, so `zorp-agent` depends on `zorp-track` behind an optional
 `research` feature, matching the existing pattern for MCP and
 OpenTelemetry support. A user who wants only the base agent never pays
 that cost.
@@ -240,12 +239,6 @@ claim resolves to a row in `metrics`, not to a sentence the agent wrote
 about its own results. It is also what makes the finished artifact
 checkable by someone who was not present for the work.
 
-LanceDB [@lancedb] is provisioned for multimodal, semantically
-searchable content, keyed by track so a search can be scoped to one
-investigation. As of this writing the store exists and is reachable but
-has no producers or consumers; what goes into it is each capability's
-own concern and is not yet implemented.
-
 ## The kill threshold
 
 Before zorp gathers anything, it commits the hypothesis, the metric,
@@ -257,8 +250,8 @@ does, and only a human can change it.
 The choice of a git-committed file rather than only a database row is
 the mechanism, not a stylistic preference. A commit timestamp cannot be
 moved quietly after results are seen, which is precisely the guarantee
-a mutable row cannot offer. The DuckDB and LanceDB stores are
-gitignored, regenerable indexes over these files rather than the source
+a mutable row cannot offer. The DuckDB store is a
+gitignored, regenerable index over these files rather than the source
 of truth: if either is lost or corrupted, `zorp-track` rebuilds it by
 re-reading every `prereg.md`.
 
@@ -407,8 +400,7 @@ guarantee inherits git's trust model: a user who rewrites history can
 defeat it, which makes this a defense against quiet drift rather than
 against a determined adversary.
 
-On the system itself, the LanceDB store is provisioned but unused,
-concurrent multi-track execution is unimplemented, and deliver's
+On the system itself, concurrent multi-track execution is unimplemented, and deliver's
 matching is scoped to academic venues although nothing in the design
 requires that.
 

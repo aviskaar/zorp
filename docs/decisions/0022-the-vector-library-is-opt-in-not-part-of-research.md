@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
 date: 2026-08-14
 ---
 
 # the vector library is opt-in, not part of research
+
+**Superseded by** 0146 (2026-11-02): the library is deleted. The retrieval
+future this kept it for chose SQLite instead (0062, 2026-08-22).
 
 **Decision:** LanceDB moves behind a non-default `library` feature in
 `zorp-track`, with a matching opt-in feature in `zorp-agent` that

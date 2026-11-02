@@ -11,6 +11,7 @@ To add one, copy the last file, take the next number, and add a row below.
 
 | # | Date | Decision | Status |
 |---|------|----------|--------|
+| 0146 | 2026-11-02 | [the vector library is deleted, because the retrieval future chose SQLite](0146-the-vector-library-is-deleted-the-retrieval-future-chose-sq.md) | accepted |
 | 0140 | 2026-10-26 | [The Mac app is native and speaks the browser's API](0140-the-mac-app-is-native-and-speaks-the-browser-s-api.md) | accepted |
 | 0139 | 2026-10-26 | [Windows runs commands under Git Bash, in a job object](0139-windows-runs-commands-under-git-bash-in-a-job-object.md) | accepted |
 | 0138 | 2026-10-04 | [Decisions are one ADR per file](0138-decisions-are-one-adr-per-file.md) | accepted |
@@ -29,7 +30,7 @@ To add one, copy the last file, take the next number, and add a row below.
 | 0125 | 2026-09-13 | [a landing page is a deliverable, so the preview is the constraint and not the page](0125-a-landing-page-is-a-deliverable-so-the-preview-is-the-constr.md) | accepted |
 | 0124 | 2026-09-13 | [one list of what zorp keeps, and the browser gets doctor without the wait](0124-one-list-of-what-zorp-keeps-and-the-browser-gets-doctor-with.md) | accepted |
 | 0123 | 2026-09-13 | [an agent is a flavor with a description, and a project one is untrusted until somebody clicks](0123-an-agent-is-a-flavor-with-a-description-and-a-project-one-is.md) | accepted |
-| 0122 | 2026-09-11 | [the library feature gets its own runner rather than more free disk](0122-the-library-feature-gets-its-own-runner-rather-than-more-fre.md) | accepted |
+| 0122 | 2026-09-11 | [the library feature gets its own runner rather than more free disk](0122-the-library-feature-gets-its-own-runner-rather-than-more-fre.md) | superseded |
 | 0121 | 2026-09-10 | [the chat REPL grows its own line editor rather than taking one](0121-the-chat-repl-grows-its-own-line-editor-rather-than-taking-o.md) | accepted |
 | 0120 | 2026-09-10 | [recall and memory move into zorp-agent, and a turn asks for memory one message at a time](0120-recall-and-memory-move-into-zorp-agent-and-a-turn-asks-for-m.md) | accepted |
 | 0119 | 2026-09-10 | [one settings file for both surfaces, and the chain that reads it](0119-one-settings-file-for-both-surfaces-and-the-chain-that-reads.md) | accepted |
@@ -129,7 +130,7 @@ To add one, copy the last file, take the next number, and add a row below.
 | 0025 | 2026-08-14 | [subcommands win over the bare-task positional](0025-subcommands-win-over-the-bare-task-positional.md) | accepted |
 | 0024 | 2026-08-14 | [kill thresholds carry a direction, and are enforced](0024-kill-thresholds-carry-a-direction-and-are-enforced.md) | accepted |
 | 0023 | 2026-08-14 | [git is the root of trust for pre-registration integrity](0023-git-is-the-root-of-trust-for-pre-registration-integrity.md) | accepted |
-| 0022 | 2026-08-14 | [the vector library is opt-in, not part of research](0022-the-vector-library-is-opt-in-not-part-of-research.md) | accepted |
+| 0022 | 2026-08-14 | [the vector library is opt-in, not part of research](0022-the-vector-library-is-opt-in-not-part-of-research.md) | superseded |
 | 0021 | 2026-08-14 | [measurement code fails loudly instead of guessing](0021-measurement-code-fails-loudly-instead-of-guessing.md) | accepted |
 | 0020 | 2026-08-14 | [command policy analyzes substitutions and redirect targets](0020-command-policy-analyzes-substitutions-and-redirect-targets.md) | accepted |
 | 0019 | 2026-08-14 | [CI covers the research stack, and the lockfile is committed](0019-ci-covers-the-research-stack-and-the-lockfile-is-committed.md) | accepted |
