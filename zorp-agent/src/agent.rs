@@ -740,6 +740,14 @@ impl Agent {
                 Err(e) => eprintln!("zorp-agent: web_search unavailable: {e}"),
             }
         }
+        // System One decision models (#279): a networked built-in like
+        // web_search, so it is gated behind its own non-default feature. The
+        // model interprets the probabilities it returns; no code reads them.
+        #[cfg(feature = "systemone")]
+        if allow("decide") {
+            self.registry
+                .register(Box::new(crate::systemone::Decide::from_env()));
+        }
         self
     }
 
@@ -4585,6 +4593,16 @@ mod tests {
     /// So nothing may exist that sets a conversation's agent, records a
     /// trust decision, or writes a flavor file through the agents API. The
     /// routes for all three are in `zorp-web/src/api.rs` and each one says
+    /// The `decide` tool (System One) is a networked built-in, so it is
+    /// registered only when the `systemone` feature is on, exactly as
+    /// `web_search` tracks `search`. This holds in both builds. (#279)
+    #[test]
+    fn decide_is_registered_only_with_the_systemone_feature() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let has = a.tool_names().iter().any(|n| n == "decide");
+        assert_eq!(has, cfg!(feature = "systemone"));
+    }
+
     /// it is a person's click.
     #[test]
     fn no_tool_picks_an_agent_or_trusts_one() {

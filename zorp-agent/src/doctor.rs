@@ -154,6 +154,9 @@ pub fn features() -> Vec<&'static str> {
     if cfg!(feature = "clipboard") {
         on.push("clipboard");
     }
+    if cfg!(feature = "systemone") {
+        on.push("systemone");
+    }
     on
 }
 

@@ -238,8 +238,9 @@ resulting artifact, deliver it in the right form.
   `SearchProvider` trait with two providers, Tavily and a self-hosted
   SearXNG. It depends on no other workspace member and knows nothing
   about agents or tools. `zorp-agent` exposes it as the `web_search`
-  built-in behind the non-default `search` feature, which is the only
-  built-in that sends anything over the network. `research` deliberately
+  built-in behind the non-default `search` feature. It sends queries over
+  the network; the only other networked built-in is `decide` (System One,
+  behind `systemone`, below). `research` deliberately
   does not enable it; run `--features research,search` when you want it.
   `ZORP_SEARCH_PROVIDER` picks the provider, read in `web_search_tool()`
   and nowhere else: unset or blank means `tavily`, `searxng` means
@@ -262,6 +263,30 @@ resulting artifact, deliver it in the right form.
   zorp-search`, `cargo test -p zorp-agent --features search` and `cargo
   test -p zorp-web --features search` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-21, 2026-09-18) before changing either.
+- System One decision models (`zorp-agent/src/systemone.rs`, non-default
+  `systemone` feature, issue #279, `docs/DECISIONS.md` 2026-11-02) are
+  Ollama's `POST /v1/systemone`: a model takes a `state` plus typed questions
+  (`choice`, `noul`, `score`) and returns a probability per option. It is one
+  non-streaming request through `zorp::http_agent` and `zorp::send_json`, no
+  new transport, under the usual retry rule. It is exposed as the `decide`
+  built-in, a networked built-in gated like `web_search`, because of the one
+  rule that shapes it: a probability a model returns is model-authored, so
+  nothing that decides may read it (detection is code, a model only
+  interprets). So it is a tool the model calls and reads back, never a gate
+  whose numbers code consumes; the answers reach the transcript as a tool
+  result and no detector, recall, memory or title path sees them. The endpoint
+  is `ZORP_SYSTEMONE_URL` if set, else the loopback default: it does not
+  inherit `ZORP_BASE_URL` or the saved chat `base_url`, because `/v1/systemone`
+  is local-only and a `state` can hold a person's files, so falling back to a
+  cloud chat base would POST those files to a third party. It is read from the
+  environment only, never a flavor (a workspace file must not move where the
+  state is sent); the model is `ZORP_SYSTEMONE_MODEL` or the
+  tool's `model` arg, with no default, and decision models never appear in the
+  chat picker. `doctor` reports whether Ollama answers and is 0.35 or newer
+  without printing a key. The client is always compiled and tested; a live
+  call against a real GGUF model and a `zorp-eval harness` TOML case are still
+  open (see the ADR). Run `cargo test -p zorp-agent` and `cargo test -p
+  zorp-agent --features systemone` whenever it changes.
 - `zorp-skill/` is zorp's own skill capability: discovery and parsing
   for Claude Code compatible skills (`SKILL.md` in a directory, YAML
   frontmatter plus a markdown body). Like `zorp-search` it depends on no
