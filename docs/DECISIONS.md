@@ -9,6 +9,7 @@ This table maps each date to its record so those references still resolve.
 
 | Date | Record |
 |------|--------|
+| 2026-11-02 | [0147](decisions/0147-the-composer-names-a-skill-never-its-body.md) the composer names a skill, never its body |
 | 2026-11-02 | [0146](decisions/0146-the-vector-library-is-deleted-the-retrieval-future-chose-sq.md) the vector library is deleted, because the retrieval future chose SQLite |
 | 2026-11-02 | [0145](decisions/0145-release-smoke-test-and-a-generated-feature-manifest.md) A release runs a smoke test and publishes a feature manifest per build |
 | 2026-10-27 | [0144](decisions/0144-dreaming-mode-detection-is-code-and-a-suggestion-is-a-proposal.md) Dreaming mode: detection is code, and a suggestion is a proposal, never a memory |
