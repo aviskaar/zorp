@@ -143,6 +143,7 @@ need a source build with the `research` feature.
 | [Skills](docs/skills.md) | Using Claude Code compatible skills, and what a skill can and cannot do |
 | [Docker](docs/docker.md) | The container image and the compose stack in detail |
 | [Benchmarks](docs/benchmarks.md) | Running zorp-agent against Terminal-Bench |
+| [Threat model](docs/THREAT_MODEL.md) | What is stored and where, what leaves the machine and when, how credentials, approvals and the sandbox work, and the known gaps |
 | [Decision log](docs/DECISIONS.md) | Why things are the way they are |
 
 ## Repository layout
