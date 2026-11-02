@@ -392,7 +392,8 @@ resulting artifact, deliver it in the right form.
   the caller's side. Run `cargo test -p zorp-web -p zorp-recall
   --features zorp-web/recall` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-22, 2026-08-24) before changing any of that,
-  especially the choice of SQLite over the LanceDB library in `zorp-track`.
+  especially the choice of SQLite over the LanceDB library `zorp-track`
+  used to carry (since removed, 2026-11-02).
 - `zorp-voice/` is zorp's own voice transcription client and runtime bootstrap
   for Qwen3-ASR 0.0.6. It depends on `zorp-loopback` and nothing else in
   the workspace. `zorp-web` exposes it behind the non-default `voice`

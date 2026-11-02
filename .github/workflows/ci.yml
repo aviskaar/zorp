@@ -266,7 +266,7 @@ jobs:
     #
     # These are the cheap ones, so they sit on the per-pull-request path with
     # no path filter. `recall` is not here, `build-and-test` already runs it,
-    # and `research` has its own job.
+    # and `research` has its own jobs (`research` and `research-pr`).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -335,11 +335,11 @@ jobs:
     # A genuinely cold cache would pay both builds, and 45 was no longer
     # far enough above that to tell slow from stuck.
     #
-    # Raised again from 60 when the `library` step lived here too. That step
-    # has its own job now, so this is four DuckDB builds rather than five,
-    # but the number is left where it is: a cold run measured 47 minutes and
-    # the cost of a generous cap is nothing until something is actually
-    # stuck.
+    # Raised again from 60 when the `library` step was the fifth DuckDB
+    # build here; that feature has since been deleted (#119), so this is
+    # four, and the number is left where it is: a cold run measured 47
+    # minutes and the cost of a generous cap is nothing until something is
+    # actually stuck.
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
