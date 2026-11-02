@@ -75,6 +75,13 @@ jobs:
           feats="$(sed -n 's/^default = \[\(.*\)\]$/\1/p' \
             zorp-desktop/bridge/Cargo.toml | tr -d ' "')"
           echo "bridge default features: $feats"
+          # Fail loudly rather than ship a manifest claiming [] (which would
+          # happen if the default array were ever wrapped onto several lines
+          # and this single-line sed stopped matching).
+          if [ -z "$feats" ]; then
+            echo "could not read [features] default from bridge/Cargo.toml" >&2
+            exit 1
+          fi
           sh scripts/feature-manifest.sh "$tag" "universal-apple-darwin-dmg" "$feats" \
             > "zorp-desktop/build/zorp-$safe_tag-desktop.features.json"
           cat "zorp-desktop/build/zorp-$safe_tag-desktop.features.json"

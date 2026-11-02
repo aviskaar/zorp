@@ -174,10 +174,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          name="zorp-${{ github.ref_name }}-${{ matrix.target }}"
+          # A ref can carry a slash on a workflow_dispatch rehearsal; keep it
+          # out of the asset path so the top-level upload glob still matches.
+          safe="zorp-$(printf '%s' '${{ github.ref_name }}' | tr '/' '-')-${{ matrix.target }}"
           sh scripts/feature-manifest.sh "${{ github.ref_name }}" "${{ matrix.target }}" "" \
-            > "dist/$name.features.json"
-          cat "dist/$name.features.json"
+            > "dist/$safe.features.json"
+          cat "dist/$safe.features.json"
 
       - name: Smoke test the built binary
         # A release that cannot print its own version, serve a healthy
@@ -194,9 +196,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The Package step created dist/$name with the raw ref; read it by
+          # that name, but write the log under a slash-safe name so the
+          # top-level upload glob catches it on a branch dispatch.
           name="zorp-${{ github.ref_name }}-${{ matrix.target }}"
+          safe="zorp-$(printf '%s' '${{ github.ref_name }}' | tr '/' '-')-${{ matrix.target }}"
           sh scripts/release-smoke.sh "dist/$name" "${{ github.ref_name }}" \
-            2>&1 | tee "dist/$name.smoke.txt"
+            2>&1 | tee "dist/$safe.smoke.txt"
 
       - uses: actions/upload-artifact@v4
         with:

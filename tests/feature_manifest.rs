@@ -51,19 +51,49 @@ fn features_are_sorted_deduped_and_trimmed() {
     );
 }
 
+/// The DMG manifest's feature set is read in `desktop.yml` from the bridge
+/// crate's `default = [...]` (what `build-bridge.sh` actually compiles). This
+/// pins that path: it parses the real `bridge/Cargo.toml` the same way, feeds
+/// it to the script, and asserts the manifest records that exact set. If the
+/// bridge default changes, this expectation changes with it rather than
+/// drifting from a hardcoded list; if the default array is ever wrapped onto
+/// several lines so the single-line parse yields nothing, the non-empty
+/// assertion fails loudly here, the same case `desktop.yml` now guards at run
+/// time.
 #[test]
-fn the_dmg_feature_set_is_recorded_whole() {
-    // The macOS bridge turns every feature on; the manifest must say so, in
-    // sorted order, so two releases diff cleanly.
-    let manifest = run(&[
-        "v0.8.0",
-        "aarch64-apple-darwin",
-        "research,voice,recall,memory,search,train",
-    ]);
-    assert_eq!(
-        manifest.trim(),
-        r#"{"version":"v0.8.0","target":"aarch64-apple-darwin","features":["memory","recall","research","search","train","voice"]}"#
+fn the_dmg_manifest_matches_the_bridge_default_features() {
+    let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("zorp-desktop/bridge/Cargo.toml");
+    let text = std::fs::read_to_string(&bridge).expect("read bridge Cargo.toml");
+    // The same extraction as desktop.yml: the single `default = [ ... ]` line.
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("default = ["))
+        .expect("bridge has a default feature line");
+    let inner = line
+        .split_once('[')
+        .and_then(|(_, r)| r.rsplit_once(']'))
+        .map(|(mid, _)| mid)
+        .expect("default line has brackets");
+    let mut feats: Vec<String> = inner
+        .split(',')
+        .map(|f| f.trim().trim_matches('"').to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    assert!(!feats.is_empty(), "bridge default features parsed empty");
+    feats.sort();
+    feats.dedup();
+
+    let csv = feats.join(",");
+    let manifest = run(&["v0.8.0", "universal-apple-darwin-dmg", &csv]);
+    let expected_features = feats
+        .iter()
+        .map(|f| format!("\"{f}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let expected = format!(
+        r#"{{"version":"v0.8.0","target":"universal-apple-darwin-dmg","features":[{expected_features}]}}"#
     );
+    assert_eq!(manifest.trim(), expected);
 }
 
 #[test]

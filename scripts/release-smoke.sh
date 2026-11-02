@@ -32,6 +32,7 @@ exe=""
 case "${OS:-}" in
     Windows_NT) exe=".exe" ;;
 esac
+core="$bindir/zorp$exe"
 agent="$bindir/zorp-agent$exe"
 web="$bindir/zorp-web$exe"
 
@@ -40,20 +41,40 @@ fail() {
     exit 1
 }
 
-echo "== 1. zorp-agent --version is $tag =="
-got="$("$agent" --version 2>&1 || true)"
-echo "$got"
-# `zorp-agent 0.8.0` vs tag `v0.8.0`: compare the number token exactly, not as
-# a substring, or tag v0.8.1 would accept a binary reporting 0.8.10.
-# shellcheck disable=SC2086
-set -- $got
-got_version="${2:-}"
-if [ "$got_version" != "${tag#v}" ]; then
-    fail "version output '$got' is not '${tag#v}'"
-fi
+# A real release tag is `v<digit>...`; check-release-version.sh guarantees the
+# binary's version then equals the tag, so assert it. A workflow_dispatch
+# rehearsal passes a branch ref instead (e.g. `main`), which no binary reports,
+# so there require only that a version prints, the way default-version skips
+# its check off a tag. Never compare a binary's version to a branch name.
+strict=0
+case "$tag" in
+    v[0-9]*) strict=1 ;;
+esac
 
-echo "== 2. zorp-agent --help runs =="
-"$agent" --help >/dev/null || fail "--help exited non-zero"
+# Check one binary prints a version, and (on a real tag) that it is the tag's.
+# `zorp 0.8.0` -> field 2 is the number, compared exactly so v0.8.1 does not
+# accept 0.8.10.
+check_version() {
+    name="$1"
+    bin="$2"
+    got="$("$bin" --version 2>&1 || true)"
+    echo "$name: $got"
+    # shellcheck disable=SC2086
+    set -- $got
+    v="${2:-}"
+    [ -n "$v" ] || fail "$name printed no version"
+    if [ "$strict" = "1" ] && [ "$v" != "${tag#v}" ]; then
+        fail "$name version '$v' is not '${tag#v}'"
+    fi
+}
+
+echo "== 1. the shipped binaries report a version =="
+check_version zorp "$core"
+check_version zorp-agent "$agent"
+
+echo "== 2. --help runs on each binary =="
+"$core" --help >/dev/null || fail "zorp --help exited non-zero"
+"$agent" --help >/dev/null || fail "zorp-agent --help exited non-zero"
 
 echo "== 3. zorp-web answers /api/health =="
 # A port nothing else on a clean runner uses. zorp-web's CLI binds this port
