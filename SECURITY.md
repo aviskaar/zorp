@@ -43,7 +43,7 @@ We do not maintain long-term support branches. Update to the latest release to r
 This policy covers the zorp Rust workspace crates published under the `aviskaar/zorp` organization on GitHub and crates.io. It does not cover:
 - Dependencies (report those to their maintainers)
 - Infrastructure outside this repository (e.g., crates.io, GitHub Actions)
-- The desktop app distribution chain (notarization, DMG signing) — report those separately to security@aviskaar.com
+- The desktop app distribution chain (notarization, DMG signing); report those separately to security@aviskaar.com
 
 ## Safe Harbor
 
