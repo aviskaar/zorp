@@ -513,6 +513,15 @@ let installedSkills: SkillSummary[] = [];
 let slashDismissedQuery: string | null = null;
 /** The skill the current turn was sent with, for the "did not load" note. */
 let turnSkill: string | null = null;
+/**
+ * Whether the `skill` tool fired this turn. The spec derives the "did not
+ * load" note from the turn's tool events, and the event carries the tool
+ * name (`skill`) but not which skill it loaded, so this records that a skill
+ * loaded at all: a turn that named a skill and made no `skill` call did not
+ * load it. The uncovered case is the model loading a different skill than
+ * the one named, which is conservative (no false "did not load" alarm).
+ */
+let turnSkillLoaded = false;
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
 const messageQueue: string[] = [];
@@ -872,7 +881,7 @@ function wireComposer(): void {
   // positioned above the textarea by the stylesheet. The menu names skills
   // and never carries a body; picking one writes `/name ` into the composer
   // as plain text.
-  slashMenu = new SlashMenu(document);
+  slashMenu = new SlashMenu(document, dom.input);
   (dom.input.parentElement ?? dom.input).append(slashMenu.element());
 
   // This keydown is added before the Enter-sends one below, so while the
@@ -1450,6 +1459,7 @@ async function sendMessage(message: string): Promise<void> {
     // for a later turn's "did not load" note; set only once the turn is
     // accepted.
     turnSkill = null;
+    turnSkillLoaded = false;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
     await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
@@ -1886,6 +1896,11 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool_started":
+      // A `skill` tool call is the only way a skill loads; record that one
+      // fired so the "did not load" note below is not shown for this turn.
+      if (event.name === "skill") {
+        turnSkillLoaded = true;
+      }
       // Two starts with no result between them cannot happen while tools run
       // one at a time; if it ever does, the first must not spin forever.
       abandonPendingTool("This call never reported a result");
@@ -2115,32 +2130,15 @@ function finishTurn(): void {
     pendingCheckpoint = null;
   }
   turnStopped = false;
-  // The person chose a skill for this turn: say whether it actually loaded.
-  // Asked of the server's active-skills listing (which skills' instructions
-  // the conversation loaded), not guessed from tool events, so a model that
-  // ignored the request or loaded a different skill is reported honestly.
-  // The check is in code over code-derived columns and the note goes through
-  // `textContent` like every other line. Both the skill and the session are
-  // captured now, so a conversation switch before it resolves cannot misfile
-  // the note.
-  const notedSkill = turnSkill;
-  const notedSession = sessionId;
-  turnSkill = null;
-  if (notedSkill && notedSession) {
-    void fetchActiveSkills(notedSession)
-      .then((listing) => {
-        // `active` is "its instructions are in the request now", not "was
-        // ever loaded": a repeat pick the model ignored, or a skill loaded
-        // earlier and since compacted out, both read as not active, which is
-        // the honest answer to whether the chosen skill is guiding this turn.
-        const present = listing.skills.some((s) => s.name === notedSkill && s.active);
-        if (!present && notedSession === sessionId) {
-          appendActivity(noticeLine(`The model did not load \`${notedSkill}\``));
-          scrollToBottomIfFollowing(false);
-        }
-      })
-      .catch(() => {});
+  // The person chose a skill for this turn and no `skill` tool call fired, so
+  // it was not loaded. Said in a line under the answer, derived in code from
+  // the turn's tool events, so the person can see whether what they asked for
+  // happened. The note goes through `textContent` like every other line.
+  if (turnSkill && !turnSkillLoaded) {
+    appendActivity(noticeLine(`The model did not load \`${turnSkill}\``));
   }
+  turnSkill = null;
+  turnSkillLoaded = false;
   void refreshSessions();
   // Forced past the poll interval: this is the last chance to notice what the
   // run wrote, and a file written in the final second is the interesting one.

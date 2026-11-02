@@ -116,10 +116,12 @@ export function applyPick(
   while (end < text.length && !/\s/.test(text[end])) {
     end += 1;
   }
-  // Absorb one run of following whitespace so the `/name ` we insert does
-  // not stack a second space on the one that was already there.
+  // Absorb one run of following spaces and tabs so the `/name ` we insert
+  // does not stack a second space on the one that was already there. Not
+  // newlines: a line break after the token is the person's, and eating it
+  // would silently flatten a multi-line message onto one line.
   let after = end;
-  while (after < text.length && /\s/.test(text[after])) {
+  while (after < text.length && /[ \t]/.test(text[after])) {
     after += 1;
   }
   const insert = `/${name} `;
@@ -138,20 +140,49 @@ export class SlashMenu {
   // parameter properties are not valid once the types are gone.
   private readonly doc: Document;
   private readonly el: HTMLElement;
+  // The control that owns the keyboard (the composer textarea), for ARIA.
+  // Optional so tests can build the widget without a page; when present it
+  // is told the picker opened and which option is active, which is the only
+  // way a screen reader learns either.
+  private readonly owner: HTMLElement | null;
+  private readonly menuId: string;
   private items: SkillSummary[] = [];
   private index = 0;
   private onpick: (name: string) => void = () => {};
 
-  constructor(doc: Document) {
+  constructor(doc: Document, owner?: HTMLElement | null) {
     this.doc = doc;
+    this.owner = owner ?? null;
+    this.menuId = "slash-menu";
     this.el = doc.createElement("div");
     this.el.className = "slash-menu";
+    this.el.id = this.menuId;
     this.el.hidden = true;
     this.el.setAttribute("role", "listbox");
+    if (this.owner) {
+      this.owner.setAttribute("role", "combobox");
+      this.owner.setAttribute("aria-autocomplete", "list");
+      this.owner.setAttribute("aria-expanded", "false");
+      this.owner.setAttribute("aria-controls", this.menuId);
+    }
     // Keep the textarea focused when the menu itself is clicked, including
     // its scrollbar and padding, so dragging to scroll a long list does not
     // blur the composer and close the menu out from under the drag.
     this.el.addEventListener("mousedown", (event) => event.preventDefault());
+  }
+
+  /** Reflect the open state and active option onto the owner for ARIA. */
+  private syncAria(): void {
+    if (!this.owner) {
+      return;
+    }
+    if (this.open && this.items.length > 0) {
+      this.owner.setAttribute("aria-expanded", "true");
+      this.owner.setAttribute("aria-activedescendant", `${this.menuId}-opt-${this.index}`);
+    } else {
+      this.owner.setAttribute("aria-expanded", "false");
+      this.owner.removeAttribute("aria-activedescendant");
+    }
   }
 
   /** The element to place in the DOM, once, near the composer. */
@@ -193,12 +224,14 @@ export class SlashMenu {
       this.render();
     }
     this.el.hidden = false;
+    this.syncAria();
   }
 
   close(): void {
     this.el.hidden = true;
     this.items = [];
     this.index = 0;
+    this.syncAria();
   }
 
   /** Move the selection by `delta`, clamped to the list (no wrap). */
@@ -209,6 +242,7 @@ export class SlashMenu {
     const last = this.items.length - 1;
     this.index = Math.max(0, Math.min(last, this.index + delta));
     this.render();
+    this.syncAria();
   }
 
   /** Pick the selected skill. No-op when closed or empty. */
@@ -227,6 +261,7 @@ export class SlashMenu {
     this.items.forEach((skill, i) => {
       const row = this.doc.createElement("div");
       row.className = "slash-menu-item";
+      row.id = `${this.menuId}-opt-${i}`;
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", String(i === this.index));
       if (i === this.index) {
