@@ -28,12 +28,17 @@ of the rule: the answers go into the transcript as a tool result for the model
 to read, and no detector, recall, memory or title path ever sees them. A
 standalone command can come later without changing any of this.
 
-**How the settings resolve:** the endpoint resolves like the other model
-settings, `ZORP_SYSTEMONE_URL` then `ZORP_BASE_URL` then the saved config then
-the loopback default, read from the environment and the saved file only and
-never from a flavor, for the reason the search provider is read that way: a
-workspace file the model can write must not move where a person's `state`
-(which can hold their files) is sent. The decision model is named by
+**How the settings resolve:** the endpoint is `ZORP_SYSTEMONE_URL` if set, else
+the loopback default. It deliberately does not inherit `ZORP_BASE_URL` or the
+saved chat `base_url`: `/v1/systemone` is a local-only Ollama endpoint and a
+`state` can hold a person's files, so falling back to a chat base that happens
+to be a cloud provider would POST those files to a third party (which would
+then 404, the files already sent) and buy nothing, since no cloud endpoint
+serves this API. That answers the issue's open question of whether a
+non-loopback host is allowed: only an explicit `ZORP_SYSTEMONE_URL`, read from
+the environment only and never from a flavor, for the reason the search
+provider is read that way (a workspace file the model can write must not move
+where the state is sent). The decision model is named by
 `ZORP_SYSTEMONE_MODEL` or the tool's `model` argument and has no default,
 because a specific local GGUF a person pulled is the only thing that answers and
 guessing one turns a missing setting into a 404. Decision models never appear in

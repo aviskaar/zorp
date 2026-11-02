@@ -4,8 +4,10 @@
 //! typed questions and returns a probability per option. It is one
 //! non-streaming request, so it goes through `zorp::http_agent` and
 //! `zorp::send_json` with no new transport, under the same retry rule as
-//! everything else (only 429, 502 and 503 retry; 400, 404, 413 and 500 do
-//! not). See issue #279 and `docs/decisions` for the placement decision.
+//! everything else (only 429, 502 and 503 retry; 400, 413 and 500 do not, nor
+//! a 404 from a local Ollama, which names no upstream provider for the shared
+//! rule to relay). See issue #279 and `docs/decisions` for the placement
+//! decision.
 //!
 //! The one rule that shapes everything here: a probability a model returns is
 //! model-authored, so nothing that decides may read it as evidence (the repo
@@ -53,6 +55,13 @@ pub struct Usage {
 /// One answer. The common fields are `type`, `probabilities` and `confidence`;
 /// the rest are present for the question type that has them. All model-authored
 /// and for the model to interpret, never for code to decide on.
+///
+/// The number-shaped fields are held as `Value`, not `f64`/`i64`, on purpose:
+/// the `/v1/systemone` shape here is from an unverified doc summary (see the
+/// module header and the PR), and binding `score` to `i64` would turn a model
+/// that returned `3.0` instead of `3` into a parse failure that discards every
+/// answer in the reply, which is exactly the "empty or wrong set of answers"
+/// the error taxonomy exists to prevent. A `Value` renders whatever came back.
 #[derive(Debug, Deserialize)]
 pub struct Answer {
     #[serde(rename = "type")]
@@ -60,13 +69,13 @@ pub struct Answer {
     #[serde(default)]
     pub probabilities: Map<String, Value>,
     #[serde(default)]
-    pub confidence: Option<f64>,
+    pub confidence: Option<Value>,
     #[serde(default)]
     pub choice: Option<String>,
     #[serde(default)]
-    pub noul: Option<f64>,
+    pub noul: Option<Value>,
     #[serde(default)]
-    pub score: Option<i64>,
+    pub score: Option<Value>,
     #[serde(default)]
     pub legend: Option<Value>,
 }
@@ -112,24 +121,30 @@ impl std::fmt::Display for SystemOneError {
 
 impl std::error::Error for SystemOneError {}
 
-/// The Ollama endpoint System One calls, resolved like the other model
-/// settings: `ZORP_SYSTEMONE_URL` for a System One server that is not the chat
-/// one, else `ZORP_BASE_URL`, else the saved config, else the loopback default.
+/// The Ollama endpoint System One calls: `ZORP_SYSTEMONE_URL` if set, else the
+/// loopback default.
 ///
-/// Read from the environment and the saved file only, never from a flavor, for
-/// the reason the search provider is: a workspace file the model can write must
-/// not move where a person's `state` (which can hold their files) is sent.
+/// It deliberately does **not** inherit `ZORP_BASE_URL` or the saved chat
+/// `base_url`. A `state` can hold a person's files, and `/v1/systemone` is a
+/// local-only Ollama endpoint, so falling back to a chat base that happens to
+/// be a cloud provider would POST those files to a third party (which would
+/// then 404, the files already sent) and buy nothing, since no cloud endpoint
+/// serves this API. A person who runs Ollama on a non-default local port sets
+/// `ZORP_SYSTEMONE_URL`; that is read from the environment only, never a
+/// flavor, for the reason the search provider is: a workspace file the model
+/// can write must not move where the state is sent.
 pub fn resolve_base() -> String {
-    for var in ["ZORP_SYSTEMONE_URL", "ZORP_BASE_URL"] {
-        if let Ok(v) = std::env::var(var) {
-            if !v.trim().is_empty() {
-                return v;
-            }
-        }
-    }
-    crate::config::load()
-        .and_then(|s| s.base_url)
-        .filter(|s| !s.trim().is_empty())
+    pick_base(std::env::var("ZORP_SYSTEMONE_URL").ok().as_deref())
+}
+
+/// The base from an explicit `ZORP_SYSTEMONE_URL`, else the loopback default.
+/// Split out from `resolve_base` so the choice is testable without the
+/// environment.
+fn pick_base(explicit: Option<&str>) -> String {
+    explicit
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| DEFAULT_BASE.to_string())
 }
 
@@ -204,6 +219,16 @@ pub fn ollama_version(base_url: &str, timeout: std::time::Duration) -> Result<St
         .ok_or_else(|| "the version endpoint returned no version".to_string())
 }
 
+/// A scalar `Value` as plain text: a string without its JSON quotes, anything
+/// else as its JSON form (a number prints as the number). Used so the rendered
+/// answers read cleanly whatever shape the field came back in.
+fn scalar(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Render the answers as the text the model reads back. Code-derived fields
 /// only; the model does the interpreting.
 fn render(resp: &DecisionResponse) -> String {
@@ -213,14 +238,14 @@ fn render(resp: &DecisionResponse) -> String {
         if let Some(choice) = &answer.choice {
             out.push_str(&format!(" choice={choice}"));
         }
-        if let Some(noul) = answer.noul {
-            out.push_str(&format!(" true={noul:.3}"));
+        if let Some(noul) = &answer.noul {
+            out.push_str(&format!(" true={}", scalar(noul)));
         }
-        if let Some(score) = answer.score {
-            out.push_str(&format!(" score={score}"));
+        if let Some(score) = &answer.score {
+            out.push_str(&format!(" score={}", scalar(score)));
         }
-        if let Some(confidence) = answer.confidence {
-            out.push_str(&format!(" confidence={confidence:.3}"));
+        if let Some(confidence) = &answer.confidence {
+            out.push_str(&format!(" confidence={}", scalar(confidence)));
         }
         if !answer.probabilities.is_empty() {
             let mut parts: Vec<String> = answer
@@ -427,6 +452,18 @@ mod tests {
             decide("http://127.0.0.1:1/v1", &req),
             Err(SystemOneError::BadRequest(_))
         ));
+    }
+
+    #[test]
+    fn the_base_is_explicit_or_loopback_never_the_chat_endpoint() {
+        assert_eq!(
+            pick_base(Some("http://localhost:11500/v1")),
+            "http://localhost:11500/v1"
+        );
+        // Unset or blank falls to the loopback default, never an inherited
+        // (possibly cloud) chat base URL.
+        assert_eq!(pick_base(None), DEFAULT_BASE);
+        assert_eq!(pick_base(Some("  ")), DEFAULT_BASE);
     }
 
     #[test]

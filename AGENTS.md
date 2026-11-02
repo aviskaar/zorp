@@ -238,8 +238,9 @@ resulting artifact, deliver it in the right form.
   `SearchProvider` trait with two providers, Tavily and a self-hosted
   SearXNG. It depends on no other workspace member and knows nothing
   about agents or tools. `zorp-agent` exposes it as the `web_search`
-  built-in behind the non-default `search` feature, which is the only
-  built-in that sends anything over the network. `research` deliberately
+  built-in behind the non-default `search` feature. It sends queries over
+  the network; the only other networked built-in is `decide` (System One,
+  behind `systemone`, below). `research` deliberately
   does not enable it; run `--features research,search` when you want it.
   `ZORP_SEARCH_PROVIDER` picks the provider, read in `web_search_tool()`
   and nowhere else: unset or blank means `tavily`, `searxng` means
@@ -274,10 +275,12 @@ resulting artifact, deliver it in the right form.
   interprets). So it is a tool the model calls and reads back, never a gate
   whose numbers code consumes; the answers reach the transcript as a tool
   result and no detector, recall, memory or title path sees them. The endpoint
-  resolves `ZORP_SYSTEMONE_URL`, then `ZORP_BASE_URL`, then the saved config,
-  then the loopback default, from the environment and the saved file only and
-  never a flavor (the search-provider rule: a workspace file must not move
-  where a person's `state` is sent); the model is `ZORP_SYSTEMONE_MODEL` or the
+  is `ZORP_SYSTEMONE_URL` if set, else the loopback default: it does not
+  inherit `ZORP_BASE_URL` or the saved chat `base_url`, because `/v1/systemone`
+  is local-only and a `state` can hold a person's files, so falling back to a
+  cloud chat base would POST those files to a third party. It is read from the
+  environment only, never a flavor (a workspace file must not move where the
+  state is sent); the model is `ZORP_SYSTEMONE_MODEL` or the
   tool's `model` arg, with no default, and decision models never appear in the
   chat picker. `doctor` reports whether Ollama answers and is 0.35 or newer
   without printing a key. The client is always compiled and tested; a live
