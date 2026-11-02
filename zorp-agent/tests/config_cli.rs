@@ -284,7 +284,9 @@ fn config_dial_switches_to_a_slots_model() {
 }
 
 /// An empty or missing slot is a refusal, not a silent no-op that leaves the
-/// person wondering whether the switch happened.
+/// person wondering whether the switch happened. A slot whose model is a
+/// blank string is refused the same way the chat `/dial` and the browser
+/// refuse it, so the three surfaces agree on the one file.
 #[test]
 fn config_dial_refuses_an_empty_slot() {
     let dir = tempfile::tempdir().unwrap();
@@ -292,6 +294,20 @@ fn config_dial_refuses_an_empty_slot() {
     let empty = run(home, &["config", "dial", "5"], &[]);
     assert_eq!(empty.code, Some(2), "{}", empty.stdout);
     assert!(empty.stderr.contains("empty"), "{}", empty.stderr);
+
+    let config = home.join("zorp");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("zorp.toml"),
+        "model = \"start\"\n\n[[dial]]\nslot = 6\nmodel = \"\"\n",
+    )
+    .unwrap();
+    let blank = run(home, &["config", "dial", "6"], &[]);
+    assert_eq!(blank.code, Some(2), "{}", blank.stdout);
+    assert!(blank.stderr.contains("no model"), "{}", blank.stderr);
+    // The active model is untouched by the refused switch.
+    let report = run(home, &["config"], &[]).stdout;
+    assert!(line(&report, "model").contains("start"), "{report}");
 }
 
 /// The saved settings reach a real run, not only the report.

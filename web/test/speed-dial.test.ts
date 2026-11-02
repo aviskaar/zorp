@@ -29,6 +29,7 @@ function chord(code: string, mods: Partial<KeyboardEvent> = {}): KeyboardEvent {
     shiftKey: false,
     metaKey: false,
     isComposing: false,
+    getModifierState: () => false,
     ...mods,
   } as KeyboardEvent;
 }
@@ -50,6 +51,15 @@ test("slotFromChord rejects non-chords", () => {
   assert.equal(slotFromChord(chord("Digit3", { isComposing: true }), false), null);
   // Focus in the settings pane: a digit is being typed into a slot's fields.
   assert.equal(slotFromChord(chord("Digit3"), true), null);
+});
+
+test("slotFromChord does not fire on AltGr+digit (a real character on international layouts)", () => {
+  // AltGr reports as Control+Alt; getModifierState("AltGraph") is what tells
+  // them apart, so AltGr+8 types its character instead of pressing a slot.
+  const altgr = chord("Digit8", { getModifierState: (m: string) => m === "AltGraph" });
+  assert.equal(slotFromChord(altgr, false), null);
+  // A genuine Control+Alt (AltGraph not down) still presses the slot.
+  assert.equal(slotFromChord(chord("Digit8", { getModifierState: () => false }), false), 8);
 });
 
 const DIAL: DialSlot[] = [
@@ -102,4 +112,23 @@ test("renderDialRows draws nine rows and lands a label through textContent", () 
   const rows = host.querySelectorAll(".dial-row");
   const lastClear = rows[8].querySelector<HTMLButtonElement>(".dial-clear");
   assert.equal(lastClear?.disabled, true);
+});
+
+test("useCurrent passes the row's own live label, not a positional lookup", () => {
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const host = dom.window.document.createElement("div");
+  let captured: { n: number; label: string } | null = null;
+  renderDialRows(dom.window.document, host, [], {
+    useCurrent: (n, label) => {
+      captured = { n, label };
+    },
+    clear: () => {},
+    relabel: () => {},
+  });
+  const rows = host.querySelectorAll(".dial-row");
+  // Type a label into slot 4, then click its "Use current model" button.
+  const label4 = rows[3].querySelector<HTMLInputElement>(".dial-label")!;
+  label4.value = "typed but not saved";
+  rows[3].querySelector<HTMLButtonElement>(".dial-use")!.click();
+  assert.deepEqual(captured, { n: 4, label: "typed but not saved" });
 });

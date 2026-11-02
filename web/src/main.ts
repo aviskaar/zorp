@@ -155,6 +155,7 @@ import {
   type MemoryEvent,
   type Capabilities,
   type Message,
+  type AgentListing,
   type ModelDetail,
   type Preregistration,
   type RecallStatus,
@@ -433,6 +434,7 @@ const agentsPaneView = new AgentsPaneView(document, dom.agentsHost, {
       await setSessionAgent(sessionId, name);
     }
     currentSessionAgent = name;
+    agentsCache = null;
     updateAgentBadge(name);
   },
   getCurrentAgent: () => currentSessionAgent,
@@ -458,6 +460,12 @@ const voiceInput = createVoiceInput(
 
 let sessionId: string | null = null;
 let currentSessionAgent: string | null = null;
+/**
+ * The agents listing, fetched at most once per session for the dial's
+ * "an agent's model wins" guard. Cleared when the active agent changes, so a
+ * press reads a fresh model rather than refetching on every keystroke.
+ */
+let agentsCache: AgentListing | null = null;
 let stream: EventStream | null = null;
 let streamSessionId: string | null = null;
 let catchUp: ZorpEvent[] | null = null;
@@ -3122,6 +3130,7 @@ async function openSession(session: SessionSummary): Promise<void> {
       return;
     }
     currentSessionAgent = transcript.agent ?? null;
+    agentsCache = null;
     updateAgentBadge(currentSessionAgent);
     if (!dom.agentsPane.hidden) {
       void agentsPaneView.refresh();
@@ -3187,6 +3196,7 @@ function startNewChat(): void {
   rememberSessionInUrl(null);
   sessionId = null;
   currentSessionAgent = null;
+  agentsCache = null;
   updateAgentBadge(null);
   setTitle("New chat");
   markActiveSession();
@@ -3546,17 +3556,13 @@ function currentDial(): DialSlot[] {
 /** Draw the speed-dial rows and wire their controls. */
 function renderDial(): void {
   renderDialRows(document, dom.settingsDialRows, currentDial(), {
-    useCurrent: (n) => {
+    useCurrent: (n, label) => {
       // Copy whatever the Model section currently shows into slot n, keeping
-      // any label the row already had. No key: the slot type has no field
-      // for one.
-      const existing = slotByNumber(currentDial(), n);
-      const labelInput = dom.settingsDialRows.querySelectorAll<HTMLInputElement>(".dial-label")[
-        n - 1
-      ];
+      // the label the row shows now (passed through from its own input rather
+      // than read by position). No key: the slot type has no field for one.
       const slot: DialSlot = {
         slot: n,
-        label: (labelInput?.value ?? existing?.label ?? "").trim() || undefined,
+        label: label.trim() || undefined,
         provider: preset(dom.settingsPreset.value).provider,
         base_url: dom.settingsBaseUrl.value.trim(),
         model: currentModelValue(),
@@ -3574,7 +3580,10 @@ function renderDial(): void {
         return;
       }
       const slot: DialSlot = { ...(existing ?? { slot: n }), slot: n, label: trimmed || undefined };
-      void saveDial(upsertSlot(currentDial(), slot));
+      // A relabel needs no repaint: the input already shows the new text, and
+      // repainting after the async save would wipe out a label the person has
+      // since started typing in another row and drop their focus.
+      void saveDial(upsertSlot(currentDial(), slot), false);
     },
   });
 }
@@ -3585,12 +3594,18 @@ function upsertSlot(dial: DialSlot[], slot: DialSlot): DialSlot[] {
   return [...rest, slot].sort((a, b) => a.slot - b.slot);
 }
 
-/** Persist the whole dial, then repaint from the server's answer. */
-async function saveDial(dial: DialSlot[]): Promise<void> {
+/**
+ * Persist the whole dial. The state is always updated from the server's
+ * answer; the table is repainted only when `rerender` is set, because a
+ * repaint during a label edit would clobber what the person is typing.
+ */
+async function saveDial(dial: DialSlot[], rerender = true): Promise<void> {
   try {
     const settings = await putSettings({ dial });
     currentSettings = settings;
-    renderDial();
+    if (rerender) {
+      renderDial();
+    }
     setDialResult("Saved.", "ok");
   } catch (error) {
     setDialResult(describeError(error), "fail");
@@ -3623,8 +3638,10 @@ async function pressDial(n: number): Promise<void> {
   // the chain still resolves the file below the flavor whatever we did here.
   if (currentSessionAgent) {
     try {
-      const listing = await fetchAgents();
-      const active = listing.agents.find((a) => a.name === currentSessionAgent);
+      if (!agentsCache) {
+        agentsCache = await fetchAgents();
+      }
+      const active = agentsCache.agents.find((a) => a.name === currentSessionAgent);
       if (active?.model) {
         flashDialSlot(n, `${currentSessionAgent} sets the model`);
         return;

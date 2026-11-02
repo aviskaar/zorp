@@ -36,6 +36,14 @@ export function slotFromChord(event: KeyboardEvent, inSettings: boolean): number
   if (!event.ctrlKey || !event.altKey || event.shiftKey || event.metaKey) {
     return null;
   }
+  // AltGr reports as Control+Alt on many layouts, and AltGr+digit types a
+  // real character there (`{ [ ] }` on a German layout, say). Treating that
+  // as a chord and calling `preventDefault` would make those characters
+  // untypeable. `getModifierState("AltGraph")` is true exactly when AltGr is
+  // down, so a genuine left-Control plus left-Alt still presses the slot.
+  if (typeof event.getModifierState === "function" && event.getModifierState("AltGraph")) {
+    return null;
+  }
   const match = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
   return match ? Number(match[1]) : null;
 }
@@ -73,8 +81,12 @@ export function slotName(slot: DialSlot): string {
 
 /** Callbacks the dial table needs from the page. */
 export interface DialTableCallbacks {
-  /** The model the form currently shows, to copy into slot `n`. */
-  useCurrent(n: number): void;
+  /**
+   * Copy the model the form currently shows into slot `n`. `label` is the
+   * row's own label input, read live and passed through rather than looked up
+   * by position, so the slot keeps whatever label the row shows now.
+   */
+  useCurrent(n: number, label: string): void;
   /** Clear slot `n`. */
   clear(n: number): void;
   /** A slot's label changed; persist the whole dial. */
@@ -126,7 +138,7 @@ export function renderDialRows(
     use.type = "button";
     use.className = "dial-use";
     use.textContent = "Use current model";
-    use.addEventListener("click", () => cb.useCurrent(n));
+    use.addEventListener("click", () => cb.useCurrent(n, label.value));
 
     const clear = doc.createElement("button");
     clear.type = "button";

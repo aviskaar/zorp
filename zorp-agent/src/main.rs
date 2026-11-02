@@ -1342,22 +1342,11 @@ fn config_dial(n: u8) {
         eprintln!("zorp-agent: speed-dial slot {n} is empty. Set it in the browser's Speed dial section, or in {}.", zorp_agent::config::path().display());
         std::process::exit(2);
     };
-    if slot.model.is_none() {
+    if !slot.has_model() {
         eprintln!("zorp-agent: speed-dial slot {n} has no model.");
         std::process::exit(2);
     }
-    if slot.provider.is_some() {
-        saved.provider = slot.provider.clone();
-    }
-    if slot.base_url.is_some() {
-        saved.base_url = slot.base_url.clone();
-    }
-    if slot.model.is_some() {
-        saved.model = slot.model.clone();
-    }
-    if slot.max_tokens.is_some() {
-        saved.max_tokens = slot.max_tokens;
-    }
+    saved.apply_dial_slot(&slot);
     match zorp_agent::config::save(&saved) {
         Ok(()) => {
             let label = slot
@@ -3959,21 +3948,10 @@ fn handle_chat_command(
                 }
                 Some(n) => match saved.dial.iter().find(|s| s.slot == n).cloned() {
                     None => out.notice(&format!("dial {n}: empty")),
-                    Some(s) if s.model.as_deref().unwrap_or("").trim().is_empty() => {
-                        out.notice(&format!("dial {n}: no model"))
-                    }
+                    Some(s) if !s.has_model() => out.notice(&format!("dial {n}: no model")),
                     Some(s) => {
                         let mut next = saved.clone();
-                        if s.provider.is_some() {
-                            next.provider = s.provider.clone();
-                        }
-                        if s.base_url.is_some() {
-                            next.base_url = s.base_url.clone();
-                        }
-                        next.model = s.model.clone();
-                        if s.max_tokens.is_some() {
-                            next.max_tokens = s.max_tokens;
-                        }
+                        next.apply_dial_slot(&s);
                         match zorp_agent::config::save(&next) {
                             Ok(()) => out.notice(&format!(
                                 "dial {n} -> {}. Saved; this conversation keeps its current \
