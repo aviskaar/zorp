@@ -1469,8 +1469,21 @@ async function sendMessage(message: string): Promise<void> {
     turnSkillLoaded = false;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
-    await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
-    turnSkill = chosenSkill;
+    try {
+      await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
+      turnSkill = chosenSkill;
+    } catch (error) {
+      // The only 400 start_turn returns is an unknown skill: the cached
+      // listing went stale (a skill uninstalled, or a workspace switch)
+      // between the pick and the send. Send the message as plain text rather
+      // than losing it, which is what it would have been before this field
+      // existed. Any other failure is the outer catch's to report.
+      if (chosenSkill && error instanceof ApiError && error.status === 400) {
+        await sendTurn(sessionId, message, dom.useMemory.checked);
+      } else {
+        throw error;
+      }
+    }
     dom.useMemory.checked = false;
   } catch (error) {
     setTurnRunning(false);

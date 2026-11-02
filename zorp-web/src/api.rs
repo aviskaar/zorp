@@ -2033,21 +2033,40 @@ async fn start_turn(
     // load one itself.
     let chosen_skill = match body.skill {
         Some(name) if !name.is_empty() => {
-            let installed = discover_skills(Some(workspace.as_path())).0;
-            if !zorp_skill::is_valid_skill_name(&name) || !installed.iter().any(|s| s.name == name)
-            {
+            // The malformed-name check is cheap and does no I/O, so it runs
+            // before the directory scan.
+            if !zorp_skill::is_valid_skill_name(&name) {
                 return (
                     StatusCode::BAD_REQUEST,
                     format!("no installed skill named {name:?}"),
                 )
                     .into_response();
             }
-            // Checked against the installed registry and nothing finer: the
-            // picker offers every installed skill (#252), and whether the
-            // model is actually offered a given one is reported back to the
-            // person by the "did not load" line rather than refused here,
-            // which would reject a valid name over a routing decision the
-            // picker did not make.
+            // Discovering skills walks and parses the scope directories, so
+            // it runs on a blocking thread rather than stalling the async
+            // worker. Checked against the installed registry and nothing
+            // finer: the picker offers every installed skill (#252), and
+            // whether the model is actually offered a given one is reported
+            // back to the person by the "did not load" line rather than
+            // refused here, which would reject a valid name over a routing
+            // decision the picker did not make.
+            let ws = workspace.clone();
+            let installed_names = tokio::task::spawn_blocking(move || {
+                discover_skills(Some(ws.as_path()))
+                    .0
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<String>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !installed_names.contains(&name) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("no installed skill named {name:?}"),
+                )
+                    .into_response();
+            }
             Some(name)
         }
         _ => None,

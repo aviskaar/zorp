@@ -117,20 +117,21 @@ test("SlashMenu move clamps and pick returns the selected name", () => {
   assert.equal(menu.open, false);
 });
 
-test("SlashMenu reflects open state and active option onto the owner", () => {
+test("SlashMenu announces the popup and active option on the owner", () => {
   const dom = new JSDOM("<!doctype html><body><textarea></textarea></body>");
   const input = dom.window.document.querySelector("textarea")!;
   const menu = new SlashMenu(dom.window.document, input);
   dom.window.document.body.append(menu.element());
-  assert.equal(input.getAttribute("aria-expanded"), "false");
-  menu.show(SKILLS, () => {});
-  assert.equal(input.getAttribute("aria-expanded"), "true");
+  // A textbox with a popup listbox, not a combobox.
+  assert.equal(input.getAttribute("aria-haspopup"), "listbox");
   assert.equal(input.getAttribute("aria-controls"), menu.element().id);
+  assert.equal(input.getAttribute("role"), null);
+  assert.equal(input.getAttribute("aria-activedescendant"), null);
+  menu.show(SKILLS, () => {});
   assert.equal(input.getAttribute("aria-activedescendant"), `${menu.element().id}-opt-0`);
   menu.move(1);
   assert.equal(input.getAttribute("aria-activedescendant"), `${menu.element().id}-opt-1`);
   menu.close();
-  assert.equal(input.getAttribute("aria-expanded"), "false");
   assert.equal(input.getAttribute("aria-activedescendant"), null);
 });
 

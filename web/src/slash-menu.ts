@@ -160,9 +160,12 @@ export class SlashMenu {
     this.el.hidden = true;
     this.el.setAttribute("role", "listbox");
     if (this.owner) {
-      this.owner.setAttribute("role", "combobox");
-      this.owner.setAttribute("aria-autocomplete", "list");
-      this.owner.setAttribute("aria-expanded", "false");
+      // A textbox that owns a popup listbox, not a combobox: `role=combobox`
+      // and `aria-autocomplete` are not a valid pattern on a multi-line
+      // textarea and would suppress its text-area semantics. `aria-haspopup`
+      // plus `aria-controls` and a dynamic `aria-activedescendant` announce
+      // the picker and the active option without reclassifying the control.
+      this.owner.setAttribute("aria-haspopup", "listbox");
       this.owner.setAttribute("aria-controls", this.menuId);
     }
     // Keep the textarea focused when the menu itself is clicked, including
@@ -177,10 +180,8 @@ export class SlashMenu {
       return;
     }
     if (this.open && this.items.length > 0) {
-      this.owner.setAttribute("aria-expanded", "true");
       this.owner.setAttribute("aria-activedescendant", `${this.menuId}-opt-${this.index}`);
     } else {
-      this.owner.setAttribute("aria-expanded", "false");
       this.owner.removeAttribute("aria-activedescendant");
     }
   }
