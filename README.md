@@ -144,6 +144,7 @@ need a source build with the `research` feature.
 | [Docker](docs/docker.md) | The container image and the compose stack in detail |
 | [Benchmarks](docs/benchmarks.md) | Running zorp-agent against Terminal-Bench |
 | [Threat model](docs/THREAT_MODEL.md) | What is stored and where, what leaves the machine and when, how credentials, approvals and the sandbox work, and the known gaps |
+| [Network egress](docs/NETWORK_EGRESS.md) | What each workflow connects to, by procedure and observed destination, marked expected, optional or prohibited |
 | [Decision log](docs/DECISIONS.md) | Why things are the way they are |
 
 ## Repository layout
