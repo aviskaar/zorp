@@ -1,0 +1,64 @@
+name: Download Stats
+
+# Snapshots GitHub release asset download counts daily and on demand.
+# Appends one JSON line per asset per day to downloads.jsonl on the
+# orphan stats branch. Commits with [skip ci] so the stats branch does
+# not trigger other workflows.
+on:
+  schedule:
+    # Runs at 03:17 UTC daily. Chosen to avoid the top-of-hour rush.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    name: Snapshot download counts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+
+      - name: Fetch release download counts
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/aviskaar/zorp/releases \
+            --jq ".[] | .tag_name as $t | .assets[] | { date: \"$(date -u +%F)\", tag: $t, asset: .name, count: .download_count } | @json" \
+            > downloads.jsonl
+
+      - name: Prepare stats branch
+        run: |
+          mkdir -p /tmp/zorp-stats
+          rm -rf /tmp/zorp-stats/*
+          # Create or update the orphan stats branch
+          if git worktree list | grep -q /tmp/zorp-stats; then
+            git worktree remove /tmp/zorp-stats --force 2>/dev/null || true
+          fi
+          git worktree add /tmp/zorp-stats -b stats --orphan
+
+      - name: Append today's counts if missing
+        run: |
+          today=$(date -u +%F)
+          if [ -f /tmp/zorp-stats/downloads.jsonl ] && grep -q "\"date\":\"$today\"" /tmp/zorp-stats/downloads.jsonl; then
+            echo "Data for $today already exists, skipping"
+          else
+            cat downloads.jsonl >> /tmp/zorp-stats/downloads.jsonl
+          fi
+
+      - name: Commit and push stats branch
+        run: |
+          cd /tmp/zorp-stats
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads.jsonl
+          git commit -m "downloads: snapshot for $(date -u +%F) [skip ci]"
+          git push origin stats --force-with-lease
+
+      - name: Clean up worktree
+        if: always()
+        run: |
+          git worktree remove /tmp/zorp-stats --force 2>/dev/null || true
