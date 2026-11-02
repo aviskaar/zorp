@@ -25,15 +25,18 @@ the sandbox decides what a command that was allowed can actually touch. See
   writes can turn it on or change it, and a project flavor that tries to
   loosen the sandbox is dropped by the trust gate before it is read.
 
-- **`srt` is not wired in on Windows** (ADR 0141). The Windows build keeps
-  its existing process supervision, and `srt`'s own Windows path is alpha
-  and deliberately not shipped. There are no OS-level filesystem and network
-  walls on Windows. `srt_settings` is not special-cased by OS, so the mode
-  still matters: `off`, the default, runs commands normally; a non-off mode
-  finds `srt` missing and hits the loud refuse-when-missing, so the command
-  does not run rather than running unsandboxed. A Windows user who needs the
-  walls runs zorp under WSL or a Linux container. The supervision, output
-  capture and secret redaction described below apply on Windows regardless.
+- **`srt` is not wired in on Windows** (ADR 0141). zorp does not ship `srt`
+  on Windows and does not support its alpha Windows path, so in the shipped
+  configuration there are no OS-level filesystem and network walls there.
+  The code is not OS-gated, so the mode still decides what happens: `off`,
+  the default, runs commands normally; a non-off mode finds `srt` absent and
+  hits the loud refuse-when-missing, so the command does not run rather than
+  running unsandboxed. (If someone put `srt` and `ripgrep` on a Windows
+  `PATH` themselves, the code would invoke `srt`'s alpha Windows path; that
+  is unsupported and is not what "not wired in" promises.) A Windows user who
+  needs the walls runs zorp under WSL or a Linux container. The supervision,
+  output capture and secret redaction described below apply on Windows
+  regardless.
 
 ## The modes and what each one generates
 
@@ -204,9 +207,9 @@ or a network call are `workspace_mode_allows_a_write_inside_the_workspace`,
 without asserting. It reports as `ok` but checked nothing.
 
 **`srt` is not installed in this container, and no CI runner installs it
-either** (a grep of `.github/workflows/` finds `srt` only in the release
-notes, never in an install step). So the OS-level enforcement cells in the
-matrix above, the ones whose layer is `srt`, are **not exercised by any
+either** (no job in `.github/workflows/` has a step that installs `srt`,
+`bwrap` or `ripgrep` for the sandbox). So the OS-level enforcement cells in
+the matrix above, the ones whose layer is `srt`, are **not exercised by any
 automated test today.** They rest on the generated settings being correct,
 which is tested, and on `srt` enforcing those settings, which is `srt`'s own
 contract and is not re-tested here.
