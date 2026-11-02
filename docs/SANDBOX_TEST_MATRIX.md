@@ -41,16 +41,14 @@ the sandbox decides what a command that was allowed can actually touch. See
 ## The modes and what each one generates
 
 `srt` is driven by a settings file that zorp generates in code, per run,
-from the mode. The model never writes it. The settings below are the real
-output of `settings_json` for a workspace at `/home/alice/project` with
-`HOME=/home/alice`, printed by running the function directly.
+from the mode. The model never writes it. The JSON blocks below for `build`,
+`workspace` and `read-only` are the real output of `settings_json` for a
+workspace at `/home/alice/project` with `HOME=/home/alice`, printed by
+running the function directly.
 
-`off` generates no settings and invokes no `srt`:
-
-```
-### off
-(no settings; srt is never invoked)
-```
+`off` is the exception: `settings_json` returns `None` for it and prints
+nothing, because `off` never invokes `srt`. There is no settings block to
+show.
 
 `build`: writes confined to the workspace and its `scratch`, credential
 stores unreadable, network open only to the named package registries.
@@ -140,10 +138,12 @@ wrong.
 
 ## The matrix
 
-Columns are the modes. `blocked` means the layer denies it, `confined` means
-it is limited but not forbidden, `full` means no restriction (the `off`
-baseline), and `n/a` means the vector is not this layer's job. The enforcing
-layer is named in the last column.
+Columns are the modes. A cell is a short phrase for what happens to that
+vector under that mode: `full` means no restriction (the `off` baseline),
+`blocked` means it is denied outright, and other cells spell out the partial
+case (for example `registries only` for the network under `build`, or
+`reaped` for a background process that is killed with its group). The last
+column names the layer that does the work, from the five layers above.
 
 | Vector | off | build | workspace | read-only | Layer |
 | --- | --- | --- | --- | --- | --- |
@@ -273,8 +273,11 @@ left out of this change to keep it to one subject.
 ## Reproducing the observed evidence
 
 ```
-# Settings generation, supervision, capture, refuse-when-missing, off:
-cargo test -p zorp-agent --lib sandbox::
+# Settings generation, supervision, capture, refuse-when-missing, off.
+# Skip the one test that is environment-dependent (issue #327): it fails
+# wherever a short secret-named env var matches the test output.
+cargo test -p zorp-agent --lib sandbox:: -- \
+  --skip output_below_cap_is_not_dropped_after_head_fills
 
 # With srt present (closes the main gap), as a non-root user on Linux:
 #   install srt + ripgrep + bwrap on PATH, then run the same command;
