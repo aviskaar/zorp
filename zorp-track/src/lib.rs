@@ -1,9 +1,6 @@
 //! zorp-track, research-track storage and checkpoints for zorp-agent.
 //!
-//! Exposes a fully synchronous API. DuckDB is natively synchronous.
-//! Behind the non-default `library` feature, LanceDB's async calls are
-//! hidden behind an internal `tokio::Runtime::block_on`, the same
-//! pattern `zorp-mcp` already uses for its own async transport.
+//! Exposes a fully synchronous API using DuckDB.
 
 pub mod admission;
 pub mod anomalies;
@@ -19,8 +16,6 @@ pub mod families;
 pub mod hypotheses;
 pub mod id;
 pub mod inquiry;
-#[cfg(feature = "library")]
-pub mod library;
 pub mod partition;
 pub mod prereg;
 pub mod project;
