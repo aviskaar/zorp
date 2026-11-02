@@ -208,6 +208,19 @@ fn api_router(state: AppState) -> Router {
         .route("/api/workspace/browse", get(browse_workspace))
         .route("/api/artifacts", get(list_artifacts))
         .route("/api/artifacts/raw", get(read_artifact))
+        // Custom emoji a person adds, as files in the config directory. The
+        // listing and the files are read by the page; adding and removing are
+        // for a person in the settings pane. No model tool reaches any of it.
+        .route(
+            "/api/emoji",
+            get(crate::emoji::list).post(crate::emoji::add).layer(
+                axum::extract::DefaultBodyLimit::max(crate::emoji::MAX_BYTES + 4096),
+            ),
+        )
+        .route(
+            "/api/emoji/:name",
+            get(crate::emoji::serve).delete(crate::emoji::delete),
+        )
         // Conversation search. The three routes exist in every build, so a
         // server without the `recall` feature answers "off, and here is
         // why" rather than a 404 the page has to interpret.

@@ -11,7 +11,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import { renderMarkdown } from "../src/markdown.ts";
+import { renderMarkdown, setCustomEmoji } from "../src/markdown.ts";
 
 const dom = new JSDOM("<!doctype html><body></body>");
 // The renderer calls document.createElement, so it needs a document. Setting
@@ -372,4 +372,52 @@ test("math inside bold still renders inside the bold", () => {
 test("a heading carrying math renders it", () => {
   const host = render("## Problem $\\rightarrow$ Solution");
   assert.equal(host.querySelector("h2")?.textContent, "Problem → Solution");
+});
+
+test("a standard shortcode in model output renders as the character", () => {
+  const host = render("ship it :rocket:");
+  assert.ok(host.textContent?.includes("🚀"), host.textContent ?? "");
+  assert.ok(!host.textContent?.includes(":rocket:"));
+});
+
+test("an unknown shortcode stays literal and a code span is left alone", () => {
+  const host = render("a :notareal_name: and `:rocket:`");
+  assert.ok(host.textContent?.includes(":notareal_name:"));
+  assert.equal(host.querySelector("code.inline-code")?.textContent, ":rocket:");
+});
+
+test("a custom emoji in the listing renders as the one img, built from the name", () => {
+  setCustomEmoji(["partyparrot"]);
+  try {
+    const host = render("hi :partyparrot: there");
+    const img = host.querySelector("img");
+    assert.ok(img, "custom emoji did not render an img");
+    assert.equal(img?.getAttribute("src"), "/api/emoji/partyparrot");
+    assert.equal(img?.getAttribute("alt"), ":partyparrot:");
+    assert.ok(host.querySelector("img.custom-emoji"));
+  } finally {
+    setCustomEmoji([]);
+  }
+});
+
+test("a :name: not in the listing makes no img and no request", () => {
+  setCustomEmoji(["partyparrot"]);
+  try {
+    const host = render("hi :notlisted: there");
+    assert.equal(host.querySelectorAll("img").length, 0);
+    assert.ok(host.textContent?.includes(":notlisted:"));
+  } finally {
+    setCustomEmoji([]);
+  }
+});
+
+test("an image markdown from a URL still makes no img, custom emoji or not", () => {
+  setCustomEmoji(["partyparrot"]);
+  try {
+    const host = render("![x](https://example.com/x.png)");
+    assert.equal(host.querySelectorAll("img").length, 0);
+    assert.ok(host.textContent?.includes("https://example.com/x.png"));
+  } finally {
+    setCustomEmoji([]);
+  }
 });

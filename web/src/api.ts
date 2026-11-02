@@ -415,6 +415,45 @@ export async function fetchSkills(): Promise<SkillListing> {
   };
 }
 
+/** A custom emoji a person added: its name and the content type served. */
+export interface CustomEmoji {
+  name: string;
+  type: string;
+}
+
+/** The custom emoji the server has, for the renderer and the picker. */
+export async function fetchEmoji(): Promise<CustomEmoji[]> {
+  const body = await request<{ emoji?: CustomEmoji[] }>("GET", "/api/emoji");
+  return Array.isArray(body?.emoji) ? body.emoji : [];
+}
+
+/**
+ * Add a custom emoji: the raw file as the body, the name in the query. Not the
+ * JSON `request` helper, because the body is binary; the type is sniffed on
+ * the server, not declared here.
+ */
+export async function addEmoji(name: string, file: Blob): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url(`/api/emoji?name=${encodeURIComponent(name)}`), {
+      method: "POST",
+      headers: authHeaders(),
+      body: file,
+    });
+  } catch {
+    throw new ApiError(0, "cannot reach the zorp server");
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim();
+    throw new ApiError(response.status, detail || `adding :${name}: failed with ${response.status}`);
+  }
+}
+
+/** Remove a custom emoji by name. */
+export async function deleteEmoji(name: string): Promise<void> {
+  await request<void>("DELETE", `/api/emoji/${encodeURIComponent(name)}`);
+}
+
 /**
  * What became of one skill's instructions in a conversation's context.
  *
@@ -2091,6 +2130,16 @@ export async function listArtifacts(): Promise<ArtifactListing> {
  */
 export function artifactUrl(path: string): string {
   return url(`/api/artifacts/raw?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * The URL an `<img>` loads a custom emoji from. Through `url`, so it carries
+ * the API base and the `?token=` the route's gate needs: an `<img>` cannot
+ * send the `Authorization` header, so a bare relative path would 401 on a
+ * token-protected or separate-origin server.
+ */
+export function emojiUrl(name: string): string {
+  return url(`/api/emoji/${encodeURIComponent(name)}`);
 }
 
 /**
