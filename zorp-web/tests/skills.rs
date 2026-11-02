@@ -376,6 +376,13 @@ async fn a_turn_naming_an_unknown_skill_is_refused() {
         body.contains("nope"),
         "the refusal should name the skill: {body}"
     );
+    // The browser matches this phrase to tell a stale-skill 400 from any
+    // other 400 and degrade to a plain-text send (web/src/main.ts). Pinned
+    // here so rewording the refusal does not silently break that fallback.
+    assert!(
+        body.contains("installed skill"),
+        "the refusal wording the client keys on changed: {body}"
+    );
 
     for var in ["ZORP_SKILLS_DIR", "ZORP_WORKSPACE"] {
         std::env::remove_var(var);

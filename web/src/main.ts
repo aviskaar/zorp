@@ -1468,21 +1468,25 @@ async function sendMessage(message: string): Promise<void> {
     // Cleared before the send so a failed start cannot leave a stale skill
     // for a later turn's "did not load" note; set only once the turn is
     // accepted.
-    turnSkill = null;
     turnSkillLoaded = false;
     turnErrored = false;
+    // Set before the send so a 400 fallback below still reports the skill as
+    // not loaded (which it was). A send that throws for any other reason
+    // never reaches finishTurn, and the next turn clears it, so this cannot
+    // leave a stale note.
+    turnSkill = chosenSkill;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
     try {
       await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
-      turnSkill = chosenSkill;
     } catch (error) {
       // start_turn returns 400 only for an unknown skill ("no installed
       // skill named ..."): the cached listing went stale (a skill
       // uninstalled, or a workspace switch) between the pick and the send.
       // Send the message as plain text rather than losing it, which is what
-      // it would have been before this field existed. Any other failure,
-      // including a 400 that is not about the skill, is the outer catch's.
+      // it would have been before this field existed, and keep turnSkill set
+      // so the person is told it did not load. Any other failure, including a
+      // 400 that is not about the skill, is the outer catch's.
       if (
         chosenSkill &&
         error instanceof ApiError &&
