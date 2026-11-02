@@ -82,7 +82,7 @@ import {
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
 import { DreamsView } from "./dreams";
-import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
+import { callLine, settleLine, startedLine, stateForStatus, toolLine } from "./activity-line";
 import { activityGroup as newActivityGroup, type ActivityGroup } from "./activity-group";
 import { approvalCard, type ApprovalOutcome } from "./approval-card";
 import { checkpointCard, type CheckpointOutcome } from "./checkpoint-card";
@@ -890,13 +890,19 @@ function wireComposer(): void {
     if (!slashMenu || !slashMenu.open || event.isComposing) {
       return;
     }
+    // While the menu owns a key, take it from document-level handlers too
+    // (voice stops recording on Escape, for one), so navigating the picker
+    // does not fire them. stopImmediatePropagation also blocks the
+    // Enter-sends handler added right below.
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
+        event.stopImmediatePropagation();
         slashMenu.move(1);
         break;
       case "ArrowUp":
         event.preventDefault();
+        event.stopImmediatePropagation();
         slashMenu.move(-1);
         break;
       case "Enter":
@@ -908,6 +914,7 @@ function wireComposer(): void {
         break;
       case "Escape": {
         event.preventDefault();
+        event.stopImmediatePropagation();
         // Remember which query was dismissed so the keyup that follows does
         // not reopen the same menu.
         const caret = dom.input.selectionStart ?? dom.input.value.length;
@@ -1896,11 +1903,6 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool_started":
-      // A `skill` tool call is the only way a skill loads; record that one
-      // fired so the "did not load" note below is not shown for this turn.
-      if (event.name === "skill") {
-        turnSkillLoaded = true;
-      }
       // Two starts with no result between them cannot happen while tools run
       // one at a time; if it ever does, the first must not spin forever.
       abandonPendingTool("This call never reported a result");
@@ -1909,6 +1911,14 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool":
+      // A `skill` tool call that reported a non-failing result is the only
+      // way a skill loads; record it so the "did not load" note is not shown
+      // this turn. Keyed on the result, not the start, so an errored load
+      // does not count. The event carries the tool name but not which skill,
+      // so this records that a skill loaded, not which one (see ADR 0147).
+      if (event.name === "skill" && stateForStatus(event.summary) !== "activity-fail") {
+        turnSkillLoaded = true;
+      }
       if (pendingTool && pendingTool.name === event.name) {
         settleLine(pendingTool.node, event.summary);
         pendingTool = null;

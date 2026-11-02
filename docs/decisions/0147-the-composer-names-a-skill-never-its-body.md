@@ -13,9 +13,11 @@ an unknown one, never joined onto a path) and puts one zorp-authored
 sentence on the seed, in the position and by the mechanism the memory block
 uses, asking the model to load the skill with the `skill` tool. The body
 never travels through the page, the request, a `user` message, or the store.
-A turn that named a skill gets a "did not load" line under the answer when
-the conversation's active-skills listing does not show it loaded, checked in
-code after the turn rather than guessed from tool events.
+A turn that named a skill and made no `skill` tool call gets a "did not
+load" line under the answer, derived in code from the turn's tool events.
+The tool event carries the tool name but not which skill, so the note is
+not shown when any skill loaded; the uncovered case is the model loading a
+different skill than the one named, which is conservative.
 
 **Why:** the browser could list installed skills but not choose one for a
 message, while the terminal already had `zorp --skill`. The gap was closed
