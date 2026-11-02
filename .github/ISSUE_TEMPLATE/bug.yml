@@ -1,0 +1,85 @@
+name: Bug report
+description: File a bug report for zorp
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill in the fields below.
+        A `zorp-agent doctor` run prints no secret by design and is safe to share.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `zorp-agent --version`
+      placeholder: "zorp-agent 0.8.0 (commit abc1234)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      description: Where the bug appeared
+      options:
+        - Terminal (zorp-agent)
+        - Browser (zorp-web)
+        - Mac app
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      description: Model provider in use (Ollama, OpenRouter, etc.)
+      placeholder: "Ollama"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: zorp-agent doctor output
+      description: Paste the full output of `zorp-agent doctor`
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Clear steps to reproduce the bug
+      placeholder: |
+        1. Run `zorp-agent ...`
+        2. ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Any error messages, stack traces, or relevant output
+      render: text

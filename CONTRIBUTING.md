@@ -78,3 +78,5 @@ commands above locally before opening a PR is on you.
 
 Open a GitHub issue with steps to reproduce, expected vs. actual
 behavior, and your environment (OS, Rust version).
+
+Questions and discussion: [Discussions › Q&A](https://github.com/aviskaar/zorp/discussions/categories/q-a).
