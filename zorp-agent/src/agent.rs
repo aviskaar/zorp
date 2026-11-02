@@ -4608,6 +4608,30 @@ mod tests {
         }
     }
 
+    /// Pressing a speed-dial slot is a settings save, so a tool that pressed
+    /// one would be a turn rewriting which model the next turn talks to. The
+    /// dial is a person's own control, from the browser's chord or `/dial` in
+    /// the terminal, and nothing the model can call reaches it. (#242)
+    #[test]
+    fn no_tool_presses_a_speed_dial_slot() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "dial",
+            "speed_dial",
+            "press_dial",
+            "set_dial",
+            "switch_model",
+            "set_model",
+            "use_slot",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
     /// A dream pass reads a person's whole conversation history and writes
     /// suggestions that, once accepted, create a project or write a flavor
     /// file. Detection is code and a pass is a person doing it, from the CLI

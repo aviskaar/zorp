@@ -244,6 +244,72 @@ fn config_path_prints_where_it_writes() {
     assert!(out.contains(dir.path().to_str().unwrap()), "{out}");
 }
 
+/// `config dial <n>` writes the slot's model fields to the saved file, the
+/// same slots the browser's chord and `/dial` read. The slots are made in the
+/// browser or hand-edited into `zorp.toml`; the terminal switches between them.
+#[test]
+fn config_dial_switches_to_a_slots_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let config = home.join("zorp");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("zorp.toml"),
+        "model = \"start\"\n\n[[dial]]\nslot = 2\nlabel = \"strong\"\nprovider = \"openai\"\n\
+         base_url = \"https://openrouter.ai/api/v1\"\nmodel = \"anthropic/claude-sonnet-4.5\"\n\
+         max_tokens = 8192\n",
+    )
+    .unwrap();
+
+    let switched = run(home, &["config", "dial", "2"], &[]);
+    assert_eq!(switched.code, Some(0), "{}", switched.stderr);
+    assert!(
+        switched.stdout.contains("anthropic/claude-sonnet-4.5"),
+        "{}",
+        switched.stdout
+    );
+
+    let report = run(home, &["config"], &[]).stdout;
+    assert!(
+        line(&report, "model").contains("anthropic/claude-sonnet-4.5"),
+        "{report}"
+    );
+    assert!(line(&report, "base url").contains("openrouter"), "{report}");
+    assert!(line(&report, "max tokens").contains("8192"), "{report}");
+
+    // The dial slot is still in the file after the switch: switching reads it,
+    // it does not consume it.
+    let file = std::fs::read_to_string(config.join("zorp.toml")).unwrap();
+    assert!(file.contains("[[dial]]"), "{file}");
+}
+
+/// An empty or missing slot is a refusal, not a silent no-op that leaves the
+/// person wondering whether the switch happened. A slot whose model is a
+/// blank string is refused the same way the chat `/dial` and the browser
+/// refuse it, so the three surfaces agree on the one file.
+#[test]
+fn config_dial_refuses_an_empty_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let empty = run(home, &["config", "dial", "5"], &[]);
+    assert_eq!(empty.code, Some(2), "{}", empty.stdout);
+    assert!(empty.stderr.contains("empty"), "{}", empty.stderr);
+
+    let config = home.join("zorp");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("zorp.toml"),
+        "model = \"start\"\n\n[[dial]]\nslot = 6\nmodel = \"\"\n",
+    )
+    .unwrap();
+    let blank = run(home, &["config", "dial", "6"], &[]);
+    assert_eq!(blank.code, Some(2), "{}", blank.stdout);
+    assert!(blank.stderr.contains("no model"), "{}", blank.stderr);
+    // The active model is untouched by the refused switch.
+    let report = run(home, &["config"], &[]).stdout;
+    assert!(line(&report, "model").contains("start"), "{report}");
+}
+
 /// The saved settings reach a real run, not only the report.
 #[test]
 fn a_saved_model_is_what_a_run_would_use() {

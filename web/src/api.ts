@@ -172,6 +172,27 @@ export interface Settings {
    * composer checks this before letting anyone type.
    */
   configured: boolean;
+  /**
+   * The model speed dial: up to nine numbered slots, each a model parked for
+   * a one-chord switch. Absent from a server built before the dial existed.
+   * A slot never carries an API key; the one key in `ZORP_API_KEY` is used
+   * as it is for the model form.
+   */
+  dial?: DialSlot[];
+}
+
+/**
+ * One speed-dial slot. Exactly the non-secret fields a settings save carries,
+ * plus a number and an optional label. **No API key:** the type has no field
+ * for one, so a slot cannot hold a secret.
+ */
+export interface DialSlot {
+  slot: number;
+  label?: string;
+  provider?: string;
+  base_url?: string;
+  model?: string;
+  max_tokens?: number;
 }
 
 /**
@@ -190,6 +211,13 @@ export interface SettingsUpdate {
   speech_voice?: string;
   /** A sandbox mode name, or the empty string to clear it back to `off`. */
   sandbox?: string;
+  /**
+   * The whole speed dial, sent only when the settings pane saves the slots.
+   * A chord press is an ordinary save of one slot's model fields and does
+   * not send this. An empty array clears the dial. A slot never carries a
+   * key.
+   */
+  dial?: DialSlot[];
 }
 
 /**

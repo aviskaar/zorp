@@ -47,6 +47,15 @@ pub enum ChatCommand {
     /// `/project` reports, `/project <name or id>` files, and
     /// `/project none` takes it out.
     Project(Option<String>),
+    /// Switch to a speed-dial slot, or report the dial.
+    ///
+    /// `/dial` lists the slots, `/dial <n>` writes slot n's model fields to
+    /// the saved file, the same slots and the same write the browser's chord
+    /// and `config dial` use. There are no chords in the terminal; a digit is
+    /// a digit, and `/dial 2` is the switch. A running conversation keeps the
+    /// model it started with, so the switch lands on the next session, which
+    /// is the terminal's version of the browser's "next turn".
+    Dial(Option<u8>),
     Capsules,
     /// List the skills this session can see.
     ///
@@ -78,6 +87,7 @@ pub enum ChatCommand {
 pub const COMMANDS: &[&str] = &[
     "help",
     "model",
+    "dial",
     "context",
     "diff",
     "status",
@@ -122,6 +132,13 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         }
         "help" | "h" | "?" => ChatCommand::Help,
         "model" => ChatCommand::Model,
+        "dial" => match remainder {
+            "" => ChatCommand::Dial(None),
+            n => match n.parse::<u8>() {
+                Ok(n) if (1..=9).contains(&n) => ChatCommand::Dial(Some(n)),
+                _ => ChatCommand::Unknown("dial".to_string()),
+            },
+        },
         "context" => ChatCommand::Context,
         "compact" => ChatCommand::Compact((!remainder.is_empty()).then(|| remainder.to_string())),
         "diff" => ChatCommand::Diff,
@@ -219,6 +236,28 @@ mod tests {
         assert_eq!(
             parse_command("/branch latest", &[]),
             ChatCommand::Unknown("branch".to_string())
+        );
+    }
+
+    /// `/dial` reports, `/dial <n>` switches, and only 1 to 9 are slots.
+    /// Zero, ten and non-numbers are refusals rather than a silent default,
+    /// the same shape `/branch` uses.
+    #[test]
+    fn dial_takes_an_optional_slot_number() {
+        assert_eq!(parse_command("/dial", &[]), ChatCommand::Dial(None));
+        assert_eq!(parse_command("/dial 1", &[]), ChatCommand::Dial(Some(1)));
+        assert_eq!(parse_command("/dial 9", &[]), ChatCommand::Dial(Some(9)));
+        assert_eq!(
+            parse_command("/dial 0", &[]),
+            ChatCommand::Unknown("dial".to_string())
+        );
+        assert_eq!(
+            parse_command("/dial 10", &[]),
+            ChatCommand::Unknown("dial".to_string())
+        );
+        assert_eq!(
+            parse_command("/dial local", &[]),
+            ChatCommand::Unknown("dial".to_string())
         );
     }
 

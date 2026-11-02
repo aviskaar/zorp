@@ -72,6 +72,67 @@ pub struct Saved {
     /// to deserialize the whole settings file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
+    /// The model speed dial: up to nine numbered slots, each a model a
+    /// person parked for a one-chord switch. Both surfaces read it from the
+    /// same file. See issue #242 and `docs/DECISIONS.md` (2026-11-02).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dial: Vec<DialSlot>,
+}
+
+/// One speed-dial slot: a model a person parked under a number, with an
+/// optional label. It carries exactly the non-secret fields a settings save
+/// carries and **never an API key**: there is no field for one, so a slot
+/// cannot hold a secret even if a caller tried to put one there. Pressing a
+/// slot is a settings save of these fields and nothing more; the one API
+/// key in `ZORP_API_KEY` is used as it is for the model form.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct DialSlot {
+    /// 1 to 9. The chord's digit and the slot's identity in the file.
+    pub slot: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+impl DialSlot {
+    /// Whether the slot points at a usable model. The one check all three
+    /// surfaces share (the browser's `slotIsSet`, `/dial`, and `config dial`),
+    /// so a slot with a missing or blank model is refused everywhere alike.
+    pub fn has_model(&self) -> bool {
+        self.model
+            .as_deref()
+            .map(|m| !m.trim().is_empty())
+            .unwrap_or(false)
+    }
+}
+
+impl Saved {
+    /// Apply a speed-dial slot's non-secret model fields over these settings:
+    /// the one place the terminal's switch is spelled out, called by both
+    /// `config dial` and the REPL's `/dial`. Fields the slot left unset are
+    /// left as they are, the same as pressing the chord in the browser. There
+    /// is no key to carry, because `DialSlot` has no field for one.
+    pub fn apply_dial_slot(&mut self, slot: &DialSlot) {
+        if slot.provider.is_some() {
+            self.provider = slot.provider.clone();
+        }
+        if slot.base_url.is_some() {
+            self.base_url = slot.base_url.clone();
+        }
+        if slot.model.is_some() {
+            self.model = slot.model.clone();
+        }
+        if slot.max_tokens.is_some() {
+            self.max_tokens = slot.max_tokens;
+        }
+    }
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -397,6 +458,14 @@ mod tests {
             speech_model: Some("phonon".to_string()),
             speech_voice: Some("default".to_string()),
             sandbox: Some("workspace".to_string()),
+            dial: vec![DialSlot {
+                slot: 1,
+                label: Some("local".to_string()),
+                provider: Some("openai_compatible".to_string()),
+                base_url: Some("http://localhost:11434/v1".to_string()),
+                model: Some("qwen3:8b".to_string()),
+                max_tokens: Some(8192),
+            }],
         };
         let text = toml::to_string_pretty(&saved).unwrap();
 
@@ -414,6 +483,47 @@ mod tests {
         assert!(!toml::to_string_pretty(&parsed)
             .unwrap()
             .contains("sk-leaked"));
+    }
+
+    /// `has_model` and `apply_dial_slot` are the one copy of the dial switch
+    /// that `config dial` and the REPL `/dial` both call, so they agree. A
+    /// blank or missing model is not a model, and applying a slot moves only
+    /// the fields the slot set.
+    #[test]
+    fn a_slot_applies_its_set_fields_and_a_blank_model_is_no_model() {
+        assert!(!DialSlot {
+            slot: 1,
+            model: Some("   ".to_string()),
+            ..DialSlot::default()
+        }
+        .has_model());
+        assert!(!DialSlot {
+            slot: 1,
+            ..DialSlot::default()
+        }
+        .has_model());
+        assert!(DialSlot {
+            slot: 1,
+            model: Some("qwen3:8b".to_string()),
+            ..DialSlot::default()
+        }
+        .has_model());
+
+        let mut saved = Saved {
+            model: Some("start".to_string()),
+            max_tokens: Some(1024),
+            ..Saved::default()
+        };
+        saved.apply_dial_slot(&DialSlot {
+            slot: 2,
+            model: Some("next".to_string()),
+            base_url: Some("https://x/v1".to_string()),
+            ..DialSlot::default()
+        });
+        assert_eq!(saved.model.as_deref(), Some("next"));
+        assert_eq!(saved.base_url.as_deref(), Some("https://x/v1"));
+        // The slot left max_tokens unset, so it is unchanged, not cleared.
+        assert_eq!(saved.max_tokens, Some(1024));
     }
 
     #[test]
