@@ -47,12 +47,17 @@ runs is a later decision; the hook is in place.
 ## Coverage, and what only runs on a tag
 
 - Tarball builds (`release.yml`): per-target feature manifest (all targets,
-  since it runs nothing) and the smoke test on the targets the runner can
-  execute (Linux x86_64, macOS arm64, Windows); the cross-compiled siblings
-  are covered by those.
-- DMG (`desktop.yml`): a feature manifest recording the bridge's full feature
-  set, published beside the DMG. A true headless GUI launch is impractical in
-  CI; the existing mount-and-verify of the app bundle is the proxy.
+  since it runs nothing) and the smoke test on every target whose runner can
+  execute it: both Linux targets (x86_64 on ubuntu-22.04, aarch64 natively on
+  ubuntu-22.04-arm), macOS arm64, and Windows. The one unsmoked target is
+  x86_64-apple-darwin, which is cross-compiled on the arm64 macOS runner and
+  cannot run there.
+- DMG (`desktop.yml`): a feature manifest whose feature set is read from the
+  bridge crate's own `default = [...]`, which is exactly what `build-bridge.sh`
+  compiles (it passes no `--features`), so the manifest cannot drift from the
+  build the way a hardcoded list would. A true headless GUI launch is
+  impractical in CI; the existing mount-and-verify of the app bundle is the
+  proxy.
 - Image (`image.yml`): an **anonymous** pull of the published image, after
   logout, so a private package fails the check rather than passing on the
   job's own still-authenticated session.

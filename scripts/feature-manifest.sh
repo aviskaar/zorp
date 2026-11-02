@@ -28,18 +28,30 @@ if [ -z "$version" ] || [ -z "$target" ]; then
     exit 2
 fi
 
+# Escape a value for a JSON string: backslash first, then double quote, then
+# drop control characters. The real inputs (a vN.N.N tag, a target triple,
+# cargo feature names) never need this, but a file sold as machine-readable
+# ground truth should not emit invalid JSON for an odd value either.
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\000-\037'
+}
+
 # Turn the comma-separated list into a sorted JSON array of strings, dropping
-# empty entries so a trailing comma or an empty argument yields [].
+# empty entries so a trailing comma or an empty argument yields [], and
+# escaping each entry.
 features_json="$(
     printf '%s' "$features" |
         tr ',' '\n' |
         sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
         grep -v '^$' |
         sort -u |
+        while IFS= read -r f; do
+            printf '%s\n' "$(json_escape "$f")"
+        done |
         awk 'BEGIN { printf "[" }
              { printf "%s\"%s\"", (NR>1 ? "," : ""), $0 }
              END { printf "]" }'
 )"
 
 printf '{"version":"%s","target":"%s","features":%s}\n' \
-    "$version" "$target" "$features_json"
+    "$(json_escape "$version")" "$(json_escape "$target")" "$features_json"

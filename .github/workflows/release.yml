@@ -181,13 +181,16 @@ jobs:
 
       - name: Smoke test the built binary
         # A release that cannot print its own version, serve a healthy
-        # /api/health, or run its help is worse than no release. Only on a
-        # target the host can execute; the cross-compiled ones are covered by
-        # their native siblings. The result is saved and published as an asset,
-        # so the release links what was checked. The model-interaction step is
-        # skipped here: a release runner has no provider configured, and the
-        # smoke script reports that rather than faking a reply.
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
+        # /api/health, or run its help is worse than no release. Run on every
+        # target whose runner can execute it: both Linux targets (x86_64 on
+        # ubuntu-22.04, aarch64 natively on ubuntu-22.04-arm), macOS arm64, and
+        # Windows. The one target not smoked is x86_64-apple-darwin, which is
+        # cross-compiled on the arm64 macOS runner and so cannot run here. The
+        # result is saved and published as an asset, so the release links what
+        # was checked. The model-interaction step is skipped here: a release
+        # runner has no provider configured, and the smoke script reports that
+        # rather than faking a reply.
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
           set -euo pipefail

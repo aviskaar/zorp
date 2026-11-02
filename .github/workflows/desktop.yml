@@ -61,16 +61,23 @@ jobs:
 
       - name: Feature manifest
         # #307: the DMG is a build too, and it carries a different feature set
-        # from the prebuilt tarballs. build-bridge.sh compiles the bridge with
-        # the zorp-web defaults, which turn every feature on, so the manifest
-        # records that set. Published beside the DMG so a download has a
-        # machine-readable answer to which build carries which capability.
+        # from the prebuilt tarballs. Derive that set from the bridge crate's
+        # own `default = [...]`, which is what build-bridge.sh compiles (it
+        # passes no --features), so the manifest cannot drift from the real
+        # build the way a hardcoded list would. Published beside the DMG so a
+        # download has a machine-readable answer to which build carries what.
         run: |
+          set -euo pipefail
           tag="${{ inputs.tag || github.ref_name }}"
-          sh scripts/feature-manifest.sh "$tag" "universal-apple-darwin-dmg" \
-            "research,voice,recall,memory,search,train" \
-            > "zorp-desktop/build/zorp-$tag-desktop.features.json"
-          cat "zorp-desktop/build/zorp-$tag-desktop.features.json"
+          # A ref name can contain a slash on a workflow_dispatch rehearsal;
+          # keep it out of the file path.
+          safe_tag="$(printf '%s' "$tag" | tr '/' '-')"
+          feats="$(sed -n 's/^default = \[\(.*\)\]$/\1/p' \
+            zorp-desktop/bridge/Cargo.toml | tr -d ' "')"
+          echo "bridge default features: $feats"
+          sh scripts/feature-manifest.sh "$tag" "universal-apple-darwin-dmg" "$feats" \
+            > "zorp-desktop/build/zorp-$safe_tag-desktop.features.json"
+          cat "zorp-desktop/build/zorp-$safe_tag-desktop.features.json"
 
       - name: Checksum DMG
         run: |
@@ -101,5 +108,6 @@ jobs:
             fi
             sleep 5
           done
+          safe_tag="$(printf '%s' "$tag" | tr '/' '-')"
           gh release upload "$tag" zorp-desktop/build/*.dmg* \
-            "zorp-desktop/build/zorp-$tag-desktop.features.json" --clobber
+            "zorp-desktop/build/zorp-$safe_tag-desktop.features.json" --clobber
