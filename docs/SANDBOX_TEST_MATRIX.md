@@ -43,8 +43,10 @@ the sandbox decides what a command that was allowed can actually touch. See
 
 `srt` is driven by a settings file that zorp generates in code, per run,
 from the mode. The model never writes it. The `build` block below is the
-verbatim output of `settings_json` for a workspace at `/home/alice/project`
-with `HOME=/home/alice`, printed by running the function directly. The
+output of `settings_json` for a workspace at `/home/alice/project` with
+`HOME=/home/alice`, printed by running the function directly; the values are
+exactly what it emits, with the long arrays reflowed to a few entries per
+line to fit the page (serde's pretty-printer puts each on its own line). The
 `workspace` and `read-only` blocks are the same output with the `denyRead`
 array abbreviated, since it is byte for byte the nine paths `build` lists;
 the function emits those nine concrete paths in every non-`off` mode.
@@ -145,11 +147,15 @@ wrong.
 ## The matrix
 
 Columns are the modes. A cell is a short phrase for what happens to that
-vector under that mode: `full` means no restriction (the `off` baseline),
-`blocked` means it is denied outright, and other cells spell out the partial
-case (for example `registries only` for the network under `build`, or
-`reaped` for a background process that is killed with its group). The last
-column names the layer that does the work, from the five layers above.
+vector under that mode: `full` means the sandbox imposes no restriction (the
+`off` baseline), `blocked` means it is denied outright, and other cells spell
+out the partial case (for example `registries only` for the network under
+`build`, or `reaped` for a background process that is killed with its group).
+The last column names the layer that does the work, from the five layers
+above. `full` describes the sandbox only: the in-code policy layer (the
+`run_command` denylist and the approval gate) still applies in every mode,
+`off` included, so a `full` cell is not "nothing stops this", it is "the
+sandbox does not".
 
 | Vector | off | build | workspace | read-only | Layer |
 | --- | --- | --- | --- | --- | --- |
@@ -174,9 +180,9 @@ installed and so was not exercised.
 
 These are unit tests over the settings generation and the supervision and
 capture layers. They do not need `srt` installed. CI exercises them on every
-pull request: the Linux and macOS build-and-test job runs the whole
-workspace (`cargo test --workspace --exclude zorp-track`), which includes
-these tests, and the Windows job runs the `sandbox::` filter explicitly
+pull request: the Linux and macOS build-and-test job runs the workspace test
+suite (`cargo test --workspace --exclude zorp-track`), which includes these
+tests, and the Windows job runs the `sandbox::` filter explicitly
 (where the `#[cfg(unix)]` enforcement and refuse tests do not compile, so
 only the cross-platform ones run there). Each named test below asserted and
 passed in this container; use the exact command in the Reproducing section
