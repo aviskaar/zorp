@@ -20,7 +20,6 @@ pub mod critique;
 pub mod deliver;
 pub mod doctor;
 pub mod dream;
-mod embed;
 #[cfg(feature = "ensemble")]
 pub mod ensemble;
 mod flavor;
@@ -73,7 +72,6 @@ pub use context_window::{
     compact_tool_results, estimate_tokens, parse_token_usage, plan_seed, CompactionOutcome,
     ContextBudget, ContextUsage, SeedPlan, TokenUsage, UsageSource,
 };
-pub use embed::{embed_request_body, embed_texts, parse_embedding_response};
 pub use skill_routing::{
     parse_size_billions, skill_offer, ModelFacts, SkillOffer, SkillTier, TierChoice,
 };

@@ -49,7 +49,7 @@ resulting artifact, deliver it in the right form.
   app's own minimum. CI's desktop job builds the bridge, runs `swift test`
   and packages the DMG. See `docs/DECISIONS.md` (2026-09-12, 2026-10-26).
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
-  records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
+  records, git-backed pre-registration, checkpoints, DuckDB),
   built, not inherited. The four capabilities (validate, investigate,
   co-write, deliver) sit on top of it as `zorp-agent` subcommands,
   behind the `research` feature. All four are built and tested
@@ -1080,10 +1080,6 @@ resulting artifact, deliver it in the right form.
   research-feature code changes. CI covers both nightly and on pull
   requests that touch the research stack, but that is a backstop, not a
   substitute for running them locally.
-- The LanceDB vector library is behind a non-default `library` feature
-  on both `zorp-track` and `zorp-agent`. `research` does not enable it.
-  Leave it off unless you are working on retrieval; it pulls in the
-  whole arrow tree.
 - `Cargo.lock` is committed and CI builds `--locked`. Shared dependency
   versions live in `[workspace.dependencies]` in the root `Cargo.toml`,
   not in the member manifests. MSRV is 1.95, declared as `rust-version`
