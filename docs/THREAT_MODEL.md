@@ -83,9 +83,12 @@ was started in.
 - **The model and its provider** are untrusted for control. Everything a model
   emits is data: the browser renders it through `textContent`, never as HTML
   (`web/src/markdown.ts` and the paths around it), and recalled text, memory
-  blocks, skill bodies, titles and compaction summaries all reach a model
-  inside a fenced, nonce-marked `user` message under a boundary sentence, never
-  the system prompt, and grant no tool and loosen no approval. Detectors and the
+  blocks, skill bodies and compaction summaries all reach a model inside a
+  fenced, nonce-marked `user` message under a boundary sentence, never the
+  system prompt, and grant no tool and loosen no approval. (A generated
+  conversation title is drawn in the sidebar as text and is never fed back to
+  any model; what the memory block quotes as a title is the verbatim first
+  message, not a model-authored line.) Detectors and the
   search layer never read a column holding model-authored text, so the agent's
   own guesses cannot become its own evidence (ADR 0063).
 - **MCP servers** are as trusted as you configure them to be. A configured
@@ -132,14 +135,21 @@ The outbound HTTP clients in the workspace, and what each is:
   fallback when the local model is missing.
 - **MCP** (`zorp-mcp`) reaches whatever a configured server points at; a remote
   server is a network egress.
-- **Settings probes and model listing.** `zorp-web/src/settings.rs` and the
-  CLI's endpoint/model-listing probe in `zorp-agent/src/main.rs` reach the
-  configured endpoint to test it and list its models, with their own bounded
-  timeouts. `zorp-agent doctor` builds its own bounded agent and probes the
-  same resolved endpoint (it never prints a key). **Titling**
-  (`zorp-web/src/title.rs`, a one-line model call over the first message and
-  answer) and **compaction's stage-two summary** (`zorp-web/src/compaction.rs`)
-  are model calls to the configured endpoint.
+- **Settings probe, model listing and the doctor probe.**
+  `zorp-web/src/settings.rs`'s connection test and `zorp-agent doctor` each
+  build their own short-bounded HTTP agent and probe the configured endpoint
+  (doctor never prints a key). The CLI's interactive model picker in
+  `zorp-agent/src/main.rs` lists a local Ollama's models (it runs only for a
+  `localhost:11434` base URL) through the shared `zorp::http_agent`, not a
+  diagnostic timeout.
+- **Titling and compaction summaries.** Titling is on by default and fires
+  from both surfaces: the logic is `zorp-agent/src/title.rs`, so a terminal
+  conversation also sends a one-line model call (the first message and answer)
+  to the configured endpoint. Compaction's stage-two summary
+  (`zorp-agent/src/compaction.rs`, driven from the CLI `/compact` as well as
+  the browser) likewise sends conversation text to the endpoint. The summary
+  is never written back to `messages`; it reaches the model as a fenced
+  stand-in only.
 - **Container image pull** fetches the published image from a registry when you
   choose to run it.
 - **The sandbox** denies the network by default; see below.
