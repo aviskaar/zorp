@@ -24,13 +24,15 @@ import type { SkillSummary } from "./api.ts";
  * The query under the caret when a slash-skill menu should be open, or
  * `null` when it should not.
  *
- * The menu opens only when the token the caret sits in starts with `/` at
- * the very start of the message or right after a newline, with no space
- * between that `/` and the caret. So `/re` at the start opens with query
- * `re`, `/` on its own opens with an empty query, but `see /etc` opens
- * nothing (the `/` is mid-line) and `/foo bar|` opens nothing (a space
- * closed the token). The returned query is the text between the `/` and the
- * caret, which is what filters the list.
+ * The menu opens only when the token the caret sits in starts the message:
+ * a `/` as the first non-whitespace character, with no space between it and
+ * the caret. This matches what is actually sent as the skill, which is the
+ * message's leading `/name` token (`leadingSkill`); opening for a `/` later
+ * in the message would offer a pick that is never sent. So `/re` at the
+ * start opens with query `re`, `/` on its own opens with an empty query, but
+ * `see /etc` opens nothing (not leading) and `/foo bar|` opens nothing (a
+ * space closed the token). The returned query is the text between the `/`
+ * and the caret, which is what filters the list.
  */
 export function slashQuery(text: string, caret: number): string | null {
   if (caret < 0 || caret > text.length) {
@@ -42,10 +44,10 @@ export function slashQuery(text: string, caret: number): string | null {
   while (start > 0 && !/\s/.test(text[start - 1])) {
     start -= 1;
   }
-  // The char before the token must be the start of the message or a
-  // newline: a slash after a space mid-line is not a command.
-  const atLineStart = start === 0 || text[start - 1] === "\n";
-  if (!atLineStart) {
+  // Only the message's leading token opens the menu: everything before it
+  // must be whitespace. A `/` further in is not the skill that would be
+  // sent, so offering it would be a pick that does nothing.
+  if (text.slice(0, start).trim() !== "") {
     return null;
   }
   if (text[start] !== "/") {
@@ -179,12 +181,17 @@ export class SlashMenu {
       this.close();
       return;
     }
+    const before = this.index;
     if (!sameList) {
       this.index = 0;
     } else {
       this.index = Math.min(this.index, items.length - 1);
     }
-    this.render();
+    // Re-showing with the same list and selection happens on every keyup;
+    // rebuilding the rows then would be wasted work on a hot path.
+    if (!sameList || this.index !== before || this.el.hidden) {
+      this.render();
+    }
     this.el.hidden = false;
   }
 
@@ -216,6 +223,7 @@ export class SlashMenu {
 
   private render(): void {
     this.el.replaceChildren();
+    let selected: HTMLElement | null = null;
     this.items.forEach((skill, i) => {
       const row = this.doc.createElement("div");
       row.className = "slash-menu-item";
@@ -223,6 +231,7 @@ export class SlashMenu {
       row.setAttribute("aria-selected", String(i === this.index));
       if (i === this.index) {
         row.classList.add("selected");
+        selected = row;
       }
       const name = this.doc.createElement("span");
       name.className = "slash-menu-name";
@@ -240,5 +249,10 @@ export class SlashMenu {
       });
       this.el.append(row);
     });
+    // Keep the highlighted row visible when arrowing past the fold of a long
+    // list. Guarded because jsdom (the tests) has no `scrollIntoView`.
+    if (selected && typeof (selected as HTMLElement).scrollIntoView === "function") {
+      (selected as HTMLElement).scrollIntoView({ block: "nearest" });
+    }
   }
 }

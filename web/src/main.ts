@@ -2129,8 +2129,12 @@ function finishTurn(): void {
   if (notedSkill && notedSession) {
     void fetchActiveSkills(notedSession)
       .then((listing) => {
-        const loaded = listing.skills.some((s) => s.name === notedSkill && s.loads > 0);
-        if (!loaded && notedSession === sessionId) {
+        // `active` is "its instructions are in the request now", not "was
+        // ever loaded": a repeat pick the model ignored, or a skill loaded
+        // earlier and since compacted out, both read as not active, which is
+        // the honest answer to whether the chosen skill is guiding this turn.
+        const present = listing.skills.some((s) => s.name === notedSkill && s.active);
+        if (!present && notedSession === sessionId) {
           appendActivity(noticeLine(`The model did not load \`${notedSkill}\``));
           scrollToBottomIfFollowing(false);
         }
