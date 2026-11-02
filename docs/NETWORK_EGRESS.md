@@ -82,9 +82,12 @@ zorp-voice   no_remote: 8 passed    no_proxy: 1 passed
 ```
 
 This covers recall indexing, memory's embedding lookup, voice transcription and
-speech synthesis: each refuses any endpoint that is not the one loopback host
-and port, follows no redirect, and reads no proxy from the environment, and the
-canary count proves the request was never made.
+speech synthesis. Across the suites the off-device, redirect and proxy cases
+assert the canary received zero connections (proving the request was never
+made), while the remaining cases assert that an off-device URL is refused
+before any request, that the resolver answers only for the validated address,
+and that a valid request does reach the one loopback host and port. Together
+they show the runtime channel cannot be pointed off the machine.
 
 ### A purely local workflow: no egress at all
 
