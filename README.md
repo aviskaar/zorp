@@ -145,6 +145,7 @@ need a source build with the `research` feature.
 | [Benchmarks](docs/benchmarks.md) | Running zorp-agent against Terminal-Bench |
 | [Threat model](docs/THREAT_MODEL.md) | What is stored and where, what leaves the machine and when, how credentials, approvals and the sandbox work, and the known gaps |
 | [Network egress](docs/NETWORK_EGRESS.md) | What each workflow connects to, by procedure and observed destination, marked expected, optional or prohibited |
+| [Sandbox test matrix](docs/SANDBOX_TEST_MATRIX.md) | Each `srt` mode against the attack vectors it is meant to stop, with what was observed, what was not, and the remediation |
 | [Decision log](docs/DECISIONS.md) | Why things are the way they are |
 
 ## Repository layout
