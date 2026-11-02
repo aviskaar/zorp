@@ -342,9 +342,10 @@ resulting artifact, deliver it in the right form.
   memory block uses. The 2026-09-10 decision left a composer slash command
   out because a control that pasted a body into the composer makes untrusted
   text look like the person's; this moves a name, not a body, which that
-  objection does not reach. A turn that named a skill and made no `skill`
-  call gets a "did not load" line under the answer, derived in code from the
-  turn's tool events. See `docs/DECISIONS.md` (2026-11-02) and issue #252.
+  objection does not reach. A turn that named a skill gets a "did not
+  load" line under the answer when the conversation's active-skills listing
+  does not show it loaded, checked in code after the turn rather than guessed
+  from tool events. See `docs/DECISIONS.md` (2026-11-02) and issue #252.
 - An agent is a flavor with a description, not a new format.
   `zorp-agent/src/agents.rs` reads the same two `flavors/` directories
   `--flavor` reads, `sessions.agent` holds the name a person picked, and

@@ -146,6 +146,10 @@ export class SlashMenu {
     this.el.className = "slash-menu";
     this.el.hidden = true;
     this.el.setAttribute("role", "listbox");
+    // Keep the textarea focused when the menu itself is clicked, including
+    // its scrollbar and padding, so dragging to scroll a long list does not
+    // blur the composer and close the menu out from under the drag.
+    this.el.addEventListener("mousedown", (event) => event.preventDefault());
   }
 
   /** The element to place in the DOM, once, near the composer. */

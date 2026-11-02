@@ -141,7 +141,6 @@ import {
   transcribeVoice,
   type ActiveSkillListing,
   type SkillSummary,
-  type SkillListing,
   type Artifact,
   type EventStream,
   type MemoryEvent,
@@ -499,23 +498,21 @@ const speechPlayer = new SpeechPlayer();
 const sandboxIndicator: SandboxIndicatorView = sandboxIndicatorView(document);
 const skills: SkillsView = skillsView(document);
 /**
- * The skills the composer's `/` picker offers (#252).
+ * The installed skills, cached for the composer's `/` picker (#252).
  *
- * The installed listing minus the ones this conversation's model is not
- * offered (`offer.withheld`): a skill the model's own `skill` tool cannot
- * load is not one to let a person pick, or the seed would ask for a load
- * that always fails. Held so the picker and the leading-token check do not
- * each refetch; populated at startup and refreshed whenever the pill
- * fetches. Names only ever reach the model as a `skill` field the server
- * rechecks; a body never travels through here.
+ * Every installed skill, the same listing the toolbar pill shows, held so
+ * the picker and the leading-token check do not each refetch; populated at
+ * startup and refreshed whenever the pill fetches. Whether the model is
+ * actually offered a given skill is left to the "did not load" line rather
+ * than filtered here, which is the picker the spec asks for. Names only ever
+ * reach the model as a `skill` field the server rechecks; a body never
+ * travels through here.
  */
-let pickableSkills: SkillSummary[] = [];
+let installedSkills: SkillSummary[] = [];
 /** The `/` query that was dismissed with Escape, kept closed until it changes. */
 let slashDismissedQuery: string | null = null;
 /** The skill the current turn was sent with, for the "did not load" note. */
 let turnSkill: string | null = null;
-/** Whether this turn called the `skill` tool for `turnSkill`. */
-let turnSkillLoaded = false;
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
 const messageQueue: string[] = [];
@@ -932,7 +929,12 @@ function wireComposer(): void {
   // without changing the text, so recompute on selection changes too.
   dom.input.addEventListener("keyup", refreshSlashMenu);
   dom.input.addEventListener("click", refreshSlashMenu);
-  dom.input.addEventListener("blur", () => slashMenu?.close());
+  dom.input.addEventListener("blur", () => {
+    // Leaving the field forgets an Escape dismissal, so coming back to the
+    // same `/token` reopens the picker rather than finding it stuck closed.
+    slashDismissedQuery = null;
+    slashMenu?.close();
+  });
   autoGrowInput();
 }
 
@@ -962,7 +964,7 @@ function refreshSlashMenu(): void {
     return;
   }
   slashDismissedQuery = null;
-  slashMenu.show(filterSkills(query, pickableSkills), (name) => {
+  slashMenu.show(filterSkills(query, installedSkills), (name) => {
     const at = dom.input.selectionStart ?? dom.input.value.length;
     const next = applyPick(dom.input.value, at, name);
     dom.input.value = next.text;
@@ -970,17 +972,6 @@ function refreshSlashMenu(): void {
     autoGrowInput();
     dom.input.focus();
   });
-}
-
-/**
- * The installed skills this conversation's model is actually offered: the
- * listing minus `offer.withheld`. A withheld skill cannot be loaded by the
- * model's `skill` tool, so the picker does not offer it and the server
- * refuses it by name.
- */
-function offeredSkills(listing: SkillListing): SkillSummary[] {
-  const withheld = new Set(listing.offer?.withheld ?? []);
-  return listing.skills.filter((s) => !withheld.has(s.name));
 }
 
 function wireSidebar(): void {
@@ -1453,13 +1444,12 @@ async function sendMessage(message: string): Promise<void> {
     // stored is what was typed.
     const chosenSkill = leadingSkill(
       message,
-      new Set(pickableSkills.map((s) => s.name)),
+      new Set(installedSkills.map((s) => s.name)),
     );
     // Cleared before the send so a failed start cannot leave a stale skill
     // for a later turn's "did not load" note; set only once the turn is
     // accepted.
     turnSkill = null;
-    turnSkillLoaded = false;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
     await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
@@ -1896,14 +1886,6 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool_started":
-      // The person chose a skill for this turn and the model called the
-      // `skill` tool, which is the only way a skill loads. The event carries
-      // the tool name but not its arguments, so this records that a skill
-      // was loaded, which is what the "did not load" note below asks: a turn
-      // that named a skill and made no `skill` call did not load it.
-      if (event.name === "skill") {
-        turnSkillLoaded = true;
-      }
       // Two starts with no result between them cannot happen while tools run
       // one at a time; if it ever does, the first must not spin forever.
       abandonPendingTool("This call never reported a result");
@@ -2133,15 +2115,28 @@ function finishTurn(): void {
     pendingCheckpoint = null;
   }
   turnStopped = false;
-  // The person chose a skill for this turn and the model never called the
-  // `skill` tool. Said in a line under the answer, derived in code from the
-  // turn's tool events, so the person can see whether what they asked for
-  // happened. The note goes through `textContent` like every other line.
-  if (turnSkill && !turnSkillLoaded) {
-    appendActivity(noticeLine(`The model did not load \`${turnSkill}\``));
-  }
+  // The person chose a skill for this turn: say whether it actually loaded.
+  // Asked of the server's active-skills listing (which skills' instructions
+  // the conversation loaded), not guessed from tool events, so a model that
+  // ignored the request or loaded a different skill is reported honestly.
+  // The check is in code over code-derived columns and the note goes through
+  // `textContent` like every other line. Both the skill and the session are
+  // captured now, so a conversation switch before it resolves cannot misfile
+  // the note.
+  const notedSkill = turnSkill;
+  const notedSession = sessionId;
   turnSkill = null;
-  turnSkillLoaded = false;
+  if (notedSkill && notedSession) {
+    void fetchActiveSkills(notedSession)
+      .then((listing) => {
+        const loaded = listing.skills.some((s) => s.name === notedSkill && s.loads > 0);
+        if (!loaded && notedSession === sessionId) {
+          appendActivity(noticeLine(`The model did not load \`${notedSkill}\``));
+          scrollToBottomIfFollowing(false);
+        }
+      })
+      .catch(() => {});
+  }
   void refreshSessions();
   // Forced past the poll interval: this is the last chance to notice what the
   // run wrote, and a file written in the final second is the interesting one.
@@ -3325,7 +3320,7 @@ async function refreshCapabilities(): Promise<void> {
     if ((capabilities.skills?.count ?? 0) > 0) {
       void fetchSkills()
         .then((listing) => {
-          pickableSkills = offeredSkills(listing);
+          installedSkills = listing.skills;
         })
         .catch(() => {});
     }
@@ -3377,7 +3372,7 @@ function wireSkills(): void {
         // that would be worse than one that shows the half it has.
         const installed = await fetchSkills();
         // Keep the composer picker's offered list in step with the pill.
-        pickableSkills = offeredSkills(installed);
+        installedSkills = installed.skills;
         let live: ActiveSkillListing | null = null;
         if (sessionId) {
           try {
