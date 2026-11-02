@@ -26,12 +26,17 @@ here. No destination below is invented.
 Two methods, both used below.
 
 1. **Connection-counting canaries.** `zorp-recall` and `zorp-voice` ship tests
-   (`tests/no_remote.rs`, `tests/no_proxy.rs`) that stand up a canary listener
-   off the loopback target, point the client at an off-device or redirecting or
-   proxied URL, and assert the canary received **zero** connections. They prove
-   a request was not made rather than that it errored, which is the only honest
-   way to show something did not leave: a failed request and a request never
-   made look the same to the caller. These run in CI.
+   (`tests/no_remote.rs`, `tests/no_proxy.rs`) over the runtime channel (the
+   loopback embedder, ASR and speech endpoints). For the off-device, redirect
+   and proxy cases they stand up a canary listener and assert it received
+   **zero** connections, which proves a request was not made rather than that
+   it merely errored, the only honest way to show something did not leave: a
+   failed request and a request never made look the same to the caller. Other
+   cases in the same suites assert instead that an off-device URL is refused
+   before any request, that the resolver answers only for the validated
+   address, and that a valid request does reach the named local endpoint. These
+   run in CI. They cover the runtime channel only, not the one-time setup
+   downloads in the table below.
 
    ```
    cargo test -p zorp-recall --test no_remote --test no_proxy
@@ -56,8 +61,10 @@ Two methods, both used below.
 | Conversation storage | none (local SQLite on disk) | expected: none | Yes: 0 `connect()` calls (below). |
 | Recall indexing (embedder) | loopback Ollama embeddings endpoint | expected (loopback); off-device **prohibited** | Yes: canary tests, 0 off-device connections. |
 | Memory retrieval | embedding lookup is loopback; the recalled text is then quoted into the chat request and goes wherever the model endpoint is | embedding expected (loopback); recalled text follows the model channel | Embedding: yes (same canaries). Model channel: see provider row. |
-| Voice (ASR) | loopback Qwen3-ASR runtime | expected (loopback); off-device **prohibited** | Yes: canary tests, 0 off-device connections. |
-| Speech (TTS) | loopback Ollama `phonon` endpoint | expected (loopback); off-device **prohibited** | Yes: `zorp-voice` canary tests, 0 off-device connections. |
+| Voice (ASR) transcription channel | loopback Qwen3-ASR runtime | expected (loopback); off-device **prohibited** | Yes: canary tests, 0 off-device connections. |
+| Speech (TTS) channel | loopback Ollama `phonon` endpoint | expected (loopback); off-device **prohibited** | Yes: `zorp-voice` canary tests, 0 off-device connections. |
+| Voice first-run setup | `pypi.org` / `files.pythonhosted.org` (`pip install qwen-asr[vllm]==0.0.6`) and `huggingface.co` (`huggingface_hub.snapshot_download` of the model) | optional and expected: a one-time download when a person enables voice; **not** prohibited | No; needs network and a non-root user (setup refuses root). Destinations from `zorp-voice/src/setup.rs`. |
+| RL Studio / training setup | `pypi.org` (and `uv`'s own fetch) installing into `~/.zorp/training-env` via `uv`/`pip install` | optional and expected: a one-time download when a person sets up training; **not** prohibited | No; needs network and Apple Silicon. Destinations from `zorp-train/src/environment.rs`. |
 | MCP | whatever a configured server points at (a local stdio process, or a remote SSE / HTTP host) | optional; a remote host is expected egress when that server is configured | No; depends on configuration. Procedure: strace a turn that calls the server. |
 | Web search | `api.tavily.com` (tavily), or the configured SearXNG instance which forwards to upstream engines (searxng) | optional (the `search` feature, off by default); the destination is expected when it is on | No; needs a key or a SearXNG instance. Procedure: strace a search with a throwaway key. |
 | Model provider calls (and titling, compaction, settings/doctor probes) | the configured model endpoint; loopback locally, or the hosted provider in external-provider operation | expected | No; needs a provider. Procedure: strace a turn, or watch the provider's own request log. |
@@ -70,8 +77,8 @@ The canary suites passed, each asserting the off-device/redirect/proxy canary
 received no connection:
 
 ```
-zorp-recall  no_remote: 1 passed    no_proxy: 7 passed
-zorp-voice   no_remote: 1 passed    no_proxy: 8 passed
+zorp-recall  no_remote: 7 passed    no_proxy: 1 passed
+zorp-voice   no_remote: 8 passed    no_proxy: 1 passed
 ```
 
 This covers recall indexing, memory's embedding lookup, voice transcription and
@@ -105,6 +112,14 @@ Conversation storage and a local Dreaming pass make no network connections.
   SearXNG host and from there the upstream engines) are from the code
   (`zorp-search`), and a search still leaves the machine even with a local
   SearXNG, as the threat model says.
+- **The loopback canaries cover the runtime channel, not setup.** Enabling
+  voice for the first time downloads its runtime from PyPI and its model from
+  HuggingFace, and setting up RL Studio installs packages from PyPI; those are
+  expected one-time, off-device downloads, separate from the loopback-only
+  transcription, speech and embedding channels the canaries prove. They were
+  not live-observed here (no network, and voice setup refuses root); the
+  destinations are from `zorp-voice/src/setup.rs` and
+  `zorp-train/src/environment.rs`.
 - **MCP depends on configuration**, so there is no single destination to
   observe; a remote server is an egress and should be treated as one.
 - **Off-device prohibition for the loopback workflows is enforced and tested;
