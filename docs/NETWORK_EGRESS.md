@@ -27,16 +27,18 @@ Two methods, both used below.
 
 1. **Connection-counting canaries.** `zorp-recall` and `zorp-voice` ship tests
    (`tests/no_remote.rs`, `tests/no_proxy.rs`) over the runtime channel (the
-   loopback embedder, ASR and speech endpoints). For the off-device, redirect
-   and proxy cases they stand up a canary listener and assert it received
-   **zero** connections, which proves a request was not made rather than that
-   it merely errored, the only honest way to show something did not leave: a
-   failed request and a request never made look the same to the caller. Other
-   cases in the same suites assert instead that an off-device URL is refused
-   before any request, that the resolver answers only for the validated
-   address, and that a valid request does reach the named local endpoint. These
-   run in CI. They cover the runtime channel only, not the one-time setup
-   downloads in the table below.
+   loopback embedder, ASR and speech endpoints). Case by case they prove a
+   forbidden destination is never reached, by two means. A URL that is
+   off-device, redirects to a name, or fails resolution is **refused before any
+   socket is opened** (the constructor returns an error). In the cases where a
+   connection could otherwise be attempted (a redirect to an address, a proxy,
+   or an unreachable local endpoint that must not fall back to a configured
+   remote), a **canary** listener standing in for the forbidden destination is
+   asserted to receive **zero** connections, which proves the request was not
+   made rather than that it merely errored, the only honest way to show
+   something did not leave. One case asserts a valid request does reach the one
+   loopback host and port. These run in CI, and cover the runtime channel only,
+   not the one-time setup downloads in the table below.
 
    ```
    cargo test -p zorp-recall --test no_remote --test no_proxy
@@ -82,12 +84,11 @@ zorp-voice   no_remote: 8 passed    no_proxy: 1 passed
 ```
 
 This covers recall indexing, memory's embedding lookup, voice transcription and
-speech synthesis. Across the suites the off-device, redirect and proxy cases
-assert the canary received zero connections (proving the request was never
-made), while the remaining cases assert that an off-device URL is refused
-before any request, that the resolver answers only for the validated address,
-and that a valid request does reach the one loopback host and port. Together
-they show the runtime channel cannot be pointed off the machine.
+speech synthesis. The suites show the runtime channel cannot be pointed off the
+machine: a forbidden destination is either refused before any socket is opened,
+or, where a connection could otherwise be attempted, shown by a canary listener
+to receive zero connections, while a valid request is confirmed to reach the
+one loopback host and port.
 
 ### A purely local workflow: no egress at all
 
