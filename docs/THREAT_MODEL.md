@@ -22,8 +22,16 @@ almost every exposure below depends on it.
 2. **Opt-in network.** The same, plus one or more of: web search (the `search`
    feature, which is the only built-in that sends a query to a third party),
    conversation search / voice / memory (which embed or transcribe through a
-   local runtime and are held to loopback), or a container image pull. Each is
-   off by default and turned on deliberately.
+   local runtime and are held to loopback), or a container image pull. In a
+   from-source build each of these is a compile-time feature that is off by
+   default and turned on deliberately. **The shipped macOS app (`Zorp.dmg`) is
+   the exception: its bridge is built with every feature on**
+   (`research`, `voice`, `recall`, `memory`, `search`, `train`), so a Mac-app
+   install has web search and the rest compiled in by default and is in this
+   mode, not "local only", from first launch. A feature being compiled in does
+   not send anything on its own (web search still needs a key and a query, a
+   turn still has to ask for memory), but a Mac-app reader should not assume
+   case 1.
 3. **External provider.** The model endpoint is a hosted provider (OpenAI,
    OpenRouter, Anthropic, and so on). Now the provider sees every message, tool
    result and file excerpt the agent puts in the transcript. This is the
@@ -55,9 +63,11 @@ so). The files:
   project flavors a person approved. Clearing it makes them untrusted again,
   not broken.
 - **Settings** (moved by `ZORP_CONFIG`). The saved provider, base URL, model,
-  max tokens and workspace path. **The API key is not here and there is no
-  field for it** (`zorp-agent/src/config.rs`): the struct has nowhere to
-  serialize a secret, on purpose.
+  max tokens, workspace path, text-to-speech model and voice, and the saved
+  `sandbox` mode (the lowest-precedence source in the sandbox config chain
+  below; the one security-relevant field here). **The API key is not here and
+  there is no field for it** (`zorp-agent/src/config.rs`): the struct has
+  nowhere to serialize a secret, on purpose.
 
 Generated files (rendered PDFs, artifacts) go under `<workspace>/scratch`, a
 directory the person chose. zorp never falls back to the directory the server
@@ -97,7 +107,7 @@ was started in.
 
 ## What leaves the machine, and when
 
-Every outbound HTTP client in the workspace, and what it is:
+The outbound HTTP clients in the workspace, and what each is:
 
 - **Model traffic** goes through `zorp::http_agent` (and the streaming path in
   `zorp-agent/src/streaming.rs`), to the configured endpoint. In local-only
@@ -122,15 +132,22 @@ Every outbound HTTP client in the workspace, and what it is:
   fallback when the local model is missing.
 - **MCP** (`zorp-mcp`) reaches whatever a configured server points at; a remote
   server is a network egress.
-- **Settings probes** (`zorp-web/src/settings.rs`) and **titling / compaction**
-  model calls (`zorp-web/src/compaction.rs`) go to the configured model
-  endpoint, with their own bounded timeouts.
+- **Settings probes and model listing.** `zorp-web/src/settings.rs` and the
+  CLI's endpoint/model-listing probe in `zorp-agent/src/main.rs` reach the
+  configured endpoint to test it and list its models, with their own bounded
+  timeouts. `zorp-agent doctor` builds its own bounded agent and probes the
+  same resolved endpoint (it never prints a key). **Titling**
+  (`zorp-web/src/title.rs`, a one-line model call over the first message and
+  answer) and **compaction's stage-two summary** (`zorp-web/src/compaction.rs`)
+  are model calls to the configured endpoint.
 - **Container image pull** fetches the published image from a registry when you
   choose to run it.
 - **The sandbox** denies the network by default; see below.
 
-`zorp-eval` has its own network clients for benchmarking live models; it is a
-developer harness and ships no binary.
+`zorp-eval` has its own network clients for benchmarking live models. It is a
+developer harness binary (`cargo run -p zorp-eval`), not one of the three
+binaries the release tarballs ship (`zorp`, `zorp-agent`, `zorp-web`), so an
+end user does not run it unless they build and invoke it themselves.
 
 ## Credentials
 
@@ -215,6 +232,11 @@ transcribe), and only ever over loopback.
 - **The model can write a workspace flavor or skill.** The content-hash trust
   gate (ADR 0123) stops an untrusted flavor from gaining privilege, but a person
   who trusts a flavor without reading it has trusted whatever it asks for.
+- **The shipped Mac app enables every feature by default.** `Zorp.dmg`'s
+  bridge is built with all features on, so web search and the rest are compiled
+  in from first launch. They still need a key, a query or a per-turn request to
+  do anything, but a Mac-app install is not the "local only" default a
+  from-source build is.
 - **No formal audit.** This model is written from the code by its authors; it
   has not been independently reviewed, and the per-workflow egress report (#309)
   and the sandbox test matrix (#310) are the evidence that will back parts of it
