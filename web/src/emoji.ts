@@ -18,9 +18,12 @@ import { EMOJI_SHORTCODES } from "./emoji-table.ts";
 
 const SHORTCODE = /:([a-z0-9_+-]+):/g;
 
-// A fenced block or inline code span (group 1), else a shortcode (group 2).
-// Code is matched first so its contents come back verbatim.
-const CODE_OR_SHORTCODE = /(```[\s\S]*?```|`[^`\n]*`)|:([a-z0-9_+-]+):/g;
+// A fenced block (closed, or unterminated to end of input the way the
+// renderer treats one), or an inline code span (group 1), else a shortcode
+// (group 2). Code is matched first so its contents come back verbatim, and an
+// unclosed fence swallows the rest so the composer and the renderer agree on
+// what is code.
+const CODE_OR_SHORTCODE = /(```[\s\S]*?```|```[\s\S]*$|`[^`\n]*`)|:([a-z0-9_+-]+):/g;
 
 /**
  * The character for a known standard shortcode, or `undefined`. Guards against

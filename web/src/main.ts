@@ -123,6 +123,7 @@ import {
   fetchEmoji,
   addEmoji,
   deleteEmoji,
+  emojiUrl,
   getCapabilities,
   branchSession,
   clearAllSessions,
@@ -665,7 +666,7 @@ function renderCustomEmojiSettings(): void {
     row.className = "emoji-settings-row";
     const img = document.createElement("img");
     img.className = "custom-emoji";
-    img.src = `/api/emoji/${encodeURIComponent(entry.name)}`;
+    img.src = emojiUrl(entry.name);
     img.alt = `:${entry.name}:`;
     const name = document.createElement("span");
     name.className = "emoji-settings-name";
@@ -1051,6 +1052,24 @@ function wireComposer(): void {
       emojiPicker?.toggle((text) => insertAtCaret(text));
     });
   }
+  // The picker closes on a click outside it (not on the button, whose own
+  // handler toggles) and on Escape, so it is not a popover that can only be
+  // dismissed by the control that opened it.
+  document.addEventListener("click", (event) => {
+    if (!emojiPicker?.isOpen) {
+      return;
+    }
+    const target = event.target as Node | null;
+    if (emojiPicker.element().contains(target) || dom.emojiBtn.contains(target)) {
+      return;
+    }
+    emojiPicker.close();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && emojiPicker?.isOpen) {
+      emojiPicker.close();
+    }
+  });
 
   // This keydown is added before the Enter-sends one below, so while the
   // menu is open it handles the navigation keys first and stops the send.

@@ -15,8 +15,12 @@
 
 import { EMOJI_CATALOG, type EmojiEntry } from "./emoji-table.ts";
 
-/** A name is one token of the shortcode charset. */
-const NAME_CHAR = /[a-z0-9_+-]/;
+/**
+ * A character the token may contain. Uppercase is allowed so `:Rocket` opens
+ * the list even though shortcodes themselves are lowercase; matching lowercases
+ * the query, so the case-insensitive behavior the matcher documents holds.
+ */
+const NAME_CHAR = /[a-zA-Z0-9_+-]/;
 
 /** A match offered in the list: what to show and what a pick inserts. */
 export interface EmojiMatch {

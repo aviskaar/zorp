@@ -45,7 +45,10 @@ pub fn names_with_prefix(prefix: &str) -> Vec<&'static str> {
 /// fence span lines.
 fn pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?s)(```.*?```|`[^`\n]*`)|:([a-z0-9_+-]+):").unwrap())
+    // A closed fence, an unterminated fence to end of input (the way the
+    // renderer treats one, so the two agree on what is code), an inline span,
+    // else a shortcode.
+    RE.get_or_init(|| Regex::new(r"(?s)(```.*?```|```.*|`[^`\n]*`)|:([a-z0-9_+-]+):").unwrap())
 }
 
 /// Expand known standard shortcodes in `text`, leaving code spans, fenced
@@ -88,6 +91,17 @@ mod tests {
         assert_eq!(expand("```\n:rocket:\n```"), "```\n:rocket:\n```");
         // Outside the span still expands.
         assert_eq!(expand("`:rocket:` then :rocket:"), "`:rocket:` then 🚀");
+    }
+
+    #[test]
+    fn an_unterminated_fence_swallows_the_rest_like_the_renderer() {
+        // An opening fence with no close: the renderer treats everything after
+        // it as code, so the expander must too, or the two disagree.
+        assert_eq!(expand("```\n:rocket:"), "```\n:rocket:");
+        assert_eq!(
+            expand("text\n```\ncode :tada: more"),
+            "text\n```\ncode :tada: more"
+        );
     }
 
     #[test]

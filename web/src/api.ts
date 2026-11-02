@@ -2133,6 +2133,16 @@ export function artifactUrl(path: string): string {
 }
 
 /**
+ * The URL an `<img>` loads a custom emoji from. Through `url`, so it carries
+ * the API base and the `?token=` the route's gate needs: an `<img>` cannot
+ * send the `Authorization` header, so a bare relative path would 401 on a
+ * token-protected or separate-origin server.
+ */
+export function emojiUrl(name: string): string {
+  return url(`/api/emoji/${encodeURIComponent(name)}`);
+}
+
+/**
  * The text of an artifact, for the markdown renderer.
  *
  * Only ever called for the types the pane renders itself. A `.svg`, a

@@ -23,6 +23,7 @@
  * is not a step towards typesetting and should not become one.
  */
 
+import { emojiUrl } from "./api.ts";
 import { expandKnown } from "./emoji.ts";
 
 /** Schemes a link is allowed to have. Anything else renders as plain text. */
@@ -99,7 +100,7 @@ function appendText(target: HTMLElement, text: string): void {
 function customEmojiImage(name: string): HTMLImageElement {
   const img = document.createElement("img");
   img.className = "custom-emoji";
-  img.src = `/api/emoji/${encodeURIComponent(name)}`;
+  img.src = emojiUrl(name);
   img.alt = `:${name}:`;
   img.title = name;
   return img;

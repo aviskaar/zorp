@@ -26,6 +26,12 @@ test("emojiQuery does not open mid-word", () => {
   assert.deepEqual(emojiQuery("see :sm", 7), { start: 4, query: "sm" });
 });
 
+test("emojiQuery opens for an uppercase query, since matching is case-insensitive", () => {
+  assert.deepEqual(emojiQuery(":Rock", 5), { start: 0, query: "Rock" });
+  // And that query matches, lowercased.
+  assert.ok(matchEmoji("Rock").some((e) => e.name === "rocket"));
+});
+
 test("matchEmoji returns prefix matches first, capped at eight", () => {
   const m = matchEmoji("rock");
   assert.ok(m.length > 0 && m.length <= 8);

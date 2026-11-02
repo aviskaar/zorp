@@ -15,7 +15,7 @@
  */
 
 import { EMOJI_CATALOG, type EmojiEntry } from "./emoji-table.ts";
-import type { CustomEmoji } from "./api.ts";
+import { emojiUrl, type CustomEmoji } from "./api.ts";
 
 const RECENT_KEY = "zorp-emoji-recent";
 const RECENT_MAX = 24;
@@ -235,7 +235,7 @@ export class EmojiPicker {
         // A custom emoji: the one img, built from the listed name.
         const img = this.doc.createElement("img");
         img.className = "custom-emoji";
-        img.src = `/api/emoji/${encodeURIComponent(cell.name)}`;
+        img.src = emojiUrl(cell.name);
         img.alt = `:${cell.name}:`;
         button.append(img);
       }

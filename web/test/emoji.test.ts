@@ -25,6 +25,14 @@ test("expandShortcodes leaves code spans and fences alone", () => {
   assert.equal(expandShortcodes("`:rocket:` then :rocket:"), "`:rocket:` then 🚀");
 });
 
+test("expandShortcodes treats an unterminated fence as code, like the renderer", () => {
+  // No closing fence: everything after the opening one is code, so the
+  // composer and the renderer agree rather than one expanding what the other
+  // draws as code.
+  assert.equal(expandShortcodes("```\n:rocket:"), "```\n:rocket:");
+  assert.equal(expandShortcodes("a\n```\n:tada: b"), "a\n```\n:tada: b");
+});
+
 test("expandKnown does not special-case code (the renderer excludes it already)", () => {
   assert.equal(expandKnown(":rocket: :tada:"), "🚀 🎉");
   assert.equal(expandKnown(":notreal:"), ":notreal:");
