@@ -163,14 +163,37 @@ jobs:
             fi
           )
 
+      # A machine-readable statement of which capabilities this build carries,
+      # one per target, published as a release asset. The tarballs build with
+      # default features (nothing after --features in the Build step above), so
+      # the set is empty here; the macOS DMG, built in the Desktop workflow with
+      # every feature on, publishes its own. See #303 for why prose alone was
+      # not enough. Written for every target, including the cross-compiled ones,
+      # because it is metadata and runs nothing.
+      - name: Feature manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="zorp-${{ github.ref_name }}-${{ matrix.target }}"
+          sh scripts/feature-manifest.sh "${{ github.ref_name }}" "${{ matrix.target }}" "" \
+            > "dist/$name.features.json"
+          cat "dist/$name.features.json"
+
       - name: Smoke test the built binary
-        # A release that cannot print its own version is worse than no
-        # release. Only run where the host can execute what we just built.
+        # A release that cannot print its own version, serve a healthy
+        # /api/health, or run its help is worse than no release. Only on a
+        # target the host can execute; the cross-compiled ones are covered by
+        # their native siblings. The result is saved and published as an asset,
+        # so the release links what was checked. The model-interaction step is
+        # skipped here: a release runner has no provider configured, and the
+        # smoke script reports that rather than faking a reply.
         if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
         shell: bash
         run: |
-          "target/${{ matrix.target }}/release/zorp-agent" --version
-          "target/${{ matrix.target }}/release/zorp-agent" --help > /dev/null
+          set -euo pipefail
+          name="zorp-${{ github.ref_name }}-${{ matrix.target }}"
+          sh scripts/release-smoke.sh "dist/$name" "${{ github.ref_name }}" \
+            2>&1 | tee "dist/$name.smoke.txt"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -178,6 +201,8 @@ jobs:
           path: |
             dist/*.tar.gz*
             dist/*.zip*
+            dist/*.features.json
+            dist/*.smoke.txt
           if-no-files-found: error
 
   publish:

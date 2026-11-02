@@ -87,3 +87,17 @@ jobs:
         # An image that cannot print its own version is worse than no image.
         run: |
           docker run --rm ghcr.io/aviskaar/zorp:${{ steps.v.outputs.version }} --version
+
+      - name: Anonymous pull (the image must be public)
+        # #307: prove the image is pullable with no credentials, which is the
+        # whole promise of "try zorp with no install". The step above ran
+        # while this job was still logged in to ghcr.io, so it could pass on a
+        # private image. Log out, drop the local copy, and pull fresh as an
+        # anonymous client. A failure here means the package is private, which
+        # no authenticated smoke would catch.
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          docker image rm "ghcr.io/aviskaar/zorp:${{ steps.v.outputs.version }}" >/dev/null 2>&1 || true
+          docker pull "ghcr.io/aviskaar/zorp:${{ steps.v.outputs.version }}"
+          docker run --rm "ghcr.io/aviskaar/zorp:${{ steps.v.outputs.version }}" --version

@@ -59,6 +59,19 @@ jobs:
         run: |
           bash zorp-desktop/scripts/package-dmg.sh
 
+      - name: Feature manifest
+        # #307: the DMG is a build too, and it carries a different feature set
+        # from the prebuilt tarballs. build-bridge.sh compiles the bridge with
+        # the zorp-web defaults, which turn every feature on, so the manifest
+        # records that set. Published beside the DMG so a download has a
+        # machine-readable answer to which build carries which capability.
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          sh scripts/feature-manifest.sh "$tag" "universal-apple-darwin-dmg" \
+            "research,voice,recall,memory,search,train" \
+            > "zorp-desktop/build/zorp-$tag-desktop.features.json"
+          cat "zorp-desktop/build/zorp-$tag-desktop.features.json"
+
       - name: Checksum DMG
         run: |
           cd zorp-desktop/build
@@ -68,7 +81,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zorp-desktop-mac-dmg
-          path: zorp-desktop/build/*.dmg*
+          path: |
+            zorp-desktop/build/*.dmg*
+            zorp-desktop/build/*.features.json
 
       - name: Attach to GitHub Release
         if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
@@ -86,4 +101,5 @@ jobs:
             fi
             sleep 5
           done
-          gh release upload "$tag" zorp-desktop/build/*.dmg* --clobber
+          gh release upload "$tag" zorp-desktop/build/*.dmg* \
+            "zorp-desktop/build/zorp-$tag-desktop.features.json" --clobber

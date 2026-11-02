@@ -1,0 +1,96 @@
+#!/bin/sh
+# Smoke test a built release, with real output, before it is trusted.
+#
+#   release-smoke.sh <bindir> <tag>
+#
+# <bindir> holds the built `zorp`, `zorp-agent` and `zorp-web` binaries (plus
+# `.exe` on Windows). <tag> is the release tag, e.g. v0.8.0.
+#
+# Checks, in order, each one failing the script loudly:
+#   1. zorp-agent prints the tag's version. A release that reports the wrong
+#      version is the drift check-release-version.sh exists to stop, seen from
+#      the other side; this proves the built binary agrees.
+#   2. zorp-agent --help runs.
+#   3. zorp-web starts, answers GET /api/health with a healthy body, and stops.
+#   4. A simple model interaction, only when a provider is configured (see the
+#      note below). It is never faked: with no provider it is reported skipped,
+#      because a release smoke test that invented a model reply would be the
+#      one result worth nothing.
+#
+# The web check binds loopback and never leaves the machine. Nothing here
+# needs a key unless step 4's provider is configured by the caller.
+set -eu
+
+bindir="${1:-}"
+tag="${2:-}"
+if [ -z "$bindir" ] || [ -z "$tag" ]; then
+    echo "usage: release-smoke.sh <bindir> <tag>" >&2
+    exit 2
+fi
+
+exe=""
+case "${OS:-}" in
+    Windows_NT) exe=".exe" ;;
+esac
+agent="$bindir/zorp-agent$exe"
+web="$bindir/zorp-web$exe"
+
+fail() {
+    echo "release smoke FAILED: $1" >&2
+    exit 1
+}
+
+echo "== 1. zorp-agent --version is $tag =="
+got="$("$agent" --version 2>&1 || true)"
+echo "$got"
+# `zorp-agent 0.8.0` vs tag `v0.8.0`: compare the number.
+case "$got" in
+    *"${tag#v}"*) : ;;
+    *) fail "version output '$got' does not contain '${tag#v}'" ;;
+esac
+
+echo "== 2. zorp-agent --help runs =="
+"$agent" --help >/dev/null || fail "--help exited non-zero"
+
+echo "== 3. zorp-web answers /api/health =="
+# A port nothing else here uses; the server falls back to an ephemeral one if
+# taken, but on a clean runner this is free.
+port=7788
+"$web" --port "$port" >/tmp/zorp-web-smoke.log 2>&1 &
+web_pid=$!
+# Give it a moment to bind, then poll briefly rather than sleeping blind.
+health=""
+i=0
+while [ "$i" -lt 30 ]; do
+    if health="$(curl -fsS "http://127.0.0.1:$port/api/health" 2>/dev/null)"; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+kill "$web_pid" 2>/dev/null || true
+wait "$web_pid" 2>/dev/null || true
+echo "health: ${health:-<no response>}"
+case "$health" in
+    *'"status"'*'"ok"'*) : ;;
+    *) fail "zorp-web /api/health did not report ok (log in /tmp/zorp-web-smoke.log)" ;;
+esac
+
+echo "== 4. a simple model interaction =="
+# Only run when the caller has configured a provider, because a real turn
+# needs a model endpoint. ZORP_SMOKE_PROVIDER=1 is the caller saying "I have
+# set ZORP_API_KEY and ZORP_BASE_URL, go". With nothing set this is reported
+# skipped rather than faked.
+if [ "${ZORP_SMOKE_PROVIDER:-}" = "1" ]; then
+    out="$("$agent" --yes "reply with the single word: ok" 2>&1 || true)"
+    echo "$out" | tail -3
+    case "$out" in
+        *ok*) echo "model interaction: ok" ;;
+        *) fail "model interaction produced no recognizable reply" ;;
+    esac
+else
+    echo "model interaction: SKIPPED (no provider configured; set"
+    echo "ZORP_SMOKE_PROVIDER=1 with ZORP_API_KEY and ZORP_BASE_URL to run it)"
+fi
+
+echo "release smoke OK for $tag"
