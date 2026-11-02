@@ -28,17 +28,16 @@ Two methods, both used below.
 1. **Connection-counting canaries.** `zorp-recall` and `zorp-voice` ship tests
    (`tests/no_remote.rs`, `tests/no_proxy.rs`) over the runtime channel (the
    loopback embedder, ASR and speech endpoints). Case by case they prove the
-   forbidden destination is never reached, by two means. Some cases **refuse
-   the request** and assert the error: an off-device URL is rejected when the
-   client is built, a redirect away from loopback is not followed, and the
-   resolver answers only for the one validated address. The cases where a
-   connection to the forbidden destination could otherwise slip through (a
-   proxy, or an unreachable local endpoint that must not fall back to a
-   configured remote) instead stand up a **canary** listener for that
-   destination and assert it received **zero** connections, which proves the
-   request was not made rather than that it merely errored, the only honest way
-   to show something did not leave. One case asserts a valid request does reach
-   the one loopback host and port. These run in CI, and cover the runtime channel only,
+   forbidden destination is never reached. An off-device URL is rejected when
+   the client is built, and the resolver answers only for the one validated
+   address. Where a request to a forbidden destination could otherwise be
+   attempted (a redirect away from loopback, a proxy, or an unreachable local
+   endpoint that must not fall back to a configured remote), a **canary**
+   listener for that destination is asserted to receive **zero** connections,
+   which proves the request was not made rather than that it merely errored,
+   the only honest way to show something did not leave; the redirect cases also
+   assert the redirect error. One case asserts a valid request does reach the
+   one loopback host and port. These run in CI, and cover the runtime channel only,
    not the one-time setup downloads in the table below.
 
    ```
