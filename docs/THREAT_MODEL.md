@@ -126,12 +126,15 @@ The outbound HTTP clients in the workspace, and what each is:
   go. `research` does not enable `search`.
 - **The embedding and transcription steps** of conversation search, voice and
   memory (`zorp-recall`, `zorp-voice`) send conversation text or recorded audio
-  to a **loopback address or nowhere**. One shared guard (`zorp-loopback`:
-  `LoopbackUrl::parse` plus `LoopbackResolver`) enforces it in four layers, each
-  proven by a connection-counting canary test rather than by trusting an error:
-  the endpoint must pass written-form and resolution checks, the HTTP client's
-  only resolver answers for one host and port and does no lookup, redirects are
-  off, and proxy-from-env is off. There is no remote embedding or ASR provider
+  to a **loopback address or nowhere**, enforced in four layers. Two are the
+  shared `zorp-loopback` crate: `LoopbackUrl::parse` checks the written form and
+  then the resolution, and `LoopbackResolver` is the HTTP client's only resolver
+  and answers for one host and port with no lookup. The other two are set by
+  each caller on its own agent, deliberately not in the shared crate: redirects
+  off and proxy-from-env off (for example `zorp-recall`'s embedder). Each caller
+  keeps its own connection-counting canary tests, which prove the guarantee by
+  counting hits on a canary rather than by trusting that a request errored.
+  There is no remote embedding or ASR provider
   and no fallback when the local model is missing. **This loopback guarantee is
   about the embedder, not the whole `memory` feature:** once memory retrieves a
   past conversation (over loopback), it quotes that text into the chat model's
