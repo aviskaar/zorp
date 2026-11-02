@@ -118,9 +118,13 @@ wrong.
   reading credential directories, and opening the network.
 - **In-code policy (denylist, approval gate, own-server deny):** the
   `run_command` denylist and the approval preset decide what the model may
-  ask for in the first place, and the own-server deny refuses a call to
-  zorp's own loopback server (ADR 0053) whatever the sandbox says. This
-  layer sits above the sandbox and runs in every mode, `off` included.
+  ask for in the first place, and sit above the sandbox in every mode, `off`
+  included. The own-server deny refuses a call to zorp's own loopback server
+  (ADR 0053) whatever the sandbox says, but only when a server port is
+  configured: `Policy::with_own_server` is called by `zorp-web`, so a bare
+  `zorp-agent` CLI run (which has no own server to protect) does not add that
+  deny. There, loopback is blocked instead by the `srt` network wall in every
+  non-off mode, and in `off` there is no server and no wall.
 - **Process supervision (`ProcessGroup`, every build including Windows):**
   background and descendant processes, which are reaped with the group when
   the command finishes, is cancelled, or times out.
@@ -146,7 +150,7 @@ layer is named in the last column.
 | Write a file outside the workspace | full | blocked | blocked | blocked (no writes at all) | srt |
 | Read a credential directory (`~/.ssh`, `~/.aws`, ...) | full | blocked | blocked | blocked | srt |
 | Open the network to an arbitrary host | full | registries only | blocked | blocked | srt |
-| Reach zorp's own loopback server | denied in code | denied in code | denied in code | denied in code | in-code own-server deny (ADR 0053) |
+| Reach zorp's own loopback server | denied in code (zorp-web) | code + srt net wall | code + srt net wall | code + srt net wall | own-server deny under zorp-web; srt network wall in non-off modes |
 | Destructive command (e.g. `rm -rf`) outside the workspace | full | blocked (write-confined) | blocked (write-confined) | blocked (no writes) | srt |
 | Destructive command inside the workspace | full | confined to workspace | confined to workspace | blocked (no writes) | srt write-confinement; denylist and approvals above it |
 | Background / descendant process outlives the command | reaped | reaped | reaped | reaped | process supervision |
@@ -166,9 +170,10 @@ These are unit tests over the settings generation and the supervision and
 capture layers. They do not need `srt` installed. Run with
 `cargo test -p zorp-agent --lib sandbox::`. Each named test below asserted
 and passed in this container. One other member of `sandbox::tests`,
-`output_below_cap_is_not_dropped_after_head_fills`, fails here for an
-unrelated root-only reason noted at the end of this section; it is not in
-the list below and is not about any `srt` mode.
+`output_below_cap_is_not_dropped_after_head_fills`, fails here for a reason
+that is about output redaction and this container's environment, not about
+any `srt` mode; it is not in the list below, and it is analyzed in full at
+the end of this section.
 
 - `sandbox::srt::tests` (10 tests, all pass): modes parse and round-trip;
   the strictness ordering `off < build < workspace < read-only`; `off`
@@ -198,14 +203,17 @@ the list below and is not about any `srt` mode.
 ### Observed here because `srt` is absent
 
 This container has no `srt` and no `bwrap` installed, which is exactly the
-condition the refuse-when-missing rule is about. These assert here:
+condition the refuse-when-missing rule is about:
 
 - `a_missing_srt_refuses_rather_than_running_unsandboxed`: with a mode other
   than `off` requested and `srt` missing, the command is refused with a
-  message naming the mode and `srt`, and is never run unsandboxed. Observed
-  passing in this environment.
-- `off_mode_runs_the_shell_directly_even_without_srt`: `off` is unchanged
-  with no `srt` present. Observed passing.
+  message naming the mode and `srt`, and is never run unsandboxed. This test
+  only asserts when `srt` is absent, which is the case here. Observed passing.
+
+`off_mode_runs_the_shell_directly_even_without_srt` also passes here, but it
+is not evidence about `srt`'s absence: `off` short-circuits in `srt_settings`
+before any detection, so it runs the shell directly whether or not `srt` is
+installed. It confirms `off` is unchanged, nothing more.
 
 ### Not observed: OS-level enforcement
 
@@ -235,11 +243,21 @@ automated test today.** They rest on the generated settings being correct,
 which is tested, and on `srt` enforcing those settings, which is `srt`'s own
 contract and is not re-tested here.
 
-The one environmental note: in this root-only container,
-`output_below_cap_is_not_dropped_after_head_fills` fails on a pipe-buffer
-timing assumption unrelated to the sandbox modes. It passes in CI's normal
-user environment. It is recorded here for completeness and is not a finding
-about any `srt` mode.
+One capture test fails in this environment, and the honest finding is that
+it is not about any `srt` mode and not the timing flake it first looks like.
+`output_below_cap_is_not_dropped_after_head_fills` runs `printf 12345678`
+with an output cap of 10 and expects `12345678` back. It fails here
+deterministically (three identical runs), and the cause is secret redaction,
+not timing or root. `secret_values` treats any environment variable whose
+name contains `KEY`, `TOKEN`, `SECRET` or `PASSWORD` as holding a secret and
+redacts its value from command output. This container sets
+`CCR_AUTO_MODE_USER_ENV_KEYS_FACT=1`: the name matches `KEY`, so the one byte
+`1` is treated as a secret, the `1` in `12345678` is replaced with
+`[REDACTED]`, and the expanded output runs past the cap and is truncated.
+The test passes in an environment with no such short secret-named variable.
+This is a test-isolation and heuristic problem in `capture.rs`, unrelated to
+the sandbox modes this document is about; it is tracked as issue #327 and
+left out of this change to keep it to one subject.
 
 ## Gaps and remediation status
 
