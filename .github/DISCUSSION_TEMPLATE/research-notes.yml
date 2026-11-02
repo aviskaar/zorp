@@ -1,0 +1,49 @@
+name: Research notes
+description: Share a calibration run, an anomaly the ledger surfaced, or a write-up using zorp
+title: "[Research]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This category is for sharing findings from using zorp for evidence-backed investigation.
+        A research note is somebody's write-up and is read as one. It is not evidence itself.
+        The wiki, `docs/DECISIONS.md`, and the ledger are where zorp's own record lives.
+
+  - type: textarea
+    id: what_was_run
+    attributes:
+      label: What was run
+      description: Describe the investigation, calibration, or experiment
+      placeholder: |
+        I ran a calibration over the crates.io corpus with investigate...
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_the_record_says
+    attributes:
+      label: What the record says
+      description: What the ledger, forecasts, or calibration output shows
+      placeholder: |
+        The ledger recorded 151 forecasts. The calibration curve...
+    validations:
+      required: true
+
+  - type: textarea
+    id: conclusion
+    attributes:
+      label: What you conclude
+      description: Your interpretation, kept separate from the record the way co_write keeps them apart
+      placeholder: |
+        The anomaly at step 47 suggests...
+    validations:
+      required: true
+
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Artifacts (optional)
+      description: Links to ledger exports, calibration plots, or other outputs
+      placeholder: |
+        - Ledger export: ...
+        - Calibration plot: ...

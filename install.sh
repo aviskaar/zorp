@@ -136,6 +136,8 @@ if [ -x "$INSTALL_DIR/zorp-web" ]; then
     say "For the chat UI, run 'zorp-web' and open http://127.0.0.1:7777"
 fi
 
+say "Questions and discussion: https://github.com/aviskaar/zorp/discussions/categories/q-a"
+
 # Check if INSTALL_DIR is in PATH
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""

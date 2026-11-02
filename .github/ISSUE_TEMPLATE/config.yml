@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question (Q&A)
+    url: https://github.com/aviskaar/zorp/discussions/new?category=q-a
+    about: How do I configure this, set up a provider, or understand a run?
+  - name: Propose an idea
+    url: https://github.com/aviskaar/zorp/discussions/new?category=ideas
+    about: A feature or direction not shaped enough to be an issue yet.
