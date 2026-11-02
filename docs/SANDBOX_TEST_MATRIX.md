@@ -27,9 +27,13 @@ the sandbox decides what a command that was allowed can actually touch. See
 
 - **`srt` is not wired in on Windows** (ADR 0141). The Windows build keeps
   its existing process supervision, and `srt`'s own Windows path is alpha
-  and deliberately not used here. On Windows every mode behaves as `off`
-  would for the OS-level filesystem and network walls. The supervision,
-  output capture and secret redaction described below still apply there.
+  and deliberately not shipped. There are no OS-level filesystem and network
+  walls on Windows. `srt_settings` is not special-cased by OS, so the mode
+  still matters: `off`, the default, runs commands normally; a non-off mode
+  finds `srt` missing and hits the loud refuse-when-missing, so the command
+  does not run rather than running unsandboxed. A Windows user who needs the
+  walls runs zorp under WSL or a Linux container. The supervision, output
+  capture and secret redaction described below apply on Windows regardless.
 
 ## The modes and what each one generates
 
@@ -153,11 +157,15 @@ The evidence splits into three groups: what runs and asserts everywhere,
 what runs here because `srt` is absent, and what is gated on `srt` being
 installed and so was not exercised.
 
-### Observed everywhere (runs and asserts on every machine and in CI)
+### Observed without `srt`, here and in CI
 
 These are unit tests over the settings generation and the supervision and
 capture layers. They do not need `srt` installed. Run with
-`cargo test -p zorp-agent --lib sandbox::`.
+`cargo test -p zorp-agent --lib sandbox::`. Each named test below asserted
+and passed in this container. One other member of `sandbox::tests`,
+`output_below_cap_is_not_dropped_after_head_fills`, fails here for an
+unrelated root-only reason noted at the end of this section; it is not in
+the list below and is not about any `srt` mode.
 
 - `sandbox::srt::tests` (10 tests, all pass): modes parse and round-trip;
   the strictness ordering `off < build < workspace < read-only`; `off`
@@ -215,7 +223,7 @@ about any `srt` mode.
 | --- | --- | --- |
 | OS-level filesystem and network enforcement is not exercised by automation | Open | Install `srt`, `ripgrep` and (on Linux) `bwrap`, run as a non-root user, and run `cargo test -p zorp-agent --lib sandbox::`. The three `workspace_mode_*` tests then assert instead of skipping. A CI job that installs these would close this; none exists yet. |
 | Symlink and path-traversal escape from the write set is not independently tested | Open | Covered in principle by `srt` resolving real paths before applying the write set, but zorp has no test that creates a symlink out of the workspace and confirms the write is denied. Add one alongside the `workspace_mode_*` tests, gated the same way on `srt` being present. |
-| Windows has no OS-level wall | By design (ADR 0141) | `srt`'s Windows path is alpha. Until it is wired in, a Windows user who needs the wall runs zorp under WSL or a Linux container. Supervision, output capture and redaction still apply on Windows. |
+| Windows has no OS-level wall | By design (ADR 0141) | `srt`'s Windows path is alpha and is not shipped. `off` (the default) runs normally; a non-off mode refuses commands because `srt` is missing, so there is no silent fall back to unsandboxed. A Windows user who needs the wall runs zorp under WSL or a Linux container. Supervision, output capture and redaction still apply on Windows. |
 | Destructive commands inside the workspace are confined, not forbidden | By design | `srt` confines writes to the workspace; it does not decide that `rm -rf ./build` is unwanted. That judgement is the denylist's and the approval gate's, above the sandbox. `read-only` forbids all writes for a run that wants that floor. |
 | Prompt injection is out of the sandbox's scope | By design | Handled by the harness boundary (fenced, nonce-marked, data-labelled recall, memory and skill content), documented in the [threat model](THREAT_MODEL.md). The sandbox is not a defense against it and is not claimed to be. |
 
