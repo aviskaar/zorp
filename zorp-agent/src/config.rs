@@ -72,6 +72,33 @@ pub struct Saved {
     /// to deserialize the whole settings file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
+    /// The model speed dial: up to nine numbered slots, each a model a
+    /// person parked for a one-chord switch. Both surfaces read it from the
+    /// same file. See issue #242 and `docs/DECISIONS.md` (2026-11-02).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dial: Vec<DialSlot>,
+}
+
+/// One speed-dial slot: a model a person parked under a number, with an
+/// optional label. It carries exactly the non-secret fields a settings save
+/// carries and **never an API key**: there is no field for one, so a slot
+/// cannot hold a secret even if a caller tried to put one there. Pressing a
+/// slot is a settings save of these fields and nothing more; the one API
+/// key in `ZORP_API_KEY` is used as it is for the model form.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct DialSlot {
+    /// 1 to 9. The chord's digit and the slot's identity in the file.
+    pub slot: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -397,6 +424,14 @@ mod tests {
             speech_model: Some("phonon".to_string()),
             speech_voice: Some("default".to_string()),
             sandbox: Some("workspace".to_string()),
+            dial: vec![DialSlot {
+                slot: 1,
+                label: Some("local".to_string()),
+                provider: Some("openai_compatible".to_string()),
+                base_url: Some("http://localhost:11434/v1".to_string()),
+                model: Some("qwen3:8b".to_string()),
+                max_tokens: Some(8192),
+            }],
         };
         let text = toml::to_string_pretty(&saved).unwrap();
 

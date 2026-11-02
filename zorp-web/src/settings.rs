@@ -82,6 +82,12 @@ pub struct PutSettings {
     /// string clears it (back to the default `off`). The person's own
     /// choice, so it is trusted the way the other saved fields are.
     pub sandbox: Option<String>,
+    /// The model speed dial, as a whole. Present only when the settings pane
+    /// saves the slots; a chord press is an ordinary save of one slot's
+    /// model fields and does not send this. `Some(vec![])` clears the dial.
+    /// A slot's number must be 1 to 9. There is no `api_key` on a slot, so a
+    /// save of the dial cannot carry a secret even by accident.
+    pub dial: Option<Vec<zorp_agent::config::DialSlot>>,
 }
 
 /// Everything the server knows about the model to use beyond the env vars
@@ -125,6 +131,10 @@ pub struct SettingsState {
     /// the endpoint since it started knows no window, which is the same as a
     /// provider that sends none.
     pub listed_windows: std::collections::HashMap<(String, String), u64>,
+    /// The model speed dial, persisted beside the rest. Edited as a whole by
+    /// the settings pane; a chord press is an ordinary save of one slot's
+    /// model fields and does not touch this list. See issue #242.
+    pub dial: Vec<zorp_agent::config::DialSlot>,
 }
 
 /// The endpoint half of a `listed_windows` key. A trailing slash is the same
@@ -211,6 +221,9 @@ impl SettingsState {
         if self.sandbox.is_none() {
             self.sandbox = persisted.sandbox;
         }
+        if self.dial.is_empty() {
+            self.dial = persisted.dial;
+        }
     }
 
     /// The shape written to disk. Deliberately cannot carry `api_key`: that
@@ -225,6 +238,7 @@ impl SettingsState {
             speech_model: self.speech_model.clone(),
             speech_voice: self.speech_voice.clone(),
             sandbox: self.sandbox.clone(),
+            dial: self.dial.clone(),
         }
     }
 
@@ -273,6 +287,22 @@ impl SettingsState {
                 let mode = zorp_agent::SandboxMode::parse(sandbox)?;
                 self.sandbox = Some(mode.as_str().to_string());
             }
+        }
+        if let Some(dial) = &put.dial {
+            // Each slot's number must be 1 to 9, and a number appears once:
+            // the chord that presses a slot is a single digit, so two slots
+            // sharing one would make the press ambiguous. Nothing is stored
+            // when this fails, so a rejected save leaves the dial intact.
+            let mut seen = std::collections::HashSet::new();
+            for s in dial {
+                if !(1..=9).contains(&s.slot) {
+                    return Err(format!("dial slot {} is not in 1 to 9", s.slot));
+                }
+                if !seen.insert(s.slot) {
+                    return Err(format!("dial slot {} is set twice", s.slot));
+                }
+            }
+            self.dial = dial.clone();
         }
         Ok(())
     }
@@ -375,6 +405,7 @@ impl SettingsState {
             speech_voice_source,
             sandbox,
             sandbox_source,
+            dial: self.dial.clone(),
         }
     }
 
@@ -476,6 +507,11 @@ pub struct Resolved {
     /// picker says so rather than letting the browser appear to override it.
     pub sandbox: String,
     pub sandbox_source: Source,
+    /// The model speed dial, straight through: the slots a person parked,
+    /// for the settings pane to draw and for the chord to read. Non-secret
+    /// by construction (a slot has no key field). See issue #242.
+    #[serde(default)]
+    pub dial: Vec<zorp_agent::config::DialSlot>,
 }
 
 /// What `turn::run_agent` builds `HttpModel` from. Carries the real API key
@@ -819,6 +855,96 @@ mod tests {
             })
             .unwrap();
         let toml_text = toml::to_string(&state.to_persisted()).unwrap();
+        assert!(!toml_text.contains("sk-secret"));
+        assert!(!toml_text.to_lowercase().contains("api_key"));
+    }
+
+    #[test]
+    fn a_dial_put_validates_slot_numbers_and_persists() {
+        use zorp_agent::config::DialSlot;
+        let mut state = SettingsState::default();
+        state
+            .apply(&PutSettings {
+                dial: Some(vec![
+                    DialSlot {
+                        slot: 1,
+                        label: Some("local".to_string()),
+                        model: Some("qwen3:8b".to_string()),
+                        ..DialSlot::default()
+                    },
+                    DialSlot {
+                        slot: 9,
+                        model: Some("anthropic/claude-sonnet-4.5".to_string()),
+                        ..DialSlot::default()
+                    },
+                ]),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        assert_eq!(state.dial.len(), 2);
+        assert_eq!(state.resolve().dial.len(), 2);
+        // Zero is not a slot.
+        let err = SettingsState::default()
+            .apply(&PutSettings {
+                dial: Some(vec![DialSlot {
+                    slot: 0,
+                    ..DialSlot::default()
+                }]),
+                ..PutSettings::default()
+            })
+            .unwrap_err();
+        assert!(err.contains("1 to 9"), "{err}");
+        // A slot number set twice would make the chord ambiguous.
+        let err = SettingsState::default()
+            .apply(&PutSettings {
+                dial: Some(vec![
+                    DialSlot {
+                        slot: 2,
+                        ..DialSlot::default()
+                    },
+                    DialSlot {
+                        slot: 2,
+                        ..DialSlot::default()
+                    },
+                ]),
+                ..PutSettings::default()
+            })
+            .unwrap_err();
+        assert!(err.contains("set twice"), "{err}");
+        // An empty vec clears the dial.
+        state
+            .apply(&PutSettings {
+                dial: Some(vec![]),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        assert!(state.dial.is_empty());
+    }
+
+    /// A slot has no field for a key and the whole dial round trips through
+    /// `zorp.toml` without one, the way `to_persisted_never_carries_the_api_key`
+    /// proves for the core fields. Even if a caller tried, there is nothing
+    /// on `DialSlot` for a secret to land in.
+    #[test]
+    fn a_dial_slot_never_carries_the_api_key() {
+        use zorp_agent::config::DialSlot;
+        let mut state = SettingsState::default();
+        state
+            .apply(&PutSettings {
+                api_key: Some("sk-secret".to_string()),
+                dial: Some(vec![DialSlot {
+                    slot: 1,
+                    label: Some("local".to_string()),
+                    provider: Some("openai_compatible".to_string()),
+                    base_url: Some("http://localhost:11434/v1".to_string()),
+                    model: Some("qwen3:8b".to_string()),
+                    max_tokens: Some(8192),
+                }]),
+                ..PutSettings::default()
+            })
+            .unwrap();
+        let toml_text = toml::to_string(&state.to_persisted()).unwrap();
+        assert!(toml_text.contains("qwen3:8b"), "dial was persisted");
         assert!(!toml_text.contains("sk-secret"));
         assert!(!toml_text.to_lowercase().contains("api_key"));
     }

@@ -3630,6 +3630,62 @@ button {
   color: #cfe9e3;
 }
 
+/* Speed dial (#242): nine rows, each a parked model. */
+.dial-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dial-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dial-num {
+  flex: none;
+  width: 1.4em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.dial-label {
+  flex: none;
+  width: 8em;
+}
+
+.dial-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.dial-target.dial-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.dial-use,
+.dial-clear {
+  flex: none;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.dial-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .settings-actions {
   display: flex;
   gap: 10px;

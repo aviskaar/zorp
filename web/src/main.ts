@@ -41,6 +41,14 @@ import {
   leadingSkill,
   slashQuery,
 } from "./slash-menu";
+import {
+  renderDialRows,
+  slotByNumber,
+  slotFields,
+  slotFromChord,
+  slotIsSet,
+  slotName,
+} from "./speed-dial";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -117,6 +125,7 @@ import {
   listModels,
   listProjects,
   listSessions,
+  fetchAgents,
   newSession,
   putSettings,
   recallSearch,
@@ -150,6 +159,7 @@ import {
   type Preregistration,
   type RecallStatus,
   type Settings,
+  type DialSlot,
   type SettingsSource,
   type SettingsUpdate,
   type ProjectSummary,
@@ -274,6 +284,8 @@ interface Elements {
   settingsModelText: HTMLInputElement;
   settingsModelSource: HTMLElement;
   settingsModelHint: HTMLElement;
+  settingsDialRows: HTMLElement;
+  settingsDialResult: HTMLElement;
   settingsRefreshModels: HTMLButtonElement;
   settingsApiKeyField: HTMLElement;
   settingsApiKey: HTMLInputElement;
@@ -580,6 +592,7 @@ start();
 
 function start(): void {
   wireComposer();
+  wireSpeedDial();
   wireLayout();
   wireSidebar();
   wireSkills();
@@ -790,6 +803,8 @@ function collectElements(): Elements {
     settingsModelText: byId<HTMLInputElement>("settings-model-text"),
     settingsModelSource: byId("settings-model-source"),
     settingsModelHint: byId("settings-model-hint"),
+    settingsDialRows: byId("settings-dial-rows"),
+    settingsDialResult: byId("settings-dial-result"),
     settingsRefreshModels: byId<HTMLButtonElement>("settings-refresh-models"),
     settingsApiKeyField: byId("settings-api-key-field"),
     settingsApiKey: byId<HTMLInputElement>("settings-api-key"),
@@ -851,6 +866,26 @@ function collectElements(): Elements {
     artifactImage: byId<HTMLImageElement>("artifact-image"),
     settingsResult: byId("settings-result"),
   };
+}
+
+/**
+ * The one global chord layer (#242): Control+Alt+digit switches to the model
+ * parked in that speed-dial slot, from anywhere on the page, the composer
+ * included. It is suppressed only while focus is in the settings pane, where
+ * a digit is being typed into a slot's own fields. `preventDefault` stops
+ * Option+digit from also typing a character on a Mac.
+ */
+function wireSpeedDial(): void {
+  document.addEventListener("keydown", (event) => {
+    const inSettings =
+      !dom.settingsPane.hidden && dom.settingsPane.contains(document.activeElement);
+    const slot = slotFromChord(event, inSettings);
+    if (slot === null) {
+      return;
+    }
+    event.preventDefault();
+    void pressDial(slot);
+  });
 }
 
 function wireComposer(): void {
@@ -3500,6 +3535,129 @@ function applySettingsToForm(settings: Settings): void {
   applySpeechToForm(settings);
   applySandboxToForm(settings);
   updateApiKeyVisibility(name);
+  renderDial();
+}
+
+/** The dial as the current settings hold it. */
+function currentDial(): DialSlot[] {
+  return currentSettings?.dial ?? [];
+}
+
+/** Draw the speed-dial rows and wire their controls. */
+function renderDial(): void {
+  renderDialRows(document, dom.settingsDialRows, currentDial(), {
+    useCurrent: (n) => {
+      // Copy whatever the Model section currently shows into slot n, keeping
+      // any label the row already had. No key: the slot type has no field
+      // for one.
+      const existing = slotByNumber(currentDial(), n);
+      const labelInput = dom.settingsDialRows.querySelectorAll<HTMLInputElement>(".dial-label")[
+        n - 1
+      ];
+      const slot: DialSlot = {
+        slot: n,
+        label: (labelInput?.value ?? existing?.label ?? "").trim() || undefined,
+        provider: preset(dom.settingsPreset.value).provider,
+        base_url: dom.settingsBaseUrl.value.trim(),
+        model: currentModelValue(),
+        max_tokens: currentSettings?.max_tokens ?? undefined,
+      };
+      void saveDial(upsertSlot(currentDial(), slot));
+    },
+    clear: (n) => void saveDial(currentDial().filter((s) => s.slot !== n)),
+    relabel: (n, label) => {
+      const trimmed = label.trim();
+      const existing = slotByNumber(currentDial(), n);
+      // A label on an empty slot is kept so "Use current model" can fill the
+      // model under it later; an empty label on an empty slot is nothing.
+      if (!existing && trimmed === "") {
+        return;
+      }
+      const slot: DialSlot = { ...(existing ?? { slot: n }), slot: n, label: trimmed || undefined };
+      void saveDial(upsertSlot(currentDial(), slot));
+    },
+  });
+}
+
+/** Replace or add a slot by its number, keeping the list sorted. */
+function upsertSlot(dial: DialSlot[], slot: DialSlot): DialSlot[] {
+  const rest = dial.filter((s) => s.slot !== slot.slot);
+  return [...rest, slot].sort((a, b) => a.slot - b.slot);
+}
+
+/** Persist the whole dial, then repaint from the server's answer. */
+async function saveDial(dial: DialSlot[]): Promise<void> {
+  try {
+    const settings = await putSettings({ dial });
+    currentSettings = settings;
+    renderDial();
+    setDialResult("Saved.", "ok");
+  } catch (error) {
+    setDialResult(describeError(error), "fail");
+  }
+}
+
+function setDialResult(text: string, state: "ok" | "fail"): void {
+  dom.settingsDialResult.textContent = text;
+  dom.settingsDialResult.dataset.state = state;
+}
+
+/**
+ * Switch to the model parked in slot `n`, from anywhere on the page. A press
+ * is an ordinary settings save of the slot's model fields and nothing more;
+ * the next turn reads the new model the way it reads any saved model. The
+ * pill repaints and flashes the slot number so the press is confirmed.
+ * A digit with no model behind it does nothing and says nothing.
+ */
+async function pressDial(n: number): Promise<void> {
+  const slot = slotByNumber(currentDial(), n);
+  if (!slotIsSet(slot)) {
+    return;
+  }
+  // An agent's model wins: a flavor sits above the saved file in the chain,
+  // so under an agent that sets `model` a press would write a file this
+  // conversation will not read. Do nothing there rather than flash a switch
+  // that will not take effect. The listing is fetched only when an agent is
+  // active (the uncommon case), and an agent with no model of its own leaves
+  // the dial working. A fetch that fails falls through to the save, because
+  // the chain still resolves the file below the flavor whatever we did here.
+  if (currentSessionAgent) {
+    try {
+      const listing = await fetchAgents();
+      const active = listing.agents.find((a) => a.name === currentSessionAgent);
+      if (active?.model) {
+        flashDialSlot(n, `${currentSessionAgent} sets the model`);
+        return;
+      }
+    } catch {
+      // Fall through and save.
+    }
+  }
+  try {
+    const settings = await putSettings(slotFields(slot));
+    currentSettings = settings;
+    applySettingsToForm(settings);
+    updateModelBadge(settings);
+    flashDialSlot(n, slotName(slot));
+  } catch (error) {
+    appendError(describeError(error));
+  }
+}
+
+let dialFlashTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Briefly show the pressed slot number beside the model name on the pill. */
+function flashDialSlot(n: number, name: string): void {
+  dom.modelBtnLabel.textContent = `${n}: ${name}`;
+  if (dialFlashTimer !== null) {
+    clearTimeout(dialFlashTimer);
+  }
+  dialFlashTimer = setTimeout(() => {
+    dialFlashTimer = null;
+    if (currentSettings) {
+      updateModelBadge(currentSettings);
+    }
+  }, 1400);
 }
 
 /**

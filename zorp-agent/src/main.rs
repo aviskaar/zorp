@@ -243,6 +243,16 @@ enum ConfigAction {
         /// One of: model, base-url, provider, max-tokens.
         key: String,
     },
+    /// Switch to a speed-dial slot: write its model fields to the saved file.
+    ///
+    /// The same slots the browser's dial and `/dial` in the chat REPL read,
+    /// out of the one `zorp.toml`. Writing them is a settings write like
+    /// `set`, so the saved-file layer of the chain changes and a flag or
+    /// variable set over it still wins. A slot never carries an API key.
+    Dial {
+        /// The slot number, 1 to 9.
+        n: u8,
+    },
     /// Print the path to the saved settings file.
     Path,
 }
@@ -1313,6 +1323,62 @@ fn config(action: Option<ConfigAction>, overrides: &Overrides) {
         Some(ConfigAction::Path) => println!("{}", zorp_agent::config::path().display()),
         Some(ConfigAction::Set { key, value }) => config_write(&key, Some(&value)),
         Some(ConfigAction::Unset { key }) => config_write(&key, None),
+        Some(ConfigAction::Dial { n }) => config_dial(n),
+    }
+}
+
+/// Apply speed-dial slot `n` to the saved settings: write its model fields
+/// so the next run talks to that model.
+///
+/// A slot carries exactly the non-secret fields a save carries (provider,
+/// base URL, model, max tokens) and never a key, so this moves only those.
+/// Fields the slot left unset are left as the saved file already has them,
+/// the same as pressing the chord in the browser leaves them. Writing the
+/// saved file is the terminal's switch, below a flag or variable in the
+/// chain exactly as `config set` is.
+fn config_dial(n: u8) {
+    let mut saved = zorp_agent::config::load().unwrap_or_default();
+    let Some(slot) = saved.dial.iter().find(|s| s.slot == n).cloned() else {
+        eprintln!("zorp-agent: speed-dial slot {n} is empty. Set it in the browser's Speed dial section, or in {}.", zorp_agent::config::path().display());
+        std::process::exit(2);
+    };
+    if slot.model.is_none() {
+        eprintln!("zorp-agent: speed-dial slot {n} has no model.");
+        std::process::exit(2);
+    }
+    if slot.provider.is_some() {
+        saved.provider = slot.provider.clone();
+    }
+    if slot.base_url.is_some() {
+        saved.base_url = slot.base_url.clone();
+    }
+    if slot.model.is_some() {
+        saved.model = slot.model.clone();
+    }
+    if slot.max_tokens.is_some() {
+        saved.max_tokens = slot.max_tokens;
+    }
+    match zorp_agent::config::save(&saved) {
+        Ok(()) => {
+            let label = slot
+                .label
+                .as_deref()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| format!(" ({l})"))
+                .unwrap_or_default();
+            println!(
+                "dial {n}{label} -> {}  ({})",
+                slot.model.as_deref().unwrap_or(""),
+                zorp_agent::config::path().display()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "zorp-agent: could not write {}: {e}",
+                zorp_agent::config::path().display()
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -3237,6 +3303,8 @@ const HELP: &str = "\
 /exit, /quit, /q     leave chat
 /help, /h, /?        show this help
 /model               show the active model
+/dial                list the speed-dial slots
+/dial <n>            switch to speed-dial slot n (saved; the next session uses it)
 /context             show transcript size
 /doctor              say what this build can do and whether it can reach anything
 /compact             summarize the older conversation so it fits the window
@@ -3851,6 +3919,71 @@ fn handle_chat_command(
                 out.notice("model: (not set)");
             } else {
                 out.notice(&format!("model: {model_name}"));
+            }
+        }
+        ChatCommand::Dial(slot) => {
+            // The same slots the browser's chord and `config dial` read, out
+            // of the one `zorp.toml`. `/dial` with no number reports them.
+            // `/dial <n>` writes the slot's model fields to the saved file:
+            // the terminal's switch. The running conversation keeps the model
+            // it started with (the agent resolved it once), so the switch
+            // lands on the next session, which is the terminal's honest
+            // version of the browser's "next turn".
+            let saved = zorp_agent::config::load().unwrap_or_default();
+            match slot {
+                None => {
+                    if saved.dial.is_empty() {
+                        out.notice(
+                            "speed dial: no slots set. Set them in the browser's Speed dial \
+                             section, or in the saved settings file.",
+                        );
+                    } else {
+                        let mut dial = saved.dial.clone();
+                        dial.sort_by_key(|s| s.slot);
+                        let mut lines = String::from("speed dial:");
+                        for s in &dial {
+                            let label = s
+                                .label
+                                .as_deref()
+                                .filter(|l| !l.trim().is_empty())
+                                .map(|l| format!("  {l}"))
+                                .unwrap_or_default();
+                            lines.push_str(&format!(
+                                "\n  {}{label}  {}",
+                                s.slot,
+                                s.model.as_deref().unwrap_or("(empty)")
+                            ));
+                        }
+                        out.notice(&lines);
+                    }
+                }
+                Some(n) => match saved.dial.iter().find(|s| s.slot == n).cloned() {
+                    None => out.notice(&format!("dial {n}: empty")),
+                    Some(s) if s.model.as_deref().unwrap_or("").trim().is_empty() => {
+                        out.notice(&format!("dial {n}: no model"))
+                    }
+                    Some(s) => {
+                        let mut next = saved.clone();
+                        if s.provider.is_some() {
+                            next.provider = s.provider.clone();
+                        }
+                        if s.base_url.is_some() {
+                            next.base_url = s.base_url.clone();
+                        }
+                        next.model = s.model.clone();
+                        if s.max_tokens.is_some() {
+                            next.max_tokens = s.max_tokens;
+                        }
+                        match zorp_agent::config::save(&next) {
+                            Ok(()) => out.notice(&format!(
+                                "dial {n} -> {}. Saved; this conversation keeps its current \
+                                 model, the next session uses it.",
+                                s.model.as_deref().unwrap_or("")
+                            )),
+                            Err(e) => out.notice(&format!("dial {n}: could not save: {e}")),
+                        }
+                    }
+                },
             }
         }
         ChatCommand::Context => {

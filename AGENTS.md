@@ -964,6 +964,29 @@ resulting artifact, deliver it in the right form.
   surfaces already read. `workspace` is written there and is the browser's
   alone. The old `web.toml` is still read and never written. See
   `docs/DECISIONS.md` (2026-09-10).
+- The model speed dial (`Saved.dial` in `config.rs`, `web/src/speed-dial.ts`)
+  is up to nine numbered slots in that same `zorp.toml`, each holding the
+  non-secret model fields a settings save holds (provider, base URL, model,
+  max tokens) and an optional label, and **never an API key**: `DialSlot`
+  has no field for one. Pressing a slot is `PUT /api/settings` with the
+  slot's fields and nothing more, the same save the model form does and
+  under the same rules, so the next turn reads the new model; the turn code
+  is not touched. The browser's chord is Control+Alt+digit (Control+Option
+  on a Mac) for 1 to 9, read from `event.code` so Option+digit still counts,
+  firing from inside the composer with `preventDefault`, and the slots are
+  set up in the settings pane's "Speed dial" section. The terminal has no
+  chords: `/dial` lists the slots and `/dial <n>` switches in the chat REPL,
+  `zorp-agent config dial <n>` does the same from the CLI, both reading the
+  same slots and writing the saved file; in the terminal the switch lands on
+  the next session, because the REPL resolves its model once at start rather
+  than per turn. Three rules are not negotiable. A slot never holds a key
+  (the type has no field, and a round trip is grepped for it the way
+  `to_persisted_never_carries_the_api_key` is). An agent's model wins,
+  because a flavor sits above the saved file in the chain, so the dial does
+  nothing under an agent that sets `model` rather than writing a file that
+  will not be read. And no model can press a slot: there is no tool for it
+  and `no_tool_presses_a_speed_dial_slot` in `agent.rs` says so. See issue
+  #242 and `docs/DECISIONS.md` (2026-11-02).
 - `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
   do and whether it can reach anything: which features `cfg!` reports, the
   resolved endpoint, provider and model, whether an API key is set, whether
