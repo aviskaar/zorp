@@ -458,6 +458,9 @@ let turnRunning = false;
  * say why. Cleared when the next turn starts.
  */
 let turnStopped = false;
+/** Set when this turn ended on an `error` frame, so the skill note is not
+ * shown for a run that never got the chance to load it. Cleared per turn. */
+let turnErrored = false;
 let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
@@ -1467,18 +1470,25 @@ async function sendMessage(message: string): Promise<void> {
     // accepted.
     turnSkill = null;
     turnSkillLoaded = false;
+    turnErrored = false;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
     try {
       await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
       turnSkill = chosenSkill;
     } catch (error) {
-      // The only 400 start_turn returns is an unknown skill: the cached
-      // listing went stale (a skill uninstalled, or a workspace switch)
-      // between the pick and the send. Send the message as plain text rather
-      // than losing it, which is what it would have been before this field
-      // existed. Any other failure is the outer catch's to report.
-      if (chosenSkill && error instanceof ApiError && error.status === 400) {
+      // start_turn returns 400 only for an unknown skill ("no installed
+      // skill named ..."): the cached listing went stale (a skill
+      // uninstalled, or a workspace switch) between the pick and the send.
+      // Send the message as plain text rather than losing it, which is what
+      // it would have been before this field existed. Any other failure,
+      // including a 400 that is not about the skill, is the outer catch's.
+      if (
+        chosenSkill &&
+        error instanceof ApiError &&
+        error.status === 400 &&
+        error.message.includes("installed skill")
+      ) {
         await sendTurn(sessionId, message, dom.useMemory.checked);
       } else {
         throw error;
@@ -2039,6 +2049,7 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "error":
+      turnErrored = true;
       appendError(event.message);
       // A turn that failed is still a turn that ran, and the server sends
       // `error` instead of `done` rather than as well as it, so without this
@@ -2152,12 +2163,16 @@ function finishTurn(): void {
     pendingCheckpoint.settle(turnStopped ? "stopped" : "abandoned");
     pendingCheckpoint = null;
   }
+  const ranToCompletion = !turnStopped && !turnErrored;
   turnStopped = false;
+  turnErrored = false;
   // The person chose a skill for this turn and no `skill` tool call fired, so
   // it was not loaded. Said in a line under the answer, derived in code from
   // the turn's tool events, so the person can see whether what they asked for
-  // happened. The note goes through `textContent` like every other line.
-  if (turnSkill && !turnSkillLoaded) {
+  // happened. Only on a turn that ran to completion: a stopped or errored
+  // turn never got its chance, so reporting "did not load" would blame the
+  // model for an interruption. The note goes through `textContent`.
+  if (turnSkill && !turnSkillLoaded && ranToCompletion) {
     appendActivity(noticeLine(`The model did not load \`${turnSkill}\``));
   }
   turnSkill = null;
