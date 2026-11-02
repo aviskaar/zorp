@@ -179,11 +179,21 @@ the list below and is not about any `srt` mode.
   then flavor then saved then off; `wrap` builds `--settings <file> --
   <shell> -c <cmd>`; a sandbox refusal is turned into a rule-naming denial
   and an ordinary error is left alone.
-- `sandbox::tests` supervision and capture (pass): a completed shell reaps
-  its background descendants; a timeout kills the descendant process group;
-  cancellation kills the running group; output is capped and secrets
-  redacted; secrets are snapshotted before the child runs and redacted even
-  inside large output.
+- `sandbox::tests` supervision and capture (pass): a completed shell kills
+  its background descendants
+  (`completed_shell_kills_background_descendants_before_joining_readers`); a
+  timeout kills the descendant process group
+  (`timeout_kills_descendant_process_group`); cancellation kills the running
+  group (`cancellation_kills_running_group`); output is capped and secrets
+  redacted (`caps_and_redacts_output`,
+  `redacts_longest_overlapping_secret_before_truncation`); secrets are
+  snapshotted before the child runs (`snapshots_secrets_before_the_child_runs`).
+- `sandbox::capture::tests` redaction (pass): a secret inside large output is
+  still redacted (`secret_inside_large_output_is_still_redacted`), large
+  output with no secret bytes passes through unchanged
+  (`large_output_without_secret_bytes_passes_through_unchanged`), and
+  streaming redaction holds across chunk boundaries
+  (`streaming_redaction_retains_bounded_output_and_cross_chunk_secrets`).
 
 ### Observed here because `srt` is absent
 
@@ -199,12 +209,23 @@ condition the refuse-when-missing rule is about. These assert here:
 
 ### Not observed: OS-level enforcement
 
-The tests that would prove `srt` actually blocks a write, a credential read
-or a network call are `workspace_mode_allows_a_write_inside_the_workspace`,
-`workspace_mode_refuses_reading_a_credential_store`, and
-`workspace_mode_refuses_the_network`. Each one begins with
+Three tests exercise `srt`'s behavior directly, and each begins with
 `if !srt_usable() { return; }`, so on a machine with no `srt` it returns
-without asserting. It reports as `ok` but checked nothing.
+without asserting. It reports as `ok` but checked nothing:
+
+- `workspace_mode_allows_a_write_inside_the_workspace` asserts that an
+  allowed write (inside the workspace) succeeds. It is the positive case, not
+  a block.
+- `workspace_mode_refuses_reading_a_credential_store` asserts a read of
+  `~/.ssh` is refused.
+- `workspace_mode_refuses_the_network` asserts a `curl` to a remote host is
+  refused.
+
+Note what is not here: no test asserts that a write *outside* the workspace
+is denied. That cell of the matrix (the top row) rests on `srt`'s
+write-confinement contract and the generated `allowWrite` list being
+correct, both of which this suite does not exercise end to end. It is listed
+as a gap below.
 
 **`srt` is not installed in this container, and no CI runner installs it
 either** (no job in `.github/workflows/` has a step that installs `srt`,
@@ -225,6 +246,7 @@ about any `srt` mode.
 | Gap | Status | Remediation |
 | --- | --- | --- |
 | OS-level filesystem and network enforcement is not exercised by automation | Open | Install `srt`, `ripgrep` and (on Linux) `bwrap`, run as a non-root user, and run `cargo test -p zorp-agent --lib sandbox::`. The three `workspace_mode_*` tests then assert instead of skipping. A CI job that installs these would close this; none exists yet. |
+| A write outside the workspace has no denial test | Open | The three `workspace_mode_*` tests cover an allowed write, a credential read and the network, but none asserts that a write outside the workspace is denied. Add a `workspace_mode_refuses_a_write_outside_the_workspace` test, gated the same way on `srt` being present, so the matrix's top row is backed directly rather than resting on the `allowWrite` list alone. |
 | Symlink and path-traversal escape from the write set is not independently tested | Open | Covered in principle by `srt` resolving real paths before applying the write set, but zorp has no test that creates a symlink out of the workspace and confirms the write is denied. Add one alongside the `workspace_mode_*` tests, gated the same way on `srt` being present. |
 | Windows has no OS-level wall | By design (ADR 0141) | `srt`'s Windows path is alpha and is not shipped. `off` (the default) runs normally; a non-off mode refuses commands because `srt` is missing, so there is no silent fall back to unsandboxed. A Windows user who needs the wall runs zorp under WSL or a Linux container. Supervision, output capture and redaction still apply on Windows. |
 | Destructive commands inside the workspace are confined, not forbidden | By design | `srt` confines writes to the workspace; it does not decide that `rm -rf ./build` is unwanted. That judgement is the denylist's and the approval gate's, above the sandbox. `read-only` forbids all writes for a run that wants that floor. |
