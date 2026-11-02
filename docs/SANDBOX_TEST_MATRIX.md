@@ -42,10 +42,12 @@ the sandbox decides what a command that was allowed can actually touch. See
 ## The modes and what each one generates
 
 `srt` is driven by a settings file that zorp generates in code, per run,
-from the mode. The model never writes it. The JSON blocks below for `build`,
-`workspace` and `read-only` are the real output of `settings_json` for a
-workspace at `/home/alice/project` with `HOME=/home/alice`, printed by
-running the function directly.
+from the mode. The model never writes it. The `build` block below is the
+verbatim output of `settings_json` for a workspace at `/home/alice/project`
+with `HOME=/home/alice`, printed by running the function directly. The
+`workspace` and `read-only` blocks are the same output with the `denyRead`
+array abbreviated, since it is byte for byte the nine paths `build` lists;
+the function emits those nine concrete paths in every non-`off` mode.
 
 `off` is the exception: `settings_json` returns `None` for it and prints
 nothing, because `off` never invokes `srt`. There is no settings block to
@@ -103,8 +105,11 @@ still unreadable.
 
 The loopback address is deliberately absent from every `allowedDomains`
 list, including `build`'s, so the agent cannot reach zorp's own server from
-inside the sandbox (ADR 0053). The in-code own-server deny runs regardless
-of the sandbox.
+inside the sandbox (ADR 0053). Under `zorp-web`, which configures the server
+port through `Policy::with_own_server`, the in-code own-server deny also
+refuses that call regardless of the sandbox mode; a bare `zorp-agent` CLI
+run has no such server and does not add that deny, so there the network wall
+in the non-off modes is what keeps loopback out.
 
 ## Which layer stops which vector
 
@@ -168,11 +173,14 @@ installed and so was not exercised.
 ### Observed without `srt`
 
 These are unit tests over the settings generation and the supervision and
-capture layers. They do not need `srt` installed, and CI's build-and-test
-job runs the `sandbox::` filter on every pull request. Each named test below
-asserted and passed in this container; use the exact command in the
-Reproducing section at the end, which skips the one environment-dependent
-test. One other member of `sandbox::tests`,
+capture layers. They do not need `srt` installed. CI exercises them on every
+pull request: the Linux and macOS build-and-test job runs the whole
+workspace (`cargo test --workspace --exclude zorp-track`), which includes
+these tests, and the Windows job runs the `sandbox::` filter explicitly
+(where the `#[cfg(unix)]` enforcement and refuse tests do not compile, so
+only the cross-platform ones run there). Each named test below asserted and
+passed in this container; use the exact command in the Reproducing section
+at the end, which skips the one environment-dependent test. One other member of `sandbox::tests`,
 `output_below_cap_is_not_dropped_after_head_fills`, fails here for a reason
 that is about output redaction and this container's environment, not about
 any `srt` mode; it is not in the list below, and it is analyzed in full at
