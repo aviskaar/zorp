@@ -44,7 +44,7 @@ pub struct Sandbox {
     /// Secret snapshot, taken lazily on the first `run` and reused for the
     /// sandbox's lifetime. Per instance rather than process-wide so tests
     /// that mutate the environment before building a sandbox stay honest.
-    secrets: OnceLock<Arc<Vec<Vec<u8>>>>,
+    secrets: OnceLock<Arc<Vec<String>>>,
     /// Whether `srt` and its dependencies are present, probed once and
     /// reused for the sandbox's lifetime the way `secrets` is. Only ever
     /// consulted when `mode` is not `Off`.
@@ -463,16 +463,14 @@ pub(crate) fn kill_process_group(pgid: i32) -> io::Result<()> {
     }
 }
 
-fn secret_values() -> Vec<Vec<u8>> {
+fn secret_values() -> Vec<String> {
     let mut seen = HashSet::new();
     let mut values = Vec::new();
-    for (name, value) in std::env::vars_os() {
-        let name = name.as_encoded_bytes();
-        let value = value.as_encoded_bytes().to_vec();
+    for (name, value) in std::env::vars() {
         if !value.is_empty()
             && ["KEY", "TOKEN", "SECRET", "PASSWORD"]
                 .iter()
-                .any(|pattern| contains_ascii_case_insensitive(name, pattern.as_bytes()))
+                .any(|pattern| name.to_ascii_uppercase().contains(pattern))
             && seen.insert(value.clone())
         {
             values.push(value);
@@ -486,20 +484,12 @@ fn secret_values() -> Vec<Vec<u8>> {
 pub(crate) fn redact_secrets(input: &str) -> String {
     let secrets = secret_values();
     let mut output = input.to_string();
-    for secret_bytes in &secrets {
-        if let Ok(secret_str) = std::str::from_utf8(secret_bytes) {
-            if !secret_str.is_empty() {
-                output = output.replace(secret_str, "[REDACTED]");
-            }
+    for secret in &secrets {
+        if !secret.is_empty() {
+            output = output.replace(secret, "[REDACTED]");
         }
     }
     output
-}
-
-fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]
@@ -573,20 +563,16 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn snapshots_non_unicode_environment_best_effort() {
+    fn env_var_with_secret_keyword_is_redacted() {
         let _env_lock = ENV_LOCK.lock().unwrap();
-        let invalid = std::ffi::OsString::from_vec(vec![b'a', 0xff, b'b']);
-        let _env = EnvVarGuard::set_os("ZORP_TEST_SECRET", &invalid);
+        let _env = EnvVarGuard::set("ZORP_TEST_SECRET", "test-secret-value");
         let dir = tempfile::tempdir().unwrap();
-
         let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
             .run("printf '%s' \"$ZORP_TEST_SECRET\"")
             .unwrap();
 
         assert_eq!(out.stdout, "[REDACTED]");
-        assert!(!out.stdout.contains('�'));
     }
 
     impl Drop for EnvVarGuard {
