@@ -163,21 +163,69 @@ jobs:
             fi
           )
 
-      - name: Smoke test the built binary
-        # A release that cannot print its own version is worse than no
-        # release. Only run where the host can execute what we just built.
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
+      # A machine-readable statement of which capabilities this build carries,
+      # one per target, published as a release asset. The tarballs build with
+      # default features (nothing after --features in the Build step above), so
+      # the set is empty here; the macOS DMG, built in the Desktop workflow with
+      # every feature on, publishes its own. See #303 for why prose alone was
+      # not enough. Written for every target, including the cross-compiled ones,
+      # because it is metadata and runs nothing.
+      - name: Feature manifest
         shell: bash
+        env:
+          # Through env, not inline `${{ }}`, so an odd branch name on a
+          # workflow_dispatch rehearsal cannot break the shell quoting.
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          "target/${{ matrix.target }}/release/zorp-agent" --version
-          "target/${{ matrix.target }}/release/zorp-agent" --help > /dev/null
+          set -euo pipefail
+          # A ref can carry a slash on a rehearsal; keep it out of the asset
+          # path so the top-level upload glob still matches.
+          safe="zorp-$(printf '%s' "$REF_NAME" | tr '/' '-')-${{ matrix.target }}"
+          sh scripts/feature-manifest.sh "$REF_NAME" "${{ matrix.target }}" "" \
+            > "dist/$safe.features.json"
+          cat "dist/$safe.features.json"
+
+      - name: Smoke test the built binary
+        # A release that cannot print its own version, serve a healthy
+        # /api/health, or run its help is worse than no release. Run on every
+        # target whose runner can execute it: both Linux targets (x86_64 on
+        # ubuntu-22.04, aarch64 natively on ubuntu-22.04-arm), macOS arm64, and
+        # Windows. The one target not smoked is x86_64-apple-darwin, which is
+        # cross-compiled on the arm64 macOS runner and so cannot run here. The
+        # result is saved and published as an asset, so the release links what
+        # was checked. The model-interaction step is skipped here: a release
+        # runner has no provider configured, and the smoke script reports that
+        # rather than faking a reply.
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-pc-windows-msvc'
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          # Assert the binary's version equals the tag only on a real tag push,
+          # where check-release-version.sh guarantees it. A rehearsal is not.
+          ZORP_SMOKE_STRICT: ${{ github.ref_type == 'tag' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          # The Package step created dist/$name with the raw ref; read it by
+          # that name, but write the log under a slash-safe name so the
+          # top-level upload glob catches it on a branch dispatch.
+          name="zorp-$REF_NAME-${{ matrix.target }}"
+          safe="zorp-$(printf '%s' "$REF_NAME" | tr '/' '-')-${{ matrix.target }}"
+          sh scripts/release-smoke.sh "dist/$name" "$REF_NAME" \
+            2>&1 | tee "dist/$safe.smoke.txt"
 
       - uses: actions/upload-artifact@v4
+        # always(), so a failing smoke test still uploads its log (and the
+        # manifest and archive) as a run artifact to debug from. On a passing
+        # tag the publish job turns these into release assets; on a failure
+        # there is no release, but the log is the thing you most want then.
+        if: always()
         with:
           name: zorp-${{ matrix.target }}
           path: |
             dist/*.tar.gz*
             dist/*.zip*
+            dist/*.features.json
+            dist/*.smoke.txt
           if-no-files-found: error
 
   publish:
