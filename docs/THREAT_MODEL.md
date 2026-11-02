@@ -124,15 +124,20 @@ The outbound HTTP clients in the workspace, and what each is:
   engines. The provider is chosen by `ZORP_SEARCH_PROVIDER` and never by a
   flavor file, so a workspace file the model can write cannot move where queries
   go. `research` does not enable `search`.
-- **Conversation search, voice and memory** (`zorp-recall`, `zorp-voice`, and
-  the `memory` feature) send conversation text or recorded audio to a **loopback
-  address or nowhere**. One shared guard (`zorp-loopback`: `LoopbackUrl::parse`
-  plus `LoopbackResolver`) enforces it in four layers, each proven by a
-  connection-counting canary test rather than by trusting an error: the endpoint
-  must pass written-form and resolution checks, the HTTP client's only resolver
-  answers for one host and port and does no lookup, redirects are off, and
-  proxy-from-env is off. There is no remote embedding or ASR provider and no
-  fallback when the local model is missing.
+- **The embedding and transcription steps** of conversation search, voice and
+  memory (`zorp-recall`, `zorp-voice`) send conversation text or recorded audio
+  to a **loopback address or nowhere**. One shared guard (`zorp-loopback`:
+  `LoopbackUrl::parse` plus `LoopbackResolver`) enforces it in four layers, each
+  proven by a connection-counting canary test rather than by trusting an error:
+  the endpoint must pass written-form and resolution checks, the HTTP client's
+  only resolver answers for one host and port and does no lookup, redirects are
+  off, and proxy-from-env is off. There is no remote embedding or ASR provider
+  and no fallback when the local model is missing. **This loopback guarantee is
+  about the embedder, not the whole `memory` feature:** once memory retrieves a
+  past conversation (over loopback), it quotes that text into the chat model's
+  request, so with an external provider the recalled text goes to the provider
+  like the rest of the transcript. The containment is the embedding lookup; the
+  recalled text then rides the normal model channel.
 - **MCP** (`zorp-mcp`) reaches whatever a configured server points at; a remote
   server is a network egress.
 - **Settings probe, model listing and the doctor probe.**
