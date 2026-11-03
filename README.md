@@ -17,6 +17,8 @@ an evidence record, and a report where every claim traces back to it.
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Status](https://img.shields.io/badge/status-pre--alpha-critical?style=flat-square)](#status-and-roadmap)
 [![Part of Aviskaar](https://img.shields.io/badge/part%20of-Aviskaar-6f42c1?style=flat-square)](https://github.com/aviskaar)
+[![GitHub downloads](https://img.shields.io/github/downloads/aviskaar/zorp/total?style=flat-square)](https://github.com/aviskaar/zorp/releases)
+[![GitHub downloads (latest release)](https://img.shields.io/github/downloads/aviskaar/zorp/latest/total?style=flat-square)](https://github.com/aviskaar/zorp/releases/latest)
 
 **[zorp.dev](https://zorp.dev)** · [Aviskaar](https://github.com/aviskaar) · [Report an issue](../../issues)
 
