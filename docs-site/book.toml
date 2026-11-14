@@ -1,6 +1,6 @@
 [book]
 title = "zorp docs"
-description = "Documentation for zorp, the open research and intelligence platform."
+description = "Documentation for zorp. Own your intelligence."
 authors = ["Aviskaar"]
 language = "en"
 src = "src"

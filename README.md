@@ -43,6 +43,7 @@ hypothesis are all the same shape of problem to zorp. It's built by
 
 ## Contents
 
+- [Six pillars](#six-pillars)
 - [Why zorp](#why-zorp)
 - [Quick start](#quick-start)
 - [What you can do with it](#what-you-can-do-with-it)
@@ -58,11 +59,11 @@ hypothesis are all the same shape of problem to zorp. It's built by
 | Pillar | What it does |
 |---|---|
 | **Run** | Connect any OpenAI-compatible model, self-hosted or cloud, and put it to work. |
-| **Remember** | Local memory that stays on your machine, conversations, context, and evidence you can always reach. |
+| **Remember** | Search and recall your own past conversations through a local embedding model. Conversation text goes to a loopback address or nowhere. |
 | **Investigate** | Staged, pre-registered evidence gathering with an immutable record every claim traces back to. |
 | **Measure** | Confidence calibration, kill thresholds, and evaluation so the output is accountable to numbers, not just language. |
-| **Improve** | Retraining and fine-tuning on your own usage logs; the next model is trained on how you actually use it. |
-| **Propose** *(experimental)* | The agent proposes its own experiments and hypotheses from the evidence record; gated approval is required before anything runs. |
+| **Improve** | RL Studio: train a small model, or fine-tune one (LoRA, SFT, DPO) on a dataset built from your own feedback. Runs on Apple Silicon through MLX. |
+| **Propose** *(experimental)* | Candidate questions and pre-registrations drawn from the evidence record. Nothing proposed runs until a person commits it, and most of this is still library code with no command of its own. |
 
 ## Why zorp
 
