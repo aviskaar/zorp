@@ -463,16 +463,21 @@ pub(crate) fn kill_process_group(pgid: i32) -> io::Result<()> {
     }
 }
 
+// `vars_os` rather than `vars`: `vars` panics on a name or value that is not
+// valid Unicode, and one stray byte in the environment must not take the
+// redaction path down. Values stay raw bytes so a non-UTF-8 secret is still
+// redacted from the byte stream. The lossy view of the name keeps every ASCII
+// byte as it was, so the keyword match is exactly the old byte match.
 fn secret_values() -> Vec<Vec<u8>> {
     let mut seen = HashSet::new();
     let mut values = Vec::new();
     for (name, value) in std::env::vars_os() {
-        let name = name.as_encoded_bytes();
-        let value = value.as_encoded_bytes().to_vec();
+        let name = name.to_string_lossy().to_ascii_uppercase();
+        let value = value.into_encoded_bytes();
         if !value.is_empty()
             && ["KEY", "TOKEN", "SECRET", "PASSWORD"]
                 .iter()
-                .any(|pattern| contains_ascii_case_insensitive(name, pattern.as_bytes()))
+                .any(|pattern| name.contains(pattern))
             && seen.insert(value.clone())
         {
             values.push(value);
@@ -484,22 +489,15 @@ fn secret_values() -> Vec<Vec<u8>> {
 
 #[allow(dead_code)]
 pub(crate) fn redact_secrets(input: &str) -> String {
-    let secrets = secret_values();
     let mut output = input.to_string();
-    for secret_bytes in &secrets {
-        if let Ok(secret_str) = std::str::from_utf8(secret_bytes) {
-            if !secret_str.is_empty() {
-                output = output.replace(secret_str, "[REDACTED]");
+    for secret in secret_values() {
+        if let Ok(secret) = std::str::from_utf8(&secret) {
+            if !secret.is_empty() {
+                output = output.replace(secret, "[REDACTED]");
             }
         }
     }
     output
-}
-
-fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]
@@ -573,6 +571,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn env_var_with_secret_keyword_is_redacted() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::set("ZORP_TEST_SECRET", "test-secret-value");
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .run("printf '%s' \"$ZORP_TEST_SECRET\"")
+            .unwrap();
+
+        assert_eq!(out.stdout, "[REDACTED]");
+    }
+
     #[cfg(unix)]
     #[test]
     fn snapshots_non_unicode_environment_best_effort() {
@@ -586,7 +596,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.stdout, "[REDACTED]");
-        assert!(!out.stdout.contains('�'));
+        assert!(!out.stdout.contains('\u{FFFD}'));
+    }
+
+    // A non-Unicode name must not panic the snapshot, and a lowercase
+    // keyword in a name still counts.
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_name_does_not_panic_and_match_ignores_case() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let bad_name = std::ffi::OsString::from_vec(vec![b'Z', 0xff, b'_', b'k', b'e', b'y']);
+        let previous = std::env::var_os(&bad_name);
+        std::env::set_var(&bad_name, "bad-name-value");
+        let _lower = EnvVarGuard::set("zorp_test_api_token", "lower-case-value");
+
+        let values = secret_values();
+
+        match previous {
+            Some(value) => std::env::set_var(&bad_name, value),
+            None => std::env::remove_var(&bad_name),
+        }
+        assert!(values.contains(&b"bad-name-value".to_vec()));
+        assert!(values.contains(&b"lower-case-value".to_vec()));
     }
 
     impl Drop for EnvVarGuard {
