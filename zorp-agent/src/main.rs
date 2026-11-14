@@ -3344,6 +3344,7 @@ const HELP: &str = "\
 /project <name>      file it under that project, or `none` to take it out
 /capsules            list available and loaded capsules
 /skills              list the skills the model can load
+/skill <name> <msg>  ask the model to load one skill for this message
 /load <name>         load a capsule
 /unload <name>       unload a capsule
 /<capsule_name> [text]  load a capsule (if needed) and optionally send a prompt through it
@@ -4343,6 +4344,35 @@ fn handle_chat_command(
                         withheld.join(", "),
                         offer.reason
                     ));
+                }
+            }
+        }
+        ChatCommand::Skill(name, prompt) => {
+            let prompt = prompt.filter(|p| !p.trim().is_empty());
+            if name.is_empty() || prompt.is_none() {
+                out.notice("usage: /skill <name> <prompt>");
+            } else if !zorp_skill::is_valid_skill_name(&name) {
+                out.notice(&format!("unknown skill: invalid name '{name}'"));
+            } else {
+                let scopes = zorp_skill::scope_dirs_from_env(cwd);
+                let (registry, warnings) = zorp_skill::SkillRegistry::discover(&scopes);
+                for warning in &warnings {
+                    out.notice(warning);
+                }
+                if registry.get(&name).is_none() {
+                    out.notice(&format!("unknown skill: '{name}' is not installed"));
+                } else {
+                    // The browser's shape (ADR 0147): one zorp-authored sentence
+                    // naming the skill, which the model sees and the store never
+                    // keeps, and the person's words sent as typed. The body
+                    // travels only through the `skill` tool, gated as always.
+                    agent.append_unrecorded(zorp_agent::Message::user(format!(
+                        "The person chose the skill `{name}` for this message. \
+                         Load it with the `skill` tool before doing anything else."
+                    )));
+                    let prompt = prompt.unwrap_or_default();
+                    run_and_render(agent, &format!("/{name} {prompt}"), out);
+                    feed_recall(session_id);
                 }
             }
         }

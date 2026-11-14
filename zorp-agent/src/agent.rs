@@ -644,6 +644,18 @@ impl Agent {
         self.recorded_messages = self.recorded_messages.min(len);
     }
 
+    /// Put a message on the end of the transcript that the model sees and the
+    /// store never keeps: everything before it is flushed first, then it is
+    /// counted as already recorded, so `sync` never offers it to the
+    /// recorder. The REPL's `/skill` uses this for its one sentence, the same
+    /// way the browser appends it to the seed.
+    pub fn append_unrecorded(&mut self, message: Message) {
+        self.sync();
+        self.messages.push(message);
+        self.message_metadata.push(MessageMetadata::default());
+        self.recorded_messages = self.messages.len();
+    }
+
     /// Replace the seed transcript (used by `resume`). The provided messages are
     /// treated as already recorded so `resume` only persists new turns.
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
@@ -3097,6 +3109,30 @@ mod tests {
         assert!(a.messages[1]
             .text()
             .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX));
+    }
+
+    /// The REPL's `/skill` sentence reaches the model and never the store,
+    /// and the question typed after it is still recorded.
+    #[test]
+    fn append_unrecorded_reaches_the_model_and_not_the_recorder() {
+        #[derive(Default)]
+        struct Recorded(Arc<Mutex<Vec<Message>>>);
+        impl RunRecorder for Recorded {
+            fn message(&mut self, m: &Message) {
+                self.0.lock().unwrap().push(m.clone());
+            }
+            fn change(&mut self, _c: &FileChange) {}
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![text("done")]))
+            .with_recorder(Box::new(Recorded(seen.clone())));
+        a.append_unrecorded(Message::user("load the skill"));
+        a.run("the question");
+
+        assert!(a.messages.iter().any(|m| m.text() == "load the skill"));
+        let recorded = seen.lock().unwrap().clone();
+        assert!(recorded.iter().all(|m| m.text() != "load the skill"));
+        assert!(recorded.iter().any(|m| m.text() == "the question"));
     }
 
     /// Compaction affects what is sent. The recorder has already been handed

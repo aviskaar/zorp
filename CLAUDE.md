@@ -344,7 +344,11 @@ resulting artifact, deliver it in the right form.
   the system slot is the one channel the harness speaks in.
   `zorp-agent`'s chat REPL gains `/skills`, which prints the same index the
   model is shown, which is the offered set, with the rule under it when it
-  withheld anything. And `zorp-web` answers `GET /api/skills` with names,
+  withheld anything. Its `/skill <name> <prompt>` does what the browser's
+  `/` picker does (ADR 0147): one zorp-authored sentence naming the skill,
+  appended with `Agent::append_unrecorded` so the model sees it and the
+  store never keeps it, and the prompt sent as typed; the body still
+  travels only through the `skill` tool. And `zorp-web` answers `GET /api/skills` with names,
   descriptions, paths and scopes, reports a count on
   `GET /api/capabilities`, and draws a toolbar pill with a popover behind
   it. **None of those loads a skill.** There is no route that does and
