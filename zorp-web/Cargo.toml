@@ -84,3 +84,6 @@ tempfile = { workspace = true }
 # The recall tests seed and then edit a scratch session store directly, to
 # stand in for a conversation the user deleted.
 rusqlite = { workspace = true }
+# `drain_request`, so a hand-rolled stub reads the whole request before it
+# replies and never closes on unread bytes.
+zorp-stub = { path = "../zorp-stub" }

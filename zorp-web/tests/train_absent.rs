@@ -38,11 +38,13 @@ async fn dev_routes_answer_501_without_the_feature() {
     ] {
         let url = format!("http://{addr}{path}");
         let (status, body) = tokio::task::spawn_blocking(move || {
-            let call = if method == "GET" {
-                ureq::get(&url).call()
-            } else {
-                ureq::post(&url).send_json(serde_json::json!({}))
-            };
+            // No body on the POSTs. These handlers never read one, and hyper
+            // closes a connection whose request body is still unread when
+            // the response goes out. A body that lands after that close is
+            // answered with a reset, and on macOS the reset makes ureq's
+            // `set_read_timeout` on returning the socket to its pool fail
+            // with "Invalid argument", which it turns into a panic.
+            let call = ureq::request(method, &url).call();
             match call {
                 Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
                 Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),

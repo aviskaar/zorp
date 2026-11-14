@@ -5508,6 +5508,7 @@ dependencies = [
  "zorp-mcp",
  "zorp-recall",
  "zorp-skill",
+ "zorp-stub",
  "zorp-track",
  "zorp-train",
  "zorp-voice",

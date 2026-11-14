@@ -65,7 +65,7 @@ async fn routes_explain_that_the_voice_feature_is_off() {
 #[cfg(feature = "voice")]
 mod enabled {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::net::TcpListener;
     use tokio::sync::Mutex;
     use zorp_voice::{QwenAsr, SetupError, SetupProgress, SetupStage};
@@ -83,8 +83,7 @@ mod enabled {
         std::thread::spawn(move || {
             for (content_type, body) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut bytes = [0u8; 16384];
-                let _ = stream.read(&mut bytes);
+                zorp_stub::drain_request(&mut stream);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -124,8 +123,7 @@ mod enabled {
                     format!(r#"{{"data":[{{"id":"{model}"}}]}}"#),
                 ] {
                     let (mut stream, _) = listener.accept().unwrap();
-                    let mut bytes = [0u8; 16384];
-                    let _ = stream.read(&mut bytes);
+                    zorp_stub::drain_request(&mut stream);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()

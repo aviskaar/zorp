@@ -43,7 +43,7 @@ async fn a_denied_write_never_touches_the_disk() {
 
     let addr = spawn().await;
     let id = tokio::task::spawn_blocking(move || {
-        let (_, body) = post(&format!("http://{addr}/api/sessions"), "{}");
+        let (_, body) = post(&format!("http://{addr}/api/sessions"), "");
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
             .as_str()
             .unwrap()
