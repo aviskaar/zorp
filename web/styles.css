@@ -4494,7 +4494,7 @@ button {
 
 /* ---------------------------------------------------------------- desktop app chrome */
 
-/* Native macOS desktop app styling (injected via Tauri initialization script) */
+/* Desktop chrome for a page that sets html.desktop. The current Mac app is native SwiftUI and does not load this page. */
 html.desktop {
   --desktop-traffic-lights-spacing: 34px;
 }
