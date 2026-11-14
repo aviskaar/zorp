@@ -1,58 +1,71 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Use the **Report a vulnerability** button on the Security tab of this repository to file a private security advisory. This is the only supported reporting channel. Do not file public issues for security vulnerabilities.
+Report security issues privately through GitHub's private vulnerability
+reporting: open the [Security tab](https://github.com/aviskaar/zorp/security)
+and press **Report a vulnerability**, or go straight to
+[the advisory form](https://github.com/aviskaar/zorp/security/advisories/new).
+This is the only reporting channel. Do not open a public issue, pull request
+or discussion about a vulnerability.
 
-If you cannot use the private advisory form, email security@aviskaar.com with the subject line "[SECURITY] zorp vulnerability report" and include:
-- A description of the vulnerability
-- Steps to reproduce or a proof of concept
-- The affected versions (if known)
-- Any suggested mitigations or fixes
+Include:
 
-## Supported Versions
+- The affected component or crate, for example `zorp-web` or `zorp-agent`.
+- The version (`zorp-agent --version`) and the surface: terminal, browser or
+  Mac app.
+- Steps to reproduce or a proof of concept.
+- The impact you see.
+- A suggested fix or mitigation, if you have one.
 
-Only the latest release on the `main` branch receives security updates. Earlier versions are not patched.
+`zorp-agent doctor` prints no secret by design, so its output is safe to
+attach. Never attach an API key.
+
+## Supported versions
+
+Only the latest release receives security fixes. There are no long-term
+support branches, so update to the latest release to get a fix.
 
 | Version | Supported |
 |---------|-----------|
-| Latest release (main) | Yes |
+| Latest release | Yes |
 | Older releases | No |
 
-We do not maintain long-term support branches. Update to the latest release to receive fixes.
+## Response expectations
 
-## Response Expectations
+- **Acknowledgment** within 3 business days.
+- **Initial assessment** of severity and scope within 10 business days.
+- **Status updates** at least every 14 days until the issue is resolved.
+- **Fix target** of 30 days from acknowledgment for critical and high
+  severity issues. Medium and low severity issues may take longer.
 
-- **Acknowledgment**: We will acknowledge receipt within 3 business days.
-- **Initial assessment**: We will provide an initial assessment of severity and scope within 10 business days.
-- **Status updates**: We will share progress updates at least every 14 days until resolution.
-- **Resolution target**: We aim to ship a fix for critical and high severity issues within 30 days of acknowledgment. Medium and low severity issues may take longer depending on complexity.
+## Disclosure process
 
-## Disclosure Process
-
-1. **Private reporting**: The reporter submits details through the private advisory form or email.
-2. **Confirmation**: We confirm the vulnerability, assess severity, and assign a tracking identifier.
-3. **Development**: We develop and test a fix in a private fork.
-4. **Coordinated disclosure**: We agree on a disclosure date with the reporter (default: 90 days from acknowledgment, or sooner if a fix is ready and tested).
-5. **Release**: We publish the fix in a new release on `main` and tag it.
-6. **Advisory publication**: We publish the GitHub Security Advisory with CVE assignment (if applicable) and credit the reporter (unless they request anonymity).
-7. **Post-release**: We monitor for regressions and update the advisory if needed.
+1. You report privately through the advisory form.
+2. We confirm the issue and assess its severity in the advisory.
+3. We develop and test a fix in the advisory's temporary private fork.
+4. We agree a disclosure date with you. The default is 90 days from
+   acknowledgment, or sooner once a fix has shipped.
+5. We ship the fix in a new tagged release.
+6. We publish the advisory, request a CVE where one applies, and credit you
+   unless you ask not to be named.
 
 ## Scope
 
-This policy covers the zorp Rust workspace crates published under the `aviskaar/zorp` organization on GitHub and crates.io. It does not cover:
-- Dependencies (report those to their maintainers)
-- Infrastructure outside this repository (e.g., crates.io, GitHub Actions)
-- The desktop app distribution chain (notarization, DMG signing); report those separately to security@aviskaar.com
+This policy covers the code in this repository: the Rust workspace crates,
+the browser UI in `web/`, the Mac desktop app in `zorp-desktop/`, and the
+release artifacts built from it. It does not cover:
 
-## Safe Harbor
+- Third-party dependencies. Report those to their maintainers.
+- Infrastructure outside this repository, such as GitHub or a model
+  provider's API.
 
-We consider good-faith research that follows this policy to be authorized. We will not pursue legal action against researchers who:
-- Report through the private channel
-- Avoid accessing or modifying user data
-- Avoid degrading service availability
-- Give us reasonable time to fix before disclosure
+## Safe harbor
 
-## Contact
+We consider good-faith research that follows this policy to be authorized,
+and we will not pursue legal action against researchers who:
 
-For questions about this policy: security@aviskaar.com
+- Report through the private channel.
+- Avoid accessing or modifying other people's data.
+- Avoid degrading service availability.
+- Give us reasonable time to fix the issue before disclosing it.
