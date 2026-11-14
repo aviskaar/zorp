@@ -483,12 +483,11 @@ pub fn spawn_turn(
 /// that never opted into this from doing anything at all with the store.
 #[cfg(feature = "recall")]
 pub(crate) fn feed_recall(indexer: RecallFeed, session_id: String) {
-    match indexer {
-        Some(indexer) => indexer.index_session(session_id),
-        // A router embedded without the process worker cannot promise
-        // automatic indexing. The forced endpoint remains available, but
-        // starting unmanaged per-turn workers here would break serialization.
-        None => {}
+    // A router embedded without the process worker cannot promise automatic
+    // indexing. The forced endpoint remains available, but starting
+    // unmanaged per-turn workers here would break serialization.
+    if let Some(indexer) = indexer {
+        indexer.index_session(session_id);
     }
 }
 

@@ -41,7 +41,7 @@ fn post(url: &str, body: &str) -> (u16, String) {
 
 async fn new_session(addr: SocketAddr) -> String {
     tokio::task::spawn_blocking(move || {
-        let (_, body) = post(&format!("http://{addr}/api/sessions"), "{}");
+        let (_, body) = post(&format!("http://{addr}/api/sessions"), "");
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
             .as_str()
             .unwrap()

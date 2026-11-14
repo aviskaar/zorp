@@ -193,7 +193,7 @@ async fn a_turn_with_no_workspace_is_refused_by_status_and_sentence() {
     let addr = spawn().await;
 
     let (status, body) = tokio::task::spawn_blocking(move || {
-        let (_, created) = post(&format!("http://{addr}/api/sessions"), "{}");
+        let (_, created) = post(&format!("http://{addr}/api/sessions"), "");
         let id = json(&created)["id"].as_str().unwrap().to_string();
         post(
             &format!("http://{addr}/api/sessions/{id}/turn"),

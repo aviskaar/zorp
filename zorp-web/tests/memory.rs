@@ -21,32 +21,20 @@ mod common;
 
 use std::net::SocketAddr;
 
+#[cfg(not(feature = "memory"))]
 async fn spawn() -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    #[cfg(not(feature = "memory"))]
-    let state = zorp_web::state::AppState::new();
-    #[cfg(feature = "memory")]
-    let state = {
-        // These tests force their initial corpus explicitly. Disable only
-        // the automatic full sweep while retaining the production worker
-        // that receives finished-turn session updates.
-        let previous = std::env::var_os("ZORP_RECALL_SWEEP_SECS");
-        std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
-        let state = zorp_web::state::AppState::new()
-            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
-        match previous {
-            Some(value) => std::env::set_var("ZORP_RECALL_SWEEP_SECS", value),
-            None => std::env::remove_var("ZORP_RECALL_SWEEP_SECS"),
-        }
-        state
-    };
+    serve(listener, zorp_web::state::AppState::new());
+    addr
+}
+
+fn serve(listener: tokio::net::TcpListener, state: zorp_web::state::AppState) {
     tokio::spawn(async move {
         axum::serve(listener, zorp_web::api::router_with_state(state))
             .await
             .unwrap();
     });
-    addr
 }
 
 /// A build without the feature still answers, and says the feature is off
@@ -87,6 +75,39 @@ mod on {
     static ENV: Mutex<()> = Mutex::const_new(());
 
     const PATIENCE: Duration = Duration::from_secs(20);
+
+    /// The real background worker, stopped when the test ends.
+    ///
+    /// A finished turn queues its session on this worker, and a pass reads
+    /// `ZORP_STATE_DB` and `ZORP_RECALL_DB` when it starts. Left to end on
+    /// its own, a queued pass could start after this test released `ENV`
+    /// and index the next test's store. Declare it after the `ENV` guard so
+    /// it drops first, on a panic too.
+    struct Worker(zorp_web::recall::IndexerHandle);
+
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+
+    async fn spawn() -> (SocketAddr, Worker) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // These tests force their initial corpus explicitly. Disable only
+        // the automatic full sweep while retaining the production worker
+        // that receives finished-turn session updates.
+        let previous = std::env::var_os("ZORP_RECALL_SWEEP_SECS");
+        std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
+        let indexer = zorp_web::recall::IndexerHandle::start_from_env();
+        match previous {
+            Some(value) => std::env::set_var("ZORP_RECALL_SWEEP_SECS", value),
+            None => std::env::remove_var("ZORP_RECALL_SWEEP_SECS"),
+        }
+        let state = zorp_web::state::AppState::new().with_recall_indexer(Some(indexer.clone()));
+        serve(listener, state);
+        (addr, Worker(indexer))
+    }
 
     fn post_blocking(url: &str, body: &str) -> (u16, String) {
         match ureq::post(url)
@@ -343,7 +364,7 @@ mod on {
 
     async fn build_index(addr: SocketAddr) {
         let (status, body) = tokio::task::spawn_blocking(move || {
-            post_blocking(&format!("http://{addr}/api/recall/index"), "{}")
+            post_blocking(&format!("http://{addr}/api/recall/index"), "")
         })
         .await
         .unwrap();
@@ -352,7 +373,7 @@ mod on {
 
     async fn new_session(addr: SocketAddr) -> String {
         tokio::task::spawn_blocking(move || {
-            let (_, body) = post_blocking(&format!("http://{addr}/api/sessions"), "{}");
+            let (_, body) = post_blocking(&format!("http://{addr}/api/sessions"), "");
             serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
                 .as_str()
                 .unwrap()
@@ -444,7 +465,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let id = new_session(addr).await;
@@ -489,7 +510,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let id = new_session(addr).await;
@@ -524,7 +545,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let id = new_session(addr).await;
@@ -583,7 +604,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let id = new_session(addr).await;
@@ -619,7 +640,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let id = new_session(addr).await;
@@ -682,11 +703,12 @@ mod on {
         //    been offered anyway. Nothing in the block can add one.
         let with_memory = tool_names(&request);
         assert!(!with_memory.is_empty(), "no tools were offered at all");
+        drop(_worker);
         drop(_fixture);
 
         let (model, plain_requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         let id = new_session(addr).await;
         let events = EventStream::connect(addr, &id);
         turn(addr, &id, "anything about the billing vendor", false).await;
@@ -727,7 +749,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, _requests) = capturing_model();
         let fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let typed = "why does the billing job fail at the weekend";
@@ -768,7 +790,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some(&dead_port()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
 
         let id = new_session(addr).await;
         let events = EventStream::connect(addr, &id);
@@ -814,7 +836,7 @@ mod on {
         for var in ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
             std::env::set_var(var, &canary.base);
         }
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
         build_index(addr).await;
 
         let id = new_session(addr).await;
@@ -841,7 +863,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let _fixture = set_up(Some("https://api.openai.com/v1"), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
 
         let id = new_session(addr).await;
         let events = EventStream::connect(addr, &id);
@@ -868,7 +890,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, _requests) = capturing_model();
         let _fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
 
         let before = status(addr).await;
         assert_eq!(before["conversations"], 0, "{before}");
@@ -912,7 +934,7 @@ mod on {
         let (model, _requests) = capturing_model();
         let (embedder, embeddings) = counting_embedding_server();
         let _fixture = set_up(Some(&embedder), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
 
         let id = new_session(addr).await;
         let events = EventStream::connect(addr, &id);
@@ -1045,7 +1067,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
 
         stored_session(&fixture.sessions_db(), "conv-asker");
         let theirs = make_project(addr, "Someone else").await;
@@ -1086,7 +1108,7 @@ mod on {
         let _env = ENV.lock().await;
         let (model, requests) = capturing_model();
         let fixture = set_up(Some(&embedding_server()), &model);
-        let addr = spawn().await;
+        let (addr, _worker) = spawn().await;
 
         stored_session(&fixture.sessions_db(), "conv-asker");
         let theirs = make_project(addr, "Someone else").await;

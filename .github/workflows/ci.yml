@@ -288,6 +288,14 @@ jobs:
       - name: Clippy zorp-agent (otel, search, clipboard, systemone)
         run: cargo clippy -p zorp-agent --features otel,search,clipboard,systemone --all-targets --locked -- -D warnings
 
+      # The same gate over zorp-web's feature-gated code, with the feature
+      # set its test step below uses (`memory` turns `recall` on). The
+      # `clippy` job only sees the default build, so a lint inside a
+      # `#[cfg(feature = "recall")]` block got past every job until somebody
+      # ran clippy with the feature by hand.
+      - name: Clippy zorp-web (search, memory, voice, train)
+        run: cargo clippy -p zorp-web --features search,memory,voice,train --all-targets --locked -- -D warnings
+
       # System One (#279) gates the `decide` tool's registration and a doctor
       # probe behind the `systemone` feature; the client itself is always
       # compiled and covered by the default build-and-test job. The clippy step

@@ -45,7 +45,7 @@ async fn post(url: String) -> (u16, String) {
     tokio::task::spawn_blocking(move || {
         match ureq::post(&url)
             .set("content-type", "application/json")
-            .send_string("{}")
+            .send_string("")
         {
             Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
             Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),

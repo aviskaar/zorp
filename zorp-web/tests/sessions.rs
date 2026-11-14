@@ -985,7 +985,7 @@ async fn an_unsaved_conversation_cannot_be_filed() {
     std::env::set_var("ZORP_WORKSPACE", dir.path());
 
     let addr = spawn().await;
-    let (_, session) = post_json(format!("http://{addr}/api/sessions"), "{}").await;
+    let (_, session) = post_json(format!("http://{addr}/api/sessions"), "").await;
     let id = session["id"].as_str().unwrap().to_string();
     let (_, created) = post_json(format!("http://{addr}/api/projects"), r#"{"name":"Roof"}"#).await;
     let project = created["id"].as_str().unwrap().to_string();
