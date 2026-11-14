@@ -18,9 +18,7 @@ cargo build --workspace --exclude zorp-track
 > below. Drop `--exclude zorp-track` (plain `cargo build --workspace`,
 > or `cargo build --workspace --features research` for `zorp-agent`)
 > once you need the `validate`/`investigate`/`co-write`/`deliver`
-> capabilities, and budget time for that first build. The LanceDB vector
-> library is behind a non-default `library` feature, so the Arrow and
-> DataFusion tree is not built unless you ask for it.
+> capabilities, and budget time for that first build.
 
 Run the core transport directly:
 

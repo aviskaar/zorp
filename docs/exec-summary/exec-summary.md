@@ -20,13 +20,13 @@ zorp starts from the opposite premise. **The human is the author of record**, an
 
 zorp is a single Rust workspace compiled to one multi-subcommand binary with ten crate members: `zorp` core (model transport), `zorp-agent` (tools, sandboxing, verification, sessions, MCP), `zorp-mcp`, `zorp-eval`, `zorp-track` (the evidence foundation), plus `zorp-web`, `zorp-search`, `zorp-skill`, `zorp-recall`, and `erbga`, a genetic algorithm for graph community detection. The execution layer is an in-tree fork of quecto, extended rather than depended upon.
 
-Two rules follow from the commitments. **The foundation does not know its consumers**: `zorp-track` owns tracks, evidence records, pre-registration, and checkpoints, and knows nothing of any capability, so tamper evidence is testable apart from capability logic. **Heavy dependencies are opt-in**: DuckDB and LanceDB sit behind the `research` feature, so a base-agent user never pays their cold-cache build. Parallel workers are additional copies of the same binary run as subprocesses, not a second program.
+Two rules follow from the commitments. **The foundation does not know its consumers**: `zorp-track` owns tracks, evidence records, pre-registration, and checkpoints, and knows nothing of any capability, so tamper evidence is testable apart from capability logic. **Heavy dependencies are opt-in**: DuckDB sits behind the `research` feature, so a base-agent user never pays its cold-cache build. Parallel workers are additional copies of the same binary run as subprocesses, not a second program.
 
 ![The four capabilities and the checkpoints between them. Each also runs alone; validate and deliver refuse to run without a configured tool. Figure reused from `docs/paper/figures`.](../paper/figures/pipeline.png){width=46%}
 
 # Mechanisms that carry the guarantee
 
-**Tamper evidence.** On every track load, `zorp-track` re-hashes each `prereg.md` (SHA-256 over raw bytes) against the hash recorded at commit time; mismatch or absence refuses the run outright. DuckDB/LanceDB stores are regenerable indexes over these files. The committed files are the source of truth, and a commit timestamp cannot be moved after results are seen.
+**Tamper evidence.** On every track load, `zorp-track` re-hashes each `prereg.md` (SHA-256 over raw bytes) against the hash recorded at commit time; mismatch or absence refuses the run outright. The DuckDB store is a regenerable index over these files. The committed files are the source of truth, and a commit timestamp cannot be moved after results are seen.
 
 **The evidence record.** Six DuckDB tables: `tracks`, `preregistrations`, `experiments`, `metrics`, `checkpoints`, `validations`. A metric is a `(key, value_type, value)` tuple in typed columns, so drafting is a lookup, not a paraphrase: "p99 latency fell 40%" must resolve to a row someone who was absent can check.
 
@@ -61,7 +61,7 @@ Tests cover the failure modes the design turns on: tampered pre-registration has
 
 - **No comparative evaluation yet.** Tests establish that mechanisms behave as specified, meaning tampering detected, gates refusing, and records surviving index loss. They do not establish that investigations are good.
 - **Tamper evidence is scoped.** It proves the committed threshold was not altered post hoc; it inherits git's trust model (history rewriting defeats it). A defense against quiet drift, not against adversaries.
-- **Deferred:** LanceDB provisioned but unused; one active track per session; deliver scoped to academic venues though the design need not be.
+- **Deferred:** one active track per session; deliver scoped to academic venues though the design need not be.
 - **Throughput bounded by design.** Human checkpoints make zorp a poor fit where volume matters more than defensibility.
 
 # Roadmap and availability

@@ -7,7 +7,7 @@
  * answers. Nothing here approves anything on its own.
  */
 
-import { renderMarkdown } from "./markdown";
+import { renderMarkdown, setCustomEmoji } from "./markdown";
 import { StreamedMessage, endsStreamedMessage } from "./streamed-message";
 import { answerActions } from "./copy-response";
 import { AnswerCount, branchButton } from "./branch";
@@ -34,6 +34,30 @@ import {
   skillsView,
   type SkillsView,
 } from "./skills-view";
+import {
+  SlashMenu,
+  applyPick,
+  filterSkills,
+  leadingSkill,
+  slashQuery,
+} from "./slash-menu";
+import { expandShortcodes } from "./emoji.ts";
+import {
+  EmojiComplete,
+  applyEmojiPick,
+  emojiQuery,
+  matchEmoji,
+  type EmojiMatch,
+} from "./emoji-complete.ts";
+import { EmojiPicker } from "./emoji-picker.ts";
+import {
+  renderDialRows,
+  slotByNumber,
+  slotFields,
+  slotFromChord,
+  slotIsSet,
+  slotName,
+} from "./speed-dial";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -75,7 +99,7 @@ import {
 import { coerceHits, renderNotice, renderResults, summarize } from "./conversation-search";
 import { coerceCitations, renderMemoryNote } from "./memory-note";
 import { DreamsView } from "./dreams";
-import { callLine, settleLine, startedLine, toolLine } from "./activity-line";
+import { callLine, settleLine, startedLine, stateForStatus, toolLine } from "./activity-line";
 import { activityGroup as newActivityGroup, type ActivityGroup } from "./activity-group";
 import { approvalCard, type ApprovalOutcome } from "./approval-card";
 import { checkpointCard, type CheckpointOutcome } from "./checkpoint-card";
@@ -88,12 +112,6 @@ import {
   type Pane,
 } from "./artifact-view";
 import {
-  slashMenuView,
-  handleSlashKeydown,
-  closeSlashMenu,
-  type SlashMenuView,
-} from "./slash-menu";
-import {
   ApiError,
   NothingRunningError,
   TurnBusyError,
@@ -102,6 +120,10 @@ import {
   setAutoApprove,
   fetchActiveSkills,
   fetchSkills,
+  fetchEmoji,
+  addEmoji,
+  deleteEmoji,
+  emojiUrl,
   getCapabilities,
   branchSession,
   clearAllSessions,
@@ -116,6 +138,7 @@ import {
   listModels,
   listProjects,
   listSessions,
+  fetchAgents,
   newSession,
   putSettings,
   recallSearch,
@@ -127,7 +150,6 @@ import {
   startPanel,
   startInvestigate,
   getInvestigateStatus,
-  type SkillSummary,
   getLedger,
   resolveCheckpoint,
   stopAfterAttempt,
@@ -140,15 +162,19 @@ import {
   waitForVoiceModel,
   transcribeVoice,
   type ActiveSkillListing,
+  type SkillSummary,
+  type CustomEmoji,
   type Artifact,
   type EventStream,
   type MemoryEvent,
   type Capabilities,
   type Message,
+  type AgentListing,
   type ModelDetail,
   type Preregistration,
   type RecallStatus,
   type Settings,
+  type DialSlot,
   type SettingsSource,
   type SettingsUpdate,
   type ProjectSummary,
@@ -273,6 +299,14 @@ interface Elements {
   settingsModelText: HTMLInputElement;
   settingsModelSource: HTMLElement;
   settingsModelHint: HTMLElement;
+  settingsDialRows: HTMLElement;
+  settingsDialResult: HTMLElement;
+  emojiBtn: HTMLButtonElement;
+  settingsEmojiList: HTMLElement;
+  settingsEmojiName: HTMLInputElement;
+  settingsEmojiFile: HTMLInputElement;
+  settingsEmojiAdd: HTMLButtonElement;
+  settingsEmojiResult: HTMLElement;
   settingsRefreshModels: HTMLButtonElement;
   settingsApiKeyField: HTMLElement;
   settingsApiKey: HTMLInputElement;
@@ -420,6 +454,7 @@ const agentsPaneView = new AgentsPaneView(document, dom.agentsHost, {
       await setSessionAgent(sessionId, name);
     }
     currentSessionAgent = name;
+    agentsCache = null;
     updateAgentBadge(name);
   },
   getCurrentAgent: () => currentSessionAgent,
@@ -445,6 +480,12 @@ const voiceInput = createVoiceInput(
 
 let sessionId: string | null = null;
 let currentSessionAgent: string | null = null;
+/**
+ * The agents listing, fetched at most once per session for the dial's
+ * "an agent's model wins" guard. Cleared when the active agent changes, so a
+ * press reads a fresh model rather than refetching on every keystroke.
+ */
+let agentsCache: AgentListing | null = null;
 let stream: EventStream | null = null;
 let streamSessionId: string | null = null;
 let catchUp: ZorpEvent[] | null = null;
@@ -457,6 +498,9 @@ let turnRunning = false;
  * say why. Cleared when the next turn starts.
  */
 let turnStopped = false;
+/** Set when this turn ended on an `error` frame, so the skill note is not
+ * shown for a run that never got the chance to load it. Cleared per turn. */
+let turnErrored = false;
 let workingDepth = 0;
 let lastSeq = -1;
 let sessions: SessionSummary[] = [];
@@ -496,12 +540,31 @@ const searchIndicator: SearchIndicatorView = searchIndicatorView(document);
 const speechPlayer = new SpeechPlayer();
 const sandboxIndicator: SandboxIndicatorView = sandboxIndicatorView(document);
 const skills: SkillsView = skillsView(document);
-/** The slash menu for skill picker. */
-const slashMenu: SlashMenuView = slashMenuView(document);
-/** Skills listing, loaded once at startup for the slash menu and later for the pill. */
-let skillsListing: SkillSummary[] = [];
-/** The skill selected through the slash menu, or null when none is pending. */
-let slashSkillName: string | null = null;
+/**
+ * The installed skills, cached for the composer's `/` picker (#252).
+ *
+ * Every installed skill, the same listing the toolbar pill shows, held so
+ * the picker and the leading-token check do not each refetch; populated at
+ * startup and refreshed whenever the pill fetches. Whether the model is
+ * actually offered a given skill is left to the "did not load" line rather
+ * than filtered here, which is the picker the spec asks for. Names only ever
+ * reach the model as a `skill` field the server rechecks; a body never
+ * travels through here.
+ */
+let installedSkills: SkillSummary[] = [];
+/** The `/` query that was dismissed with Escape, kept closed until it changes. */
+let slashDismissedQuery: string | null = null;
+/** The skill the current turn was sent with, for the "did not load" note. */
+let turnSkill: string | null = null;
+/**
+ * Whether the `skill` tool fired this turn. The spec derives the "did not
+ * load" note from the turn's tool events, and the event carries the tool
+ * name (`skill`) but not which skill it loaded, so this records that a skill
+ * loaded at all: a turn that named a skill and made no `skill` call did not
+ * load it. The uncovered case is the model loading a different skill than
+ * the one named, which is conservative (no false "did not load" alarm).
+ */
+let turnSkillLoaded = false;
 const queue: QueueView = queueView(document);
 /** Messages typed while a turn was running, oldest first. */
 const messageQueue: string[] = [];
@@ -557,6 +620,7 @@ start();
 
 function start(): void {
   wireComposer();
+  wireSpeedDial();
   wireLayout();
   wireSidebar();
   wireSkills();
@@ -571,10 +635,89 @@ function start(): void {
   wireApprovalMode();
   wireReadAloud();
   wireZorpMode();
+  wireCustomEmoji();
   paintApprovalMode();
   showEmptyState();
   setStatus("idle", "idle");
   void connectOrExplain();
+  // Load the custom emoji listing so the renderer and picker know the names.
+  void refreshCustomEmoji();
+}
+
+/** Wire the settings pane's custom emoji section. */
+function wireCustomEmoji(): void {
+  dom.settingsEmojiAdd?.addEventListener("click", () => void addCustomEmojiFromForm());
+}
+
+function renderCustomEmojiSettings(): void {
+  if (!dom.settingsEmojiList) {
+    return;
+  }
+  dom.settingsEmojiList.replaceChildren();
+  if (customEmoji.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-hint";
+    empty.textContent = "No custom emoji yet. Add one below, or copy a file into the emoji directory.";
+    dom.settingsEmojiList.append(empty);
+    return;
+  }
+  for (const entry of customEmoji) {
+    const row = document.createElement("div");
+    row.className = "emoji-settings-row";
+    const img = document.createElement("img");
+    img.className = "custom-emoji";
+    img.src = emojiUrl(entry.name);
+    img.alt = `:${entry.name}:`;
+    const name = document.createElement("span");
+    name.className = "emoji-settings-name";
+    name.textContent = `:${entry.name}:`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "emoji-settings-remove";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => void removeCustomEmoji(entry.name));
+    row.append(img, name, remove);
+    dom.settingsEmojiList.append(row);
+  }
+}
+
+async function addCustomEmojiFromForm(): Promise<void> {
+  if (!dom.settingsEmojiName || !dom.settingsEmojiFile) {
+    return;
+  }
+  const name = dom.settingsEmojiName.value.trim().toLowerCase();
+  const file = dom.settingsEmojiFile.files?.[0] ?? null;
+  if (!name || !file) {
+    setEmojiResult("A name and a file are both needed.", "fail");
+    return;
+  }
+  try {
+    await addEmoji(name, file);
+    dom.settingsEmojiName.value = "";
+    dom.settingsEmojiFile.value = "";
+    setEmojiResult(`Added :${name}:`, "ok");
+    await refreshCustomEmoji();
+  } catch (error) {
+    setEmojiResult(describeError(error), "fail");
+  }
+}
+
+async function removeCustomEmoji(name: string): Promise<void> {
+  try {
+    await deleteEmoji(name);
+    setEmojiResult(`Removed :${name}:`, "ok");
+    await refreshCustomEmoji();
+  } catch (error) {
+    setEmojiResult(describeError(error), "fail");
+  }
+}
+
+function setEmojiResult(text: string, state: "ok" | "fail"): void {
+  if (!dom.settingsEmojiResult) {
+    return;
+  }
+  dom.settingsEmojiResult.textContent = text;
+  dom.settingsEmojiResult.dataset.state = state;
 }
 
 /** Check there is a zorp server before offering a composer.
@@ -767,6 +910,14 @@ function collectElements(): Elements {
     settingsModelText: byId<HTMLInputElement>("settings-model-text"),
     settingsModelSource: byId("settings-model-source"),
     settingsModelHint: byId("settings-model-hint"),
+    settingsDialRows: byId("settings-dial-rows"),
+    settingsDialResult: byId("settings-dial-result"),
+    emojiBtn: byId<HTMLButtonElement>("emoji-btn"),
+    settingsEmojiList: byId("settings-emoji-list"),
+    settingsEmojiName: byId<HTMLInputElement>("settings-emoji-name"),
+    settingsEmojiFile: byId<HTMLInputElement>("settings-emoji-file"),
+    settingsEmojiAdd: byId<HTMLButtonElement>("settings-emoji-add"),
+    settingsEmojiResult: byId("settings-emoji-result"),
     settingsRefreshModels: byId<HTMLButtonElement>("settings-refresh-models"),
     settingsApiKeyField: byId("settings-api-key-field"),
     settingsApiKey: byId<HTMLInputElement>("settings-api-key"),
@@ -830,6 +981,26 @@ function collectElements(): Elements {
   };
 }
 
+/**
+ * The one global chord layer (#242): Control+Alt+digit switches to the model
+ * parked in that speed-dial slot, from anywhere on the page, the composer
+ * included. It is suppressed only while focus is in the settings pane, where
+ * a digit is being typed into a slot's own fields. `preventDefault` stops
+ * Option+digit from also typing a character on a Mac.
+ */
+function wireSpeedDial(): void {
+  document.addEventListener("keydown", (event) => {
+    const inSettings =
+      !dom.settingsPane.hidden && dom.settingsPane.contains(document.activeElement);
+    const slot = slotFromChord(event, inSettings);
+    if (slot === null) {
+      return;
+    }
+    event.preventDefault();
+    void pressDial(slot);
+  });
+}
+
 function wireComposer(): void {
   dom.composer.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -857,19 +1028,132 @@ function wireComposer(): void {
     void submitInvestigate(dom.input.value.trim(), null);
   });
 
-  dom.input.addEventListener("keydown", (event) => {
-    // Slash menu handles / and its own navigation keys.
-    if (
-      handleSlashKeydown(event, slashMenu, skillsListing, (name) => {
-        // On selection, insert /name at cursor. We also need to tell
-        // submitMessage which skill was chosen.
-        slashSkillName = name;
-      },
-      dom.input,
-    )
-    ) {
+  // The `/` skill picker (#252). Its element lives in the composer box,
+  // positioned above the textarea by the stylesheet. The menu names skills
+  // and never carries a body; picking one writes `/name ` into the composer
+  // as plain text.
+  slashMenu = new SlashMenu(document, dom.input);
+  (dom.input.parentElement ?? dom.input).append(slashMenu.element());
+
+  // Emoji autocomplete (#243): typing `:` and two or more characters opens a
+  // list. Its element lives beside the slash menu in the composer box.
+  emojiComplete = new EmojiComplete(document, dom.input);
+  (dom.input.parentElement ?? dom.input).append(emojiComplete.element());
+
+  // The emoji picker button and its popover. Clicking a cell inserts at the
+  // caret; the popover stays open so several can be inserted.
+  emojiPicker = new EmojiPicker(document);
+  emojiPicker.setCustom(customEmoji);
+  (dom.input.parentElement ?? dom.input).append(emojiPicker.element());
+  if (dom.emojiBtn) {
+    dom.emojiBtn.addEventListener("click", () => {
+      slashMenu?.close();
+      emojiComplete?.close();
+      emojiPicker?.toggle((text) => insertAtCaret(text));
+    });
+  }
+  // The picker closes on a click outside it (not on the button, whose own
+  // handler toggles) and on Escape, so it is not a popover that can only be
+  // dismissed by the control that opened it.
+  document.addEventListener("click", (event) => {
+    if (!emojiPicker?.isOpen) {
       return;
     }
+    const target = event.target as Node | null;
+    if (emojiPicker.element().contains(target) || dom.emojiBtn.contains(target)) {
+      return;
+    }
+    emojiPicker.close();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && emojiPicker?.isOpen) {
+      emojiPicker.close();
+    }
+  });
+
+  // This keydown is added before the Enter-sends one below, so while the
+  // menu is open it handles the navigation keys first and stops the send.
+  dom.input.addEventListener("keydown", (event) => {
+    if (!slashMenu || !slashMenu.open || event.isComposing) {
+      return;
+    }
+    // While the menu owns a key, take it from document-level handlers too
+    // (voice stops recording on Escape, for one), so navigating the picker
+    // does not fire them. stopImmediatePropagation also blocks the
+    // Enter-sends handler added right below.
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        slashMenu.move(1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        slashMenu.move(-1);
+        break;
+      case "Enter":
+      case "Tab":
+        // Take the key: Enter would otherwise send, Tab would move focus.
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        slashMenu.pick();
+        break;
+      case "Escape": {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        // Remember which query was dismissed so the keyup that follows does
+        // not reopen the same menu.
+        const caret = dom.input.selectionStart ?? dom.input.value.length;
+        slashDismissedQuery = slashQuery(dom.input.value, caret);
+        slashMenu.close();
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
+  // The emoji autocomplete owns the same navigation keys while it is open.
+  // Added after the slash handler and before the Enter-sends one, so a key it
+  // takes never reaches the send. The two never open together: the slash menu
+  // is only the leading `/token`, the emoji list only a `:token` after
+  // whitespace.
+  dom.input.addEventListener("keydown", (event) => {
+    if (!emojiComplete || !emojiComplete.open || event.isComposing) {
+      return;
+    }
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emojiComplete.move(1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emojiComplete.move(-1);
+        break;
+      case "Enter":
+      case "Tab":
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        emojiComplete.pick();
+        break;
+      case "Escape": {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const caret = dom.input.selectionStart ?? dom.input.value.length;
+        emojiDismissed = emojiQuery(dom.input.value, caret)?.query ?? null;
+        emojiComplete.close();
+        break;
+      }
+      default:
+        break;
+    }
+  });
+
+  dom.input.addEventListener("keydown", (event) => {
     // Enter sends. Shift+Enter is a newline. An open IME composition owns the
     // key and must be left alone.
     if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
@@ -879,16 +1163,134 @@ function wireComposer(): void {
     void submitMessage();
   });
 
-  dom.input.addEventListener("input", autoGrowInput);
-  // Close the slash menu when focus leaves the composer.
-  dom.input.addEventListener("blur", () => {
-    if (!slashMenu.container.hidden) {
-      closeSlashMenu(slashMenu, dom.input);
-    }
+  dom.input.addEventListener("input", () => {
+    autoGrowInput();
+    refreshSlashMenu();
+    refreshEmojiComplete();
   });
-  // Attach the slash menu container to the document for positioning.
-  document.body.appendChild(slashMenu.container);
+  // Moving the caret with the keyboard or mouse can open or close a menu
+  // without changing the text, so recompute on selection changes too.
+  dom.input.addEventListener("keyup", () => {
+    refreshSlashMenu();
+    refreshEmojiComplete();
+  });
+  dom.input.addEventListener("click", () => {
+    refreshSlashMenu();
+    refreshEmojiComplete();
+  });
+  dom.input.addEventListener("blur", () => {
+    // Leaving the field forgets an Escape dismissal, so coming back to the
+    // same token reopens the picker rather than finding it stuck closed.
+    slashDismissedQuery = null;
+    emojiDismissed = null;
+    slashMenu?.close();
+    emojiComplete?.close();
+  });
   autoGrowInput();
+}
+
+/**
+ * Fetch the custom emoji listing and hand it to the renderer and the picker.
+ * The renderer draws a `:name:` as an image only for a name in here, so this
+ * is what makes custom emoji appear; the listing carries no body. Best effort:
+ * a failure leaves the set empty, which renders every `:name:` as literal text.
+ */
+async function refreshCustomEmoji(): Promise<void> {
+  try {
+    customEmoji = await fetchEmoji();
+  } catch {
+    customEmoji = [];
+  }
+  setCustomEmoji(customEmoji.map((c) => c.name));
+  emojiPicker?.setCustom(customEmoji);
+  renderCustomEmojiSettings();
+}
+
+/** Insert `text` at the composer's caret, replacing any selection. */
+function insertAtCaret(text: string): void {
+  const start = dom.input.selectionStart ?? dom.input.value.length;
+  const end = dom.input.selectionEnd ?? start;
+  const value = dom.input.value;
+  dom.input.value = value.slice(0, start) + text + value.slice(end);
+  const caret = start + text.length;
+  dom.input.setSelectionRange(caret, caret);
+  dom.input.focus();
+  autoGrowInput();
+}
+
+/**
+ * Open, update or close the emoji autocomplete from the caret. Mirrors
+ * `refreshSlashMenu`: the token under the caret decides, an Escape dismissal
+ * of the same query keeps it closed, and the matches include custom emoji.
+ */
+function refreshEmojiComplete(): void {
+  if (!emojiComplete) {
+    return;
+  }
+  const caret = dom.input.selectionStart ?? dom.input.value.length;
+  const found = emojiQuery(dom.input.value, caret);
+  if (!found) {
+    emojiComplete.close();
+    emojiDismissed = null;
+    return;
+  }
+  if (found.query === emojiDismissed) {
+    return;
+  }
+  emojiDismissed = null;
+  const names = customEmoji.map((c) => c.name);
+  const matches = matchEmoji(found.query, names);
+  emojiComplete.show(matches, (match: EmojiMatch) => {
+    const at = dom.input.selectionStart ?? dom.input.value.length;
+    const next = applyEmojiPick(dom.input.value, found.start, at, match.insert);
+    dom.input.value = next.text;
+    dom.input.setSelectionRange(next.caret, next.caret);
+    dom.input.focus();
+    autoGrowInput();
+  });
+}
+
+/** The composer's slash picker, created in `wireComposer`. */
+let slashMenu: SlashMenu | null = null;
+/** The composer's emoji autocomplete and picker, created in `wireComposer`. */
+let emojiComplete: EmojiComplete | null = null;
+let emojiPicker: EmojiPicker | null = null;
+/** The emoji query an Escape dismissed, so a keyup does not reopen it. */
+let emojiDismissed: string | null = null;
+/** The custom emoji the server has listed. Set by `refreshCustomEmoji`. */
+let customEmoji: CustomEmoji[] = [];
+
+/**
+ * Open, filter, or close the `/` picker from the composer's current text and
+ * caret. The menu opens only for a `/` at the start of a line (see
+ * `slashQuery`); picking rewrites the token to `/name ` as plain text.
+ */
+function refreshSlashMenu(): void {
+  if (!slashMenu) {
+    return;
+  }
+  const caret = dom.input.selectionStart ?? dom.input.value.length;
+  const query = slashQuery(dom.input.value, caret);
+  if (query === null) {
+    slashDismissedQuery = null;
+    slashMenu.close();
+    return;
+  }
+  // Escape dismissed this exact query; keep it closed until the text or
+  // caret moves it to a different one, or Escape would be undone on keyup.
+  if (query === slashDismissedQuery) {
+    slashMenu.close();
+    return;
+  }
+  slashDismissedQuery = null;
+  slashMenu.show(filterSkills(query, installedSkills), (name) => {
+    const at = dom.input.selectionStart ?? dom.input.value.length;
+    const next = applyPick(dom.input.value, at, name);
+    dom.input.value = next.text;
+    dom.input.setSelectionRange(next.caret, next.caret);
+    autoGrowInput();
+    dom.input.focus();
+  });
 }
 
 function wireSidebar(): void {
@@ -1249,23 +1651,33 @@ async function refreshApprovalMode(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 async function submitMessage(): Promise<void> {
-  const message = dom.input.value.trim();
-  if (!message) {
+  // Sending ends any open picker: the message is going out as typed.
+  slashMenu?.close();
+  emojiComplete?.close();
+  const raw = dom.input.value.trim();
+  if (!raw) {
     return;
   }
 
   // The one slash command there is. A `startsWith` check and not a command
   // table, because a table for one entry is a table nobody reads; build one
   // when there is a second.
-  if (message === "/compact" || message.startsWith("/compact ")) {
+  if (raw === "/compact" || raw.startsWith("/compact ")) {
     dom.input.value = "";
     autoGrowInput();
-    await runCompact(message.slice("/compact".length).trim());
+    await runCompact(raw.slice("/compact".length).trim());
     return;
   }
 
   dom.input.value = "";
   autoGrowInput();
+
+  // Expand standard emoji shortcodes once, here, so the message the model,
+  // the recall index and a later quote all see carries the character rather
+  // than a name. Code spans and unknown or custom names are left alone; a
+  // custom `:name:` stays for the renderer to draw. This never touches the
+  // stored transcript of earlier messages.
+  const message = expandShortcodes(raw);
 
   if (turnRunning) {
     messageQueue.push(message);
@@ -1316,7 +1728,7 @@ function paintQueue(): void {
   });
 }
 
-async function sendMessage(message: string, skillOverride: string | null = null): Promise<void> {
+async function sendMessage(message: string): Promise<void> {
   clearEmptyState();
   appendMessage("user", message);
   scrollToBottomIfFollowing(true);
@@ -1352,11 +1764,48 @@ async function sendMessage(message: string, skillOverride: string | null = null)
     // water mark: seq climbs for the life of the session, and resetting it
     // here would let a reconnect mid-turn render the backlog twice.
     await ensureStream(sessionId);
+    // The leading `/name` token, when it is a skill this model is offered,
+    // is sent as the `skill` field for the server to recheck; a path or an
+    // unknown or withheld name is left as plain text and no field is sent.
+    // The message itself is sent verbatim, `/name` included, so what is
+    // stored is what was typed.
+    const chosenSkill = leadingSkill(
+      message,
+      new Set(installedSkills.map((s) => s.name)),
+    );
+    // Cleared before the send so a failed start cannot leave a stale skill
+    // for a later turn's "did not load" note; set only once the turn is
+    // accepted.
+    turnSkillLoaded = false;
+    turnErrored = false;
+    // Set before the send so a 400 fallback below still reports the skill as
+    // not loaded (which it was). A send that throws for any other reason
+    // never reaches finishTurn, and the next turn clears it, so this cannot
+    // leave a stale note.
+    turnSkill = chosenSkill;
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
-    const skill = skillOverride ?? slashSkillName;
-    slashSkillName = null;
-    await sendTurn(sessionId, message, dom.useMemory.checked, skill || undefined);
+    try {
+      await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
+    } catch (error) {
+      // start_turn returns 400 only for an unknown skill ("no installed
+      // skill named ..."): the cached listing went stale (a skill
+      // uninstalled, or a workspace switch) between the pick and the send.
+      // Send the message as plain text rather than losing it, which is what
+      // it would have been before this field existed, and keep turnSkill set
+      // so the person is told it did not load. Any other failure, including a
+      // 400 that is not about the skill, is the outer catch's.
+      if (
+        chosenSkill &&
+        error instanceof ApiError &&
+        error.status === 400 &&
+        error.message.includes("installed skill")
+      ) {
+        await sendTurn(sessionId, message, dom.useMemory.checked);
+      } else {
+        throw error;
+      }
+    }
     dom.useMemory.checked = false;
   } catch (error) {
     setTurnRunning(false);
@@ -1380,21 +1829,6 @@ async function sendMessage(message: string, skillOverride: string | null = null)
 let zorpQuestion: string | null = null;
 /** Whether the running turn is a Zorp mode attempt rather than a turn. */
 let zorpRunning = false;
-
-/**
- * Extract a skill name from a message that was selected through the slash
- * menu, or null when there is no leading slash-skill token.
- */
-function extractSkill(message: string): string | null {
-  const text = message.trimStart();
-  if (!text.startsWith("/")) return null;
-  const afterSlash = text.slice(1);
-  const spaceIdx = afterSlash.indexOf(" ");
-  const raw = spaceIdx === -1 ? afterSlash : afterSlash.slice(0, spaceIdx);
-  // Validate: same rules the server applies. Lowercase and single path component.
-  if (/^[a-z][a-z0-9_-]*$/.test(raw)) return raw;
-  return null;
-}
 
 /**
  * The question waiting on a pre-registration typed by hand.
@@ -1812,6 +2246,14 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "tool":
+      // A `skill` tool call that reported a non-failing result is the only
+      // way a skill loads; record it so the "did not load" note is not shown
+      // this turn. Keyed on the result, not the start, so an errored load
+      // does not count. The event carries the tool name but not which skill,
+      // so this records that a skill loaded, not which one (see ADR 0147).
+      if (event.name === "skill" && stateForStatus(event.summary) !== "activity-fail") {
+        turnSkillLoaded = true;
+      }
       if (pendingTool && pendingTool.name === event.name) {
         settleLine(pendingTool.node, event.summary);
         pendingTool = null;
@@ -1919,6 +2361,7 @@ function applyEvent(event: ZorpEvent): void {
       break;
 
     case "error":
+      turnErrored = true;
       appendError(event.message);
       // A turn that failed is still a turn that ran, and the server sends
       // `error` instead of `done` rather than as well as it, so without this
@@ -2032,7 +2475,20 @@ function finishTurn(): void {
     pendingCheckpoint.settle(turnStopped ? "stopped" : "abandoned");
     pendingCheckpoint = null;
   }
+  const ranToCompletion = !turnStopped && !turnErrored;
   turnStopped = false;
+  turnErrored = false;
+  // The person chose a skill for this turn and no `skill` tool call fired, so
+  // it was not loaded. Said in a line under the answer, derived in code from
+  // the turn's tool events, so the person can see whether what they asked for
+  // happened. Only on a turn that ran to completion: a stopped or errored
+  // turn never got its chance, so reporting "did not load" would blame the
+  // model for an interruption. The note goes through `textContent`.
+  if (turnSkill && !turnSkillLoaded && ranToCompletion) {
+    appendActivity(noticeLine(`The model did not load \`${turnSkill}\``));
+  }
+  turnSkill = null;
+  turnSkillLoaded = false;
   void refreshSessions();
   // Forced past the poll interval: this is the last chance to notice what the
   // run wrote, and a file written in the final second is the interesting one.
@@ -2041,8 +2497,7 @@ function finishTurn(): void {
   const next = messageQueue.shift();
   if (next !== undefined) {
     paintQueue();
-    const skill = extractSkill(next);
-    void sendMessage(next, skill);
+    void sendMessage(next);
   }
 }
 
@@ -2940,6 +3395,7 @@ async function openSession(session: SessionSummary): Promise<void> {
       return;
     }
     currentSessionAgent = transcript.agent ?? null;
+    agentsCache = null;
     updateAgentBadge(currentSessionAgent);
     if (!dom.agentsPane.hidden) {
       void agentsPaneView.refresh();
@@ -3005,6 +3461,7 @@ function startNewChat(): void {
   rememberSessionInUrl(null);
   sessionId = null;
   currentSessionAgent = null;
+  agentsCache = null;
   updateAgentBadge(null);
   setTitle("New chat");
   markActiveSession();
@@ -3211,6 +3668,16 @@ async function refreshCapabilities(): Promise<void> {
     // and absent are both drawn as no pill. A count that appeared while
     // the answer was in flight would be a guess.
     renderSkillsIndicator(skills, capabilities.skills ?? null);
+    // Prime the composer's `/` picker with the offered listing, so it works
+    // before the pill is ever opened. Best effort and the same listing the
+    // pill fetches; a failure leaves the picker empty, not broken.
+    if ((capabilities.skills?.count ?? 0) > 0) {
+      void fetchSkills()
+        .then((listing) => {
+          installedSkills = listing.skills;
+        })
+        .catch(() => {});
+    }
     voiceInput.observe(capabilities.voice);
     speechPlayer.observe(capabilities.speech ?? null);
     updateReadAloudVisibility();
@@ -3258,6 +3725,8 @@ function wireSkills(): void {
         // has no such route at all. A page that lost the whole panel to
         // that would be worse than one that shows the half it has.
         const installed = await fetchSkills();
+        // Keep the composer picker's offered list in step with the pill.
+        installedSkills = installed.skills;
         let live: ActiveSkillListing | null = null;
         if (sessionId) {
           try {
@@ -3267,8 +3736,6 @@ function wireSkills(): void {
           }
         }
         renderSkillsPanel(document, skills.panel, installed, live);
-        // Keep the listing for the slash menu too.
-        skillsListing = installed.skills;
       } catch (error) {
         // The server's own words. A page that said "could not list skills"
         // would be hiding the reason it already has.
@@ -3343,6 +3810,136 @@ function applySettingsToForm(settings: Settings): void {
   applySpeechToForm(settings);
   applySandboxToForm(settings);
   updateApiKeyVisibility(name);
+  renderDial();
+}
+
+/** The dial as the current settings hold it. */
+function currentDial(): DialSlot[] {
+  return currentSettings?.dial ?? [];
+}
+
+/** Draw the speed-dial rows and wire their controls. */
+function renderDial(): void {
+  renderDialRows(document, dom.settingsDialRows, currentDial(), {
+    useCurrent: (n, label) => {
+      // Copy whatever the Model section currently shows into slot n, keeping
+      // the label the row shows now (passed through from its own input rather
+      // than read by position). No key: the slot type has no field for one.
+      const slot: DialSlot = {
+        slot: n,
+        label: label.trim() || undefined,
+        provider: preset(dom.settingsPreset.value).provider,
+        base_url: dom.settingsBaseUrl.value.trim(),
+        model: currentModelValue(),
+        max_tokens: currentSettings?.max_tokens ?? undefined,
+      };
+      void saveDial(upsertSlot(currentDial(), slot));
+    },
+    clear: (n) => void saveDial(currentDial().filter((s) => s.slot !== n)),
+    relabel: (n, label) => {
+      const trimmed = label.trim();
+      const existing = slotByNumber(currentDial(), n);
+      // A label on an empty slot is kept so "Use current model" can fill the
+      // model under it later; an empty label on an empty slot is nothing.
+      if (!existing && trimmed === "") {
+        return;
+      }
+      const slot: DialSlot = { ...(existing ?? { slot: n }), slot: n, label: trimmed || undefined };
+      // A relabel needs no repaint: the input already shows the new text, and
+      // repainting after the async save would wipe out a label the person has
+      // since started typing in another row and drop their focus.
+      void saveDial(upsertSlot(currentDial(), slot), false);
+    },
+  });
+}
+
+/** Replace or add a slot by its number, keeping the list sorted. */
+function upsertSlot(dial: DialSlot[], slot: DialSlot): DialSlot[] {
+  const rest = dial.filter((s) => s.slot !== slot.slot);
+  return [...rest, slot].sort((a, b) => a.slot - b.slot);
+}
+
+/**
+ * Persist the whole dial. The state is always updated from the server's
+ * answer; the table is repainted only when `rerender` is set, because a
+ * repaint during a label edit would clobber what the person is typing.
+ */
+async function saveDial(dial: DialSlot[], rerender = true): Promise<void> {
+  try {
+    const settings = await putSettings({ dial });
+    currentSettings = settings;
+    if (rerender) {
+      renderDial();
+    }
+    setDialResult("Saved.", "ok");
+  } catch (error) {
+    setDialResult(describeError(error), "fail");
+  }
+}
+
+function setDialResult(text: string, state: "ok" | "fail"): void {
+  dom.settingsDialResult.textContent = text;
+  dom.settingsDialResult.dataset.state = state;
+}
+
+/**
+ * Switch to the model parked in slot `n`, from anywhere on the page. A press
+ * is an ordinary settings save of the slot's model fields and nothing more;
+ * the next turn reads the new model the way it reads any saved model. The
+ * pill repaints and flashes the slot number so the press is confirmed.
+ * A digit with no model behind it does nothing and says nothing.
+ */
+async function pressDial(n: number): Promise<void> {
+  const slot = slotByNumber(currentDial(), n);
+  if (!slotIsSet(slot)) {
+    return;
+  }
+  // An agent's model wins: a flavor sits above the saved file in the chain,
+  // so under an agent that sets `model` a press would write a file this
+  // conversation will not read. Do nothing there rather than flash a switch
+  // that will not take effect. The listing is fetched only when an agent is
+  // active (the uncommon case), and an agent with no model of its own leaves
+  // the dial working. A fetch that fails falls through to the save, because
+  // the chain still resolves the file below the flavor whatever we did here.
+  if (currentSessionAgent) {
+    try {
+      if (!agentsCache) {
+        agentsCache = await fetchAgents();
+      }
+      const active = agentsCache.agents.find((a) => a.name === currentSessionAgent);
+      if (active?.model) {
+        flashDialSlot(n, `${currentSessionAgent} sets the model`);
+        return;
+      }
+    } catch {
+      // Fall through and save.
+    }
+  }
+  try {
+    const settings = await putSettings(slotFields(slot));
+    currentSettings = settings;
+    applySettingsToForm(settings);
+    updateModelBadge(settings);
+    flashDialSlot(n, slotName(slot));
+  } catch (error) {
+    appendError(describeError(error));
+  }
+}
+
+let dialFlashTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Briefly show the pressed slot number beside the model name on the pill. */
+function flashDialSlot(n: number, name: string): void {
+  dom.modelBtnLabel.textContent = `${n}: ${name}`;
+  if (dialFlashTimer !== null) {
+    clearTimeout(dialFlashTimer);
+  }
+  dialFlashTimer = setTimeout(() => {
+    dialFlashTimer = null;
+    if (currentSettings) {
+      updateModelBadge(currentSettings);
+    }
+  }, 1400);
 }
 
 /**

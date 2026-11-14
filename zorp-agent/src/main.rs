@@ -243,6 +243,16 @@ enum ConfigAction {
         /// One of: model, base-url, provider, max-tokens.
         key: String,
     },
+    /// Switch to a speed-dial slot: write its model fields to the saved file.
+    ///
+    /// The same slots the browser's dial and `/dial` in the chat REPL read,
+    /// out of the one `zorp.toml`. Writing them is a settings write like
+    /// `set`, so the saved-file layer of the chain changes and a flag or
+    /// variable set over it still wins. A slot never carries an API key.
+    Dial {
+        /// The slot number, 1 to 9.
+        n: u8,
+    },
     /// Print the path to the saved settings file.
     Path,
 }
@@ -1313,6 +1323,51 @@ fn config(action: Option<ConfigAction>, overrides: &Overrides) {
         Some(ConfigAction::Path) => println!("{}", zorp_agent::config::path().display()),
         Some(ConfigAction::Set { key, value }) => config_write(&key, Some(&value)),
         Some(ConfigAction::Unset { key }) => config_write(&key, None),
+        Some(ConfigAction::Dial { n }) => config_dial(n),
+    }
+}
+
+/// Apply speed-dial slot `n` to the saved settings: write its model fields
+/// so the next run talks to that model.
+///
+/// A slot carries exactly the non-secret fields a save carries (provider,
+/// base URL, model, max tokens) and never a key, so this moves only those.
+/// Fields the slot left unset are left as the saved file already has them,
+/// the same as pressing the chord in the browser leaves them. Writing the
+/// saved file is the terminal's switch, below a flag or variable in the
+/// chain exactly as `config set` is.
+fn config_dial(n: u8) {
+    let mut saved = zorp_agent::config::load().unwrap_or_default();
+    let Some(slot) = saved.dial.iter().find(|s| s.slot == n).cloned() else {
+        eprintln!("zorp-agent: speed-dial slot {n} is empty. Set it in the browser's Speed dial section, or in {}.", zorp_agent::config::path().display());
+        std::process::exit(2);
+    };
+    if !slot.has_model() {
+        eprintln!("zorp-agent: speed-dial slot {n} has no model.");
+        std::process::exit(2);
+    }
+    saved.apply_dial_slot(&slot);
+    match zorp_agent::config::save(&saved) {
+        Ok(()) => {
+            let label = slot
+                .label
+                .as_deref()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| format!(" ({l})"))
+                .unwrap_or_default();
+            println!(
+                "dial {n}{label} -> {}  ({})",
+                slot.model.as_deref().unwrap_or(""),
+                zorp_agent::config::path().display()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "zorp-agent: could not write {}: {e}",
+                zorp_agent::config::path().display()
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -1760,6 +1815,37 @@ fn doctor_report(overrides: &Overrides) -> zorp_agent::doctor::Report {
     } else {
         Check::off("web_search", search.detail)
     });
+
+    // System One decision models, when this build has the tool. Reports the
+    // resolved endpoint and whether Ollama answers and is new enough (0.35+),
+    // through its own short-timeout probe. No key is read or printed.
+    //
+    // A reachable, new-enough Ollama is an `ok`; everything else is a `note`,
+    // not a `bad`, because System One is an optional local capability. A
+    // person who built with the feature but has not started Ollama, or whose
+    // Ollama is too old, has not made the whole build unhealthy, any more than
+    // an uncompiled `web_search` does; a `bad` here would make `doctor` exit
+    // non-zero on every machine without a running decision model.
+    #[cfg(feature = "systemone")]
+    {
+        let base = zorp_agent::systemone::resolve_base();
+        let root = zorp_agent::systemone::ollama_root(&base);
+        let timeout = std::time::Duration::from_secs(PROBE_TIMEOUT_SECS);
+        report.checks.push(
+            match zorp_agent::systemone::ollama_version(&base, timeout) {
+                Ok(version) if zorp_agent::systemone::version_at_least(&version, 0, 35) => {
+                    Check::ok("systemone", format!("Ollama {version} at {root}"))
+                }
+                Ok(version) => Check::note(
+                    "systemone",
+                    format!(
+                        "Ollama {version} at {root} is older than 0.35, which System One needs"
+                    ),
+                ),
+                Err(e) => Check::note("systemone", format!("{root} did not answer: {e}")),
+            },
+        );
+    }
 
     // The sandbox, probed the way the real path probes it. The resolved mode
     // is reported, and whether `srt` could actually run it. A requested mode
@@ -3237,6 +3323,8 @@ const HELP: &str = "\
 /exit, /quit, /q     leave chat
 /help, /h, /?        show this help
 /model               show the active model
+/dial                list the speed-dial slots
+/dial <n>            switch to speed-dial slot n (saved; the next session uses it)
 /context             show transcript size
 /doctor              say what this build can do and whether it can reach anything
 /compact             summarize the older conversation so it fits the window
@@ -3256,6 +3344,7 @@ const HELP: &str = "\
 /project <name>      file it under that project, or `none` to take it out
 /capsules            list available and loaded capsules
 /skills              list the skills the model can load
+/skill <name> <msg>  ask the model to load one skill for this message
 /load <name>         load a capsule
 /unload <name>       unload a capsule
 /<capsule_name> [text]  load a capsule (if needed) and optionally send a prompt through it
@@ -3675,11 +3764,23 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                         crossterm::event::KeyCode::Tab => {
                             let flat = line.flat();
                             let names = capsules.registry().names();
-                            let candidates = zorp_agent::line_editor::complete(
-                                &flat,
-                                zorp_agent::CHAT_COMMANDS,
-                                &names,
-                            );
+                            // An open `:shortcode` at the end completes to the
+                            // emoji name, which Enter then expands; otherwise
+                            // Tab completes a leading slash command or capsule.
+                            let candidates = if let Some((before, prefix)) =
+                                zorp_agent::line_editor::emoji_token_suffix(&flat)
+                            {
+                                zorp_agent::emoji::names_with_prefix(prefix)
+                                    .iter()
+                                    .map(|name| format!("{before}{name}:"))
+                                    .collect()
+                            } else {
+                                zorp_agent::line_editor::complete(
+                                    &flat,
+                                    zorp_agent::CHAT_COMMANDS,
+                                    &names,
+                                )
+                            };
                             match candidates.len() {
                                 0 => {}
                                 1 => {
@@ -3851,6 +3952,60 @@ fn handle_chat_command(
                 out.notice("model: (not set)");
             } else {
                 out.notice(&format!("model: {model_name}"));
+            }
+        }
+        ChatCommand::Dial(slot) => {
+            // The same slots the browser's chord and `config dial` read, out
+            // of the one `zorp.toml`. `/dial` with no number reports them.
+            // `/dial <n>` writes the slot's model fields to the saved file:
+            // the terminal's switch. The running conversation keeps the model
+            // it started with (the agent resolved it once), so the switch
+            // lands on the next session, which is the terminal's honest
+            // version of the browser's "next turn".
+            let saved = zorp_agent::config::load().unwrap_or_default();
+            match slot {
+                None => {
+                    if saved.dial.is_empty() {
+                        out.notice(
+                            "speed dial: no slots set. Set them in the browser's Speed dial \
+                             section, or in the saved settings file.",
+                        );
+                    } else {
+                        let mut dial = saved.dial.clone();
+                        dial.sort_by_key(|s| s.slot);
+                        let mut lines = String::from("speed dial:");
+                        for s in &dial {
+                            let label = s
+                                .label
+                                .as_deref()
+                                .filter(|l| !l.trim().is_empty())
+                                .map(|l| format!("  {l}"))
+                                .unwrap_or_default();
+                            lines.push_str(&format!(
+                                "\n  {}{label}  {}",
+                                s.slot,
+                                s.model.as_deref().unwrap_or("(empty)")
+                            ));
+                        }
+                        out.notice(&lines);
+                    }
+                }
+                Some(n) => match saved.dial.iter().find(|s| s.slot == n).cloned() {
+                    None => out.notice(&format!("dial {n}: empty")),
+                    Some(s) if !s.has_model() => out.notice(&format!("dial {n}: no model")),
+                    Some(s) => {
+                        let mut next = saved.clone();
+                        next.apply_dial_slot(&s);
+                        match zorp_agent::config::save(&next) {
+                            Ok(()) => out.notice(&format!(
+                                "dial {n} -> {}. Saved; this conversation keeps its current \
+                                 model, the next session uses it.",
+                                s.model.as_deref().unwrap_or("")
+                            )),
+                            Err(e) => out.notice(&format!("dial {n}: could not save: {e}")),
+                        }
+                    }
+                },
             }
         }
         ChatCommand::Context => {
@@ -4193,7 +4348,8 @@ fn handle_chat_command(
             }
         }
         ChatCommand::Skill(name, prompt) => {
-            if name.is_empty() {
+            let prompt = prompt.filter(|p| !p.trim().is_empty());
+            if name.is_empty() || prompt.is_none() {
                 out.notice("usage: /skill <name> <prompt>");
             } else if !zorp_skill::is_valid_skill_name(&name) {
                 out.notice(&format!("unknown skill: invalid name '{name}'"));
@@ -4206,17 +4362,16 @@ fn handle_chat_command(
                 if registry.get(&name).is_none() {
                     out.notice(&format!("unknown skill: '{name}' is not installed"));
                 } else {
-                    let instruction = format!(
+                    // The browser's shape (ADR 0147): one zorp-authored sentence
+                    // naming the skill, which the model sees and the store never
+                    // keeps, and the person's words sent as typed. The body
+                    // travels only through the `skill` tool, gated as always.
+                    agent.append_unrecorded(zorp_agent::Message::user(format!(
                         "The person chose the skill `{name}` for this message. \
                          Load it with the `skill` tool before doing anything else."
-                    );
-                    let combined = if let Some(p) = prompt {
-                        format!("{instruction}\n\n{p}")
-                    } else {
-                        // No prompt text given: use the skill instructions alone.
-                        instruction
-                    };
-                    run_and_render(agent, &combined, out);
+                    )));
+                    let prompt = prompt.unwrap_or_default();
+                    run_and_render(agent, &format!("/{name} {prompt}"), out);
                     feed_recall(session_id);
                 }
             }
@@ -4349,6 +4504,12 @@ fn handle_chat_command(
         }
         ChatCommand::Say(text) => {
             if !text.is_empty() {
+                // Expand standard emoji shortcodes on the line as it is sent,
+                // so the message carries the character the way the browser's
+                // composer sends it. Code spans and unknown or custom names
+                // are left alone. This happens once, here, never over the
+                // stored transcript.
+                let text = zorp_agent::emoji::expand(&text);
                 run_and_render(agent, &text, out);
                 // After the answer, so the person has it before anything
                 // else is asked of the model, and only if this conversation

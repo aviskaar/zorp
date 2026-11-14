@@ -248,7 +248,6 @@ cargo build -p zorp-agent --features research
 
 export ZORP_BASE_URL=http://localhost:11434/v1
 export ZORP_MODEL=qwen3.8:27b
-export ZORP_EMBEDDING_MODEL=qwen3-embedding:latest   # validate needs it, no default
 export ZORP_STATE_DB=$PWD/uat-state.db               # keep UAT out of the real state dir
 export ZORP_TRUST_FILE=$PWD/uat-trust
 export ZORP_MAX_STEPS=8

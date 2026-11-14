@@ -379,6 +379,40 @@ pub fn complete(line: &str, commands: &[&str], capsules: &[String]) -> Vec<Strin
     out
 }
 
+/// The open emoji shortcode token at the end of `line`, as `(before, prefix)`
+/// where `before` is everything up to and including the opening `:` and
+/// `prefix` is the shortcode characters after it.
+///
+/// `None` unless the line ends in such a token: a `:` that starts the line or
+/// follows whitespace, then one or more shortcode characters, with nothing
+/// after. So `hi :rock` gives `("hi :", "rock")`, but `12:34` and a closed
+/// `:rocket:` give nothing, the latter because a pick is already complete.
+pub fn emoji_token_suffix(line: &str) -> Option<(&str, &str)> {
+    let is_name =
+        |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '+' | '-');
+    // Walk back over the shortcode characters at the end.
+    let start = line
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_name(*c))
+        .last()
+        .map(|(i, _)| i)?;
+    if start == 0 {
+        return None;
+    }
+    // The character before the run must be the opening colon.
+    let before = &line[..start];
+    if !before.ends_with(':') {
+        return None;
+    }
+    // The colon opens a token only at the start or after whitespace.
+    let colon = before.len() - 1;
+    if colon > 0 && !line[..colon].ends_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    Some((before, &line[start..]))
+}
+
 /// The longest prefix every candidate shares, so Tab fills in as much as it
 /// can before offering a list.
 pub fn common_prefix(candidates: &[String]) -> String {
@@ -781,6 +815,20 @@ mod tests {
         // Past the first word, this would be guessing at prose.
         assert!(complete("/help me", &commands, &capsules).is_empty());
         assert!(complete("", &commands, &capsules).is_empty());
+    }
+
+    #[test]
+    fn emoji_token_suffix_finds_an_open_shortcode_at_the_end() {
+        assert_eq!(emoji_token_suffix("hi :rock"), Some(("hi :", "rock")));
+        assert_eq!(emoji_token_suffix(":rock"), Some((":", "rock")));
+        // A closed token is complete; nothing to finish.
+        assert_eq!(emoji_token_suffix("hi :rocket: there"), None);
+        // A colon inside a word is not an opener.
+        assert_eq!(emoji_token_suffix("at 12:34"), None);
+        assert_eq!(emoji_token_suffix("http://x"), None);
+        // No token at the end.
+        assert_eq!(emoji_token_suffix("plain text"), None);
+        assert_eq!(emoji_token_suffix("hi :"), None);
     }
 
     #[test]

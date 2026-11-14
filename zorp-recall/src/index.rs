@@ -2,12 +2,13 @@
 //!
 //! A SQLite file, and a brute-force scan.
 //!
-//! Both halves of that are deliberate. `zorp-track` already has a LanceDB
-//! vector library, and reusing it would have been the reflex, but it is
-//! opt-in precisely because it pulls the whole Arrow tree in, it is keyed
-//! by track id because it holds an investigation's evidence, and chat
-//! history is not evidence. SQLite is already in this workspace, already
-//! linked by the crate that holds the conversations, and adds nothing.
+//! Both halves of that are deliberate. `zorp-track` once had a LanceDB
+//! vector library (since deleted, see docs/DECISIONS.md 2026-11-02), and
+//! reusing it would have been the reflex, but it was opt-in precisely
+//! because it pulled the whole Arrow tree in, it was keyed by track id
+//! because it held an investigation's evidence, and chat history is not
+//! evidence. SQLite is already in this workspace, already linked by the
+//! crate that holds the conversations, and adds nothing.
 //!
 //! The scan is brute force because the corpus is a person's chat history.
 //! A few hundred conversations is a few thousand vectors, which is a few

@@ -1,5 +1,3 @@
-#[cfg(feature = "library")]
-use crate::library::Library;
 use crate::track::Store;
 use crate::TrackError;
 use std::path::{Path, PathBuf};
@@ -11,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // matches that one name and neither of those, so both used to surface
 // as untracked in a real run. `tracks/*/prereg.md` stays tracked, which
 // is the point of ignoring by name rather than ignoring `.zorp/`.
-const GITIGNORE_CONTENT: &str = "zorp.duckdb*\nlancedb/\n";
+const GITIGNORE_CONTENT: &str = "zorp.duckdb*\n";
 
 /// Substrings that show up in DuckDB's error message when `Store::open`
 /// fails because another connection already holds the file's lock (a
@@ -77,14 +75,10 @@ fn open_store_recovering_from_corruption(db_path: &Path) -> Result<Store, TrackE
 
 /// The single entry point for a project's `.zorp/` directory: opens (or
 /// creates) the DuckDB run record and a `.gitignore` covering the
-/// regenerable stores while leaving `tracks/*/prereg.md` tracked. The
-/// LanceDB library (behind the `library` feature) is opened lazily on
-/// first use via `Project::library`, so nothing touches it otherwise.
+/// regenerable stores while leaving `tracks/*/prereg.md` tracked.
 pub struct Project {
     root: PathBuf,
     pub store: Store,
-    #[cfg(feature = "library")]
-    library: std::cell::OnceCell<Library>,
 }
 
 impl Project {
@@ -111,20 +105,7 @@ impl Project {
         Ok(Project {
             root: zorp_dir,
             store,
-            #[cfg(feature = "library")]
-            library: std::cell::OnceCell::new(),
         })
-    }
-
-    /// The LanceDB library for this project, opened (and created on
-    /// disk) only on the first call.
-    #[cfg(feature = "library")]
-    pub fn library(&self) -> Result<&Library, TrackError> {
-        if self.library.get().is_none() {
-            let opened = Library::open(&self.root.join("lancedb"))?;
-            let _ = self.library.set(opened);
-        }
-        Ok(self.library.get().expect("library cell was just filled"))
     }
 
     /// The directory a track's `prereg.md` and future capability

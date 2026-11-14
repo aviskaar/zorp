@@ -1,334 +1,160 @@
 /**
- * Slash menu for skill picker.
+ * Tests for the composer's slash-skill picker.
  *
- * Tests the view creation, opening/closing, keyboard navigation, filtering,
- * and selection without a full page.
+ * The pure functions decide when the menu opens, what it shows, and which
+ * skill a message names; the widget draws the rows. The load-bearing claims:
+ * the menu opens only for a `/` at the start of a line, a message names a
+ * skill only when its leading token is a real installed skill (so a path
+ * like `/etc/hosts` is left alone), and every string on the page lands
+ * through `textContent` because a skill name and description come from a
+ * `SKILL.md` zorp did not write.
  */
 
-import test from "node:test";
-import assert from "node:assert/strict";
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
 import { JSDOM } from "jsdom";
-
 import {
-  slashMenuView,
-  handleSlashKeydown,
-  closeSlashMenu,
-  renderSlashMenu,
-  type SlashMenuView,
+  SlashMenu,
+  applyPick,
+  filterSkills,
+  leadingSkill,
+  slashQuery,
 } from "../src/slash-menu.ts";
+import type { SkillSummary } from "../src/api.ts";
 
-const MARKUP =
-  "<!doctype html><body>" +
-  '<textarea id="input"></textarea>' +
-  "</body></html>";
-
-function fixture(): {
-  dom: JSDOM;
-  doc: Document;
-  view: SlashMenuView;
-  textArea: HTMLTextAreaElement;
-} {
-  const dom = new JSDOM(MARKUP);
-  const doc = dom.window.document as unknown as Document;
-  const textArea = doc.getElementById(
-    "input"
-  ) as HTMLTextAreaElement;
-  return { dom, doc, view: slashMenuView(doc), textArea };
+function skill(name: string, description = ""): SkillSummary {
+  return { name, description, path: `/skills/${name}`, scope: "user", declared_tools: [] };
 }
 
-const SKILLS = [
-  { name: "tidy-notes", description: "Tidy notes", path: "/", scope: "env" },
-  { name: "code-docs", description: "Write docs", path: "/", scope: "env" },
-  { name: "lint-fix", description: "Fix lint errors", path: "/", scope: "workspace" },
-] as const;
+const SKILLS = [skill("react-components"), skill("landing-page"), skill("review")];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SkillSummary = any;
-
-test("view creates a hidden container with a list", () => {
-  const { doc, view } = fixture();
-  assert.strictEqual(view.container.hidden, true);
-  assert(view.container.classList.contains("slash-menu"));
-  assert(view.list.classList.contains("slash-menu-list"));
+test("slashQuery opens on a message-leading slash and reads the query", () => {
+  assert.equal(slashQuery("/re", 3), "re");
+  assert.equal(slashQuery("/", 1), "");
+  // Leading whitespace before the slash still counts as the message start,
+  // because the message is trimmed before the skill is parsed.
+  assert.equal(slashQuery("  /re", 5), "re");
 });
 
-test("renderSlashMenu renders skills as list items", () => {
-  const { doc, view } = fixture();
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-  assert.strictEqual(view.container.hidden, false);
-  const items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items.length, 3);
-  assert.strictEqual(items[0].dataset.name, "tidy-notes");
-  assert(items[0].classList.contains("selected"));
-  const spans = items[0].querySelectorAll("span");
-  assert.strictEqual(spans[0].textContent, "tidy-notes");
-  assert.strictEqual(spans[1].textContent, "Tidy notes");
+test("slashQuery stays closed when the slash is not the leading token", () => {
+  // A slash in the middle of a sentence is not a command.
+  assert.equal(slashQuery("see /etc", 8), null);
+  // A space closed the token.
+  assert.equal(slashQuery("/foo bar", 8), null);
+  // Plain text opens nothing.
+  assert.equal(slashQuery("hello", 5), null);
+  // A slash after a newline is not the message's leading token, and only the
+  // leading token is ever sent as the skill, so the picker does not open.
+  assert.equal(slashQuery("hello\n/lan", 10), null);
 });
 
-test("renderSlashMenu shows no skills message when empty", () => {
-  const { doc, view } = fixture();
-  renderSlashMenu(view, [], 0);
-  assert.strictEqual(view.container.hidden, false);
-  const items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items.length, 1);
-  assert(items[0].classList.contains("slash-menu-empty"));
-  assert.strictEqual(
-    items[0].textContent,
-    "No skills match your input."
+test("slashQuery reads only up to the caret", () => {
+  // Caret after `/re`, even though the token continues.
+  assert.equal(slashQuery("/review", 3), "re");
+});
+
+test("filterSkills prefix-matches case-insensitively and empty shows all", () => {
+  assert.deepEqual(
+    filterSkills("re", SKILLS).map((s) => s.name),
+    ["react-components", "review"],
   );
+  assert.deepEqual(
+    filterSkills("", SKILLS).map((s) => s.name),
+    ["react-components", "landing-page", "review"],
+  );
+  assert.deepEqual(filterSkills("zz", SKILLS), []);
 });
 
-test("arrow keys move selection", () => {
-  const { doc, view, textArea } = fixture();
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-
-  const downEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "ArrowDown" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(downEvent, view, SKILLS as SkillSummary[], () => {}, textArea);
-  let items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items[1].classList.contains("selected"), true);
-
-  const downEvent2 = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "ArrowDown" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(downEvent2, view, SKILLS as SkillSummary[], () => {}, textArea);
-  items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items[2].classList.contains("selected"), true);
-
-  const downEvent3 = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "ArrowDown" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(downEvent3, view, SKILLS as SkillSummary[], () => {}, textArea);
-  items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items[0].classList.contains("selected"), true);
-
-  const upEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "ArrowUp" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(upEvent, view, SKILLS as SkillSummary[], () => {}, textArea);
-  items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items[2].classList.contains("selected"), true);
+test("leadingSkill names a skill only for a real installed leading token", () => {
+  const installed = new Set(["review", "landing-page"]);
+  assert.equal(leadingSkill("/review look at this", installed), "review");
+  assert.equal(leadingSkill("/review", installed), "review");
+  // Not installed: left as plain text, no skill named.
+  assert.equal(leadingSkill("/nope do a thing", installed), null);
+  // A path, not a command.
+  assert.equal(leadingSkill("/etc/hosts please", installed), null);
+  // No leading slash.
+  assert.equal(leadingSkill("review this", installed), null);
 });
 
-test("Enter picks selected item", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "/";
-  textArea.selectionStart = 1;
-  textArea.selectionEnd = 1;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-  let picked: string | null = null;
-  const pickHandler = (name: string) => {
+test("applyPick replaces the token with `/name ` and places the caret", () => {
+  const r = applyPick("/re", 3, "review");
+  assert.equal(r.text, "/review ");
+  assert.equal(r.caret, "/review ".length);
+  // Mid-name pick replaces the whole name and absorbs the following space,
+  // so there is no double space before the rest.
+  const mid = applyPick("/rev ok", 2, "review");
+  assert.equal(mid.text, "/review ok");
+  assert.equal(mid.caret, "/review ".length);
+});
+
+test("SlashMenu shows rows through textContent and never builds HTML", () => {
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const menu = new SlashMenu(dom.window.document);
+  dom.window.document.body.append(menu.element());
+  const injected = skill("<img src=x onerror=alert(1)>", "<b>desc</b>");
+  menu.show([injected], () => {});
+  assert.equal(menu.open, true);
+  // No element was created from the injected string: it is text.
+  assert.equal(dom.window.document.querySelector("img"), null);
+  assert.equal(dom.window.document.querySelector("b"), null);
+  const name = dom.window.document.querySelector(".slash-menu-name");
+  assert.equal(name?.textContent, "/<img src=x onerror=alert(1)>");
+});
+
+test("SlashMenu move clamps and pick returns the selected name", () => {
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const menu = new SlashMenu(dom.window.document);
+  dom.window.document.body.append(menu.element());
+  let picked = "";
+  menu.show(SKILLS, (name) => {
+    picked = name;
+  });
+  menu.move(-1); // clamps at the top
+  menu.move(1); // -> landing-page
+  menu.pick();
+  assert.equal(picked, "landing-page");
+  assert.equal(menu.open, false);
+});
+
+test("SlashMenu announces the popup and active option on the owner", () => {
+  const dom = new JSDOM("<!doctype html><body><textarea></textarea></body>");
+  const input = dom.window.document.querySelector("textarea")!;
+  const menu = new SlashMenu(dom.window.document, input);
+  dom.window.document.body.append(menu.element());
+  // A textbox with a popup listbox, not a combobox.
+  assert.equal(input.getAttribute("aria-haspopup"), "listbox");
+  assert.equal(input.getAttribute("aria-controls"), menu.element().id);
+  assert.equal(input.getAttribute("role"), null);
+  assert.equal(input.getAttribute("aria-activedescendant"), null);
+  menu.show(SKILLS, () => {});
+  assert.equal(input.getAttribute("aria-activedescendant"), `${menu.element().id}-opt-0`);
+  menu.move(1);
+  assert.equal(input.getAttribute("aria-activedescendant"), `${menu.element().id}-opt-1`);
+  menu.close();
+  assert.equal(input.getAttribute("aria-activedescendant"), null);
+});
+
+test("SlashMenu stays closed for an empty list", () => {
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const menu = new SlashMenu(dom.window.document);
+  menu.show([], () => {});
+  assert.equal(menu.open, false);
+});
+
+test("SlashMenu keeps the selection when re-shown with the same items", () => {
+  // The composer re-shows the menu on every keyup, which must not snap the
+  // highlight back to the top, or arrow-key navigation could never move.
+  const dom = new JSDOM("<!doctype html><body></body>");
+  const menu = new SlashMenu(dom.window.document);
+  dom.window.document.body.append(menu.element());
+  let picked = "";
+  const onpick = (name: string) => {
     picked = name;
   };
-
-  const enterEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "Enter" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(enterEvent, view, SKILLS as SkillSummary[], pickHandler, textArea);
-
-  assert.strictEqual(picked, "tidy-notes");
-  assert(view.container.hidden, true);
-  assert.strictEqual(textArea.value, "/tidy-notes ");
-  assert.strictEqual(textArea.selectionStart, 12);
-});
-
-test("Tab picks selected item same as Enter", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "/";
-  textArea.selectionStart = 1;
-  textArea.selectionEnd = 1;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-  let picked: string | null = null;
-  const pickHandler = (name: string) => {
-    picked = name;
-  };
-
-  const tabEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "Tab" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(tabEvent, view, SKILLS as SkillSummary[], pickHandler, textArea);
-
-  assert.strictEqual(picked, "tidy-notes");
-});
-
-test("Escape closes the menu", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "/ti";
-  textArea.selectionStart = 3;
-  textArea.selectionEnd = 3;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-  assert.strictEqual(view.container.hidden, false);
-
-  const escapeEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "Escape" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(escapeEvent, view, SKILLS as SkillSummary[], () => {}, textArea);
-  assert(view.container.hidden, true);
-});
-
-test("Shift+Enter lets textarea handle it", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "/tidy-notes ";
-  textArea.selectionStart = 12;
-  textArea.selectionEnd = 12;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-
-  const shiftEnterEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "Enter", shiftKey: true }
-  ) as unknown as KeyboardEvent;
-  const handled = handleSlashKeydown(
-    shiftEnterEvent,
-    view,
-    SKILLS as SkillSummary[],
-    () => {},
-    textArea
-  );
-  assert.strictEqual(handled, false);
-  assert(view.container.hidden, true);
-});
-
-test("slash in middle of text does not open menu", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "hello / there";
-  textArea.selectionStart = 12;
-  textArea.selectionEnd = 12;
-  let opened = false;
-  const pickHandler = () => {
-    opened = true;
-  };
-
-  const slashEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "/" }
-  ) as unknown as KeyboardEvent;
-  const handled = handleSlashKeydown(
-    slashEvent,
-    view,
-    SKILLS as SkillSummary[],
-    pickHandler,
-    textArea
-  );
-  assert.strictEqual(handled, false);
-  assert(!opened);
-  assert(view.container.hidden, true);
-});
-
-test("slash after newline opens menu", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "first line\n";
-  textArea.selectionStart = 11;
-  textArea.selectionEnd = 11;
-  let opened = false;
-  const pickHandler = () => {
-    opened = true;
-  };
-
-  const slashEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "/" }
-  ) as unknown as KeyboardEvent;
-  const handled = handleSlashKeydown(
-    slashEvent,
-    view,
-    SKILLS as SkillSummary[],
-    pickHandler,
-    textArea
-  );
-  assert.strictEqual(handled, true);
-  assert(!opened);
-  assert(!view.container.hidden);
-});
-
-test("slash opening inserts / if not present", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "";
-  textArea.selectionStart = 0;
-  textArea.selectionEnd = 0;
-  let picked: string | null = null;
-  const pickHandler = (name: string) => {
-    picked = name;
-  };
-
-  const slashEvent = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "/" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(slashEvent, view, SKILLS as SkillSummary[], pickHandler, textArea);
-
-  assert.strictEqual(textArea.value, "/");
-});
-
-test("selectIndex scrolls selected into view", () => {
-  const { doc, view, textArea } = fixture();
-  const manySkills = Array.from({ length: 12 }, (_, i) => ({
-    name: `skill-${i}`,
-    description: `Description ${i}`,
-    path: "/",
-    scope: "env",
-  })) as unknown as SkillSummary[];
-  renderSlashMenu(view, manySkills, 0);
-
-  const down1 = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "ArrowDown" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(down1, view, manySkills, () => {}, textArea);
-  const down2 = new textArea.ownerDocument.defaultView!.KeyboardEvent(
-    "keydown",
-    { key: "ArrowDown" }
-  ) as unknown as KeyboardEvent;
-  handleSlashKeydown(down2, view, manySkills, () => {}, textArea);
-
-  const items = view.list.querySelectorAll<HTMLLIElement>("li");
-  assert.strictEqual(items[2].classList.contains("selected"), true);
-});
-
-test("closeSlashMenu removes slash prefix and closes", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "/hello world";
-  textArea.selectionStart = 6;
-  textArea.selectionEnd = 6;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-
-  closeSlashMenu(view, textArea);
-
-  assert(view.container.hidden, true);
-  assert.strictEqual(textArea.value, "hello world");
-  assert.strictEqual(textArea.selectionStart, 0);
-});
-
-test("closeSlashMenu with no slash does nothing", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "hello world";
-  textArea.selectionStart = 5;
-  textArea.selectionEnd = 5;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-
-  closeSlashMenu(view, textArea);
-
-  assert(view.container.hidden, true);
-  assert.strictEqual(textArea.value, "hello world");
-});
-
-test("closeSlashMenu removes everything up to newline before slash", () => {
-  const { doc, view, textArea } = fixture();
-  textArea.value = "first line\n/cool stuff";
-  textArea.selectionStart = 14;
-  textArea.selectionEnd = 14;
-  renderSlashMenu(view, SKILLS as SkillSummary[], 0);
-
-  closeSlashMenu(view, textArea);
-
-  assert(view.container.hidden, true);
-  assert.strictEqual(textArea.value, "first line\nstuff");
-  assert.strictEqual(textArea.selectionStart, 12);
+  menu.show(SKILLS, onpick);
+  menu.move(1); // -> landing-page
+  menu.show(SKILLS, onpick); // same list, as a keyup would
+  menu.pick();
+  assert.equal(picked, "landing-page");
 });

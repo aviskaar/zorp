@@ -23,9 +23,7 @@ is in history that would show the edit.
 
 ## Storage
 
-Track data lives in DuckDB. A LanceDB vector library sits behind a
-non-default `library` feature for retrieval work, and the `research`
-feature does not pull it in.
+Track data lives in DuckDB.
 
 ## Where to read more
 

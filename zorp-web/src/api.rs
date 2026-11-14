@@ -208,6 +208,19 @@ fn api_router(state: AppState) -> Router {
         .route("/api/workspace/browse", get(browse_workspace))
         .route("/api/artifacts", get(list_artifacts))
         .route("/api/artifacts/raw", get(read_artifact))
+        // Custom emoji a person adds, as files in the config directory. The
+        // listing and the files are read by the page; adding and removing are
+        // for a person in the settings pane. No model tool reaches any of it.
+        .route(
+            "/api/emoji",
+            get(crate::emoji::list).post(crate::emoji::add).layer(
+                axum::extract::DefaultBodyLimit::max(crate::emoji::MAX_BYTES + 4096),
+            ),
+        )
+        .route(
+            "/api/emoji/:name",
+            get(crate::emoji::serve).delete(crate::emoji::delete),
+        )
         // Conversation search. The three routes exist in every build, so a
         // server without the `recall` feature answers "off, and here is
         // why" rather than a 404 the page has to interpret.
@@ -1660,10 +1673,12 @@ struct TurnBody {
     /// it is a thing to choose each time and not a mode to leave on.
     #[serde(default)]
     memory: bool,
-    /// The skill the person chose for this message, or absent.
+    /// An installed skill the person chose for this one message.
     ///
-    /// The message itself still carries `/name` verbatim; this field tells
-    /// the server to seed the turn with the instruction to load it.
+    /// A name, never a body: the server checks it against the registry and
+    /// puts one sentence on the seed asking the model to load it with the
+    /// `skill` tool. There is no route that loads a skill, and this does not
+    /// become one. Absent means the person named none.
     #[serde(default)]
     skill: Option<String>,
 }
@@ -2024,36 +2039,51 @@ async fn start_turn(
     if session.lock().unwrap().running {
         return (StatusCode::CONFLICT, "a turn is already running").into_response();
     }
-    // Validate the skill name before the turn starts.
-    // The name is a key into the skill registry, not a path, so it must
-    // be a single ordinary path component and resolve to an installed skill.
-    if let Some(ref skill_name) = body.skill {
-        if !zorp_skill::is_valid_skill_name(skill_name) {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown skill: invalid name '{skill_name}'"),
-            )
-                .into_response();
+    // A chosen skill is a name, checked here against the same registry the
+    // agent registers before the turn starts. An unknown name is a 400 that
+    // names it, never a search and never joined onto a path. The body is
+    // never carried: the turn asks the model to load the skill, it does not
+    // load one itself.
+    let chosen_skill = match body.skill {
+        Some(name) if !name.is_empty() => {
+            // The malformed-name check is cheap and does no I/O, so it runs
+            // before the directory scan.
+            if !zorp_skill::is_valid_skill_name(&name) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("no installed skill named {name:?}"),
+                )
+                    .into_response();
+            }
+            // Discovering skills walks and parses the scope directories, so
+            // it runs on a blocking thread rather than stalling the async
+            // worker. Checked against the installed registry and nothing
+            // finer: the picker offers every installed skill (#252), and
+            // whether the model is actually offered a given one is reported
+            // back to the person by the "did not load" line rather than
+            // refused here, which would reject a valid name over a routing
+            // decision the picker did not make.
+            let ws = workspace.clone();
+            let installed_names = tokio::task::spawn_blocking(move || {
+                discover_skills(Some(ws.as_path()))
+                    .0
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect::<Vec<String>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !installed_names.contains(&name) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("no installed skill named {name:?}"),
+                )
+                    .into_response();
+            }
+            Some(name)
         }
-        let (skills, _warnings) = zorp_skill::SkillRegistry::discover(
-            &zorp_skill::scope_dirs_from_env(workspace.as_ref()),
-        );
-        if skills.is_empty() {
-            // No skills installed at all: even a valid name matches nothing.
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown skill: '{skill_name}' is not installed"),
-            )
-                .into_response();
-        }
-        if skills.get(skill_name).is_none() {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("unknown skill: '{skill_name}' is not installed"),
-            )
-                .into_response();
-        }
-    }
+        _ => None,
+    };
     #[cfg(feature = "recall")]
     let recall_indexer = state.recall_indexer.clone();
     #[cfg(not(feature = "recall"))]
@@ -2063,7 +2093,7 @@ async fn start_turn(
         id,
         body.message,
         body.memory,
-        body.skill,
+        chosen_skill,
         workspace,
         state.settings.clone(),
         state.own_port,

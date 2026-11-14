@@ -644,6 +644,18 @@ impl Agent {
         self.recorded_messages = self.recorded_messages.min(len);
     }
 
+    /// Put a message on the end of the transcript that the model sees and the
+    /// store never keeps: everything before it is flushed first, then it is
+    /// counted as already recorded, so `sync` never offers it to the
+    /// recorder. The REPL's `/skill` uses this for its one sentence, the same
+    /// way the browser appends it to the seed.
+    pub fn append_unrecorded(&mut self, message: Message) {
+        self.sync();
+        self.messages.push(message);
+        self.message_metadata.push(MessageMetadata::default());
+        self.recorded_messages = self.messages.len();
+    }
+
     /// Replace the seed transcript (used by `resume`). The provided messages are
     /// treated as already recorded so `resume` only persists new turns.
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
@@ -739,6 +751,14 @@ impl Agent {
                 Ok(tool) => self.registry.register(Box::new(tool)),
                 Err(e) => eprintln!("zorp-agent: web_search unavailable: {e}"),
             }
+        }
+        // System One decision models (#279): a networked built-in like
+        // web_search, so it is gated behind its own non-default feature. The
+        // model interprets the probabilities it returns; no code reads them.
+        #[cfg(feature = "systemone")]
+        if allow("decide") {
+            self.registry
+                .register(Box::new(crate::systemone::Decide::from_env()));
         }
         self
     }
@@ -3091,6 +3111,30 @@ mod tests {
             .starts_with(crate::compaction::SUMMARY_MARKER_PREFIX));
     }
 
+    /// The REPL's `/skill` sentence reaches the model and never the store,
+    /// and the question typed after it is still recorded.
+    #[test]
+    fn append_unrecorded_reaches_the_model_and_not_the_recorder() {
+        #[derive(Default)]
+        struct Recorded(Arc<Mutex<Vec<Message>>>);
+        impl RunRecorder for Recorded {
+            fn message(&mut self, m: &Message) {
+                self.0.lock().unwrap().push(m.clone());
+            }
+            fn change(&mut self, _c: &FileChange) {}
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut a = agent(Scripted::new(vec![text("done")]))
+            .with_recorder(Box::new(Recorded(seen.clone())));
+        a.append_unrecorded(Message::user("load the skill"));
+        a.run("the question");
+
+        assert!(a.messages.iter().any(|m| m.text() == "load the skill"));
+        let recorded = seen.lock().unwrap().clone();
+        assert!(recorded.iter().all(|m| m.text() != "load the skill"));
+        assert!(recorded.iter().any(|m| m.text() == "the question"));
+    }
+
     /// Compaction affects what is sent. The recorder has already been handed
     /// the original, and must not be handed the elided copy afterwards.
     #[test]
@@ -4585,6 +4629,16 @@ mod tests {
     /// So nothing may exist that sets a conversation's agent, records a
     /// trust decision, or writes a flavor file through the agents API. The
     /// routes for all three are in `zorp-web/src/api.rs` and each one says
+    /// The `decide` tool (System One) is a networked built-in, so it is
+    /// registered only when the `systemone` feature is on, exactly as
+    /// `web_search` tracks `search`. This holds in both builds. (#279)
+    #[test]
+    fn decide_is_registered_only_with_the_systemone_feature() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let has = a.tool_names().iter().any(|n| n == "decide");
+        assert_eq!(has, cfg!(feature = "systemone"));
+    }
+
     /// it is a person's click.
     #[test]
     fn no_tool_picks_an_agent_or_trusts_one() {
@@ -4600,6 +4654,53 @@ mod tests {
             "write_agent",
             "edit_agent",
             "delete_agent",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
+    /// Pressing a speed-dial slot is a settings save, so a tool that pressed
+    /// one would be a turn rewriting which model the next turn talks to. The
+    /// dial is a person's own control, from the browser's chord or `/dial` in
+    /// the terminal, and nothing the model can call reaches it. (#242)
+    #[test]
+    fn no_tool_presses_a_speed_dial_slot() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "dial",
+            "speed_dial",
+            "press_dial",
+            "set_dial",
+            "switch_model",
+            "set_model",
+            "use_slot",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{forbidden} is registered as a tool: {names:?}"
+            );
+        }
+    }
+
+    /// Custom emoji are files a person adds in the settings pane, and the
+    /// routes that add, remove and list them are a person's, not a turn's: a
+    /// tool that wrote one would be a turn putting a file on disk the renderer
+    /// then draws. So nothing the model can call reaches them. (#243)
+    #[test]
+    fn no_tool_manages_custom_emoji() {
+        let a = agent(Scripted::new(vec![])).register_builtins_filtered(None);
+        let names = a.tool_names();
+        for forbidden in [
+            "emoji",
+            "add_emoji",
+            "custom_emoji",
+            "upload_emoji",
+            "delete_emoji",
+            "list_emoji",
         ] {
             assert!(
                 !names.iter().any(|n| n == forbidden),

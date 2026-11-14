@@ -7,7 +7,6 @@ pub enum ValidateError {
     AgentOutcome(String),
     Scoring(ParseError),
     Track(zorp_track::TrackError),
-    Embedding(String),
 }
 
 impl fmt::Display for ValidateError {
@@ -20,7 +19,6 @@ impl fmt::Display for ValidateError {
             ValidateError::AgentOutcome(outcome) => write!(f, "agent did not complete: {outcome}"),
             ValidateError::Scoring(e) => write!(f, "could not score the search results: {e}"),
             ValidateError::Track(e) => write!(f, "{e}"),
-            ValidateError::Embedding(msg) => write!(f, "could not embed a cited source: {msg}"),
         }
     }
 }

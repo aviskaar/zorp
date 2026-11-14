@@ -90,7 +90,7 @@ for i, c in enumerate(caps):
 
 box(ax, 0.2, 2.65, 9.6, 1.0,
     "zorp-track  (shared foundation, feature-gated)\n"
-    "tracks $\\cdot$ evidence record (DuckDB) $\\cdot$ library (LanceDB) $\\cdot$ checkpoints",
+    "tracks $\\cdot$ evidence record (DuckDB) $\\cdot$ checkpoints",
     fc=SURFACE, ec=TINT)
 
 box(ax, 0.2, 1.35, 9.6, 1.0,

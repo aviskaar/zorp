@@ -28,8 +28,8 @@ cd zorp
 cargo build --workspace --exclude zorp-track
 ```
 
-`zorp-track` bundles DuckDB and pulls in LanceDB/Arrow/DataFusion,
-which take 20-30 minutes to compile cold. The command above skips it;
+`zorp-track` bundles DuckDB, which compiles from source and takes a
+while on a cold cache. The command above skips it;
 drop `--exclude zorp-track` only when you're touching `zorp-track` or
 the `research` feature, and budget time for that first build.
 
@@ -50,8 +50,8 @@ cargo test -p zorp-agent --features research
 Both must pass before a PR is reviewed. Note that CI only runs
 `cargo test --workspace --exclude zorp-track` (see
 [`docs/DECISIONS.md`](docs/DECISIONS.md), 2026-08-13): `zorp-track` and
-the `research` feature depend on `duckdb` (bundled) and `lancedb`,
-which are too slow to cold-compile on every CI run. Running both
+the `research` feature bundle `duckdb`, which is too slow to
+cold-compile on every CI run. Running both
 commands above locally before opening a PR is on you.
 
 ## Style

@@ -16,8 +16,8 @@ workspace = true
 # and it is handed the text to index rather than reading a store itself.
 #
 # Every one of these three is already in the tree that zorp-web links.
-# That is most of the argument for SQLite over LanceDB here: this whole
-# capability adds no crates at all.
+# That is most of the argument for reaching for SQLite rather than adding
+# a LanceDB store here: this whole capability adds no crates at all.
 [dependencies]
 ureq       = { workspace = true }
 serde_json = { workspace = true }

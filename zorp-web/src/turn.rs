@@ -348,7 +348,9 @@ pub fn spawn_turn(
     session_id: String,
     message: String,
     use_memory: UseMemory,
-    skill_name: Option<String>,
+    // An installed skill the person chose for this one message, already
+    // checked against the registry by the handler. A name, never a body.
+    chosen_skill: Option<String>,
     // The directory this turn works in, resolved by the handler before the
     // session was occupied. A turn never resolves it for itself and never
     // falls back to the current directory.
@@ -412,12 +414,12 @@ pub fn spawn_turn(
         // model would already have answered without it.
         let recalled = recall_into_turn(use_memory, &session_id, &message, &tx, &seq);
 
-        let (outcome, skill_loaded) = run_agent(
+        let outcome = run_agent(
             Ask {
                 session_id: &session_id,
                 message: &message,
                 recalled,
-                skill: skill_name.clone(),
+                chosen_skill,
             },
             workspace,
             Box::new(renderer),
@@ -426,19 +428,6 @@ pub fn spawn_turn(
             &settings,
             own_port,
         );
-
-        // If a skill was requested but not loaded, send a notice.
-        if outcome.is_ok() && !skill_loaded {
-            if let Some(ref name) = skill_name {
-                let _ = tx.send(Event {
-                    seq: *seq.lock().unwrap(),
-                    kind: EventKind::Notice {
-                        text: format!("The model did not load `{name}`."),
-                    },
-                });
-                *seq.lock().unwrap() += 1;
-            }
-        }
 
         // Read after the run, not before, so a stop that lands during the
         // final moments of a turn is still reported as a stop.
@@ -594,8 +583,11 @@ struct Ask<'a> {
     /// Earlier conversations, framed and fenced, or `None` when this turn
     /// did not ask for any.
     recalled: Option<String>,
-    /// The skill the person chose for this turn, if any.
-    skill: Option<String>,
+    /// A skill the person chose for this message, by name, or `None`. The
+    /// server put it here after checking it against the registry; the run
+    /// puts one zorp-authored sentence on the seed asking the model to load
+    /// it, and never carries the body.
+    chosen_skill: Option<String>,
 }
 
 /// The agent a conversation runs under, by name, and its flavor with
@@ -690,12 +682,12 @@ fn run_agent(
     cancel: zorp_agent::CancelToken,
     settings: &SettingsHandle,
     own_port: Option<u16>,
-) -> (Result<Outcome, String>, bool) {
+) -> Result<Outcome, String> {
     let Ask {
         session_id,
         message,
         recalled,
-        ref skill,
+        chosen_skill,
     } = ask;
     // The agent this conversation runs under, resolved before anything is
     // built from the settings, because it may replace some of them.
@@ -728,10 +720,7 @@ fn run_agent(
         .unwrap()
         .listed_window(&resolved.base_url, &resolved.model);
     if !resolved.configured {
-        return (
-            Err("no model configured, open settings and pick one".to_string()),
-            false,
-        );
+        return Err("no model configured, open settings and pick one".to_string());
     }
     let url = zorp_agent::join_url(&resolved.base_url, resolved.provider.path_suffix());
     let model = HttpModel {
@@ -741,12 +730,11 @@ fn run_agent(
         provider: resolved.provider,
         max_tokens: resolved.max_tokens,
     }
+    // Preserve the existing ZORP_REASONING_MODE support that
+    // `HttpModel::try_from_env` used to apply, now that the base
+    // model itself is built from resolved settings instead of `from_env`.
     .try_with_env_reasoning_mode(None)
-    .map_err(|e| e.to_string());
-    let model = match model {
-        Ok(model) => model,
-        Err(e) => return (Err(e), false),
-    };
+    .map_err(|e| e.to_string())?;
     // Generated files belong in scratch/, and the prompt below says so.
     // Made when the turn starts rather than at startup, because a workspace
     // can be chosen while the server is running, and never fatal: a turn
@@ -840,15 +828,17 @@ fn run_agent(
         plan.records.push(zorp_agent::Message::user(block).into());
     }
 
-    // The skill sentence goes here too, on the seed where the model will
-    // see it before the person's actual message. It is zorp's own sentence,
-    // never a string taken from a skill file. The model is told to load
-    // the skill before doing anything else: that is the only path the body
-    // travels, and the browser checks the stream for whether it happened.
-    if let (Some(plan), Some(skill_name)) = (seed.as_mut(), ask.skill.as_deref()) {
+    // The skill the person chose, as one sentence on the seed in the same
+    // position and by the same mechanism as the recalled block: a `user`
+    // message appended to `plan.records`, which the agent counts as already
+    // persisted and so never writes to the store. The sentence is zorp's own
+    // and names the skill; it carries nothing from the file. The model then
+    // calls the `skill` tool, gated as every tool call is, and the body
+    // travels the one way it already travels. See issue #252.
+    if let (Some(plan), Some(name)) = (seed.as_mut(), chosen_skill.as_deref()) {
         plan.records.push(
             zorp_agent::Message::user(format!(
-                "The person chose the skill `{skill_name}` for this message. \
+                "The person chose the skill `{name}` for this message. \
                  Load it with the `skill` tool before doing anything else."
             ))
             .into(),
@@ -967,31 +957,7 @@ fn run_agent(
         agent = agent.with_recorder(recorder);
     }
 
-    let outcome = agent.run(message);
-    let skill_loaded = match skill.as_deref() {
-        Some(name) => skill_was_loaded(&agent, name),
-        None => true,
-    };
-    (Ok(outcome), skill_loaded)
-}
-
-/// Whether the agent loaded the skill requested for this turn.
-///
-/// Checks the tool events recorded in the agent's messages. A `skill` tool
-/// call with the matching name means the model complied.
-fn skill_was_loaded(agent: &zorp_agent::Agent, skill_name: &str) -> bool {
-    for message in &agent.messages {
-        for tc in &message.tool_calls {
-            if tc.name == "skill" {
-                if let Some(name_val) = tc.arguments.get("name").and_then(|v| v.as_str()) {
-                    if name_val == skill_name {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
+    Ok(agent.run(message))
 }
 
 #[cfg(test)]

@@ -29,9 +29,13 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Check Release Version
+        env:
+          # Through env, not inline, so a ref name cannot break the shell.
+          TAG: ${{ inputs.tag || github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ -n "${{ inputs.tag }}" ]; then
+          tag="$TAG"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ -n "$INPUT_TAG" ]; then
             sh scripts/check-release-version.sh "$tag"
           else
             echo "Not a tag push or explicit release tag; skipping version check"
@@ -59,6 +63,37 @@ jobs:
         run: |
           bash zorp-desktop/scripts/package-dmg.sh
 
+      - name: Feature manifest
+        # #307: the DMG is a build too, and it carries a different feature set
+        # from the prebuilt tarballs. Derive that set from the bridge crate's
+        # own `default = [...]`, which is what build-bridge.sh compiles (it
+        # passes no --features), so the manifest cannot drift from the real
+        # build the way a hardcoded list would. Published beside the DMG so a
+        # download has a machine-readable answer to which build carries what.
+        env:
+          # Through env, not inline `${{ }}`, so an odd ref name cannot break
+          # the shell quoting on a workflow_dispatch rehearsal.
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+          # A ref name can contain a slash on a workflow_dispatch rehearsal;
+          # keep it out of the file path.
+          safe_tag="$(printf '%s' "$tag" | tr '/' '-')"
+          feats="$(sed -n 's/^default = \[\(.*\)\]$/\1/p' \
+            zorp-desktop/bridge/Cargo.toml | tr -d ' "')"
+          echo "bridge default features: $feats"
+          # Fail loudly rather than ship a manifest claiming [] (which would
+          # happen if the default array were ever wrapped onto several lines
+          # and this single-line sed stopped matching).
+          if [ -z "$feats" ]; then
+            echo "could not read [features] default from bridge/Cargo.toml" >&2
+            exit 1
+          fi
+          sh scripts/feature-manifest.sh "$tag" "universal-apple-darwin-dmg" "$feats" \
+            > "zorp-desktop/build/zorp-$safe_tag-desktop.features.json"
+          cat "zorp-desktop/build/zorp-$safe_tag-desktop.features.json"
+
       - name: Checksum DMG
         run: |
           cd zorp-desktop/build
@@ -68,14 +103,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: zorp-desktop-mac-dmg
-          path: zorp-desktop/build/*.dmg*
+          path: |
+            zorp-desktop/build/*.dmg*
+            zorp-desktop/build/*.features.json
 
       - name: Attach to GitHub Release
         if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
         env:
           GH_TOKEN: ${{ github.token }}
+          # Through env, not inline, so a ref name cannot break the shell.
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$TAG"
           for i in 1 2 3 4 5; do
             if gh release view "$tag" >/dev/null 2>&1; then
               break
@@ -86,4 +125,6 @@ jobs:
             fi
             sleep 5
           done
-          gh release upload "$tag" zorp-desktop/build/*.dmg* --clobber
+          safe_tag="$(printf '%s' "$tag" | tr '/' '-')"
+          gh release upload "$tag" zorp-desktop/build/*.dmg* \
+            "zorp-desktop/build/zorp-$safe_tag-desktop.features.json" --clobber

@@ -17,8 +17,6 @@ workspace = true
 # one path crate to the tree and nothing else.
 erbga   = { path = "../erbga" }
 duckdb  = { version = "1", features = ["bundled"] }
-lancedb = { version = "0.33", optional = true }
-tokio   = { version = "1", features = ["rt"], optional = true }
 sha2    = { workspace = true }
 chrono  = { version = "0.4", default-features = false, features = ["clock"] }
 serde   = { workspace = true }
@@ -26,10 +24,6 @@ serde_json = { workspace = true }
 
 [features]
 default = []
-# The LanceDB-backed Library (vector store for multimodal sources).
-# Off by default: it pulls in the arrow stack (hundreds of crates), and
-# nothing reads from it yet; citations live in DuckDB.
-library = ["dep:lancedb", "dep:tokio"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

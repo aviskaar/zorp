@@ -5,7 +5,6 @@ use std::fmt;
 pub enum TrackError {
     Io(String),
     Db(String),
-    Library(String),
     NotFound {
         kind: &'static str,
         id: String,
@@ -35,7 +34,6 @@ impl fmt::Display for TrackError {
         match self {
             TrackError::Io(msg) => write!(f, "zorp-track io error: {msg}"),
             TrackError::Db(msg) => write!(f, "zorp-track db error: {msg}"),
-            TrackError::Library(msg) => write!(f, "zorp-track library error: {msg}"),
             TrackError::NotFound { kind, id } => write!(f, "{kind} not found: {id}"),
             TrackError::IntegrityMismatch { track_id, detail } => {
                 write!(f, "prereg integrity mismatch for track '{track_id}': {detail}")

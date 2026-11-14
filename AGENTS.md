@@ -49,7 +49,7 @@ resulting artifact, deliver it in the right form.
   app's own minimum. CI's desktop job builds the bridge, runs `swift test`
   and packages the DMG. See `docs/DECISIONS.md` (2026-09-12, 2026-10-26).
 - `zorp-track/` is zorp's own research foundation (multi-track evidence
-  records, git-backed pre-registration, checkpoints, DuckDB + LanceDB),
+  records, git-backed pre-registration, checkpoints, DuckDB),
   built, not inherited. The four capabilities (validate, investigate,
   co-write, deliver) sit on top of it as `zorp-agent` subcommands,
   behind the `research` feature. All four are built and tested
@@ -238,8 +238,9 @@ resulting artifact, deliver it in the right form.
   `SearchProvider` trait with two providers, Tavily and a self-hosted
   SearXNG. It depends on no other workspace member and knows nothing
   about agents or tools. `zorp-agent` exposes it as the `web_search`
-  built-in behind the non-default `search` feature, which is the only
-  built-in that sends anything over the network. `research` deliberately
+  built-in behind the non-default `search` feature. It sends queries over
+  the network; the only other networked built-in is `decide` (System One,
+  behind `systemone`, below). `research` deliberately
   does not enable it; run `--features research,search` when you want it.
   `ZORP_SEARCH_PROVIDER` picks the provider, read in `web_search_tool()`
   and nowhere else: unset or blank means `tavily`, `searxng` means
@@ -262,6 +263,30 @@ resulting artifact, deliver it in the right form.
   zorp-search`, `cargo test -p zorp-agent --features search` and `cargo
   test -p zorp-web --features search` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-21, 2026-09-18) before changing either.
+- System One decision models (`zorp-agent/src/systemone.rs`, non-default
+  `systemone` feature, issue #279, `docs/DECISIONS.md` 2026-11-02) are
+  Ollama's `POST /v1/systemone`: a model takes a `state` plus typed questions
+  (`choice`, `noul`, `score`) and returns a probability per option. It is one
+  non-streaming request through `zorp::http_agent` and `zorp::send_json`, no
+  new transport, under the usual retry rule. It is exposed as the `decide`
+  built-in, a networked built-in gated like `web_search`, because of the one
+  rule that shapes it: a probability a model returns is model-authored, so
+  nothing that decides may read it (detection is code, a model only
+  interprets). So it is a tool the model calls and reads back, never a gate
+  whose numbers code consumes; the answers reach the transcript as a tool
+  result and no detector, recall, memory or title path sees them. The endpoint
+  is `ZORP_SYSTEMONE_URL` if set, else the loopback default: it does not
+  inherit `ZORP_BASE_URL` or the saved chat `base_url`, because `/v1/systemone`
+  is local-only and a `state` can hold a person's files, so falling back to a
+  cloud chat base would POST those files to a third party. It is read from the
+  environment only, never a flavor (a workspace file must not move where the
+  state is sent); the model is `ZORP_SYSTEMONE_MODEL` or the
+  tool's `model` arg, with no default, and decision models never appear in the
+  chat picker. `doctor` reports whether Ollama answers and is 0.35 or newer
+  without printing a key. The client is always compiled and tested; a live
+  call against a real GGUF model and a `zorp-eval harness` TOML case are still
+  open (see the ADR). Run `cargo test -p zorp-agent` and `cargo test -p
+  zorp-agent --features systemone` whenever it changes.
 - `zorp-skill/` is zorp's own skill capability: discovery and parsing
   for Claude Code compatible skills (`SKILL.md` in a directory, YAML
   frontmatter plus a markdown body). Like `zorp-search` it depends on no
@@ -319,7 +344,11 @@ resulting artifact, deliver it in the right form.
   the system slot is the one channel the harness speaks in.
   `zorp-agent`'s chat REPL gains `/skills`, which prints the same index the
   model is shown, which is the offered set, with the rule under it when it
-  withheld anything. And `zorp-web` answers `GET /api/skills` with names,
+  withheld anything. Its `/skill <name> <prompt>` does what the browser's
+  `/` picker does (ADR 0147): one zorp-authored sentence naming the skill,
+  appended with `Agent::append_unrecorded` so the model sees it and the
+  store never keeps it, and the prompt sent as typed; the body still
+  travels only through the `skill` tool. And `zorp-web` answers `GET /api/skills` with names,
   descriptions, paths and scopes, reports a count on
   `GET /api/capabilities`, and draws a toolbar pill with a popover behind
   it. **None of those loads a skill.** There is no route that does and
@@ -329,6 +358,23 @@ resulting artifact, deliver it in the right form.
   listing carries no skill body either, so a `SKILL.md` cannot reach the
   page at all; the strings that do reach it are a file zorp did not write
   and go on through `textContent` like model output.
+  Typing `/` in the browser composer picks an installed skill for one
+  message (`web/src/slash-menu.ts`): the picker shows the same names and
+  descriptions the pill fetched and never a body, picking writes `/name ` as
+  plain text the person can see and delete, and the turn request carries a
+  `skill` name the server rechecks against the registry (400 for an unknown
+  one, `is_valid_skill_name` and never a path) and turns into one
+  zorp-authored sentence on the seed asking the model to load it with the
+  `skill` tool. It names a skill and never loads one: there is still no route
+  that does, the body still travels only the one way it did, and the sentence
+  reaches the model and never the store, the same mechanism and position the
+  memory block uses. The 2026-09-10 decision left a composer slash command
+  out because a control that pasted a body into the composer makes untrusted
+  text look like the person's; this moves a name, not a body, which that
+  objection does not reach. A turn that named a skill and made no
+  `skill` tool call gets a "did not load" line under the answer, derived in
+  code from the turn's tool events. See `docs/DECISIONS.md` (2026-11-02) and
+  issue #252.
 - An agent is a flavor with a description, not a new format.
   `zorp-agent/src/agents.rs` reads the same two `flavors/` directories
   `--flavor` reads, `sessions.agent` holds the name a person picked, and
@@ -392,7 +438,8 @@ resulting artifact, deliver it in the right form.
   the caller's side. Run `cargo test -p zorp-web -p zorp-recall
   --features zorp-web/recall` whenever any of it changes. See
   `docs/DECISIONS.md` (2026-08-22, 2026-08-24) before changing any of that,
-  especially the choice of SQLite over the LanceDB library in `zorp-track`.
+  especially the choice of SQLite over the LanceDB library `zorp-track`
+  used to carry (since removed, 2026-11-02).
 - `zorp-voice/` is zorp's own voice transcription client and runtime bootstrap
   for Qwen3-ASR 0.0.6. It depends on `zorp-loopback` and nothing else in
   the workspace. `zorp-web` exposes it behind the non-default `voice`
@@ -946,6 +993,29 @@ resulting artifact, deliver it in the right form.
   surfaces already read. `workspace` is written there and is the browser's
   alone. The old `web.toml` is still read and never written. See
   `docs/DECISIONS.md` (2026-09-10).
+- The model speed dial (`Saved.dial` in `config.rs`, `web/src/speed-dial.ts`)
+  is up to nine numbered slots in that same `zorp.toml`, each holding the
+  non-secret model fields a settings save holds (provider, base URL, model,
+  max tokens) and an optional label, and **never an API key**: `DialSlot`
+  has no field for one. Pressing a slot is `PUT /api/settings` with the
+  slot's fields and nothing more, the same save the model form does and
+  under the same rules, so the next turn reads the new model; the turn code
+  is not touched. The browser's chord is Control+Alt+digit (Control+Option
+  on a Mac) for 1 to 9, read from `event.code` so Option+digit still counts,
+  firing from inside the composer with `preventDefault`, and the slots are
+  set up in the settings pane's "Speed dial" section. The terminal has no
+  chords: `/dial` lists the slots and `/dial <n>` switches in the chat REPL,
+  `zorp-agent config dial <n>` does the same from the CLI, both reading the
+  same slots and writing the saved file; in the terminal the switch lands on
+  the next session, because the REPL resolves its model once at start rather
+  than per turn. Three rules are not negotiable. A slot never holds a key
+  (the type has no field, and a round trip is grepped for it the way
+  `to_persisted_never_carries_the_api_key` is). An agent's model wins,
+  because a flavor sits above the saved file in the chain, so the dial does
+  nothing under an agent that sets `model` rather than writing a file that
+  will not be read. And no model can press a slot: there is no tool for it
+  and `no_tool_presses_a_speed_dial_slot` in `agent.rs` says so. See issue
+  #242 and `docs/DECISIONS.md` (2026-11-02).
 - `zorp-agent doctor` (`zorp-agent/src/doctor.rs`) says what this build can
   do and whether it can reach anything: which features `cfg!` reports, the
   resolved endpoint, provider and model, whether an API key is set, whether
@@ -1073,6 +1143,40 @@ resulting artifact, deliver it in the right form.
   the workspace listing is the only thing that decides what is a file, so
   a name it does not know stays plain text and no reference in an answer
   leads out of the workspace; see `docs/DECISIONS.md` (2026-09-05).
+- Emoji (#243, `docs/DECISIONS.md` 2026-11-02) are two mechanisms split by
+  whether there is a character to expand to. A **standard** emoji is a Unicode
+  character and `:rocket:` is a name for it: a table generated by
+  `web/scripts/gen-emoji.mjs` from gemoji's `db/emoji.json` into two committed
+  files, `web/src/emoji-table.ts` and `zorp-agent/src/emoji_table.rs`, which
+  cannot drift (`zorp-agent/tests/emoji_drift.rs` reads both and asserts the
+  maps agree, the shape of `there_is_one_chunker_and_one_fingerprint`).
+  Expansion happens once, in the composer at send (`web/src/emoji.ts`
+  `expandShortcodes`) and on the REPL line on Enter (`zorp-agent/src/emoji.rs`
+  `expand`), so the character, not a name, reaches the model, the recall index
+  and a later quote; a code span is left alone, an unknown name stays literal,
+  and the stored transcript is never rewritten. The renderer expands standard
+  shortcodes in model output through the same table, in the `math` text-node
+  path. A **custom** emoji is a file in `<config>/emoji/` named
+  `<name>.{png,gif,webp,svg}`; there is no character, so `:name:` stays in the
+  message and the renderer draws the file on the way back. That `<img>` is the
+  one `markdown.ts` ever makes, built in code with `src` `/api/emoji/<name>`
+  for a name in the listing the page fetched (`setCustomEmoji`), never a URL
+  from the text, so the `LINK` rule still forbids every model-pointed image
+  (a test pins that `![x](url)` makes no `img` and `:notlisted:` makes no
+  request). Five rules are not negotiable: the renderer builds nodes not an
+  HTML string; a custom emoji name is a lookup key, not a path (one component
+  of `[a-z0-9_+-]`, ≤64, checked server-side before a file opens and
+  page-side before a `src` is built, symlink-escape skipped); an SVG is served
+  with the bare `Content-Security-Policy: sandbox` and every file with
+  `nosniff` under a 256 KiB cap with the type sniffed not trusted; expansion
+  never rewrites the store; and no model tool adds, removes or lists custom
+  emoji (`no_tool_manages_custom_emoji` in `agent.rs`). The browser adds
+  autocomplete (`web/src/emoji-complete.ts`), a picker beside the microphone
+  (`web/src/emoji-picker.ts`) and a settings section; the terminal completes
+  `:name:` on Tab and cannot draw a custom emoji, so it prints `:name:`.
+  `zorp-web/src/emoji.rs` serves the routes, gated like everything else. Run
+  the `web/` commands and `cargo test -p zorp-agent -p zorp-web` whenever any
+  of it changes. See `docs/superpowers/specs/2026-11-02-emoji-design.md`.
 - `cargo test --workspace` does not exercise the `research` feature
   (validate, investigate, co-write, deliver). Run
   `cargo test -p zorp-agent --features research` and
@@ -1080,10 +1184,6 @@ resulting artifact, deliver it in the right form.
   research-feature code changes. CI covers both nightly and on pull
   requests that touch the research stack, but that is a backstop, not a
   substitute for running them locally.
-- The LanceDB vector library is behind a non-default `library` feature
-  on both `zorp-track` and `zorp-agent`. `research` does not enable it.
-  Leave it off unless you are working on retrieval; it pulls in the
-  whole arrow tree.
 - `Cargo.lock` is committed and CI builds `--locked`. Shared dependency
   versions live in `[workspace.dependencies]` in the root `Cargo.toml`,
   not in the member manifests. MSRV is 1.95, declared as `rust-version`

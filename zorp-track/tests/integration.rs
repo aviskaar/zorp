@@ -34,17 +34,11 @@ fn full_track_lifecycle() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());
 
-    // Opening a fresh project creates .zorp/, a .gitignore, and both stores.
+    // Opening a fresh project creates .zorp/, a .gitignore, and the DuckDB store.
     let project = Project::open(dir.path()).unwrap();
     assert!(dir.path().join(".zorp/.gitignore").exists());
     let gitignore = std::fs::read_to_string(dir.path().join(".zorp/.gitignore")).unwrap();
     assert!(gitignore.contains("zorp.duckdb"));
-    assert!(gitignore.contains("lancedb/"));
-    #[cfg(feature = "library")]
-    assert_eq!(
-        project.library().unwrap().table_names().unwrap(),
-        vec!["library".to_string()]
-    );
 
     // Create a track and pre-register it.
     let track_id = "2026-08-09-does-caching-help";

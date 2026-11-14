@@ -340,6 +340,11 @@ bytes, and batch-copy runs of non-matching bytes in one push. Related:
 
 ### 2.9 LanceDB: ~390 crates for a write-only, never-read sink [high, build-time]
 
+**Resolved by #119 (2026-11-02):** the `library` feature and its whole
+arrow/datafusion/lancedb tree were deleted. Citations stay in the DuckDB
+columns, which is the "cut it" option the fix below anticipated. The
+original finding is kept for the record.
+
 `zorp-track` pulls the full arrow/datafusion/lancedb tree (measured: 397 of the
 crate's 404 dependencies). It is written by `validate::run` but never read:
 `library.rs` exposes only `table_names()` and `insert_source()`, there is no
@@ -413,8 +418,7 @@ upgrading over a running binary.
 - **Unoptimized dependencies in test runs**: add `[profile.dev.package."*"]
   opt-level = 2` so bundled `rusqlite`/`duckdb` compile optimized once and cache.
 - **`zorp-eval` drags in a second HTTP and TLS stack**: `reqwest 0.11` with
-  default features pulls native-tls/OpenSSL plus hyper 0.14, while `lancedb`
-  pulls reqwest 0.12 + rustls, so the workspace links two of each. And `reqwest`
+  default features pulls native-tls/OpenSSL plus hyper 0.14. And `reqwest`
   is actually dead in `zorp-eval` (only referenced in a comment). Remove it; if
   the LLM grader is implemented later, use the workspace's `ureq`.
 - **`zorp-eval` uses `tokio` `full` for a synchronous program** (`Cargo.toml:8`,
@@ -503,7 +507,7 @@ high-consequence gaps:
 - **`instrumentation_validation.rs:16-52` is a permanently-green no-op**: three
   `return`s turn every failure into a pass. Mark it `#[ignore]` and run it
   explicitly so a skip reads as a skip.
-- **Nothing asserts LanceDB contents**: the whole vector path runs unverified.
+- **Nothing asserts LanceDB contents** (resolved by #119: the vector path was deleted).
 
 ---
 

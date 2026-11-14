@@ -172,6 +172,27 @@ export interface Settings {
    * composer checks this before letting anyone type.
    */
   configured: boolean;
+  /**
+   * The model speed dial: up to nine numbered slots, each a model parked for
+   * a one-chord switch. Absent from a server built before the dial existed.
+   * A slot never carries an API key; the one key in `ZORP_API_KEY` is used
+   * as it is for the model form.
+   */
+  dial?: DialSlot[];
+}
+
+/**
+ * One speed-dial slot. Exactly the non-secret fields a settings save carries,
+ * plus a number and an optional label. **No API key:** the type has no field
+ * for one, so a slot cannot hold a secret.
+ */
+export interface DialSlot {
+  slot: number;
+  label?: string;
+  provider?: string;
+  base_url?: string;
+  model?: string;
+  max_tokens?: number;
 }
 
 /**
@@ -190,6 +211,13 @@ export interface SettingsUpdate {
   speech_voice?: string;
   /** A sandbox mode name, or the empty string to clear it back to `off`. */
   sandbox?: string;
+  /**
+   * The whole speed dial, sent only when the settings pane saves the slots.
+   * A chord press is an ordinary save of one slot's model fields and does
+   * not send this. An empty array clears the dial. A slot never carries a
+   * key.
+   */
+  dial?: DialSlot[];
 }
 
 /**
@@ -385,6 +413,45 @@ export async function fetchSkills(): Promise<SkillListing> {
     warnings: Array.isArray(body?.warnings) ? body.warnings : [],
     offer: offerFrom(body?.offer),
   };
+}
+
+/** A custom emoji a person added: its name and the content type served. */
+export interface CustomEmoji {
+  name: string;
+  type: string;
+}
+
+/** The custom emoji the server has, for the renderer and the picker. */
+export async function fetchEmoji(): Promise<CustomEmoji[]> {
+  const body = await request<{ emoji?: CustomEmoji[] }>("GET", "/api/emoji");
+  return Array.isArray(body?.emoji) ? body.emoji : [];
+}
+
+/**
+ * Add a custom emoji: the raw file as the body, the name in the query. Not the
+ * JSON `request` helper, because the body is binary; the type is sniffed on
+ * the server, not declared here.
+ */
+export async function addEmoji(name: string, file: Blob): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url(`/api/emoji?name=${encodeURIComponent(name)}`), {
+      method: "POST",
+      headers: authHeaders(),
+      body: file,
+    });
+  } catch {
+    throw new ApiError(0, "cannot reach the zorp server");
+  }
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).trim();
+    throw new ApiError(response.status, detail || `adding :${name}: failed with ${response.status}`);
+  }
+}
+
+/** Remove a custom emoji by name. */
+export async function deleteEmoji(name: string): Promise<void> {
+  await request<void>("DELETE", `/api/emoji/${encodeURIComponent(name)}`);
 }
 
 /**
@@ -1187,6 +1254,10 @@ export async function sendTurn(
   skill?: string,
 ): Promise<void> {
   try {
+    // `skill` is a name the server checks against the installed listing; it
+    // is sent only when the message's leading token is a real skill, and it
+    // never carries a body. Omitted when absent so an older server sees
+    // nothing new.
     const body: { message: string; memory: boolean; skill?: string } = { message, memory };
     if (skill) {
       body.skill = skill;
@@ -2059,6 +2130,16 @@ export async function listArtifacts(): Promise<ArtifactListing> {
  */
 export function artifactUrl(path: string): string {
   return url(`/api/artifacts/raw?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * The URL an `<img>` loads a custom emoji from. Through `url`, so it carries
+ * the API base and the `?token=` the route's gate needs: an `<img>` cannot
+ * send the `Authorization` header, so a bare relative path would 401 on a
+ * token-protected or separate-origin server.
+ */
+export function emojiUrl(name: string): string {
+  return url(`/api/emoji/${encodeURIComponent(name)}`);
 }
 
 /**

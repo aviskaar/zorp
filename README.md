@@ -143,6 +143,9 @@ need a source build with the `research` feature.
 | [Skills](docs/skills.md) | Using Claude Code compatible skills, and what a skill can and cannot do |
 | [Docker](docs/docker.md) | The container image and the compose stack in detail |
 | [Benchmarks](docs/benchmarks.md) | Running zorp-agent against Terminal-Bench |
+| [Threat model](docs/THREAT_MODEL.md) | What is stored and where, what leaves the machine and when, how credentials, approvals and the sandbox work, and the known gaps |
+| [Network egress](docs/NETWORK_EGRESS.md) | What each workflow connects to, by procedure and observed destination, marked expected, optional or prohibited |
+| [Sandbox test matrix](docs/SANDBOX_TEST_MATRIX.md) | Each `srt` mode against the attack vectors it is meant to stop, with what was observed, what was not, and the remediation |
 | [Decision log](docs/DECISIONS.md) | Why things are the way they are |
 
 ## Repository layout
@@ -192,7 +195,7 @@ design specs live, and repo conventions.
 ## Status and roadmap
 
 - [x] Base execution harness (forked from quecto, renamed, fully tested)
-- [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB + LanceDB)
+- [x] Research foundation (`zorp-track`: multi-track evidence records, git-backed pre-registration, checkpoints, DuckDB)
 - [x] **validate**: is this question worth investigating (novelty and feasibility check)
 - [x] **investigate**: gather evidence through staged, pre-registered attempts, every attempt recorded
 - [x] **co-write**: zorp drafts the artifact, a human is always the author of record

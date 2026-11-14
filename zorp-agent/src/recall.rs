@@ -164,8 +164,8 @@ pub struct Status {
 ///
 /// Nothing gitignores it, because nothing needs to: it is in the state
 /// directory, not in a repository. `.zorp/`'s own `.gitignore` covers
-/// `zorp.duckdb*` and `lancedb/` because those are written inside a project
-/// tree. This is not.
+/// `zorp.duckdb*` because that is written inside a project tree. This is
+/// not.
 pub fn index_path() -> PathBuf {
     if let Ok(p) = std::env::var("ZORP_RECALL_DB") {
         if !p.is_empty() {
