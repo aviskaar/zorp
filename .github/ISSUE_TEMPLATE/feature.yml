@@ -1,0 +1,46 @@
+name: Feature request
+description: A feature that is shaped enough to build. An early idea goes to Discussions.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An issue here is a specification: a problem, what to build, and what is out of scope.
+        If the idea is not that shaped yet, start it in [Ideas](https://github.com/aviskaar/zorp/discussions/categories/ideas). Once it is, open an issue and link the thread.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is missing
+      description: The problem, and where it stands today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What to build
+      description: What should exist when this is done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How someone can tell it is finished.
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and out of scope
+      description: Rules the change must keep, and what this issue does not cover.
+
+  - type: input
+    id: discussion
+    attributes:
+      label: Ideas thread
+      description: Link to the Discussions thread this came from, if any.
