@@ -320,6 +320,30 @@ mod on {
         }
     }
 
+    /// The real background worker, stopped when the test ends.
+    ///
+    /// A worker reads `ZORP_STATE_DB` and `ZORP_RECALL_DB` when each pass
+    /// starts and holds the process-wide reindex lock while it runs. Left to
+    /// end on its own, a pass still running after this test released `ENV`
+    /// held that lock against the next test's forced index, which answered
+    /// "an index is already running". Declare it after the `ENV` guard so it
+    /// drops first, on a panic too.
+    struct Worker(zorp_web::recall::IndexerHandle);
+
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+
+    /// App state with the real worker installed, configured from the
+    /// environment as it stands now.
+    fn with_worker() -> (zorp_web::state::AppState, Worker) {
+        let indexer = zorp_web::recall::IndexerHandle::start_from_env();
+        let state = zorp_web::state::AppState::new().with_recall_indexer(Some(indexer.clone()));
+        (state, Worker(indexer))
+    }
+
     fn set_up(embed_url: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("sessions.db");
@@ -388,8 +412,7 @@ mod on {
         let embedder = embedding_server();
         let _fixture = set_up(Some(&embedder));
         std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
-        let state = zorp_web::state::AppState::new()
-            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        let (state, _worker) = with_worker();
         let addr = spawn_with_state(state).await;
 
         let (_, body) = get(format!("http://{addr}/api/recall/status")).await;
@@ -419,8 +442,7 @@ mod on {
         let embedder = embedding_server();
         let fixture = set_up(Some(&embedder));
         std::env::set_var("ZORP_RECALL_SWEEP_SECS", "1");
-        let state = zorp_web::state::AppState::new()
-            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        let (state, _worker) = with_worker();
         let addr = spawn_with_state(state).await;
 
         let initial = wait_for_status(addr, |status| status["ready"] == true).await;
@@ -495,8 +517,7 @@ mod on {
         let _fixture = set_up(Some(&dead_port()));
         std::env::set_var("ZORP_BASE_URL", format!("{}/v1", canary.base));
         std::env::set_var("ZORP_RECALL_SWEEP_SECS", "0");
-        let state = zorp_web::state::AppState::new()
-            .with_recall_indexer(Some(zorp_web::recall::IndexerHandle::start_from_env()));
+        let (state, _worker) = with_worker();
         let addr = spawn_with_state(state).await;
 
         let (status, body) = post(format!("http://{addr}/api/recall/index")).await;

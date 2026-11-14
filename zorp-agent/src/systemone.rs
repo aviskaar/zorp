@@ -360,19 +360,23 @@ impl Tool for Decide {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::net::TcpListener;
 
     /// A one-shot HTTP/1.1 server that reads a request and writes `response`,
     /// returning its `http://127.0.0.1:PORT/v1` base. Enough to drive the real
     /// client over a real socket without a live Ollama.
+    ///
+    /// The whole request, headers and `Content-Length` body, is read before
+    /// replying. A single `read` used to return once the headers arrived, the
+    /// reply and close then raced the client still sending its body, and the
+    /// client saw a reset (on macOS, "Invalid argument").
     fn server(response: &'static str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf);
+                zorp_stub::drain_request(&mut stream);
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
             }

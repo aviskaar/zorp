@@ -449,6 +449,7 @@ pub struct IndexerSnapshot {
 enum Command {
     Session(String),
     Sweep(mpsc::Sender<Result<Report, RecallError>>),
+    Stop(mpsc::Sender<()>),
 }
 
 type Logger = Arc<dyn Fn(&str) + Send + Sync>;
@@ -563,6 +564,22 @@ impl IndexerHandle {
         })
     }
 
+    /// Stop the worker and wait until it has. A pass already running
+    /// finishes first, and no pass starts afterwards, timed or queued.
+    ///
+    /// Dropping every handle also ends the worker, but only the next time it
+    /// waits for a command: a timed pass whose deadline has passed still
+    /// runs, and nothing can wait for the thread. A pass reads the store and
+    /// index paths from the environment when it starts, so a worker outliving
+    /// the code that configured it can index somebody else's store, and holds
+    /// the one reindex lock while it does. This is the deterministic end.
+    pub fn stop(&self) {
+        let (tx, rx) = mpsc::channel();
+        if self.tx.send(Command::Stop(tx)).is_ok() {
+            let _ = rx.recv();
+        }
+    }
+
     pub fn snapshot(&self) -> IndexerSnapshot {
         let state = self.state.lock().unwrap();
         let available = state.last_failure.is_none();
@@ -647,6 +664,10 @@ fn worker_loop(
             Some(Command::Sweep(reply)) => {
                 let result = run_pass(&state, runner.as_ref(), None, true, logger.as_ref());
                 let _ = reply.send(result);
+            }
+            Some(Command::Stop(done)) => {
+                let _ = done.send(());
+                break;
             }
             None => {
                 let _ = run_pass(&state, runner.as_ref(), None, false, logger.as_ref());
@@ -1061,6 +1082,28 @@ mod tests {
             runner.sweeps.load(Ordering::SeqCst) >= 2,
             "the queued session backlog starved the periodic sweep"
         );
+    }
+
+    /// `stop` returns only once the running pass has finished, and the
+    /// worker runs nothing after it, timed or forced.
+    #[test]
+    fn stop_waits_for_the_running_pass_and_ends_the_worker() {
+        let runner = Arc::new(ConcurrentRunner::new());
+        let indexer = IndexerHandle::start_with(
+            Some(Duration::from_millis(5)),
+            runner.clone(),
+            silent_logger(),
+        );
+        wait_until(Duration::from_secs(1), || {
+            runner.active.load(Ordering::SeqCst) == 1
+        });
+
+        indexer.stop();
+
+        assert_eq!(runner.active.load(Ordering::SeqCst), 0);
+        let calls = runner.calls.load(Ordering::SeqCst);
+        assert!(indexer.sweep().is_err(), "a stopped worker ran a pass");
+        assert_eq!(runner.calls.load(Ordering::SeqCst), calls);
     }
 
     #[test]
