@@ -57,8 +57,12 @@ fn one_shot_reports_a_refused_second_stream_request() {
 
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("small.txt"), "small\n").unwrap();
+    // Keep the turn out of the developer's real session store. Without this
+    // every `cargo test` added a "read the file" conversation to
+    // ~/.local/state/zorp/sessions.db, which then showed up in the app.
     let output = Command::new(env!("CARGO_BIN_EXE_zorp-agent"))
         .current_dir(dir.path())
+        .env("ZORP_STATE_DB", dir.path().join("sessions.db"))
         .args([
             "--yes",
             "--no-verify",
