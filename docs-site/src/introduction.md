@@ -1,6 +1,9 @@
 # Introduction
 
-zorp is a research agent for scientific discovery. It turns an uncertain
+zorp is about owning your intelligence: run any OpenAI-compatible model,
+self-hosted or cloud, remember your own conversations locally, investigate
+questions with evidence, measure confidence, improve your models, and
+(experimentally) propose what to test next. It turns an uncertain
 question into a defensible answer, using evidence: question,
 investigation, sources, evidence, conflicting evidence, reasoning,
 validation, answer or artifact.
