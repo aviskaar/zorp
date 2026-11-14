@@ -27,7 +27,7 @@ To add one, copy the last file, take the next number, and add a row below.
 | 0132 | 2026-09-18 | [a search provider is picked by one environment variable, and a wrong name is an error](0132-a-search-provider-is-picked-by-one-environment-variable-and.md) | accepted |
 | 0131 | 2026-09-18 | [`bench` is the third part of `zorp-eval`, and it never gates](0131-bench-is-the-third-part-of-zorp-eval-and-it-never-gates.md) | accepted |
 | 0130 | 2026-09-18 | [a small model is offered the plain HTML skill, and the rule says so](0130-a-small-model-is-offered-the-plain-html-skill-and-the-rule-s.md) | accepted |
-| 0129 | 2026-09-12 | [native Mac app (`zorp-desktop`) runs `zorp-web` in-process via Tauri v2](0129-native-mac-app-zorp-desktop-runs-zorp-web-in-process-via-tau.md) | accepted |
+| 0129 | 2026-09-12 | [native Mac app (`zorp-desktop`) runs `zorp-web` in-process via Tauri v2](0129-native-mac-app-zorp-desktop-runs-zorp-web-in-process-via-tau.md) | superseded |
 | 0128 | 2026-09-12 | [a Zorp mode run reports where it is, and a person can answer its checkpoints](0128-a-zorp-mode-run-reports-where-it-is-and-a-person-can-answer.md) | accepted |
 | 0127 | 2026-09-13 | [what is loaded and what is still in the window are different questions](0127-what-is-loaded-and-what-is-still-in-the-window-are-different.md) | accepted |
 | 0126 | 2026-09-13 | [an approval prompt shows the whole command, and a report asks nothing](0126-an-approval-prompt-shows-the-whole-command-and-a-report-asks.md) | accepted |

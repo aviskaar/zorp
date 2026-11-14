@@ -73,7 +73,7 @@ build, because `zorp-track` bundles DuckDB.
 
 ## Mac App (Zorp.app)
 
-A native macOS application packaged as a universal `.dmg` on GitHub releases. It runs the local `zorp-web` server in-process via Tauri v2 and opens the chat UI in its own native window with inset traffic lights, single-instance enforcement, and automatic login shell `PATH` repair.
+A native SwiftUI macOS application packaged as a universal `.dmg` on GitHub releases. It runs the local `zorp-web` server in-process through a small Rust bridge and talks to it over the same HTTP API the browser uses. It repairs `PATH` from your login shell at launch and keeps the API key in the login keychain.
 
 Download `Zorp_<version>_universal.dmg` from the GitHub Release, open it, and drag `Zorp.app` to `/Applications`.
 

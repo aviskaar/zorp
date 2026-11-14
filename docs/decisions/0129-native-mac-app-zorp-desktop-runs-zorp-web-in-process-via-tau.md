@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-12
 ---
 
@@ -12,3 +12,5 @@ date: 2026-09-12
 **Why excluded from the workspace.** Tauri pulls in `wry`, `tao`, `objc2`, and desktop system bindings. Putting `zorp-desktop` into the root Cargo workspace would slow down every CI job and break `cargo test --workspace` on Linux runners that lack GTK/WebKit2GTK dev headers. Keeping it excluded preserves fast, hermetic Linux builds and tests while letting macOS CI compile `zorp-desktop` independently.
 
 **What it rules out:** Sidecar binary architectures, Electron runtimes, custom protocol schemes (`tauri://`) that require CORS allowances, and running multiple conflicting servers on the same SQLite session database (prevented via `tauri-plugin-single-instance`).
+
+**Superseded by** [0140](0140-the-mac-app-is-native-and-speaks-the-browser-s-api.md) (2026-10-26) for the Tauri web view: the app is native SwiftUI over a Rust bridge. Running `zorp-web` in-process and keeping `zorp-desktop` out of the workspace still hold.
