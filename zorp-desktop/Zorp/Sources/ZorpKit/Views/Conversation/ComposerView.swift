@@ -108,14 +108,25 @@ struct ComposerView: View {
                 Button("Cancel") { voice.cancel() }.controlSize(.small)
             }
         case .listening:
-            HStack(spacing: 8) {
-                Circle().fill(Color.red).frame(width: 8, height: 8)
-                Text("Listening").font(.caption)
-                if let started = voice.startedAt {
-                    Text(started, style: .timer).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Circle().fill(Color.red).frame(width: 8, height: 8)
+                    Text("Listening").font(.caption)
+                    if let started = voice.startedAt {
+                        Text(started, style: .timer).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    LevelMeter(level: voice.level)
+                    Spacer()
                 }
-                LevelMeter(level: voice.level)
-                Spacer()
+                // Verbatim: this came from a speech model, so it is never
+                // read as markdown or a localization key.
+                if !voice.liveText.isEmpty {
+                    Text(verbatim: voice.liveText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         case .transcribing:
             HStack(spacing: 8) {

@@ -472,7 +472,14 @@ resulting artifact, deliver it in the right form.
   `/api/voice/transcribe` route, its text joining a preview line under the
   composer that is one text node set through `textContent`; a failed segment
   leaves `[unclear]` and the recording goes on. On stop the joined text lands
-  in the composer as a transcript always did. See `docs/DECISIONS.md`
+  in the composer as a transcript always did. The Mac app does it the other
+  way, because its recorder holds the raw samples: `VoiceRecorder` sends the
+  audio since the last kept stretch about once a second, one request at a
+  time, and each answer replaces the previous guess shown under the composer,
+  so words appear as they are spoken and get corrected as context arrives. A
+  stretch is kept at the first pause after four seconds or at fifteen
+  regardless, which bounds every request, and on stop the rest is sent once
+  more and the whole text lands in the composer. See `docs/DECISIONS.md`
   (2026-09-03). A transcript is untrusted
   editable composer text. It grants no tool, changes no approval, bypasses no
   denylist, and is never sent automatically. Run `cargo test -p zorp-web
