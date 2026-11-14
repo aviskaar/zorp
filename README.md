@@ -22,6 +22,8 @@ an evidence record, and a report where every claim traces back to it.
 
 **[zorp.dev](https://zorp.dev)** · [Aviskaar](https://github.com/aviskaar) · [Report an issue](../../issues)
 
+[Quick start](#quick-start) · [Architecture](#architecture) · [Guides](#what-you-can-do-with-it) · [Development](#development) · [Roadmap](#status-and-roadmap) · [Q&A](https://github.com/aviskaar/zorp/discussions/categories/q-a)
+
 </div>
 
 ---
@@ -45,16 +47,30 @@ hypothesis are all the same shape of problem to zorp. It's built by
 
 ## Contents
 
-- [Six pillars](#six-pillars)
-- [Why zorp](#why-zorp)
-- [Quick start](#quick-start)
-- [What you can do with it](#what-you-can-do-with-it)
-- [Repository layout](#repository-layout)
-- [Development](#development)
-- [Status and roadmap](#status-and-roadmap)
-- [Origins](#origins)
-- [Contributing](#contributing)
-- [License](#license)
+**Start here, by what you came for:**
+
+| I want to... | Go to |
+|---|---|
+| Try it in five minutes | [Quick start](#quick-start) |
+| Understand what it is and why | [Six pillars](#six-pillars), [Why zorp](#why-zorp) |
+| See how the pieces fit | [Architecture](#architecture), [Repository layout](#repository-layout) |
+| Run an investigation | [Research capabilities](docs/research.md) |
+| Use the browser or Mac app | [Web UI](docs/web-ui.md), [Getting started](docs/getting-started.md) |
+| Check what leaves my machine | [Threat model](docs/THREAT_MODEL.md), [Network egress](docs/NETWORK_EGRESS.md) |
+| Contribute code | [Development](#development), [Contributing](#contributing) |
+
+**All sections:**
+[Six pillars](#six-pillars) ·
+[Why zorp](#why-zorp) ·
+[Quick start](#quick-start) ·
+[Architecture](#architecture) ·
+[What you can do with it](#what-you-can-do-with-it) ·
+[Repository layout](#repository-layout) ·
+[Development](#development) ·
+[Status and roadmap](#status-and-roadmap) ·
+[Origins](#origins) ·
+[Contributing](#contributing) ·
+[License](#license)
 
 ## Six pillars
 
@@ -145,6 +161,59 @@ to the `sh.exe` you want. The desktop app is Mac only.
 To build from source, run from Docker, or tune timeouts and retries, see
 [Getting started](docs/getting-started.md). The four research capabilities
 need a source build with the `research` feature.
+
+## Architecture
+
+Three surfaces share one agent, one session store and one settings file.
+Everything below the agent is a separate crate, so each piece can be
+tested on its own.
+
+```mermaid
+flowchart TB
+    subgraph Surfaces["How you use it"]
+        CLI["Terminal<br/>zorp, zorp-agent"]
+        WEB["Browser<br/>web/ + zorp-web"]
+        MAC["Zorp.app<br/>zorp-desktop"]
+    end
+
+    MAC -->|"runs zorp-web in process"| WEB
+    CLI --> AGENT
+    WEB --> AGENT
+
+    AGENT["zorp-agent<br/>tools, approvals, sandbox, sessions, compaction"]
+
+    subgraph Research["Research (research feature)"]
+        direction LR
+        V[validate] --> I[investigate] --> C[co-write] --> K[critique] --> D[deliver]
+    end
+
+    AGENT --> Research
+    Research --> TRACK["zorp-track<br/>evidence records, git pre-registration,<br/>aryabhatta ledger, DuckDB"]
+    TRACK --> ERBGA["erbga<br/>graph search backend"]
+
+    AGENT --> CORE["zorp core<br/>model transport, retries, timeouts"]
+    AGENT --> MCP["zorp-mcp<br/>MCP tools"]
+    AGENT --> SKILL["zorp-skill<br/>local skills"]
+    AGENT --> SEARCH["zorp-search<br/>Tavily or SearXNG"]
+    AGENT --> RECALL["zorp-recall<br/>conversation search"]
+    WEB --> VOICE["zorp-voice<br/>speech in and out"]
+    WEB --> TRAIN["zorp-train<br/>RL Studio: pretrain, fine-tune"]
+
+    RECALL --> LOOP["zorp-loopback<br/>loopback-only guard"]
+    VOICE --> LOOP
+
+    CORE --> MODEL[("Any OpenAI-compatible<br/>model endpoint")]
+    SEARCH --> NET[("Web search provider")]
+    LOOP --> LOCAL[("Local Ollama / ASR<br/>on 127.0.0.1")]
+    TRAIN --> MLX[("Python + MLX<br/>on Apple Silicon")]
+```
+
+Two boundaries matter most. Conversation text and recorded voice only
+ever go to a loopback address, enforced in `zorp-loopback`. And no model
+can start an investigation, a panel, a training run or a memory pass:
+those are launched by a person. The [threat model](docs/THREAT_MODEL.md)
+covers the rest. Testing sits beside all of this: `zorp-eval` runs the
+real binary against `zorp-stub`, a scripted model on loopback.
 
 ## What you can do with it
 
