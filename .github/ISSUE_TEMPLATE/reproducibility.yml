@@ -1,0 +1,82 @@
+name: Reproducibility problem
+description: A bug that does not happen every time, or a result you cannot reproduce.
+title: "[Reproducibility]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the same steps give different results across runs. A bug that happens every time uses the bug report instead.
+        `zorp-agent doctor` prints no secret by design, so its output is safe to paste. Never paste an API key.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `zorp-agent --version`, or the commit sha for a source build.
+      placeholder: "zorp-agent 0.8.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Terminal (zorp-agent)
+        - Browser (zorp-web)
+        - Mac app
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      placeholder: "Ollama, qwen2.5:7b"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: zorp-agent doctor output
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps you ran
+      description: Include any settings that vary between runs, such as `ZORP_` variables, flavor or seed.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: runs
+    attributes:
+      label: What each run did
+      description: How many times you ran it, and what happened each time.
+      placeholder: "5 runs: 3 finished, 2 stopped at step 4 with ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Output from a good run and a bad run side by side helps most.
+      render: text
