@@ -39,9 +39,9 @@ hypothesis are all the same shape of problem to zorp. It's built by
 > shared research foundation (tracks, evidence records, checkpoints) are
 > in place and fully tested. All four capabilities built on top,
 > validate, investigate, co-write, and deliver, are built and tested.
-> Training your own models is the next direction: pretraining works in
-> developer mode, and Zorp RL (fine-tuning and retraining on your own
-> usage) is planned. See [Status and roadmap](#status-and-roadmap) below.
+> Training your own models is the next direction: RL Studio pretrains
+> a model and fine-tunes one on your own feedback, and retraining without
+> being asked is planned. See [Status and roadmap](#status-and-roadmap) below.
 
 ## Contents
 
@@ -237,13 +237,13 @@ better model. Each pass fits the model more closely to one person's or
 one team's usage patterns, and because the loop is meant to run on your
 own hardware, those logs are meant to stay there too.
 
-Most of this is direction, not product. What exists today:
+Part of this is built and part is direction. What exists today:
 
-- [x] **Pretrain**: developer mode (`zorp-train`) trains a BPE tokenizer and a Qwen style model from scratch on Apple Metal through MLX
+- [x] **Pretrain**: RL Studio (`zorp-train`) trains a BPE tokenizer and a Qwen style model from scratch on Apple Metal through MLX
 - [x] **Use it in zorp**: a finished checkpoint is served on loopback and shows up in the model picker ("Open in Zorp")
-- [ ] **Observability**: partly there. Conversations are kept in the local session store and traces export over OpenTelemetry; turning them into training data is not built
-- [ ] **Fine-tune**: post-train an existing open model on your own data
-- [ ] **Zorp RL**: reinforcement learning and fine-tuning from local usage logs
+- [x] **Observe**: thumbs, a better answer you typed, and tool status derived in code are recorded in a local work log, and turned into an SFT set and a preference set in code. The model never grades itself
+- [x] **Fine-tune**: post-train an existing open model with LoRA, SFT or DPO through `mlx-lm` on a dataset built from that work log. Runs on Apple Silicon; you start each round
+- [ ] **Zorp RL**: reinforcement learning on that feedback, beyond the SFT and DPO rounds above
 - [ ] **Automated training**: retrain on new data without being asked, and keep a new model only when it measures better than the one it would replace
 
 ## Origins
