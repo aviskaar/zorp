@@ -1,0 +1,54 @@
+name: Download Stats
+
+# Snapshots GitHub release asset download counts once a day and on demand.
+# Appends one JSON line per asset per day to downloads.jsonl on the orphan
+# `stats` branch, so a count survives a `--clobber` re-upload. It never
+# writes to main: the main ruleset refuses non-fast-forward pushes there,
+# and the history does not belong in the source tree anyway. A day that is
+# already recorded is skipped, so a manual run does not double count.
+on:
+  schedule:
+    # 03:17 UTC daily, off the top of the hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: download-stats
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    name: Snapshot download counts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Append today's counts to the stats branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export TODAY=$(date -u +%F)
+          if git ls-remote --exit-code --heads origin stats >/dev/null; then
+            git fetch --depth=1 origin stats
+            git checkout -B stats FETCH_HEAD
+          else
+            git checkout --orphan stats
+            git rm -rfq .
+          fi
+          touch downloads.jsonl
+          if grep -q "\"date\":\"$TODAY\"" downloads.jsonl; then
+            echo "Counts for $TODAY already recorded, nothing to do."
+            exit 0
+          fi
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '.[] | .tag_name as $t | .assets[] | {date: $ENV.TODAY, tag: $t, asset: .name, count: .download_count} | @json' \
+            >> downloads.jsonl
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads.jsonl
+          git commit -qm "downloads: snapshot for $TODAY [skip ci]"
+          git push origin stats
