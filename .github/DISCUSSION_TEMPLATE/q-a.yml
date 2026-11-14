@@ -1,0 +1,59 @@
+name: Q&A
+description: Ask a question about configuration, setup, providers, or a run that did something odd
+title: "[Q&A]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most questions are about configuration. Please fill in the same four things the bug template asks for, so we can help faster.
+        A `zorp-agent doctor` run prints no secret by design and is safe to share.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `zorp-agent --version`
+      placeholder: "zorp-agent 0.8.0 (commit abc1234)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      description: Where you are running zorp
+      options:
+        - Terminal (zorp-agent)
+        - Browser (zorp-web)
+        - Mac app
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      description: Model provider in use (Ollama, OpenRouter, etc.)
+      placeholder: "Ollama"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: zorp-agent doctor output
+      description: Paste the full output of `zorp-agent doctor`
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do, and what happened?
+      placeholder: |
+        I am trying to point zorp at Ollama on a non-default port...
+    validations:
+      required: true
