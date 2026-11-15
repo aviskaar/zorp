@@ -717,6 +717,11 @@
             <span>Ask me at each research checkpoint</span>
           </label>
 
+          <label class="composer-connection" id="composer-connection" hidden>
+            <span>Runs on</span>
+            <select id="connection-select" aria-label="Where this conversation runs"></select>
+          </label>
+
           <label class="composer-memory" id="composer-memory" hidden>
             <input id="use-memory" type="checkbox" />
             <span>Recall earlier conversations for this message</span>
@@ -996,6 +1001,27 @@
               </div>
               <p class="settings-result" id="settings-result"></p>
             </form>
+          </section>
+
+          <section class="settings-section" id="settings-section-connections">
+            <h3 class="settings-section-title">Connections</h3>
+            <p class="settings-section-desc">
+              Other endpoints kept beside the model above: a remote Ollama, a
+              cloud provider, another local server. A new conversation starts
+              on the default one, and the select under the composer moves a
+              conversation to another. Bring your own key: each connection
+              uses only its own key, typed here or read from an environment
+              variable you name, and never borrows the main model's key.
+              Typed keys stay in the server's memory and are never written to
+              the settings file.
+            </p>
+            <div class="connection-rows" id="settings-connection-rows"></div>
+            <div class="settings-actions">
+              <button class="btn" id="settings-connection-add" type="button">Add connection</button>
+              <button class="btn" id="settings-connection-nodefault" type="button">No default</button>
+              <button class="btn btn-allow" id="settings-connection-save" type="button">Save connections</button>
+            </div>
+            <p class="settings-result" id="settings-connection-result"></p>
           </section>
 
           <section class="settings-section" id="settings-section-dial">

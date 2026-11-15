@@ -1000,6 +1000,17 @@ resulting artifact, deliver it in the right form.
   surfaces already read. `workspace` is written there and is the browser's
   alone. The old `web.toml` is still read and never written. See
   `docs/DECISIONS.md` (2026-09-10).
+- Model connections (`Saved.connections` in `config.rs`,
+  `web/src/connections.ts`, the Mac app's Connections tab) are named
+  endpoints kept beside the main model, one of them the default for a new
+  conversation. A conversation pins its connection and model on the session
+  row, a turn may change them, a branch copies them, and every model call for
+  that conversation (turn, title, compaction, tool safety, skill offer) uses
+  them. Bring your own key: a connection uses only its own key, typed and held
+  in server memory and the Mac keychain, or read from the variable it names,
+  and never falls back to `ZORP_API_KEY`. The settings file has no field for a
+  key. Panel and investigate still use the main model. No tool touches a
+  connection. See `docs/DECISIONS.md` (2026-11-15).
 - The model speed dial (`Saved.dial` in `config.rs`, `web/src/speed-dial.ts`)
   is up to nine numbered slots in that same `zorp.toml`, each holding the
   non-secret model fields a settings save holds (provider, base URL, model,

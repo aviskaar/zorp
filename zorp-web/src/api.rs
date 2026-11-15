@@ -1285,8 +1285,15 @@ async fn get_session(Path(id): Path<String>) -> impl IntoResponse {
             let (rows, seqs) = transcript_with_seqs(&messages);
             let compactions = compaction_rows(&store, &id, &seqs);
             let agent = store.session_agent(&id).ok().flatten();
-            Json(json!({"messages": rows, "compactions": compactions, "agent": agent}))
-                .into_response()
+            let (connection, connection_model) = store.session_connection(&id).unwrap_or_default();
+            Json(json!({
+                "messages": rows,
+                "compactions": compactions,
+                "agent": agent,
+                "connection": connection,
+                "connection_model": connection_model,
+            }))
+            .into_response()
         }
         Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
@@ -1681,6 +1688,15 @@ struct TurnBody {
     /// become one. Absent means the person named none.
     #[serde(default)]
     skill: Option<String>,
+    /// The saved connection to run this message on, by id, and the model
+    /// there. Sending either sets both, with an empty or missing value
+    /// meaning the default; sending neither keeps what the conversation
+    /// already runs on. A client that has not heard of connections sends
+    /// neither and nothing changes for it.
+    #[serde(default)]
+    connection: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2084,6 +2100,12 @@ async fn start_turn(
         }
         _ => None,
     };
+    let connection = match connection_choice(&state, body.connection, body.model) {
+        Ok(choice) => choice,
+        Err(message) => {
+            return (StatusCode::BAD_REQUEST, message).into_response();
+        }
+    };
     #[cfg(feature = "recall")]
     let recall_indexer = state.recall_indexer.clone();
     #[cfg(not(feature = "recall"))]
@@ -2094,12 +2116,33 @@ async fn start_turn(
         body.message,
         body.memory,
         chosen_skill,
+        connection,
         workspace,
         state.settings.clone(),
         state.own_port,
         recall_indexer,
     );
     StatusCode::ACCEPTED.into_response()
+}
+
+/// Check a turn's connection fields against the saved list. An unknown id
+/// is refused rather than run on some other endpoint.
+fn connection_choice(
+    state: &AppState,
+    connection: Option<String>,
+    model: Option<String>,
+) -> Result<Option<turn::ConnectionChoice>, String> {
+    if connection.is_none() && model.is_none() {
+        return Ok(None);
+    }
+    let tidy = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let (connection, model) = (tidy(connection), tidy(model));
+    if let Some(id) = &connection {
+        if state.settings.lock().unwrap().connection(id).is_none() {
+            return Err(format!("no saved connection named {id:?}"));
+        }
+    }
+    Ok(Some((connection, model)))
 }
 
 /// Stop the turn that is running on this session.
@@ -2493,8 +2536,22 @@ async fn list_models(
             .map(str::to_string)
             .filter(|u| !u.trim().is_empty())
     };
-    let base_url = field("base_url").or(query.base_url).unwrap_or_default();
-    let api_key = field("api_key").or_else(|| state.settings.lock().unwrap().api_key.clone());
+    // A saved connection lists with its own endpoint and its own key, so
+    // the per-conversation model picker never sends one provider's key to
+    // another's host.
+    let saved = field("connection").and_then(|id| {
+        let settings = state.settings.lock().unwrap();
+        settings
+            .connection(&id)
+            .map(|c| (c.base_url.clone(), settings.connection_key(&id)))
+    });
+    let (base_url, api_key) = match saved {
+        Some((url, key)) => (url, field("api_key").or(key)),
+        None => (
+            field("base_url").or(query.base_url).unwrap_or_default(),
+            field("api_key").or_else(|| state.settings.lock().unwrap().api_key.clone()),
+        ),
+    };
     let listed_url = base_url.clone();
     let result =
         tokio::task::spawn_blocking(move || settings::fetch_models(&base_url, api_key.as_deref()))

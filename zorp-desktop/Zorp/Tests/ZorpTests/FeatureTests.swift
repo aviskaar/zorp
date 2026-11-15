@@ -112,6 +112,14 @@ import Testing
         #expect(vm.items.last?.kind == .error(text: "this server was built without the research feature"))
     }
 
+    @Test func aTurnCarriesItsConnectionAndModel() async throws {
+        StubProtocol.reset(["POST /api/sessions/c1/turn": (202, "")])
+        try await stubClient().sendTurn(id: "c1", message: "hi", connection: "deepseek", model: "deepseek-chat")
+        let body = StubProtocol.bodies(for: "/api/sessions/c1/turn").first
+        #expect(body?["connection"] as? String == "deepseek")
+        #expect(body?["model"] as? String == "deepseek-chat")
+    }
+
     @Test func choosingAnAgentPutsItsName() async throws {
         StubProtocol.reset(["PUT /api/sessions/a1/agent": (200, "")])
         try await stubClient().setSessionAgent(id: "a1", agent: "reviewer")

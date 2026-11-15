@@ -27,8 +27,15 @@ const MAX_TOKENS: u32 = 64;
 /// The clamp is deliberately not applied here. It belongs next to the
 /// write, in `title_session_in`, so that nothing can ever reach the column
 /// without going through it.
-fn ask(settings: &SettingsHandle, question: &str, answer: &str) -> Option<String> {
-    let resolved = settings.lock().unwrap().effective_model();
+fn ask(
+    settings: &SettingsHandle,
+    session_id: &str,
+    question: &str,
+    answer: &str,
+) -> Option<String> {
+    // The conversation's own connection: a conversation kept on a local
+    // model is not sent to the default endpoint just to be named.
+    let resolved = crate::settings::model_for_session(settings, session_id).ok()?;
     if !resolved.configured {
         return None;
     }
@@ -58,7 +65,7 @@ fn ask(settings: &SettingsHandle, question: &str, answer: &str) -> Option<String
 fn title_session(session_id: &str, settings: &SettingsHandle) -> Option<String> {
     let store = Store::open_default().ok()?;
     title_session_in(&store, session_id, |question, answer| {
-        ask(settings, question, answer)
+        ask(settings, session_id, question, answer)
     })
 }
 

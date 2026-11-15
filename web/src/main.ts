@@ -58,6 +58,7 @@ import {
   slotIsSet,
   slotName,
 } from "./speed-dial";
+import { connectionSlug, fillConnectionSelect, renderConnectionRows } from "./connections";
 import { setSendControl } from "./send-control";
 import { createVoiceInput } from "./voice-input";
 import { createVoiceMeter } from "./voice-meter";
@@ -174,6 +175,7 @@ import {
   type Preregistration,
   type RecallStatus,
   type Settings,
+  type ModelConnection,
   type DialSlot,
   type SettingsSource,
   type SettingsUpdate,
@@ -221,6 +223,13 @@ interface Elements {
   recall: HTMLElement;
   composerMemory: HTMLElement;
   useMemory: HTMLInputElement;
+  composerConnection: HTMLElement;
+  connectionSelect: HTMLSelectElement;
+  settingsConnectionRows: HTMLElement;
+  settingsConnectionAdd: HTMLButtonElement;
+  settingsConnectionNoDefault: HTMLButtonElement;
+  settingsConnectionSave: HTMLButtonElement;
+  settingsConnectionResult: HTMLElement;
   composerCheckpoints: HTMLElement;
   askCheckpoints: HTMLInputElement;
   recallInput: HTMLInputElement;
@@ -832,6 +841,13 @@ function collectElements(): Elements {
     recall: byId("recall"),
     composerMemory: byId("composer-memory"),
     useMemory: byId<HTMLInputElement>("use-memory"),
+    composerConnection: byId<HTMLElement>("composer-connection"),
+    connectionSelect: byId<HTMLSelectElement>("connection-select"),
+    settingsConnectionRows: byId<HTMLElement>("settings-connection-rows"),
+    settingsConnectionAdd: byId<HTMLButtonElement>("settings-connection-add"),
+    settingsConnectionNoDefault: byId<HTMLButtonElement>("settings-connection-nodefault"),
+    settingsConnectionSave: byId<HTMLButtonElement>("settings-connection-save"),
+    settingsConnectionResult: byId<HTMLElement>("settings-connection-result"),
     composerCheckpoints: byId("composer-checkpoints"),
     askCheckpoints: byId<HTMLInputElement>("ask-checkpoints"),
     recallInput: byId("recall-input"),
@@ -1394,6 +1410,21 @@ function wireSettings(): void {
     }
   });
   dom.settingsPreset.addEventListener("change", () => applyPreset(dom.settingsPreset.value));
+  // Takes effect on the next message; the conversation so far goes with it.
+  dom.connectionSelect.addEventListener("change", () => {
+    sessionConnection = dom.connectionSelect.value || null;
+    sessionConnectionModel = null;
+  });
+  dom.settingsConnectionAdd.addEventListener("click", () => {
+    const id = connectionSlug("connection", connectionDraft.map((c) => c.id));
+    connectionDraft.push({ id, label: null, provider: "openai", base_url: "http://localhost:11434/v1", model: null });
+    renderConnections();
+  });
+  dom.settingsConnectionNoDefault.addEventListener("click", () => {
+    connectionDraftDefault = null;
+    renderConnections();
+  });
+  dom.settingsConnectionSave.addEventListener("click", () => void saveConnections());
   dom.settingsBaseUrl.addEventListener("change", () => void refreshModelOptions());
   dom.settingsRefreshModels.addEventListener("click", () => void refreshModelOptions());
   dom.settingsTest.addEventListener("click", () => void runConnectionTest());
@@ -1786,7 +1817,13 @@ async function sendMessage(message: string): Promise<void> {
     // The box is read here and cleared below, so recall is a decision
     // about this message and never a state the next one inherits.
     try {
-      await sendTurn(sessionId, message, dom.useMemory.checked, chosenSkill ?? undefined);
+      await sendTurn(
+        sessionId,
+        message,
+        dom.useMemory.checked,
+        chosenSkill ?? undefined,
+        turnConnection(),
+      );
     } catch (error) {
       // start_turn returns 400 only for an unknown skill ("no installed
       // skill named ..."): the cached listing went stale (a skill
@@ -1801,7 +1838,7 @@ async function sendMessage(message: string): Promise<void> {
         error.status === 400 &&
         error.message.includes("installed skill")
       ) {
-        await sendTurn(sessionId, message, dom.useMemory.checked);
+        await sendTurn(sessionId, message, dom.useMemory.checked, undefined, turnConnection());
       } else {
         throw error;
       }
@@ -3395,6 +3432,9 @@ async function openSession(session: SessionSummary): Promise<void> {
       return;
     }
     currentSessionAgent = transcript.agent ?? null;
+    sessionConnection = transcript.connection ?? null;
+    sessionConnectionModel = transcript.connection_model ?? null;
+    paintConnectionSelect();
     agentsCache = null;
     updateAgentBadge(currentSessionAgent);
     if (!dom.agentsPane.hidden) {
@@ -3461,6 +3501,9 @@ function startNewChat(): void {
   rememberSessionInUrl(null);
   sessionId = null;
   currentSessionAgent = null;
+  sessionConnection = currentSettings?.default_connection ?? null;
+  sessionConnectionModel = null;
+  paintConnectionSelect();
   agentsCache = null;
   updateAgentBadge(null);
   setTitle("New chat");
@@ -3771,6 +3814,10 @@ async function refreshSettingsBadge(): Promise<void> {
     currentSettings = settings;
     updateModelBadge(settings);
     updateComposerWarning(settings);
+    if (sessionId === null) {
+      sessionConnection = settings.default_connection ?? null;
+    }
+    paintConnectionSelect();
     // The one place first run is decided. This runs once, on connect, and
     // it is the only read that knows nothing has ever been configured
     // before the person is dropped in front of a composer that cannot send.
@@ -3811,6 +3858,87 @@ function applySettingsToForm(settings: Settings): void {
   applySandboxToForm(settings);
   updateApiKeyVisibility(name);
   renderDial();
+  loadConnectionDraft(settings);
+}
+
+/**
+ * Where the open conversation runs: a saved connection id and the model
+ * picked there, both null for the main model. Read from the session row
+ * when a conversation opens, and the default connection for a new one.
+ */
+let sessionConnection: string | null = null;
+let sessionConnectionModel: string | null = null;
+
+/** The pair a turn carries, sent with every message once connections exist. */
+function turnConnection(): { connection: string; model: string } | undefined {
+  if ((currentSettings?.connections ?? []).length === 0 && sessionConnection === null) {
+    return undefined;
+  }
+  return { connection: sessionConnection ?? "", model: sessionConnectionModel ?? "" };
+}
+
+function paintConnectionSelect(): void {
+  const list = currentSettings?.connections ?? [];
+  dom.composerConnection.hidden = list.length === 0;
+  fillConnectionSelect(document, dom.connectionSelect, list, currentSettings?.model ?? "", sessionConnection);
+}
+
+/** The connections section's unsaved edits. */
+let connectionDraft: ModelConnection[] = [];
+let connectionDraftDefault: string | null = null;
+let connectionDraftKeys: Record<string, string> = {};
+
+function loadConnectionDraft(settings: Settings): void {
+  connectionDraft = (settings.connections ?? []).map((c) => ({ ...c }));
+  connectionDraftDefault = settings.default_connection ?? null;
+  connectionDraftKeys = {};
+  renderConnections();
+  paintConnectionSelect();
+}
+
+function renderConnections(): void {
+  renderConnectionRows(document, dom.settingsConnectionRows, connectionDraft, connectionDraftDefault, {
+    change: (i, next) => {
+      connectionDraft[i] = next;
+    },
+    key: (id, key) => {
+      connectionDraftKeys[id] = key;
+    },
+    makeDefault: (id) => {
+      connectionDraftDefault = id;
+    },
+    remove: (i) => {
+      const [gone] = connectionDraft.splice(i, 1);
+      if (gone && connectionDraftDefault === gone.id) {
+        connectionDraftDefault = null;
+      }
+      if (gone) {
+        delete connectionDraftKeys[gone.id];
+      }
+      renderConnections();
+    },
+  });
+}
+
+async function saveConnections(): Promise<void> {
+  // Only keys somebody typed are sent; an untouched field keeps the saved one.
+  const keys = Object.fromEntries(
+    Object.entries(connectionDraftKeys).filter(([, key]) => key.trim() !== ""),
+  );
+  try {
+    const settings = await putSettings({
+      connections: connectionDraft.map(({ has_api_key: _, ...rest }) => rest),
+      default_connection: connectionDraftDefault ?? "",
+      connection_keys: Object.keys(keys).length > 0 ? keys : undefined,
+    });
+    currentSettings = settings;
+    loadConnectionDraft(settings);
+    dom.settingsConnectionResult.textContent = "Saved.";
+    dom.settingsConnectionResult.dataset.state = "ok";
+  } catch (error) {
+    dom.settingsConnectionResult.textContent = describeError(error);
+    dom.settingsConnectionResult.dataset.state = "fail";
+  }
 }
 
 /** The dial as the current settings hold it. */

@@ -91,7 +91,11 @@ fn summarize_before_seeding(
     renderer.compacting(older.len(), before, false);
 
     let standing = crate::compaction::SettingsSummarizer::standing_for(workspace);
-    let mut summarizer = crate::compaction::SettingsSummarizer::new(settings.clone(), standing);
+    let mut summarizer = crate::compaction::SettingsSummarizer::new(
+        settings.clone(),
+        standing,
+        Some(session_id.to_string()),
+    );
     let summary = match zorp_agent::Summarizer::summarize(&mut summarizer, &older, None) {
         Ok(summary) => summary,
         Err(reason) => {
@@ -108,7 +112,8 @@ fn summarize_before_seeding(
         }
     };
 
-    let resolved = settings.lock().unwrap().effective_model();
+    let resolved = crate::settings::model_for_session(settings, session_id)
+        .unwrap_or_else(|_| settings.lock().unwrap().effective_model());
     let recorded = zorp_agent::Compaction {
         id: 0,
         boundary_seq: boundary,
@@ -361,6 +366,9 @@ pub fn spawn_turn(
     // An installed skill the person chose for this one message, already
     // checked against the registry by the handler. A name, never a body.
     chosen_skill: Option<String>,
+    // The connection and model picked for this message, already checked
+    // against the saved list, or `None` to keep the conversation's own.
+    connection: Option<ConnectionChoice>,
     // The directory this turn works in, resolved by the handler before the
     // session was occupied. A turn never resolves it for itself and never
     // falls back to the current directory.
@@ -395,12 +403,10 @@ pub fn spawn_turn(
     if let Ok(store) = Store::open_default() {
         let _ = store.set_status(&session_id, "running");
     }
-    let approver = Arc::new(WebApprover::new(
-        tx.clone(),
-        Arc::clone(&seq),
-        auto_approve,
-        settings.clone(),
-    ));
+    let approver = Arc::new(
+        WebApprover::new(tx.clone(), Arc::clone(&seq), auto_approve, settings.clone())
+            .for_session(&session_id),
+    );
     session.lock().unwrap().approver = Some(Arc::clone(&approver));
 
     // Drain into the backlog on its own thread so a slow browser cannot
@@ -430,6 +436,7 @@ pub fn spawn_turn(
                 message: &message,
                 recalled,
                 chosen_skill,
+                connection,
             },
             workspace,
             Box::new(renderer),
@@ -597,7 +604,14 @@ struct Ask<'a> {
     /// puts one zorp-authored sentence on the seed asking the model to load
     /// it, and never carries the body.
     chosen_skill: Option<String>,
+    /// The connection and model the person picked for this message, or
+    /// `None` to keep what the conversation already runs on. Checked by the
+    /// handler against the saved list.
+    connection: Option<ConnectionChoice>,
 }
+
+/// A connection id and a model on it, each `None` for the default.
+pub type ConnectionChoice = (Option<String>, Option<String>);
 
 /// The agent a conversation runs under, by name, and its flavor with
 /// whether privileged fields were withheld. `(None, None)` for a
@@ -654,7 +668,11 @@ pub fn skill_offer_for(
     workspace: Option<&std::path::Path>,
     session_id: Option<&str>,
 ) -> (String, zorp_agent::SkillOffer) {
-    let mut resolved = settings.lock().unwrap().effective_model();
+    let mut resolved = match session_id {
+        Some(id) => crate::settings::model_for_session(settings, id)
+            .unwrap_or_else(|_| settings.lock().unwrap().effective_model()),
+        None => settings.lock().unwrap().effective_model(),
+    };
     if let (Some(id), Some(root)) = (session_id, workspace) {
         if let (_, Some((flavor, _))) = session_profile(id, root) {
             apply_flavor_model(&mut resolved, &flavor);
@@ -697,6 +715,7 @@ fn run_agent(
         message,
         recalled,
         chosen_skill,
+        connection,
     } = ask;
     // The agent this conversation runs under, resolved before anything is
     // built from the settings, because it may replace some of them.
@@ -720,7 +739,34 @@ fn run_agent(
     }
     let flavor = profile.map(|(flavor, _)| flavor);
 
-    let mut resolved = settings.lock().unwrap().effective_model();
+    // The connection this conversation runs on: what the person picked for
+    // this message, else what its row holds, and for a conversation with
+    // nothing recorded yet, the default connection. Pinned to the row below,
+    // so changing the default later does not move a conversation somebody
+    // started on their own machine to someone else's endpoint, and a
+    // conversation moved back to the main model stays there.
+    let (connection, connection_model) = match connection {
+        Some(choice) => choice,
+        None => {
+            let store = Store::open_default().ok();
+            let fresh = store
+                .as_ref()
+                .map(|s| s.message_count(session_id).unwrap_or(0) == 0)
+                .unwrap_or(true);
+            let stored = store
+                .and_then(|s| s.session_connection(session_id).ok())
+                .unwrap_or_default();
+            if fresh && stored.0.is_none() {
+                (settings.lock().unwrap().default_connection.clone(), None)
+            } else {
+                stored
+            }
+        }
+    };
+    let mut resolved = settings
+        .lock()
+        .unwrap()
+        .model_for(connection.as_deref(), connection_model.as_deref())?;
     if let Some(flavor) = &flavor {
         apply_flavor_model(&mut resolved, flavor);
     }
@@ -788,6 +834,11 @@ fn run_agent(
         if seq == 0 {
             let _ = store.create_session(session_id, message, &cwd_display, "");
         }
+        let _ = store.set_session_connection(
+            session_id,
+            connection.as_deref(),
+            connection_model.as_deref(),
+        );
         let mut plan = seed_transcript(&store, session_id, &system, &budget);
         // The seed will not fit and a summary is the better answer than
         // dropping the oldest exchanges on the floor. Done before the run
@@ -936,6 +987,7 @@ fn run_agent(
     agent = agent.with_summarizer(Box::new(crate::compaction::SettingsSummarizer::new(
         settings.clone(),
         standing,
+        Some(session_id.to_string()),
     )));
 
     // The seed replaces the transcript wholesale, so it has to land before

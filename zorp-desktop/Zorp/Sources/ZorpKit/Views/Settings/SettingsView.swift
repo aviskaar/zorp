@@ -16,6 +16,8 @@ struct EndpointPreset: Identifiable, Hashable {
         EndpointPreset(name: "Anthropic", provider: .anthropic, baseURL: "https://api.anthropic.com", needsKey: true),
         EndpointPreset(name: "Ollama (this Mac)", provider: .openai, baseURL: "http://localhost:11434/v1", needsKey: false),
         EndpointPreset(name: "LM Studio (this Mac)", provider: .openai, baseURL: "http://localhost:1234/v1", needsKey: false),
+        EndpointPreset(name: "Ollama Cloud", provider: .openai, baseURL: "https://ollama.com/v1", needsKey: true),
+        EndpointPreset(name: "DeepSeek", provider: .openai, baseURL: "https://api.deepseek.com/v1", needsKey: true),
     ]
 }
 
@@ -31,6 +33,8 @@ public struct SettingsView: View {
         TabView {
             ModelSettingsView(app: app)
                 .tabItem { Label("Model", systemImage: "cpu") }
+            ConnectionsSettingsView(app: app)
+                .tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }
             WorkspaceSettingsView(app: app)
                 .tabItem { Label("Workspace", systemImage: "folder") }
             AgentsSettingsView(app: app)
@@ -276,5 +280,137 @@ enum WorkspacePicker {
         app.wantsWorkspacePicker = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await app.chooseWorkspace(url.path) }
+    }
+}
+
+/// Saved model connections: several endpoints kept at once, one of them
+/// the default for a new conversation. Keys go to the keychain and the
+/// server's memory, never the settings file.
+struct ConnectionsSettingsView: View {
+    @Bindable var app: AppState
+    @State private var list: [ModelConnection] = []
+    @State private var defaultId: String?
+    @State private var keys: [String: String] = [:]
+    @State private var selected: String?
+    @State private var status: String?
+    @State private var busy = false
+
+    var body: some View {
+        HSplitView {
+            VStack(alignment: .leading, spacing: 6) {
+                List(selection: $selected) {
+                    ForEach(list) { c in
+                        HStack {
+                            Text(verbatim: c.name)
+                            if c.id == defaultId {
+                                Text("default").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                        .tag(c.id)
+                    }
+                }
+                HStack {
+                    Menu {
+                        ForEach(EndpointPreset.all) { p in
+                            Button(p.name) { add(p) }
+                        }
+                        Divider()
+                        Button("Custom") { add(nil) }
+                    } label: { Image(systemName: "plus") }
+                        .menuStyle(.borderlessButton).fixedSize()
+                    Button {
+                        if let id = selected { remove(id) }
+                    } label: { Image(systemName: "minus") }
+                        .buttonStyle(.borderless)
+                        .disabled(selected == nil)
+                }
+                .padding(6)
+            }
+            .frame(minWidth: 180, maxWidth: 220)
+            Group {
+                if let index = list.firstIndex(where: { $0.id == selected }) {
+                    editor(index)
+                } else {
+                    Text("Add a connection with +. A new conversation uses the default; the picker under the composer switches one conversation to another.")
+                        .foregroundStyle(.secondary).padding()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .onAppear(perform: load)
+    }
+
+    private func editor(_ index: Int) -> some View {
+        let id = list[index].id
+        return Form {
+            TextField("Name", text: Binding(
+                get: { list[index].label ?? "" },
+                set: { list[index].label = $0 }))
+            Picker("Provider", selection: Binding(
+                get: { list[index].provider ?? .openai },
+                set: { list[index].provider = $0 })) {
+                ForEach(ModelProvider.allCases) { Text($0.label).tag($0) }
+            }
+            TextField("Base URL", text: $list[index].baseURL)
+            TextField("Model", text: Binding(
+                get: { list[index].model ?? "" },
+                set: { list[index].model = $0.isEmpty ? nil : $0 }))
+            Section("Bring your own key") {
+                SecureField(list[index].hasAPIKey ? "Your key (saved, type to replace)" : "Your key (optional)",
+                            text: Binding(get: { keys[id] ?? "" }, set: { keys[id] = $0 }))
+                TextField("Or read it from an environment variable", text: Binding(
+                    get: { list[index].apiKeyEnv ?? "" },
+                    set: { list[index].apiKeyEnv = $0.isEmpty ? nil : $0.uppercased() }))
+                Text("Each connection uses only its own key, kept in the keychain or read from that variable. It never borrows the main model's key.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Toggle("Default for new conversations", isOn: Binding(
+                get: { defaultId == id },
+                set: { defaultId = $0 ? id : nil }))
+            HStack {
+                if let status { Text(status).font(.caption).foregroundStyle(.red) }
+                Spacer()
+                Button("Save") { Task { await save() } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(busy)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func load() {
+        list = app.settings?.connections ?? []
+        defaultId = app.settings?.defaultConnection
+        keys = [:]
+        if selected == nil { selected = list.first?.id }
+    }
+
+    private func add(_ preset: EndpointPreset?) {
+        let label = preset?.name ?? "Connection"
+        var id = ModelConnection.slug(label)
+        if id.isEmpty { id = "connection" }
+        var n = 2
+        let base = id
+        while list.contains(where: { $0.id == id }) { id = "\(base)-\(n)"; n += 1 }
+        list.append(ModelConnection(id: id, label: label, provider: preset?.provider ?? .openai,
+                                    baseURL: preset?.baseURL ?? "http://localhost:11434/v1"))
+        selected = id
+    }
+
+    private func remove(_ id: String) {
+        list.removeAll { $0.id == id }
+        keys[id] = nil
+        if defaultId == id { defaultId = nil }
+        selected = list.first?.id
+    }
+
+    private func save() async {
+        busy = true
+        defer { busy = false }
+        // Only keys somebody typed are sent; an untouched field keeps the
+        // saved one.
+        let typed = keys.filter { !$0.value.isEmpty }
+        status = await app.saveConnections(list, defaultId: defaultId, keys: typed)
+        if status == nil { load() }
     }
 }
