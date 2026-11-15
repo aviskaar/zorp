@@ -210,13 +210,23 @@ pub fn turn_prompt(workspace: &std::path::Path) -> String {
 /// fact about this server's workspace rather than a matter of taste, and an
 /// agent whose prompt omitted it would write into the top of somebody's
 /// repository.
+///
+/// The workspace's own instruction files (`AGENTS.md`, `CLAUDE.md`) follow,
+/// the way the CLI and other harnesses put them in front of the model. They
+/// are text for the model and grant nothing: no tool, no approval, no
+/// setting.
 pub fn scoped_prompt(prompt: &str, workspace: &std::path::Path) -> String {
-    format!(
+    let mut out = format!(
         "{}\n\nYou are working in {}. Generated files, such as PDFs you render \
          and scratch scripts you write, go in scratch/ under that directory.",
         prompt,
         workspace.display()
-    )
+    );
+    if let Some(rules) = zorp_agent::load_instructions(workspace, workspace) {
+        out.push_str("\n\n# Workspace rules\n");
+        out.push_str(&rules);
+    }
+    out
 }
 
 /// The policy an agent's approval preset asks for, with the loopback guard
@@ -1144,6 +1154,16 @@ mod tests {
     /// The prompt is the harness's to set. A session recorded before a prompt
     /// change must not keep re-sending the old one, and the several stored
     /// copies the server used to write must collapse back to one.
+    #[test]
+    fn the_workspace_instruction_files_reach_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!turn_prompt(dir.path()).contains("Workspace rules"));
+        std::fs::write(dir.path().join("AGENTS.md"), "Run sims with pygame.\n").unwrap();
+        let prompt = turn_prompt(dir.path());
+        assert!(prompt.contains("# Workspace rules"), "{prompt}");
+        assert!(prompt.contains("Run sims with pygame."), "{prompt}");
+    }
+
     #[test]
     fn a_seeded_turn_leads_with_the_current_system_prompt_once() {
         let (mut store, dir) = temp_store("prompt");

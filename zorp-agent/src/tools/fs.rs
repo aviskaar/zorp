@@ -62,13 +62,16 @@ impl Tool for ListFiles {
     }
 
     fn description(&self) -> &str {
-        "List files and directories under a repo-relative path (default the repo root). Respects .gitignore."
+        "List the entries directly under a repo-relative directory (default the repo root), sorted, with '/' after each directory. Pass depth 2 or 3 to look further down. Respects .gitignore."
     }
 
     fn schema(&self) -> Value {
         json!({
             "type": "object",
-            "properties": { "path": {"type":"string","description":"repo-relative directory (default '.')"} },
+            "properties": {
+                "path": {"type":"string","description":"repo-relative directory (default '.')"},
+                "depth": {"type":"integer","description":"how many levels to list, 1 to 3 (default 1)"}
+            },
             "required": []
         })
     }
@@ -76,11 +79,19 @@ impl Tool for ListFiles {
     fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
         let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let base = cx.resolve_existing(rel)?;
+        // One level by default, like `ls`. Two levels of a working directory
+        // full of result files buried the one script a person named under
+        // hundreds of lines and a truncation marker.
+        let depth = args
+            .get("depth")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .clamp(1, 3) as usize;
         let mut entries = Vec::new();
         for dent in ignore::WalkBuilder::new(&base)
             .require_git(false)
             .standard_filters(true)
-            .max_depth(Some(2))
+            .max_depth(Some(depth))
             .build()
         {
             let dent = match dent {
@@ -94,7 +105,9 @@ impl Tool for ListFiles {
                 .path()
                 .strip_prefix(&cx.repo_root)
                 .unwrap_or(dent.path());
-            entries.push(shown.display().to_string());
+            let is_dir = dent.file_type().is_some_and(|t| t.is_dir());
+            let slash = if is_dir { "/" } else { "" };
+            entries.push(format!("{}{slash}", shown.display()));
             if entries.len() >= 500 {
                 break;
             }
@@ -232,6 +245,24 @@ mod tests {
         let out = ListFiles.run(&json!({}), &mut cx).unwrap();
         assert!(out.content.contains("kept.txt"));
         assert!(!out.content.contains("ignored.txt"));
+    }
+
+    #[test]
+    fn list_files_is_one_level_with_slashed_dirs_unless_asked_deeper() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("sub/deeper")).unwrap();
+        fs::write(dir.path().join("sub/inner.txt"), "x").unwrap();
+        fs::write(dir.path().join("top.py"), "x").unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let out = ListFiles.run(&json!({}), &mut cx).unwrap();
+        assert_eq!(out.content, "sub/\ntop.py");
+        let deeper = ListFiles.run(&json!({"depth": 2}), &mut cx).unwrap();
+        assert!(
+            deeper.content.contains("sub/inner.txt"),
+            "{}",
+            deeper.content
+        );
+        assert!(deeper.content.contains("sub/deeper/"), "{}", deeper.content);
     }
 
     #[test]
