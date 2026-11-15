@@ -128,6 +128,23 @@ impl Sandbox {
     }
 
     pub fn run(&self, command: &str) -> Result<CommandOutput, ToolError> {
+        self.run_for(command, None)
+    }
+
+    /// The longest a model may ask one command to run for. Cancel still ends
+    /// it sooner; this only bounds a forgotten one.
+    pub const MAX_TIMEOUT: Duration = Duration::from_secs(600);
+
+    /// `run`, with the model's own deadline in place of the default when it
+    /// gave one, held between one second and `MAX_TIMEOUT`.
+    pub fn run_for(
+        &self,
+        command: &str,
+        timeout: Option<Duration>,
+    ) -> Result<CommandOutput, ToolError> {
+        let deadline = timeout
+            .map(|t| t.clamp(Duration::from_secs(1), Self::MAX_TIMEOUT))
+            .unwrap_or(self.timeout);
         let secrets = self
             .secrets
             .get_or_init(|| Arc::new(secret_values()))
@@ -214,7 +231,7 @@ impl Sandbox {
                 break (status.code(), false, false);
             }
             let cancelled = self.cancel.load(Ordering::SeqCst);
-            let timed_out = started.elapsed() >= self.timeout;
+            let timed_out = started.elapsed() >= deadline;
             if cancelled || timed_out {
                 let kill_result = group.kill();
                 if let Err(error) = kill_result {
@@ -731,7 +748,25 @@ mod tests {
         assert!(!out.stdout.contains("m4-secret-value"));
         assert!(out.stdout.contains("[REDACTED]"));
         assert!(out.stdout.contains("truncated"));
-        assert!(out.stdout.contains("head or tail"));
+    }
+
+    #[test]
+    fn cut_output_names_the_file_holding_all_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_output_cap(1024)
+            .run("seq 1 5000")
+            .unwrap();
+        let path = out
+            .stdout
+            .split_whitespace()
+            .find(|w| w.contains("zorp-output"))
+            .map(|w| w.trim_end_matches(';'))
+            .expect("no file named in cut output");
+        let whole = std::fs::read_to_string(path).unwrap();
+        assert_eq!(whole.lines().count(), 5000);
+        assert!(whole.contains("\n2500\n"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

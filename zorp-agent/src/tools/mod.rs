@@ -105,6 +105,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> Value;
     fn run(&self, args: &Value, cx: &mut Context) -> ToolResult;
+    /// One short rule for the system prompt, when this tool is registered.
+    /// Small models follow the system prompt more closely than a schema.
+    fn guideline(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A recorded file mutation for in-session summaries and later undo support.
@@ -149,7 +154,16 @@ impl Context {
     }
 
     pub fn run_command(&self, command: &str) -> ToolResult {
-        let output = self.sandbox.run(command)?;
+        self.run_command_for(command, None)
+    }
+
+    /// `run_command` under the deadline the call asked for, if any.
+    pub fn run_command_for(
+        &self,
+        command: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> ToolResult {
+        let output = self.sandbox.run_for(command, timeout)?;
         let summary = if output.cancelled {
             "cancelled".to_string()
         } else if output.timed_out {
@@ -357,6 +371,22 @@ impl Registry {
     }
 
     /// Return the names of all registered tools.
+    /// The registered tools' rules as one system prompt section, or `None`
+    /// when no registered tool has one.
+    pub fn guidelines(&self) -> Option<String> {
+        let rules: Vec<String> = self
+            .tools
+            .iter()
+            .filter_map(|t| t.guideline())
+            .map(|g| format!("- {g}"))
+            .collect();
+        if rules.is_empty() {
+            None
+        } else {
+            Some(format!("# Tool use\n{}", rules.join("\n")))
+        }
+    }
+
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }
@@ -435,11 +465,7 @@ pub fn cap_output(s: &str, max: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    format!(
-        "{}\n[… {} bytes truncated; for read_file use start_line and end_line. …]",
-        &s[..end],
-        s.len() - end
-    )
+    format!("{}\n[… {} bytes truncated …]", &s[..end], s.len() - end)
 }
 
 #[cfg(test)]
@@ -506,13 +532,13 @@ mod tests {
     }
 
     #[test]
-    fn capped_output_tells_the_model_to_request_a_smaller_range() {
+    fn capped_output_says_how_much_was_cut_and_names_no_other_tool() {
+        // list_files and apply_patch share this marker; a read_file hint in it
+        // pointed a directory listing at a tool that cannot page one.
+        // read_file writes its own continuation line instead.
         let capped = cap_output(&"x".repeat(32), 8);
-
-        assert!(
-            capped.contains("start_line") && capped.contains("end_line"),
-            "a truncated read gives no way to ask for the rest: {capped}"
-        );
+        assert!(capped.contains("24 bytes truncated"), "{capped}");
+        assert!(!capped.contains("read_file"), "{capped}");
     }
 
     #[test]

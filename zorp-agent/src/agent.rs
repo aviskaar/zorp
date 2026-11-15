@@ -389,6 +389,22 @@ impl Agent {
         }
     }
 
+    /// Append the registered tools' rules to the system message, once. A
+    /// stored system message is never replayed (seeding puts the current
+    /// prompt first), so this cannot pile up across turns.
+    fn add_tool_guidelines(&mut self) {
+        let Some(rules) = self.registry.guidelines() else {
+            return;
+        };
+        let Some(first) = self.messages.first() else {
+            return;
+        };
+        if first.role != "system" || first.text().contains(&rules) {
+            return;
+        }
+        self.messages[0] = Message::system(format!("{}\n\n{rules}", first.text()));
+    }
+
     /// Create an agent with a model, a system prompt, a step limit, and the
     /// repository root that filesystem tools are scoped to.
     pub fn new(
@@ -1228,6 +1244,7 @@ impl Agent {
 
     fn run_loop(&mut self) -> Outcome {
         let schemas = self.registry.schemas();
+        self.add_tool_guidelines();
         let mut step = 0;
         let mut repeats = RepeatGuard::default();
         let mut failed_verify_changes: Option<usize> = None;
@@ -1878,6 +1895,26 @@ mod tests {
         ) -> Result<ModelCompletion, BoxErr> {
             self.pop()
         }
+    }
+
+    #[test]
+    fn registered_tools_put_their_rules_in_the_system_message_once() {
+        let mut a = Agent::new(
+            Box::new(Scripted::new(vec![text("one"), text("two")])),
+            "sys",
+            5,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .register(Box::new(crate::tools::fs::ReadFile))
+        .register(Box::new(crate::tools::shell::RunCommand));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(matches!(a.run("again"), Outcome::Complete(_)));
+        let system = a.transcript()[0].text().into_owned();
+        assert!(system.starts_with("sys\n\n# Tool use\n"), "{system}");
+        assert!(system.contains("start_background_process"), "{system}");
+        assert_eq!(system.matches("# Tool use").count(), 1, "{system}");
     }
 
     fn text(c: &str) -> AssistantMessage {
