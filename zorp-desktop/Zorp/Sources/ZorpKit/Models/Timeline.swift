@@ -131,3 +131,62 @@ public struct InvestigateRun: Equatable, Sendable {
         }
     }
 }
+
+/// What the conversation draws: an item on its own, or a run of
+/// consecutive activity lines folded into one row, the way the browser's
+/// `web/src/activity-group.ts` folds them. A long turn reads as its answers,
+/// and the plumbing is one click away.
+public enum TimelineRowModel: Identifiable, Equatable {
+    case single(TimelineItem)
+    case activity([TimelineItem])
+
+    /// A group keeps its first line's id, so it stays the same row while
+    /// it grows and its open or shut state survives each new line.
+    public var id: UUID {
+        switch self {
+        case .single(let item): return item.id
+        case .activity(let lines): return lines[0].id
+        }
+    }
+}
+
+extension TimelineItem {
+    var isActivity: Bool {
+        switch kind {
+        case .tool, .verify, .notice: return true
+        default: return false
+        }
+    }
+
+    var isCall: Bool {
+        switch kind {
+        case .tool, .verify: return true
+        default: return false
+        }
+    }
+
+    /// Fold each run of activity lines that holds at least one call. A
+    /// notice standing alone, with no call beside it, stays a line of its own.
+    public static func rows(_ items: [TimelineItem]) -> [TimelineRowModel] {
+        var rows: [TimelineRowModel] = []
+        var run: [TimelineItem] = []
+        func flush() {
+            if run.contains(where: \.isCall) {
+                rows.append(.activity(run))
+            } else {
+                rows.append(contentsOf: run.map(TimelineRowModel.single))
+            }
+            run = []
+        }
+        for item in items {
+            if item.isActivity {
+                run.append(item)
+            } else {
+                flush()
+                rows.append(.single(item))
+            }
+        }
+        flush()
+        return rows
+    }
+}

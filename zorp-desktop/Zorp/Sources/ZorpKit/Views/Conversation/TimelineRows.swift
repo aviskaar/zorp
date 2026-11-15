@@ -356,3 +356,77 @@ struct MemoryRow: View {
         }
     }
 }
+
+/// A run of tool lines folded to one row. Shut by default: while the turn
+/// runs it names the call in progress, and once the run is over it is a
+/// count. Opening it shows every line as it was drawn.
+struct ActivityGroupRow: View {
+    let lines: [TimelineItem]
+    let session: SessionViewModel
+    @State private var expanded = false
+
+    private var calls: Int { lines.filter(\.isCall).count }
+
+    private var failed: Int {
+        lines.filter {
+            switch $0.kind {
+            case .tool(_, _, _, .failed): return true
+            case .verify(_, false): return true
+            default: return false
+            }
+        }.count
+    }
+
+    /// The call still running, if any: the newest line wins.
+    private var running: (name: String, phrase: String?)? {
+        for line in lines.reversed() {
+            if case .tool(let name, let phrase, _, .running) = line.kind { return (name, phrase) }
+        }
+        return nil
+    }
+
+    private var label: String {
+        if let running {
+            return ActivityLine.headline(name: running.name, phrase: running.phrase).text
+        }
+        let noun = calls == 1 ? "tool call" : "tool calls"
+        return failed > 0 ? "\(calls) \(noun), \(failed) failed" : "\(calls) \(noun)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeOut(duration: 0.12)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    if running != nil {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "wrench.and.screwdriver")
+                            .foregroundStyle(failed > 0 ? Color.red : Color.secondary)
+                    }
+                    // A phrase can be the model's own words: verbatim, never
+                    // read as markdown.
+                    Text(verbatim: label).font(.callout).lineLimit(1)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "Hide what ran" : "Show what ran")
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(lines) { line in
+                        TimelineRow(item: line, session: session) { _ in }
+                    }
+                }
+                .padding(.leading, 14)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Color.secondary.opacity(0.2)).frame(width: 1)
+                }
+            }
+        }
+    }
+}

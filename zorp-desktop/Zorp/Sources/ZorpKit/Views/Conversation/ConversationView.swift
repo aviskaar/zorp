@@ -21,11 +21,17 @@ public struct ConversationView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 14) {
-                            ForEach(session.items) { item in
-                                TimelineRow(item: item, session: session) { ordinal in
-                                    Task { await app.branch(at: ordinal) }
+                            ForEach(TimelineItem.rows(session.items)) { row in
+                                switch row {
+                                case .single(let item):
+                                    TimelineRow(item: item, session: session) { ordinal in
+                                        Task { await app.branch(at: ordinal) }
+                                    }
+                                    .id(item.id)
+                                case .activity(let lines):
+                                    ActivityGroupRow(lines: lines, session: session)
+                                        .id(row.id)
                                 }
-                                .id(item.id)
                             }
                             if session.isThinking {
                                 HStack(spacing: 8) {
