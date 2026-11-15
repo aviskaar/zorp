@@ -152,6 +152,7 @@ public final class SessionViewModel {
     // MARK: events
 
     func apply(_ event: ServerEvent) {
+        if Self.endsStreamedMessage(event.kind) { closeStream() }
         switch event.kind {
         case .working:
             isRunning = true
@@ -348,6 +349,34 @@ public final class SessionViewModel {
         if !queue.isEmpty {
             let next = queue.removeFirst()
             Task { await self.send(next) }
+        }
+    }
+
+    /// Text before a tool call and text after it are two things the model
+    /// said. Without this the next step's deltas join the first fragment,
+    /// and the finished answer lands above every tool line of the turn.
+    /// The same boundary `web/src/streamed-message.ts` draws.
+    static func endsStreamedMessage(_ kind: ServerEventKind) -> Bool {
+        switch kind {
+        case .toolStarted, .tool, .verify, .notice, .approvalRequest, .checkpointRequest,
+             .memory, .compacting, .error, .stopped, .done:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Keep what streamed so far as a finished fragment. It is not an
+    /// answer the server counted, so it gets no ordinal and no Branch.
+    private func closeStream() {
+        guard let id = streamingItem else { return }
+        streamingItem = nil
+        guard let index = items.firstIndex(where: { $0.id == id }),
+              case .assistant(let text, _, _) = items[index].kind else { return }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            items.remove(at: index)
+        } else {
+            items[index].kind = .assistant(text: text, streaming: false, ordinal: nil)
         }
     }
 

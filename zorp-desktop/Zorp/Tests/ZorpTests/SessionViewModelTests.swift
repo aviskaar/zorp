@@ -135,6 +135,31 @@ func stubClient() -> ZorpClient {
         #expect(!vm.isRunning)
     }
 
+    @Test func theAnswerLandsAfterTheToolsItFollows() {
+        let vm = SessionViewModel(client: stubClient(), sessionId: "s4b")
+        vm.apply(ServerEvent(seq: 1, kind: .assistantDelta(text: "Let me look.")))
+        vm.apply(ServerEvent(seq: 2, kind: .toolStarted(name: "read_file", phrase: nil)))
+        vm.apply(ServerEvent(seq: 3, kind: .tool(name: "read_file", summary: "", phrase: nil)))
+        vm.apply(ServerEvent(seq: 4, kind: .assistantDelta(text: "Done")))
+        vm.apply(ServerEvent(seq: 5, kind: .assistant(text: "Done.")))
+        #expect(vm.items.map(\.kind) == [
+            .assistant(text: "Let me look.", streaming: false, ordinal: nil),
+            .tool(name: "read_file", phrase: nil, summary: "", state: .ok),
+            .assistant(text: "Done.", streaming: false, ordinal: 1),
+        ])
+    }
+
+    @Test func activityRunsFoldIntoOneRow() {
+        let user = TimelineItem(.user(text: "go"))
+        let note = TimelineItem(.notice(text: "auto-approved read_file"))
+        let call = TimelineItem(.tool(name: "read_file", phrase: nil, summary: "", state: .ok))
+        let answer = TimelineItem(.assistant(text: "ok", streaming: false, ordinal: 1))
+        let lone = TimelineItem(.notice(text: "Nothing to compact yet."))
+        let rows = TimelineItem.rows([user, note, call, answer, lone])
+        #expect(rows == [.single(user), .activity([note, call]), .single(answer), .single(lone)])
+        #expect(rows[1].id == note.id)
+    }
+
     @Test func aWithdrawnStreamIsTakenDown() {
         let vm = SessionViewModel(client: stubClient(), sessionId: "s5")
         vm.apply(ServerEvent(seq: 1, kind: .assistantDelta(text: "partial")))
