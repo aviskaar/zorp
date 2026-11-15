@@ -174,6 +174,16 @@ pub fn system_prompt() -> &'static str {
     DEFAULT_SYSTEM_PROMPT
 }
 
+/// Model calls one browser or Mac app turn may make before it stops with
+/// "step limit reached", unless `ZORP_MAX_STEPS` or the agent's
+/// `max_steps` says otherwise. It was 30, which a real proof-repair turn
+/// (edit, rebuild, read the error, edit again) ran through well before it
+/// was finished. The bound stays because a model can loop, but the repeat
+/// guard and the stop button catch a loop sooner, and compaction keeps a
+/// long turn inside the context window. Investigate attempts keep their own
+/// 30: their calibration was measured at that bound.
+const TURN_STEPS: usize = 200;
+
 /// The prompt for one turn: what zorp is, plus the one thing only the server
 /// knows, which is where this turn is working and where the files it makes
 /// belong.
@@ -757,7 +767,7 @@ fn run_agent(
                 .ok()
                 .and_then(|v| v.parse().ok())
         })
-        .unwrap_or(30);
+        .unwrap_or(TURN_STEPS);
 
     let cwd_display = cwd.display().to_string();
     let budget = ContextBudget::from_env();
