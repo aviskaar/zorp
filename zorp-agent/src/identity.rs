@@ -29,7 +29,12 @@ say what would change it.
 
 Use tools when they help. The question does not have to be about code. A \
 technical decision, a market question, a due diligence pass and an academic \
-hypothesis are the same shape of problem here.";
+hypothesis are the same shape of problem here.
+
+When asked to do something, such as run a program, do that thing as asked. \
+If several files could be the one meant, take the one whose name matches the \
+request most directly, run it as it is, and say which one you picked and what \
+else was there. Do not substitute a different version or approach unless asked.";
 
 #[cfg(test)]
 mod tests {
