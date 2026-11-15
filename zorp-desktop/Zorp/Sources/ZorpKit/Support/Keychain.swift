@@ -30,9 +30,38 @@ public enum Keychain {
         return key
     }
 
+    /// A saved connection's key, under its own account so one provider's
+    /// key is never read for another.
+    public static func connectionKey(_ id: String) -> String? { read(account: "connection." + id) }
+
+    @discardableResult
+    public static func setConnectionKey(_ id: String, _ key: String?) -> Bool {
+        write(account: "connection." + id, key)
+    }
+
     /// Store `key`, or remove the stored one when it is nil or empty.
     @discardableResult
-    public static func setAPIKey(_ key: String?) -> Bool {
+    public static func setAPIKey(_ key: String?) -> Bool { write(account: account, key) }
+
+    static func read(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let key = String(data: data, encoding: .utf8),
+              !key.isEmpty else {
+            return nil
+        }
+        return key
+    }
+
+    static func write(account: String, _ key: String?) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

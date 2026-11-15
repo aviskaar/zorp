@@ -98,15 +98,23 @@ public struct Transcript: Codable, Sendable {
     public let messages: [TranscriptEntry]
     public let compactions: [CompactionRecord]
     public let agent: String?
+    /// The saved connection this conversation runs on and the model picked
+    /// there, each nil for the default.
+    public let connection: String?
+    public let connectionModel: String?
 
-    public init(messages: [TranscriptEntry], compactions: [CompactionRecord] = [], agent: String? = nil) {
+    public init(messages: [TranscriptEntry], compactions: [CompactionRecord] = [], agent: String? = nil,
+                connection: String? = nil, connectionModel: String? = nil) {
         self.messages = messages
         self.compactions = compactions
         self.agent = agent
+        self.connection = connection
+        self.connectionModel = connectionModel
     }
 
     enum CodingKeys: String, CodingKey {
-        case messages, compactions, agent
+        case messages, compactions, agent, connection
+        case connectionModel = "connection_model"
     }
 
     public init(from decoder: Decoder) throws {
@@ -114,6 +122,8 @@ public struct Transcript: Codable, Sendable {
         messages = try c.decode([TranscriptEntry].self, forKey: .messages)
         compactions = try c.decodeIfPresent([CompactionRecord].self, forKey: .compactions) ?? []
         agent = try c.decodeIfPresent(String.self, forKey: .agent)
+        connection = try c.decodeIfPresent(String.self, forKey: .connection)
+        connectionModel = try c.decodeIfPresent(String.self, forKey: .connectionModel)
     }
 }
 
@@ -182,9 +192,13 @@ public struct Settings: Codable, Hashable, Sendable {
     public let hasAPIKey: Bool
     public let apiKeySource: SettingsSource
     public let configured: Bool
+    /// Saved model connections. Empty from a server that predates them.
+    public var connections: [ModelConnection] = []
+    public var defaultConnection: String?
 
     enum CodingKeys: String, CodingKey {
-        case provider, model, configured
+        case provider, model, configured, connections
+        case defaultConnection = "default_connection"
         case providerSource = "provider_source"
         case baseURL = "base_url"
         case baseURLSource = "base_url_source"
@@ -196,6 +210,99 @@ public struct Settings: Codable, Hashable, Sendable {
     }
 }
 
+extension Settings {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decode(ModelProvider.self, forKey: .provider)
+        providerSource = try c.decode(SettingsSource.self, forKey: .providerSource)
+        baseURL = try c.decode(String.self, forKey: .baseURL)
+        baseURLSource = try c.decode(SettingsSource.self, forKey: .baseURLSource)
+        model = try c.decode(String.self, forKey: .model)
+        modelSource = try c.decode(SettingsSource.self, forKey: .modelSource)
+        maxTokens = try c.decodeIfPresent(Int.self, forKey: .maxTokens)
+        maxTokensSource = try c.decode(SettingsSource.self, forKey: .maxTokensSource)
+        hasAPIKey = try c.decode(Bool.self, forKey: .hasAPIKey)
+        apiKeySource = try c.decode(SettingsSource.self, forKey: .apiKeySource)
+        configured = try c.decode(Bool.self, forKey: .configured)
+        connections = try c.decodeIfPresent([ModelConnection].self, forKey: .connections) ?? []
+        defaultConnection = try c.decodeIfPresent(String.self, forKey: .defaultConnection)
+    }
+}
+
+/// One saved way of reaching a model: a local Ollama, a remote one,
+/// OpenRouter. It never carries a key; `hasAPIKey` says whether the server
+/// holds one for it, and the key itself lives in the login keychain.
+public struct ModelConnection: Codable, Hashable, Identifiable, Sendable {
+    public var id: String
+    public var label: String?
+    public var provider: ModelProvider?
+    public var baseURL: String
+    public var model: String?
+    public var maxTokens: Int?
+    public var apiKeyEnv: String?
+    public var hasAPIKey: Bool = false
+
+    public init(id: String, label: String? = nil, provider: ModelProvider? = nil, baseURL: String,
+                model: String? = nil, maxTokens: Int? = nil, apiKeyEnv: String? = nil) {
+        self.id = id
+        self.label = label
+        self.provider = provider
+        self.baseURL = baseURL
+        self.model = model
+        self.maxTokens = maxTokens
+        self.apiKeyEnv = apiKeyEnv
+    }
+
+    public var name: String {
+        let trimmed = label?.trimmingCharacters(in: .whitespaces) ?? ""
+        return trimmed.isEmpty ? id : trimmed
+    }
+
+    /// An id from a label: lowercase letters, digits and dashes, the shape
+    /// the server accepts.
+    public static func slug(_ text: String) -> String {
+        var out = ""
+        for ch in text.lowercased() {
+            if ch.isASCII && (ch.isLetter || ch.isNumber) { out.append(ch) }
+            else if !out.isEmpty && out.last != "-" { out.append("-") }
+        }
+        while out.last == "-" { out.removeLast() }
+        return String(out.prefix(40))
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, provider, model
+        case baseURL = "base_url"
+        case maxTokens = "max_tokens"
+        case apiKeyEnv = "api_key_env"
+        case hasAPIKey = "has_api_key"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        provider = try c.decodeIfPresent(ModelProvider.self, forKey: .provider)
+        baseURL = try c.decode(String.self, forKey: .baseURL)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        maxTokens = try c.decodeIfPresent(Int.self, forKey: .maxTokens)
+        apiKeyEnv = try c.decodeIfPresent(String.self, forKey: .apiKeyEnv)
+        hasAPIKey = try c.decodeIfPresent(Bool.self, forKey: .hasAPIKey) ?? false
+    }
+
+    /// What the server stores: no `has_api_key`, which it computes.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encodeIfPresent(label, forKey: .label)
+        try c.encodeIfPresent(provider, forKey: .provider)
+        try c.encode(baseURL, forKey: .baseURL)
+        try c.encodeIfPresent(model, forKey: .model)
+        try c.encodeIfPresent(maxTokens, forKey: .maxTokens)
+        try c.encodeIfPresent(apiKeyEnv, forKey: .apiKeyEnv)
+    }
+}
+
 /// `PUT /api/settings`. Every field is optional and a missing one is left
 /// as it is.
 public struct SettingsUpdate: Encodable, Sendable {
@@ -204,6 +311,12 @@ public struct SettingsUpdate: Encodable, Sendable {
     public var model: String?
     public var maxTokens: Int?
     public var apiKey: String?
+    /// The whole connection list, replacing the saved one.
+    public var connections: [ModelConnection]?
+    /// The connection a new conversation starts on; "" clears it.
+    public var defaultConnection: String?
+    /// Keys by connection id, held in the server's memory only; "" forgets.
+    public var connectionKeys: [String: String]?
 
     public init(provider: ModelProvider? = nil, baseURL: String? = nil, model: String? = nil, maxTokens: Int? = nil, apiKey: String? = nil) {
         self.provider = provider
@@ -218,6 +331,9 @@ public struct SettingsUpdate: Encodable, Sendable {
         case baseURL = "base_url"
         case maxTokens = "max_tokens"
         case apiKey = "api_key"
+        case connections
+        case defaultConnection = "default_connection"
+        case connectionKeys = "connection_keys"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -227,6 +343,9 @@ public struct SettingsUpdate: Encodable, Sendable {
         try c.encodeIfPresent(model, forKey: .model)
         try c.encodeIfPresent(maxTokens, forKey: .maxTokens)
         try c.encodeIfPresent(apiKey, forKey: .apiKey)
+        try c.encodeIfPresent(connections, forKey: .connections)
+        try c.encodeIfPresent(defaultConnection, forKey: .defaultConnection)
+        try c.encodeIfPresent(connectionKeys, forKey: .connectionKeys)
     }
 }
 

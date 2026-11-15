@@ -507,6 +507,12 @@ fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
         // here, following `project_id`, so an older database picks it up
         // on the next open exactly as a fresh one does.
         ("agent", "TEXT"),
+        // Which saved model connection this conversation runs on, and the
+        // model picked there, or NULL for the default. Ids from the
+        // settings file, never a URL or a key: a connection renamed or
+        // removed there resolves at turn time, not here.
+        ("connection", "TEXT"),
+        ("connection_model", "TEXT"),
     ];
 
     for (column, sql_type) in COLUMNS {
@@ -1195,6 +1201,39 @@ impl Store {
         Ok(false)
     }
 
+    /// Record the model connection a conversation runs on, and the model
+    /// picked there. `None` for either means the default. Unlike the agent
+    /// this is never locked: a person can move a conversation from one
+    /// endpoint to another between messages, and the transcript goes with it.
+    pub fn set_session_connection(
+        &self,
+        session_id: &str,
+        connection: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<bool, BoxErr> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET connection = ?2, connection_model = ?3 WHERE id = ?1",
+            (session_id, connection, model),
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// The connection and model a conversation runs on, each `None` when
+    /// unset or when there is no such conversation.
+    pub fn session_connection(
+        &self,
+        session_id: &str,
+    ) -> Result<(Option<String>, Option<String>), BoxErr> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT connection, connection_model FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query([session_id])?;
+        match rows.next()? {
+            Some(row) => Ok((row.get(0)?, row.get(1)?)),
+            None => Ok((None, None)),
+        }
+    }
+
     /// The agent a conversation runs under, or `None`.
     pub fn session_agent(&self, session_id: &str) -> Result<Option<String>, BoxErr> {
         let mut stmt = self
@@ -1307,8 +1346,8 @@ impl Store {
             return Ok(false);
         };
         let inserted = tx.execute(
-            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, project_id, agent, created, updated) \
-             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, project_id, agent, ?3, ?3 \
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, display_title, project_id, agent, connection, connection_model, created, updated) \
+             SELECT ?2, task, repo, model, 'running', session_reasoning_mode, display_title, project_id, agent, connection, connection_model, ?3, ?3 \
              FROM sessions WHERE id = ?1",
             (from, to, now()),
         )?;
@@ -2592,6 +2631,29 @@ CREATE TABLE file_changes (
             .find(|s| s.id == id)
             .unwrap()
             .project_id
+    }
+
+    #[test]
+    fn a_connection_is_stored_and_a_branch_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open_at(&dir.path().join("s.db")).unwrap();
+        store.create_session("s1", "ask", "/r", "m").unwrap();
+        assert_eq!(store.session_connection("s1").unwrap(), (None, None));
+        assert!(store
+            .set_session_connection("s1", Some("home-ollama"), Some("qwen3:32b"))
+            .unwrap());
+        store.record_message("s1", 0, &Message::user("hi")).unwrap();
+        store
+            .record_message("s1", 1, &Message::assistant("hello"))
+            .unwrap();
+        assert!(store.branch_session("s1", 1, "s2").unwrap());
+        let want = (
+            Some("home-ollama".to_string()),
+            Some("qwen3:32b".to_string()),
+        );
+        assert_eq!(store.session_connection("s1").unwrap(), want);
+        assert_eq!(store.session_connection("s2").unwrap(), want);
+        assert!(!store.set_session_connection("nope", None, None).unwrap());
     }
 
     #[test]

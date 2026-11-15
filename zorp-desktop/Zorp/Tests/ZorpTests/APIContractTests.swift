@@ -73,6 +73,21 @@ private func event(_ json: String) -> ServerEvent? {
     #expect(bare.entries.map(\.id) == ["only"])
 }
 
+@Test func connectionsDecodeAndEncodeWithoutTheirKeyFlag() throws {
+    let settings = #"{"provider":"openai","provider_source":"ui","base_url":"u","base_url_source":"ui","model":"m","model_source":"ui","max_tokens":null,"max_tokens_source":"default","has_api_key":false,"api_key_source":"default","configured":true,"connections":[{"id":"deepseek","label":"DeepSeek","provider":"openai","base_url":"https://api.deepseek.com/v1","model":"deepseek-chat","max_tokens":null,"api_key_env":null,"has_api_key":true}],"default_connection":"deepseek"}"#
+    let s = try JSONDecoder().decode(Settings.self, from: Data(settings.utf8))
+    #expect(s.connections.first?.hasAPIKey == true)
+    #expect(s.defaultConnection == "deepseek")
+    let old = try JSONDecoder().decode(Settings.self, from: Data(#"{"provider":"openai","provider_source":"ui","base_url":"u","base_url_source":"ui","model":"m","model_source":"ui","max_tokens":null,"max_tokens_source":"default","has_api_key":false,"api_key_source":"default","configured":true}"#.utf8))
+    #expect(old.connections.isEmpty)
+    let out = try JSONSerialization.jsonObject(with: JSONEncoder().encode(s.connections[0])) as? [String: Any]
+    #expect(out?["has_api_key"] == nil)
+    #expect(out?["base_url"] as? String == "https://api.deepseek.com/v1")
+    let t = try JSONDecoder().decode(Transcript.self, from: Data(#"{"messages":[],"connection":"deepseek","connection_model":"deepseek-reasoner"}"#.utf8))
+    #expect(t.connection == "deepseek")
+    #expect(t.connectionModel == "deepseek-reasoner")
+}
+
 @Test func workspaceAndProjectsDecode() throws {
     let ws = try JSONDecoder().decode(Workspace.self, from: Data(#"{"path":null,"scratch":null,"source":"none","configured":false}"#.utf8))
     #expect(!ws.configured)

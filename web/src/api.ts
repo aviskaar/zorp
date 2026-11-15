@@ -117,6 +117,10 @@ export interface SessionTranscript {
   messages: Message[];
   compactions: CompactionRecord[];
   agent?: string | null;
+  /** The saved connection this conversation runs on, null for the main model. */
+  connection?: string | null;
+  /** The model picked on that connection, null for the connection's own. */
+  connection_model?: string | null;
 }
 
 /**
@@ -179,6 +183,26 @@ export interface Settings {
    * as it is for the model form.
    */
   dial?: DialSlot[];
+  /** Saved model connections. Absent from a server that predates them. */
+  connections?: ModelConnection[];
+  /** The connection a new conversation starts on, or null for the main model. */
+  default_connection?: string | null;
+}
+
+/**
+ * A saved model connection: an endpoint kept beside the main model so a
+ * conversation can run on it. **No key:** `has_api_key` says whether the
+ * server holds one, and a key is sent only in `connection_keys`.
+ */
+export interface ModelConnection {
+  id: string;
+  label?: string | null;
+  provider?: string | null;
+  base_url: string;
+  model?: string | null;
+  max_tokens?: number | null;
+  api_key_env?: string | null;
+  has_api_key?: boolean;
 }
 
 /**
@@ -218,6 +242,12 @@ export interface SettingsUpdate {
    * key.
    */
   dial?: DialSlot[];
+  /** The whole connection list, sent only when the connections section saves. */
+  connections?: ModelConnection[];
+  /** A connection id, or the empty string for the main model. */
+  default_connection?: string;
+  /** Keys typed in this save, by connection id. Never read back. */
+  connection_keys?: Record<string, string>;
 }
 
 /**
@@ -1252,15 +1282,27 @@ export async function sendTurn(
   message: string,
   memory = false,
   skill?: string,
+  connection?: { connection: string; model: string },
 ): Promise<void> {
   try {
     // `skill` is a name the server checks against the installed listing; it
     // is sent only when the message's leading token is a real skill, and it
     // never carries a body. Omitted when absent so an older server sees
     // nothing new.
-    const body: { message: string; memory: boolean; skill?: string } = { message, memory };
+    const body: {
+      message: string;
+      memory: boolean;
+      skill?: string;
+      connection?: string;
+      model?: string;
+    } = { message, memory };
     if (skill) {
       body.skill = skill;
+    }
+    // Where this conversation runs. The empty string is the main model.
+    if (connection) {
+      body.connection = connection.connection;
+      body.model = connection.model;
     }
     await request<void>("POST", `/api/sessions/${segment(id)}/turn`, body);
   } catch (error) {

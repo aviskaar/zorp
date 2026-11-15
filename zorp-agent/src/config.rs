@@ -77,6 +77,117 @@ pub struct Saved {
     /// same file. See issue #242 and `docs/DECISIONS.md` (2026-11-02).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dial: Vec<DialSlot>,
+    /// Named model connections a conversation can run on instead of the
+    /// model above: a local Ollama, a remote one, OpenRouter, an oMLX box.
+    /// Saved together so every one is available at once, and picked per
+    /// conversation. See `docs/DECISIONS.md` (2026-11-15).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<Connection>,
+    /// The connection a new conversation starts on, by id. Unset means the
+    /// model above, which is what every conversation used before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_connection: Option<String>,
+}
+
+/// One saved way of reaching a model: an endpoint, a provider shape and the
+/// model to use there unless a conversation picks another.
+///
+/// **It holds no key, and there is no field for one**, the same as
+/// `DialSlot`. Each connection's key lives in the server's memory and, in
+/// the Mac app, the login keychain. `api_key_env` is the *name* of an
+/// environment variable to read a key from, for the terminal and for a
+/// browser server started with keys in its environment; a name is not a
+/// secret. A connection never falls back to `ZORP_API_KEY`: that key was
+/// given for the default endpoint, and sending it to whatever host a
+/// connection names would hand one provider's secret to another.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct Connection {
+    /// The connection's identity in this file and on a session row:
+    /// lowercase letters, digits, `-` and `_`, at most 40 characters.
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+impl Connection {
+    /// What a person reads: the label, or the id when there is none.
+    pub fn name(&self) -> &str {
+        self.label
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .unwrap_or(&self.id)
+    }
+
+    /// The key named by `api_key_env`, when that variable is set.
+    pub fn env_key(&self) -> Option<String> {
+        self.api_key_env
+            .as_deref()
+            .and_then(|name| std::env::var(name).ok())
+            .filter(|k| !k.is_empty())
+    }
+}
+
+/// Whether `id` can name a connection: it is written to a session row and
+/// used as a keychain account, so it is kept to a plain token.
+pub fn is_valid_connection_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 40
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Check a whole list before it is stored, so a rejected save leaves the
+/// previous list intact. Ids are unique and well formed, the URL is http or
+/// https, the provider is one zorp speaks, and `api_key_env` is a plain
+/// variable name.
+pub fn validate_connections(list: &[Connection]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for c in list {
+        if !is_valid_connection_id(&c.id) {
+            return Err(format!(
+                "connection id {:?} must be 1 to 40 lowercase letters, digits, - or _",
+                c.id
+            ));
+        }
+        if !seen.insert(c.id.as_str()) {
+            return Err(format!("connection id {:?} is used twice", c.id));
+        }
+        let url = c.base_url.trim();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!(
+                "connection {:?}: the base URL must start with http:// or https://",
+                c.id
+            ));
+        }
+        if let Some(p) = &c.provider {
+            p.parse::<crate::Provider>()
+                .map_err(|e| format!("connection {:?}: {e}", c.id))?;
+        }
+        if let Some(name) = &c.api_key_env {
+            let ok = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+            if !ok {
+                return Err(format!(
+                    "connection {:?}: api_key_env must be a variable name like OPENROUTER_API_KEY",
+                    c.id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One speed-dial slot: a model a person parked under a number, with an
@@ -475,6 +586,16 @@ mod tests {
                 model: Some("qwen3:8b".to_string()),
                 max_tokens: Some(8192),
             }],
+            connections: vec![Connection {
+                id: "home".to_string(),
+                label: Some("Home Ollama".to_string()),
+                provider: Some("openai".to_string()),
+                base_url: "http://10.0.0.5:11434/v1".to_string(),
+                model: Some("qwen3:32b".to_string()),
+                max_tokens: None,
+                api_key_env: None,
+            }],
+            default_connection: Some("home".to_string()),
         };
         let text = toml::to_string_pretty(&saved).unwrap();
 

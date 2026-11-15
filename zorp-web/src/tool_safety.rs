@@ -148,8 +148,19 @@ pub fn clamp(raw: &str) -> Verdict {
 
 /// Ask the session's own model, once, whether this call is safe to run
 /// unattended. Never asked with any tools of its own to call.
-pub fn check(settings: &SettingsHandle, tool: &str, arguments: &str) -> Verdict {
-    let resolved = settings.lock().unwrap().effective_model();
+pub fn check(
+    settings: &SettingsHandle,
+    session_id: Option<&str>,
+    tool: &str,
+    arguments: &str,
+) -> Verdict {
+    let resolved = match session_id {
+        Some(id) => match crate::settings::model_for_session(settings, id) {
+            Ok(resolved) => resolved,
+            Err(_) => return Verdict::Unclear,
+        },
+        None => settings.lock().unwrap().effective_model(),
+    };
     if !resolved.configured {
         return Verdict::Unclear;
     }
@@ -236,6 +247,9 @@ mod tests {
         use crate::settings::SettingsState;
         use std::sync::{Arc, Mutex};
         let settings: SettingsHandle = Arc::new(Mutex::new(SettingsState::default()));
-        assert_eq!(check(&settings, "run_command", "{}"), Verdict::Unclear);
+        assert_eq!(
+            check(&settings, None, "run_command", "{}"),
+            Verdict::Unclear
+        );
     }
 }

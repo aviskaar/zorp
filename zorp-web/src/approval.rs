@@ -148,6 +148,9 @@ pub struct WebApprover {
     /// whether the call it is about to wave through looks safe. See
     /// `tool_safety`.
     settings: SettingsHandle,
+    /// The conversation this approver gates, so the safety check asks the
+    /// model that conversation runs on and sends the call nowhere else.
+    session_id: Option<String>,
     /// Test-only seam so the safety verdict can be fixed without a socket.
     /// `None` means the real `tool_safety::check`.
     #[cfg(test)]
@@ -168,9 +171,15 @@ impl WebApprover {
             timeout: APPROVAL_TIMEOUT,
             auto_approve,
             settings,
+            session_id: None,
             #[cfg(test)]
             checker: None,
         }
+    }
+
+    pub fn for_session(mut self, session_id: &str) -> Self {
+        self.session_id = Some(session_id.to_string());
+        self
     }
 
     #[cfg(test)]
@@ -191,7 +200,7 @@ impl WebApprover {
         if let Some(checker) = &self.checker {
             return checker(tool, arguments);
         }
-        tool_safety::check(&self.settings, tool, arguments)
+        tool_safety::check(&self.settings, self.session_id.as_deref(), tool, arguments)
     }
 
     /// Resolve whatever the agent is currently waiting on. Returns false when

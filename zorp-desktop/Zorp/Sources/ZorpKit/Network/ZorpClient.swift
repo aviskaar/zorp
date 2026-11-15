@@ -160,8 +160,17 @@ public final class ZorpClient: Sendable {
     }
 
     /// Start a turn. The answer arrives on the event stream, not here.
-    public func sendTurn(id: String, message: String, memory: Bool = false) async throws {
-        try await send("POST", "api/sessions/\(id)/turn", body: encode(["message": message, "memory": memory]))
+    /// `connection` and `model` pick where this message runs. Sent as a
+    /// pair whenever a connection is chosen; with neither, the conversation
+    /// keeps what it already runs on.
+    public func sendTurn(id: String, message: String, memory: Bool = false,
+                         connection: String? = nil, model: String? = nil) async throws {
+        var body: [String: Any] = ["message": message, "memory": memory]
+        if connection != nil || model != nil {
+            body["connection"] = connection ?? ""
+            body["model"] = model ?? ""
+        }
+        try await send("POST", "api/sessions/\(id)/turn", body: encode(body))
     }
 
     /// Ask the running turn to stop. A 409 means nothing was running.
@@ -237,6 +246,11 @@ public final class ZorpClient: Sendable {
         var body: [String: Any] = ["base_url": baseURL]
         if let apiKey, !apiKey.isEmpty { body["api_key"] = apiKey }
         return try await json(ModelsList.self, "POST", "api/settings/models", body: encode(body))
+    }
+
+    /// List a saved connection's models, with its own endpoint and key.
+    public func listModels(connection: String) async throws -> ModelsList {
+        try await json(ModelsList.self, "POST", "api/settings/models", body: encode(["connection": connection]))
     }
 
     public func testConnection(provider: ModelProvider, baseURL: String, model: String, apiKey: String? = nil) async throws -> ConnectionTest {

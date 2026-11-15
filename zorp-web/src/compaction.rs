@@ -37,11 +37,22 @@ pub struct SettingsSummarizer {
     /// somebody may have cloned; it is fenced as a preference by
     /// `compaction::prompt` and can change no rule.
     standing: Option<String>,
+    /// The conversation being summarized, so the summary is written by the
+    /// model it runs on and its text goes to no other endpoint.
+    session_id: Option<String>,
 }
 
 impl SettingsSummarizer {
-    pub fn new(settings: SettingsHandle, standing: Option<String>) -> SettingsSummarizer {
-        SettingsSummarizer { settings, standing }
+    pub fn new(
+        settings: SettingsHandle,
+        standing: Option<String>,
+        session_id: Option<String>,
+    ) -> SettingsSummarizer {
+        SettingsSummarizer {
+            settings,
+            standing,
+            session_id,
+        }
     }
 
     /// Read standing compaction instructions out of the workspace's
@@ -55,7 +66,10 @@ impl SettingsSummarizer {
 
 impl Summarizer for SettingsSummarizer {
     fn summarize(&mut self, older: &[Message], focus: Option<&str>) -> Result<String, String> {
-        let resolved = self.settings.lock().unwrap().effective_model();
+        let resolved = match &self.session_id {
+            Some(id) => crate::settings::model_for_session(&self.settings, id)?,
+            None => self.settings.lock().unwrap().effective_model(),
+        };
         if !resolved.configured {
             return Err("no model is configured, so no summary could be written".to_string());
         }
@@ -161,7 +175,8 @@ pub fn compact_stored(
     emit.compacting(older.len(), tokens_before, true);
 
     let standing = workspace.and_then(SettingsSummarizer::standing_for);
-    let mut summarizer = SettingsSummarizer::new(settings.clone(), standing);
+    let mut summarizer =
+        SettingsSummarizer::new(settings.clone(), standing, Some(session_id.to_string()));
     let summary = match Summarizer::summarize(&mut summarizer, older, focus.as_deref()) {
         Ok(summary) => summary,
         Err(reason) => {
@@ -184,7 +199,8 @@ pub fn compact_stored(
     after_messages.extend_from_slice(&messages[cut..]);
     let tokens_after = zorp_agent::estimate_tokens(&after_messages);
 
-    let resolved = settings.lock().unwrap().effective_model();
+    let resolved = crate::settings::model_for_session(settings, session_id)
+        .unwrap_or_else(|_| settings.lock().unwrap().effective_model());
     store
         .record_compaction(
             session_id,

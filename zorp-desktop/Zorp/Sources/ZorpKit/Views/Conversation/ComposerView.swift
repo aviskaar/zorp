@@ -154,6 +154,9 @@ struct ComposerView: View {
                 .help(voice.isListening ? "Stop listening" : (app.voice?.available == true || app.voice?.setupAvailable == true
                     ? "Voice input, transcribed on this Mac" : (app.voice?.detail ?? "Voice input is unavailable")))
             }
+            if !(app.settings?.connections.isEmpty ?? true) {
+                ConnectionPicker(app: app, session: session)
+            }
             Button {
                 showInvestigate = true
             } label: {
@@ -237,5 +240,73 @@ struct LevelMeter: View {
             }
         }
         .frame(height: 16)
+    }
+}
+
+/// Where this conversation's next message runs: the main model or one of
+/// the saved connections, and a model there. Switching takes effect on the
+/// next message; the transcript goes with it.
+struct ConnectionPicker: View {
+    @Bindable var app: AppState
+    @Bindable var session: SessionViewModel
+    /// Models each connection listed, by id, fetched with its own key.
+    @State private var listed: [String: [String]] = [:]
+
+    private var connections: [ModelConnection] { app.settings?.connections ?? [] }
+
+    private var current: ModelConnection? {
+        connections.first { $0.id == session.connection }
+    }
+
+    private var label: String {
+        guard let c = current else { return app.settings?.model ?? "Main model" }
+        let model = session.connectionModel ?? c.model ?? "pick a model"
+        return "\(c.name) · \(model)"
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                app.setConnection(nil, model: nil)
+            } label: {
+                Text(verbatim: "Main model · \(app.settings?.model ?? "")")
+            }
+            Divider()
+            ForEach(connections) { c in
+                Menu {
+                    if let own = c.model, !own.isEmpty {
+                        Button { app.setConnection(c.id, model: nil) } label: {
+                            Text(verbatim: "\(own) (saved)")
+                        }
+                    }
+                    let models = listed[c.id] ?? []
+                    if models.isEmpty {
+                        Text("No models listed")
+                    }
+                    ForEach(models.filter { $0 != c.model }, id: \.self) { m in
+                        Button { app.setConnection(c.id, model: m) } label: { Text(verbatim: m) }
+                    }
+                } label: {
+                    Text(verbatim: c.name)
+                }
+            }
+        } label: {
+            Label {
+                Text(verbatim: label).font(.caption).lineLimit(1)
+            } icon: {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(session.isRunning)
+        .help("Where this conversation runs. Takes effect on the next message.")
+        .task(id: connections.map(\.id)) {
+            for c in connections where listed[c.id] == nil {
+                if let list = try? await app.client.listModels(connection: c.id) {
+                    listed[c.id] = list.entries.filter(\.answersWithText).map(\.id)
+                }
+            }
+        }
     }
 }

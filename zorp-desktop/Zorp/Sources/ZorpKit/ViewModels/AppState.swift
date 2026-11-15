@@ -73,6 +73,7 @@ public final class AppState: SessionHost {
             _ = try? await client.putSettings(SettingsUpdate(apiKey: key))
         }
         await refreshSettings()
+        await handOverConnectionKeys()
         await refreshWorkspace()
         await refreshSessions()
         await refreshProjects()
@@ -162,6 +163,20 @@ public final class AppState: SessionHost {
         current = SessionViewModel(client: client)
         current.host = self
         selectedSessionId = nil
+        applyDefaultConnection()
+    }
+
+    /// A new conversation starts on the default connection.
+    func applyDefaultConnection() {
+        guard current.sessionId == nil, !current.connectionSet else { return }
+        current.connection = settings?.defaultConnection
+        current.connectionModel = nil
+    }
+
+    public func setConnection(_ id: String?, model: String?) {
+        current.connection = id
+        current.connectionModel = model
+        current.connectionSet = true
     }
 
     public func openSession(_ id: String) {
@@ -271,6 +286,7 @@ public final class AppState: SessionHost {
 
     public func refreshSettings() async {
         if let s = try? await client.getSettings() { settings = s }
+        applyDefaultConnection()
     }
 
     /// Save model settings. A key goes to the keychain and to the server's
@@ -286,6 +302,38 @@ public final class AppState: SessionHost {
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// Each saved connection's key, from its own keychain item to the
+    /// server's memory. Never written anywhere else.
+    func handOverConnectionKeys() async {
+        var keys: [String: String] = [:]
+        for c in settings?.connections ?? [] {
+            if let key = Keychain.connectionKey(c.id) { keys[c.id] = key }
+        }
+        guard !keys.isEmpty else { return }
+        var update = SettingsUpdate()
+        update.connectionKeys = keys
+        if let s = try? await client.putSettings(update) { settings = s }
+    }
+
+    /// Save the connection list and the default. `keys` holds keys typed
+    /// in this save, by id; an empty one forgets that connection's key.
+    @discardableResult
+    public func saveConnections(_ list: [ModelConnection], defaultId: String?, keys: [String: String]) async -> String? {
+        let removed = (settings?.connections ?? []).map(\.id).filter { id in !list.contains { $0.id == id } }
+        var update = SettingsUpdate()
+        update.connections = list
+        update.defaultConnection = defaultId ?? ""
+        update.connectionKeys = keys.isEmpty ? nil : keys
+        do {
+            settings = try await client.putSettings(update)
+        } catch {
+            return error.localizedDescription
+        }
+        for id in removed { Keychain.setConnectionKey(id, nil) }
+        for (id, key) in keys { Keychain.setConnectionKey(id, key) }
+        return nil
     }
 
     public func clearAPIKey() async {

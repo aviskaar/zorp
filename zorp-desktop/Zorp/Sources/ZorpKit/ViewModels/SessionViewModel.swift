@@ -43,6 +43,14 @@ public final class SessionViewModel {
     /// Messages typed while a turn was running, sent in order after it.
     public var queue: [String] = []
     public private(set) var agent: String?
+    /// The saved connection this conversation runs on and the model picked
+    /// there, nil for the main model. Sent with every message, so switching
+    /// takes effect on the next one.
+    public var connection: String?
+    public var connectionModel: String?
+    /// Whether a person or a stored conversation has set the pair, so the
+    /// default connection does not overwrite their choice.
+    public var connectionSet = false
     public private(set) var loadError: String?
 
     public let client: ZorpClient
@@ -82,6 +90,9 @@ public final class SessionViewModel {
                 return count
             }
             agent = transcript.agent
+            connection = transcript.connection
+            connectionModel = transcript.connectionModel
+            connectionSet = true
         } catch let error as APIError where error.status == 404 {
             // An in-memory session with nothing stored yet.
             items = []
@@ -407,7 +418,8 @@ public final class SessionViewModel {
                 host?.sessionCreated(id)
                 connect(joining: false)
             }
-            try await client.sendTurn(id: sessionId!, message: text, memory: memory)
+            try await client.sendTurn(id: sessionId!, message: text, memory: memory,
+                                      connection: connection ?? "", model: connectionModel ?? "")
         } catch let error as APIError {
             isRunning = false
             if error.isNoWorkspace {

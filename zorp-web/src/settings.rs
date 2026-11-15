@@ -88,6 +88,16 @@ pub struct PutSettings {
     /// A slot's number must be 1 to 9. There is no `api_key` on a slot, so a
     /// save of the dial cannot carry a secret even by accident.
     pub dial: Option<Vec<zorp_agent::config::DialSlot>>,
+    /// The saved model connections, as a whole, the way `dial` is saved.
+    /// `Some(vec![])` clears them. No connection carries a key.
+    pub connections: Option<Vec<zorp_agent::config::Connection>>,
+    /// The connection a new conversation starts on. An empty string clears
+    /// it back to the default model.
+    pub default_connection: Option<String>,
+    /// Keys for connections, by id, held in memory and never written: the
+    /// same treatment `api_key` gets. An empty value forgets that key. The
+    /// Mac app hands these over from the keychain at launch.
+    pub connection_keys: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Everything the server knows about the model to use beyond the env vars
@@ -135,6 +145,11 @@ pub struct SettingsState {
     /// the settings pane; a chord press is an ordinary save of one slot's
     /// model fields and does not touch this list. See issue #242.
     pub dial: Vec<zorp_agent::config::DialSlot>,
+    /// Saved model connections and the one a new conversation starts on.
+    pub connections: Vec<zorp_agent::config::Connection>,
+    pub default_connection: Option<String>,
+    /// Each connection's key, by id. In memory only, like `api_key`.
+    pub connection_keys: std::collections::HashMap<String, String>,
 }
 
 /// The endpoint half of a `listed_windows` key. A trailing slash is the same
@@ -224,6 +239,12 @@ impl SettingsState {
         if self.dial.is_empty() {
             self.dial = persisted.dial;
         }
+        if self.connections.is_empty() {
+            self.connections = persisted.connections;
+        }
+        if self.default_connection.is_none() {
+            self.default_connection = persisted.default_connection;
+        }
     }
 
     /// The shape written to disk. Deliberately cannot carry `api_key`: that
@@ -239,6 +260,8 @@ impl SettingsState {
             speech_voice: self.speech_voice.clone(),
             sandbox: self.sandbox.clone(),
             dial: self.dial.clone(),
+            connections: self.connections.clone(),
+            default_connection: self.default_connection.clone(),
         }
     }
 
@@ -304,7 +327,103 @@ impl SettingsState {
             }
             self.dial = dial.clone();
         }
+        if let Some(list) = &put.connections {
+            zorp_agent::config::validate_connections(list)?;
+            let mut list = list.clone();
+            for c in &mut list {
+                c.base_url = validate_scheme(&c.base_url)?;
+            }
+            // A key for a connection that is gone has nothing left to unlock.
+            self.connection_keys
+                .retain(|id, _| list.iter().any(|c| &c.id == id));
+            self.connections = list;
+        }
+        if let Some(id) = &put.default_connection {
+            let id = id.trim();
+            if id.is_empty() {
+                self.default_connection = None;
+            } else if self.connection(id).is_some() {
+                self.default_connection = Some(id.to_string());
+            } else {
+                return Err(format!("no connection named {id:?}"));
+            }
+        }
+        if let Some(default) = &self.default_connection {
+            if self.connection(default).is_none() {
+                self.default_connection = None;
+            }
+        }
+        if let Some(keys) = &put.connection_keys {
+            for (id, key) in keys {
+                if self.connection(id).is_none() {
+                    return Err(format!("no connection named {id:?}"));
+                }
+                if key.is_empty() {
+                    self.connection_keys.remove(id);
+                } else {
+                    self.connection_keys.insert(id.clone(), key.clone());
+                }
+            }
+        }
         Ok(())
+    }
+
+    pub fn connection(&self, id: &str) -> Option<&zorp_agent::config::Connection> {
+        self.connections.iter().find(|c| c.id == id)
+    }
+
+    /// A connection's key: the one handed over in memory, else the
+    /// variable its `api_key_env` names. Never `ZORP_API_KEY`; see
+    /// `zorp_agent::config::Connection`.
+    pub fn connection_key(&self, id: &str) -> Option<String> {
+        self.connection_keys
+            .get(id)
+            .cloned()
+            .or_else(|| self.connection(id).and_then(|c| c.env_key()))
+    }
+
+    /// The model a conversation runs on. `connection` and `model` are what
+    /// its row holds; with no connection it is the model above, exactly as
+    /// before connections existed. The default connection is applied when a
+    /// conversation starts, by the turn, not here: a conversation somebody
+    /// moved back to the main model stays there.
+    /// A connection that is no longer saved is an error rather than a quiet
+    /// switch to some other endpoint, because the person picked that one,
+    /// possibly to keep the conversation on their own machine.
+    pub fn model_for(
+        &self,
+        connection: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<EffectiveModel, String> {
+        let Some(id) = connection.map(str::to_string) else {
+            let mut resolved = self.effective_model();
+            if let Some(m) = model.map(str::trim).filter(|m| !m.is_empty()) {
+                resolved.model = m.to_string();
+                resolved.configured = true;
+            }
+            return Ok(resolved);
+        };
+        let c = self.connection(&id).ok_or_else(|| {
+            format!("this conversation's connection {id:?} is no longer saved; pick another")
+        })?;
+        let provider = match &c.provider {
+            Some(p) => p.parse().map_err(|e: zorp_agent::BoxErr| e.to_string())?,
+            None => Provider::default(),
+        };
+        let chosen = model
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .or_else(|| c.model.clone().filter(|m| !m.trim().is_empty()))
+            .ok_or_else(|| format!("connection {:?} has no model; pick one", c.name()))?;
+        Ok(EffectiveModel {
+            provider,
+            base_url: c.base_url.clone(),
+            model: chosen,
+            max_tokens: c.max_tokens,
+            api_key: self.connection_key(&c.id),
+            configured: true,
+        })
     }
 
     /// The saved TTS model and voice, each `None` when unset so the caller
@@ -406,6 +525,15 @@ impl SettingsState {
             sandbox,
             sandbox_source,
             dial: self.dial.clone(),
+            connections: self
+                .connections
+                .iter()
+                .map(|c| ConnectionView {
+                    connection: c.clone(),
+                    has_api_key: self.connection_key(&c.id).is_some(),
+                })
+                .collect(),
+            default_connection: self.default_connection.clone(),
         }
     }
 
@@ -512,6 +640,34 @@ pub struct Resolved {
     /// by construction (a slot has no key field). See issue #242.
     #[serde(default)]
     pub dial: Vec<zorp_agent::config::DialSlot>,
+    /// The saved connections, each with whether a key is available for it
+    /// and never the key itself.
+    pub connections: Vec<ConnectionView>,
+    pub default_connection: Option<String>,
+}
+
+/// A saved connection as `GET /api/settings` shows it.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConnectionView {
+    #[serde(flatten)]
+    pub connection: zorp_agent::config::Connection,
+    pub has_api_key: bool,
+}
+
+/// The model a stored conversation runs on, from the connection on its row.
+/// Read outside the settings lock, because it opens the session store.
+pub fn model_for_session(
+    settings: &crate::state::SettingsHandle,
+    session_id: &str,
+) -> Result<EffectiveModel, String> {
+    let (connection, model) = zorp_agent::Store::open_default()
+        .ok()
+        .and_then(|store| store.session_connection(session_id).ok())
+        .unwrap_or_default();
+    settings
+        .lock()
+        .unwrap()
+        .model_for(connection.as_deref(), model.as_deref())
 }
 
 /// What `turn::run_agent` builds `HttpModel` from. Carries the real API key
@@ -800,6 +956,144 @@ fn validate_scheme(base_url: &str) -> Result<String, String> {
         return Err("base URL must start with http:// or https://".to_string());
     }
     Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    use zorp_agent::config::Connection;
+
+    fn conn(id: &str, url: &str, model: Option<&str>, env: Option<&str>) -> Connection {
+        Connection {
+            id: id.into(),
+            base_url: url.into(),
+            model: model.map(str::to_string),
+            api_key_env: env.map(str::to_string),
+            ..Connection::default()
+        }
+    }
+
+    fn state_with(list: Vec<Connection>) -> SettingsState {
+        let mut s = SettingsState {
+            api_key: Some("sk-default".into()),
+            model: Some("default-model".into()),
+            ..SettingsState::default()
+        };
+        s.apply(&PutSettings {
+            connections: Some(list),
+            ..PutSettings::default()
+        })
+        .unwrap();
+        s
+    }
+
+    #[test]
+    fn a_connection_never_borrows_the_default_key() {
+        let s = state_with(vec![conn(
+            "lan",
+            "http://10.0.0.5:11434/v1",
+            Some("qwen3"),
+            None,
+        )]);
+        let m = s.model_for(Some("lan"), None).unwrap();
+        assert_eq!(m.base_url, "http://10.0.0.5:11434/v1");
+        assert_eq!(m.model, "qwen3");
+        assert_eq!(m.api_key, None, "the default key went to another host");
+    }
+
+    #[test]
+    fn a_connection_uses_its_own_key_and_the_picked_model() {
+        let mut s = state_with(vec![conn(
+            "or",
+            "https://openrouter.ai/api/v1",
+            Some("a"),
+            None,
+        )]);
+        s.apply(&PutSettings {
+            connection_keys: Some([("or".to_string(), "sk-or".to_string())].into()),
+            ..PutSettings::default()
+        })
+        .unwrap();
+        let m = s.model_for(Some("or"), Some("b")).unwrap();
+        assert_eq!(
+            (m.model.as_str(), m.api_key.as_deref()),
+            ("b", Some("sk-or"))
+        );
+        assert!(s.resolve().connections[0].has_api_key);
+        let shown = serde_json::to_string(&s.resolve()).unwrap();
+        assert!(!shown.contains("sk-or"), "{shown}");
+        assert!(!format!("{:?}", s.to_persisted()).contains("sk-or"));
+    }
+
+    #[test]
+    fn no_connection_is_the_default_model_and_a_missing_one_is_an_error() {
+        let s = state_with(vec![conn(
+            "lan",
+            "http://10.0.0.5:11434/v1",
+            Some("qwen3"),
+            None,
+        )]);
+        let m = s.model_for(None, None).unwrap();
+        assert_eq!(
+            (m.model.as_str(), m.api_key.as_deref()),
+            ("default-model", Some("sk-default"))
+        );
+        assert!(s.model_for(Some("gone"), None).is_err());
+    }
+
+    #[test]
+    fn the_default_connection_applies_and_must_exist() {
+        let mut s = state_with(vec![conn(
+            "lan",
+            "http://10.0.0.5:11434/v1",
+            Some("qwen3"),
+            None,
+        )]);
+        assert!(s
+            .apply(&PutSettings {
+                default_connection: Some("nope".into()),
+                ..PutSettings::default()
+            })
+            .is_err());
+        s.apply(&PutSettings {
+            default_connection: Some("lan".into()),
+            ..PutSettings::default()
+        })
+        .unwrap();
+        assert_eq!(s.default_connection.as_deref(), Some("lan"));
+        // An explicit "main model" is not overridden by the default.
+        assert_eq!(s.model_for(None, None).unwrap().model, "default-model");
+        // Removing the connection clears the default and its key.
+        s.apply(&PutSettings {
+            connections: Some(vec![]),
+            ..PutSettings::default()
+        })
+        .unwrap();
+        assert_eq!(s.default_connection, None);
+        assert_eq!(s.model_for(None, None).unwrap().model, "default-model");
+    }
+
+    #[test]
+    fn a_bad_list_is_refused_whole() {
+        let mut s = state_with(vec![conn("lan", "http://h/v1", Some("m"), None)]);
+        for bad in [
+            vec![conn("Bad Id", "http://h/v1", None, None)],
+            vec![conn("a", "ftp://h", None, None)],
+            vec![
+                conn("a", "http://h", None, None),
+                conn("a", "http://g", None, None),
+            ],
+            vec![conn("a", "http://h", None, Some("lower"))],
+        ] {
+            assert!(s
+                .apply(&PutSettings {
+                    connections: Some(bad),
+                    ..PutSettings::default()
+                })
+                .is_err());
+        }
+        assert_eq!(s.connections.len(), 1);
+    }
 }
 
 #[cfg(test)]
