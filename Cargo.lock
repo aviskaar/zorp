@@ -5320,7 +5320,7 @@ dependencies = [
 
 [[package]]
 name = "zorp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-agent"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -5369,7 +5369,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-eval"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "clap",
  "csv",
@@ -5388,14 +5388,14 @@ dependencies = [
 
 [[package]]
 name = "zorp-loopback"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "ureq",
 ]
 
 [[package]]
 name = "zorp-mcp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5408,7 +5408,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-recall"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "rusqlite",
  "serde_json",
@@ -5419,7 +5419,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-search"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde_json",
  "ureq",
@@ -5427,14 +5427,14 @@ dependencies = [
 
 [[package]]
 name = "zorp-skill"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "zorp-stub"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -5443,7 +5443,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-track"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "duckdb",
@@ -5456,7 +5456,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-train"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "rustix",
  "serde",
@@ -5471,7 +5471,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-voice"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -5485,7 +5485,7 @@ dependencies = [
 
 [[package]]
 name = "zorp-web"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-stream",
  "axum 0.7.9",

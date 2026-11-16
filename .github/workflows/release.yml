@@ -278,6 +278,15 @@ jobs:
             For macOS users, a standalone native desktop app (`Zorp.dmg`) is
             also attached to this release.
 
+            ### New in v0.8.1
+
+            - **Mac app welcome guide**: a new install, or Reset Settings,
+              opens a short guide that picks a workspace and connects a model,
+              in place of the two popups it used to show. Help > Welcome Guide
+              opens it again. The key still goes to the login keychain.
+            - **README demo**: the README opens with an animated walkthrough
+              of that first run.
+
             ### New since v0.7.1, and which builds carry it
 
             What merged after v0.7.1, and which build has each one, which
