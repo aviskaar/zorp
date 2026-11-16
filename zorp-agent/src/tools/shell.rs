@@ -13,6 +13,12 @@ fn shell_schema() -> Value {
     json!({"type":"object","properties":{"command":{"type":"string","description":"Command passed to /bin/sh -c"},"description":{"type":"string","description":DESCRIPTION_HINT}},"required":["command"],"additionalProperties":false})
 }
 
+fn run_schema() -> Value {
+    let mut schema = shell_schema();
+    schema["properties"]["timeout_secs"] = json!({"type":"integer","description":"Seconds to allow this command, 1 to 600. Default 120. Raise it for a long build or test run."});
+    schema
+}
+
 pub struct RunCommand;
 
 impl Tool for RunCommand {
@@ -20,12 +26,16 @@ impl Tool for RunCommand {
         "run_command"
     }
 
+    fn guideline(&self) -> Option<&str> {
+        Some("run_command waits for the command to end. Start servers, watchers and programs that open a window with start_background_process.")
+    }
+
     fn description(&self) -> &str {
-        "Run a shell command at the repository root with timeout, cancellation, bounded output, and approval."
+        "Run a shell command at the repository root and wait for it to finish, with a timeout (default 120 seconds, set timeout_secs for longer), cancellation, bounded output, and approval. Long output keeps its start and end and names a file holding all of it. Anything that keeps running until someone stops it, such as a server, a watcher or a program that opens a window, goes to start_background_process instead, or this call waits until the timeout kills it."
     }
 
     fn schema(&self) -> Value {
-        shell_schema()
+        run_schema()
     }
 
     fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
@@ -34,7 +44,11 @@ impl Tool for RunCommand {
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::new("run_command requires a non-empty string 'command'"))?;
-        cx.run_command(command)
+        let timeout = args
+            .get("timeout_secs")
+            .and_then(Value::as_u64)
+            .map(std::time::Duration::from_secs);
+        cx.run_command_for(command, timeout)
     }
 }
 
@@ -46,7 +60,7 @@ impl Tool for StartBackgroundProcess {
     }
 
     fn description(&self) -> &str {
-        "Starts a detached background process and returns its PID."
+        "Start a command that keeps running, such as a server, a watcher or a program that opens a window, and return its PID at once. Use kill_background_process to stop it."
     }
 
     fn schema(&self) -> Value {
@@ -158,6 +172,22 @@ mod tests {
         assert_eq!(described.content, plain.content);
         assert_eq!(described.summary, plain.summary);
         assert!(!described.content.contains("greeting"));
+    }
+
+    #[test]
+    fn a_call_can_set_its_own_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let started = std::time::Instant::now();
+        let out = RunCommand
+            .run(&json!({"command":"sleep 5","timeout_secs":1}), &mut cx)
+            .unwrap();
+        assert_eq!(out.summary, "timed out");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        assert_eq!(
+            RunCommand.schema()["properties"]["timeout_secs"]["type"],
+            json!("integer")
+        );
     }
 
     #[test]

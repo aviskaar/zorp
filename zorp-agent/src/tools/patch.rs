@@ -72,16 +72,75 @@ pub(crate) enum ApplyErr {
     Ambiguous(usize),
 }
 
-/// Replace the unique exact occurrence of `search` with `replace`.
+/// Replace the unique exact occurrence of `search` with `replace`, or, when
+/// there is none, the unique run of whole lines that matches it once
+/// trailing spaces and typographic quotes and dashes are set aside.
 pub(crate) fn apply_to_text(
     content: &str,
     search: &str,
     replace: &str,
 ) -> Result<String, ApplyErr> {
     match content.matches(search).count() {
-        0 => Err(ApplyErr::NotFound),
+        0 => apply_loosely(content, search, replace),
         1 => Ok(content.replacen(search, replace, 1)),
         count => Err(ApplyErr::Ambiguous(count)),
+    }
+}
+
+/// A line as a model is likely to have retyped it: no trailing whitespace,
+/// curly quotes and Unicode dashes as their ASCII forms. Leading whitespace
+/// is kept, because indentation is meaning in Python and YAML.
+fn loose(line: &str) -> String {
+    line.trim_end()
+        .chars()
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{00A0}' => ' ',
+            c => c,
+        })
+        .collect()
+}
+
+/// The fallback: compare line by line in the loose form and replace the
+/// original lines that matched, so nothing outside them is rewritten. Small
+/// local models drop a trailing space or straighten a quote often enough
+/// that an exact-only match cost them a retry on most edits.
+fn apply_loosely(content: &str, search: &str, replace: &str) -> Result<String, ApplyErr> {
+    let wanted: Vec<String> = search.lines().map(loose).collect();
+    if wanted.iter().all(|l| l.is_empty()) {
+        return Err(ApplyErr::NotFound);
+    }
+    // Byte span of every line, line ending included.
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for piece in content.split_inclusive('\n') {
+        spans.push((at, at + piece.len()));
+        at += piece.len();
+    }
+    let have: Vec<String> = spans
+        .iter()
+        .map(|&(a, b)| loose(content[a..b].trim_end_matches(['\n', '\r'])))
+        .collect();
+    let hits: Vec<usize> = (0..have.len().saturating_sub(wanted.len() - 1))
+        .filter(|&i| have[i..i + wanted.len()] == wanted[..])
+        .collect();
+    match hits.as_slice() {
+        [] => Err(ApplyErr::NotFound),
+        [i] => {
+            let start = spans[*i].0;
+            let last = spans[i + wanted.len() - 1];
+            let line = &content[last.0..last.1];
+            let ending = &line[line.trim_end_matches(['\n', '\r']).len()..];
+            let mut out = String::with_capacity(content.len() + replace.len());
+            out.push_str(&content[..start]);
+            out.push_str(replace.trim_end_matches(['\n', '\r']));
+            out.push_str(ending);
+            out.push_str(&content[last.1..]);
+            Ok(out)
+        }
+        many => Err(ApplyErr::Ambiguous(many.len())),
     }
 }
 
@@ -115,8 +174,12 @@ impl Tool for ApplyPatch {
         "apply_patch"
     }
 
+    fn guideline(&self) -> Option<&str> {
+        Some("Change part of a file with apply_patch; use write_file only for a new file or a full rewrite.")
+    }
+
     fn description(&self) -> &str {
-        "Edit files using search/replace blocks. Format per block: a line '------ <path>', then '<<<<<<< SEARCH', the exact text to find, '=======', the replacement, '>>>>>>> REPLACE'. The SEARCH text must match exactly and uniquely. An empty SEARCH creates or overwrites the file."
+        "Edit files using search/replace blocks; several blocks, for one file or many, can go in one call. Format per block: a line '------ <path>', then '<<<<<<< SEARCH', the exact text to find, '=======', the replacement, '>>>>>>> REPLACE'. The SEARCH text must match uniquely; whole lines that differ only in trailing spaces or curly quotes and dashes still match. Keep SEARCH short. An empty SEARCH creates or overwrites the file."
     }
 
     fn schema(&self) -> Value {
@@ -238,6 +301,34 @@ mod tests {
     use crate::sandbox::cancel_token;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn near_miss_lines_still_apply_and_leave_the_rest_alone() {
+        let content = "def f():\n    print(\u{201C}hi\u{201D})   \n    return 1\nend\n";
+        let out = apply_to_text(
+            content,
+            "    print(\"hi\")\n    return 1",
+            "    print(\"bye\")\n    return 2",
+        )
+        .unwrap();
+        assert_eq!(out, "def f():\n    print(\"bye\")\n    return 2\nend\n");
+    }
+
+    #[test]
+    fn a_loose_match_never_ignores_indentation_or_picks_between_two() {
+        assert!(matches!(
+            apply_to_text("if x:\n    y = 1\n", "y = 1 ", "y = 2"),
+            Err(ApplyErr::NotFound)
+        ));
+        assert!(matches!(
+            apply_to_text(
+                "x = \u{2018}a\u{2019}\nx = \u{2019}a\u{2018}\n",
+                "x = 'a'",
+                "x = 1"
+            ),
+            Err(ApplyErr::Ambiguous(2))
+        ));
+    }
 
     const PATCH: &str = "\
 ------ src/a.rs

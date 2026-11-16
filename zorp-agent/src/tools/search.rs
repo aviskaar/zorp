@@ -8,6 +8,10 @@ impl Tool for SearchText {
         "search_text"
     }
 
+    fn guideline(&self) -> Option<&str> {
+        Some("Find text across files with search_text rather than grep in run_command.")
+    }
+
     fn description(&self) -> &str {
         "Search the repository for a regular expression. Returns matching lines as path:line: text. Respects .gitignore."
     }

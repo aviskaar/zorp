@@ -11,8 +11,12 @@ impl Tool for ReadFile {
         "read_file"
     }
 
+    fn guideline(&self) -> Option<&str> {
+        Some("Read files with read_file, not cat or sed in run_command, and follow its start_line hint to page a long file.")
+    }
+
     fn description(&self) -> &str {
-        "Read a UTF-8 text file in the repository. Optional 1-based start_line/end_line select a range."
+        "Read a UTF-8 text file in the repository. Optional 1-based start_line/end_line select a range. A long file comes back in pages of whole lines, each ending with the start_line to continue from."
     }
 
     fn schema(&self) -> Value {
@@ -36,22 +40,54 @@ impl Tool for ReadFile {
         let text =
             std::fs::read_to_string(&full).map_err(|e| ToolError::new(format!("{path}: {e}")))?;
 
+        let lines: Vec<&str> = text.lines().collect();
+        let total = lines.len();
         let start = args.get("start_line").and_then(|v| v.as_u64());
         let end = args.get("end_line").and_then(|v| v.as_u64());
-        let selected = if start.is_some() || end.is_some() {
-            let lines: Vec<&str> = text.lines().collect();
-            let s = start.unwrap_or(1).max(1) as usize;
-            let e = (end.unwrap_or(lines.len() as u64) as usize).min(lines.len());
-            lines.get(s.saturating_sub(1)..e).unwrap_or(&[]).join("\n")
-        } else {
-            text
-        };
-        let n = selected.lines().count();
-        Ok(ToolOutput::new(
-            cap_output(&selected, READ_FILE_OUTPUT_CAP),
-            format!("{path} ({n} lines)"),
+        if start.is_none() && end.is_none() && text.len() <= READ_FILE_OUTPUT_CAP {
+            return Ok(ToolOutput::new(text, format!("{path} ({total} lines)")));
+        }
+        let s = start.unwrap_or(1).max(1) as usize;
+        let e = (end.unwrap_or(total as u64) as usize).min(total);
+        Ok(read_page(
+            path,
+            lines.get(s.saturating_sub(1)..e).unwrap_or(&[]),
+            s,
+            total,
         ))
     }
+}
+
+/// Whole lines from `first` on, up to the output cap, and when the cap cuts
+/// them short, the exact `start_line` to continue from. A cut in the middle
+/// of a line with "N bytes truncated" left a small model guessing where the
+/// next page began, so it guessed, re-read, or stopped.
+fn read_page(path: &str, lines: &[&str], first: usize, total: usize) -> ToolOutput {
+    let mut out = String::new();
+    let mut shown = 0;
+    for line in lines {
+        if !out.is_empty() && out.len() + line.len() + 1 > READ_FILE_OUTPUT_CAP {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        shown += 1;
+    }
+    if shown == 0 {
+        return ToolOutput::new(String::new(), format!("{path} (0 lines)"));
+    }
+    let last = first + shown - 1;
+    // Only a single line longer than the cap gets here over it.
+    let mut out = cap_output(&out, READ_FILE_OUTPUT_CAP);
+    if shown < lines.len() {
+        out.push_str(&format!(
+            "\n\n[Showing lines {first}-{last} of {total}. Call read_file with start_line={} to continue.]",
+            last + 1
+        ));
+    }
+    ToolOutput::new(out, format!("{path} (lines {first}-{last} of {total})"))
 }
 
 pub struct ListFiles;
@@ -59,6 +95,10 @@ pub struct ListFiles;
 impl Tool for ListFiles {
     fn name(&self) -> &str {
         "list_files"
+    }
+
+    fn guideline(&self) -> Option<&str> {
+        Some("Look at a directory with list_files before guessing paths; it shows one level unless you pass depth.")
     }
 
     fn description(&self) -> &str {
@@ -226,6 +266,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ranged.content, "00000010\n00000011\n00000012");
+    }
+
+    #[test]
+    fn a_long_file_pages_by_whole_lines_and_says_where_to_continue() {
+        let dir = tempdir().unwrap();
+        let line = "x".repeat(99);
+        let body = vec![line.as_str(); 400].join("\n");
+        fs::write(dir.path().join("big.txt"), &body).unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let out = ReadFile.run(&json!({"path":"big.txt"}), &mut cx).unwrap();
+        let (page, hint) = out.content.split_once("\n\n[").unwrap();
+        assert!(page.lines().all(|l| l == line), "a line was cut");
+        let shown = page.lines().count();
+        assert!(hint.contains(&format!("lines 1-{shown} of 400")), "{hint}");
+        assert!(
+            hint.contains(&format!("start_line={}", shown + 1)),
+            "{hint}"
+        );
+        let next = ReadFile
+            .run(&json!({"path":"big.txt","start_line": shown + 1}), &mut cx)
+            .unwrap();
+        assert!(next.content.contains(&format!("lines {}-", shown + 1)));
+        let small = ReadFile
+            .run(
+                &json!({"path":"big.txt","start_line":2,"end_line":3}),
+                &mut cx,
+            )
+            .unwrap();
+        assert_eq!(small.content, format!("{line}\n{line}"));
     }
 
     #[test]

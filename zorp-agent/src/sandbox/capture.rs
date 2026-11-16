@@ -5,7 +5,9 @@
 //! window of the output within a byte cap.
 
 use std::collections::VecDeque;
-use std::io::{self, Read};
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -17,6 +19,27 @@ pub(super) struct BoundedCapture {
     tail: VecDeque<u8>,
     total: usize,
     cap: usize,
+    /// The whole (redacted) stream, opened the moment it outgrows the cap,
+    /// so the middle the head and tail windows drop can still be read.
+    spill: Option<(PathBuf, File)>,
+}
+
+/// A fresh owner-only file under the temp directory for one stream's whole
+/// output, or `None` if one cannot be made: a missing file loses the middle
+/// of the output, which is what happened before it existed.
+fn open_spill() -> Option<(PathBuf, File)> {
+    use std::sync::atomic::AtomicUsize;
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join("zorp-output");
+    std::fs::create_dir_all(&dir).ok()?;
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!("{}-{n}.log", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(&path).ok()?;
+    Some((path, file))
 }
 
 impl BoundedCapture {
@@ -26,10 +49,29 @@ impl BoundedCapture {
             tail: VecDeque::with_capacity(cap - cap / 2),
             total: 0,
             cap,
+            spill: None,
         }
     }
 
     fn push(&mut self, bytes: &[u8]) {
+        // Until the cap is passed the windows hold every byte, so they are
+        // the file's start; after that every byte goes to the file too.
+        if self.spill.is_none() && self.total + bytes.len() > self.cap {
+            if let Some((path, mut file)) = open_spill() {
+                let (front, back) = self.tail.as_slices();
+                let ok = file.write_all(&self.head).is_ok()
+                    && file.write_all(front).is_ok()
+                    && file.write_all(back).is_ok();
+                if ok {
+                    self.spill = Some((path, file));
+                }
+            }
+        }
+        if let Some((_, file)) = &mut self.spill {
+            if file.write_all(bytes).is_err() {
+                self.spill = None;
+            }
+        }
         let head_cap = self.cap / 2;
         let tail_cap = self.cap - head_cap;
         self.total = self.total.saturating_add(bytes.len());
@@ -173,7 +215,8 @@ pub(super) fn render_capture(capture: &BoundedCapture, cap: usize) -> String {
     let head = decode_truncated_head(&capture.head);
     let tail_bytes: Vec<u8> = capture.tail.iter().copied().collect();
     let tail = decode_truncated_tail(&tail_bytes);
-    cap_separate_head_tail(&head, &tail, capture.omitted(), cap)
+    let spill = capture.spill.as_ref().map(|(path, _)| path.as_path());
+    cap_separate_head_tail(&head, &tail, capture.omitted(), cap, spill)
 }
 
 fn cap_output_head_tail(text: &str, cap: usize) -> String {
@@ -188,15 +231,27 @@ fn cap_output_head_tail(text: &str, cap: usize) -> String {
         &text[tail_start..],
         tail_start - head_end,
         cap,
+        None,
     )
 }
 
-fn cap_separate_head_tail(head: &str, tail: &str, omitted: usize, cap: usize) -> String {
+fn cap_separate_head_tail(
+    head: &str,
+    tail: &str,
+    omitted: usize,
+    cap: usize,
+    spill: Option<&std::path::Path>,
+) -> String {
     if cap < "truncated".len() {
         return head[..nearest_char_boundary(head, cap)].to_string();
     }
-    let marker =
-        format!("\n[… {omitted} bytes truncated. Pipe the command through head or tail. …]\n");
+    let marker = match spill {
+        Some(path) => format!(
+            "\n[… {omitted} bytes truncated. The whole output is in {p}; read the middle with sed -n 'START,ENDp' {p} or grep it, instead of running the command again. …]\n",
+            p = path.display()
+        ),
+        None => format!("\n[… {omitted} bytes truncated. Pipe the command through head or tail. …]\n"),
+    };
     let marker = if marker.len() <= cap {
         marker
     } else {
@@ -267,6 +322,39 @@ mod tests {
             .retained_bytes()
             .windows(21)
             .any(|w| w == b"cross-boundary-secret"));
+    }
+
+    #[test]
+    fn a_cut_stream_keeps_its_whole_redacted_output_in_a_file_it_names() {
+        let mut input: Vec<u8> = (0..2000)
+            .flat_map(|i| format!("line {i}\n").into_bytes())
+            .collect();
+        input.extend_from_slice(b"the-secret\n");
+        let secrets = Arc::new(vec![b"the-secret".to_vec()]);
+        let eof = Arc::new(AtomicBool::new(false));
+        let capture =
+            capture_stream(Cursor::new(input), 1024, secrets, eof, Duration::ZERO).unwrap();
+        let (path, _) = capture
+            .spill
+            .as_ref()
+            .expect("no spill file for a cut stream");
+        let whole = std::fs::read_to_string(path).unwrap();
+        assert!(whole.starts_with("line 0\n") && whole.contains("line 1000\n"));
+        assert!(whole.ends_with("[REDACTED]\n"), "secret reached the file");
+        assert_eq!(whole.len(), capture.total);
+        let shown = render_capture(&capture, 1024);
+        assert!(shown.contains(&path.display().to_string()), "{shown}");
+        std::fs::remove_file(path).unwrap();
+
+        let small = capture_stream(
+            Cursor::new(b"short".to_vec()),
+            256,
+            Arc::new(vec![]),
+            Arc::new(AtomicBool::new(false)),
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(small.spill.is_none(), "an uncut stream made a file");
     }
 
     #[test]
