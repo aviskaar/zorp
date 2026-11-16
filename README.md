@@ -2,6 +2,8 @@
 
 # zorp
 
+<img src="docs/assets/zorp-onboarding.webp" alt="Setting up the zorp Mac app: pick a workspace, connect a model, start a conversation" width="860">
+
 ### Own your intelligence.
 
 *Answers are cheap. Evidence is not.*
