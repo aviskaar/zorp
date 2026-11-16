@@ -25,6 +25,9 @@ public struct AppCommands: Commands {
             Button("Choose Workspace…") { app.wantsWorkspacePicker = true }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
         }
+        CommandGroup(before: .help) {
+            Button("Welcome Guide") { app.showOnboarding = true }
+        }
         CommandGroup(after: .windowArrangement) {
             Button("Developer Mode") { openWindow(id: "developer") }
                 .keyboardShortcut("d", modifiers: [.command, .shift])

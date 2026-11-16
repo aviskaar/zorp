@@ -32,6 +32,9 @@ public final class AppState: SessionHost {
     public var wantsWorkspacePicker = false
     /// Raised when the settings window should open: no model is set up.
     public var wantsSettings = false
+    /// The guided first run, over the whole window: a fresh install with
+    /// nothing set up, and right after Reset Settings.
+    public var showOnboarding = false
     /// Bumped whenever the Files pane should list again.
     public private(set) var filesGeneration = 0
     /// Whether the Files pane is open, and the file it should show.
@@ -77,10 +80,8 @@ public final class AppState: SessionHost {
         await refreshWorkspace()
         await refreshSessions()
         await refreshProjects()
-        if workspace?.configured != true {
-            wantsWorkspacePicker = true
-        } else if settings?.configured != true {
-            wantsSettings = true
+        if workspace?.configured != true || settings?.configured != true {
+            showOnboarding = true
         }
         if let settings, settings.configured {
             await loadModels(baseURL: settings.baseURL)
@@ -150,6 +151,10 @@ public final class AppState: SessionHost {
         do {
             try await client.resetSettings()
             await refreshSettings()
+            await refreshWorkspace()
+            models = []
+            modelsError = nil
+            showOnboarding = true
         } catch {
             banner = "Could not reset settings: \(error.localizedDescription)"
         }
@@ -274,7 +279,7 @@ public final class AppState: SessionHost {
             banner = nil
             filesGeneration += 1
             await refreshKnownFiles()
-            if settings?.configured != true { wantsSettings = true }
+            if settings?.configured != true, !showOnboarding { wantsSettings = true }
             return true
         } catch {
             banner = error.localizedDescription

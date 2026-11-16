@@ -45,6 +45,13 @@ public struct MainWindowView: View {
                 .help("Show the workspace's files")
             }
         }
+        .overlay {
+            if app.showOnboarding {
+                OnboardingView(app: app)
+                    .transition(.opacity.combined(with: .scale(scale: 1.02)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.35), value: app.showOnboarding)
         .task { await app.start() }
         .onChange(of: app.wantsWorkspacePicker) {
             if app.wantsWorkspacePicker { WorkspacePicker.run(app: app) }
