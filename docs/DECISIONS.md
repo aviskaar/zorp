@@ -9,6 +9,7 @@ This table maps each date to its record so those references still resolve.
 
 | Date | Record |
 |------|--------|
+| 2026-11-16 | [0153](decisions/0153-mac-app-first-run-is-a-guide-over-the-existing-routes.md) The Mac app's first run is a guide over the existing routes |
 | 2026-11-15 | [0152](decisions/0152-tool-output-and-edits-shaped-for-small-models.md) Tool output and edits shaped for small local models |
 | 2026-11-15 | [0151](decisions/0151-saved-model-connections-each-with-its-own-key.md) Saved model connections, each with its own key |
 | 2026-11-02 | [0150](decisions/0150-a-system-one-decision-model-is-a-tool-the-model-reads-not-a-gate.md) a System One decision model is a tool the model reads, not a gate code reads |

@@ -195,7 +195,10 @@ struct DataSettingsView: View {
                     switch what {
                     case "conversations": await app.clearAllConversations()
                     case "index": await app.deleteSearchIndex()
-                    case "settings": await app.resetSettings()
+                    case "settings":
+                        await app.resetSettings()
+                        // The guide opens in the main window; get this one out of its way.
+                        NSApp.keyWindow?.close()
                     default: break
                     }
                     await load()
