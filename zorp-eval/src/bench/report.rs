@@ -10,8 +10,8 @@
 //! Every cell is computed from code-derived columns: counts of an outcome
 //! the runner assigned, a reason from a closed set, and timings the client
 //! measured. No model is asked what it scored and no text a model wrote
-//! reaches a cell; `bench_results.response` exists for a person debugging
-//! a grader and nothing here reads it. The rule is the one
+//! reaches a cell; `bench_results.response` and `bench_results.reasoning`
+//! exist for a person debugging a grader and nothing here reads them. The rule is the one
 //! `evals/harbor/ensemble_report.py` lives under.
 
 use crate::BoxErr;
@@ -44,6 +44,8 @@ pub fn init_schema(conn: &Connection) -> Result<(), BoxErr> {
         )",
         (),
     )?;
+    // Added after the table first shipped; an older database grows it.
+    crate::runner::ensure_column(conn, "bench_results", "reasoning", "TEXT")?;
     Ok(())
 }
 
@@ -63,6 +65,9 @@ pub struct Record<'a> {
     pub expected: &'a str,
     pub extracted: Option<&'a str>,
     pub response: Option<&'a str>,
+    /// A thinking model's reasoning. Withheld exactly when `response` is,
+    /// and like it, read by nothing here.
+    pub reasoning: Option<&'a str>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
     pub ttft_ms: Option<u64>,
@@ -119,8 +124,8 @@ pub fn insert(conn: &Connection, r: &Record) -> Result<(), BoxErr> {
         ],
     )?;
     conn.execute(
-        "INSERT INTO bench_results (session, run_id, benchmark, item_id, outcome, unparsed, reason, http_status, detail, expected, extracted, response, prompt_tokens, completion_tokens, ttft_ms, sends)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO bench_results (session, run_id, benchmark, item_id, outcome, unparsed, reason, http_status, detail, expected, extracted, response, prompt_tokens, completion_tokens, ttft_ms, sends, reasoning)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         rusqlite::params![
             r.session,
             run_id,
@@ -138,6 +143,7 @@ pub fn insert(conn: &Connection, r: &Record) -> Result<(), BoxErr> {
             r.completion_tokens.map(|t| t as i64),
             r.ttft_ms.map(|t| t as i64),
             r.sends,
+            r.reasoning,
         ],
     )?;
     Ok(())
@@ -429,6 +435,7 @@ mod tests {
             expected: "A",
             extracted: None,
             response: None,
+            reasoning: None,
             prompt_tokens: Some(10),
             completion_tokens: Some(20),
             ttft_ms: Some(100),

@@ -104,6 +104,10 @@ impl ReasoningMode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Answered {
     pub text: String,
+    /// A thinking model's reasoning, from `reasoning_content` or
+    /// `reasoning`, when it sent any. Data for a person reading the
+    /// database: nothing that grades reads it.
+    pub reasoning: Option<String>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
     /// Send to the first streamed token, of any kind. `None` when the
@@ -261,6 +265,7 @@ pub fn ask(endpoint: &Endpoint, bounds: &Bounds, prompt: &str) -> Result<Answere
         }
         return Ok(Answered {
             text: reply.text,
+            reasoning: Some(reply.reasoning).filter(|r| !r.is_empty()),
             prompt_tokens: reply.prompt_tokens,
             completion_tokens: reply.completion_tokens,
             ttft_ms: reply.ttft_ms,
@@ -366,6 +371,7 @@ fn timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
 /// A reply read to its end.
 struct Reply {
     text: String,
+    reasoning: String,
     finish: Option<String>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
@@ -449,9 +455,19 @@ fn parse(payload: &str) -> Result<Value, Stop> {
     })
 }
 
+/// The reasoning text on a message or delta, under whichever of the two
+/// names the server uses.
+fn reasoning_in(value: &Value) -> &str {
+    ["reasoning_content", "reasoning"]
+        .iter()
+        .find_map(|k| value.get(*k).and_then(Value::as_str))
+        .unwrap_or("")
+}
+
 fn read_openai(resp: ureq::Response, sent_at: Instant, ceiling: Duration) -> Result<Reply, Stop> {
     let mut reply = Reply {
         text: String::new(),
+        reasoning: String::new(),
         finish: None,
         prompt_tokens: None,
         completion_tokens: None,
@@ -475,18 +491,15 @@ fn read_openai(resp: ureq::Response, sent_at: Instant, ceiling: Duration) -> Res
             if let Some(text) = message.get("content").and_then(Value::as_str) {
                 reply.text.push_str(text);
             }
+            reply.reasoning.push_str(reasoning_in(message));
         } else if let Some(delta) = choice.and_then(|c| c.get("delta")) {
             let content = delta.get("content").and_then(Value::as_str).unwrap_or("");
-            let thought = ["reasoning_content", "reasoning"].iter().any(|k| {
-                delta
-                    .get(*k)
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.is_empty())
-            });
-            if reply.ttft_ms.is_none() && (!content.is_empty() || thought) {
+            let thought = reasoning_in(delta);
+            if reply.ttft_ms.is_none() && (!content.is_empty() || !thought.is_empty()) {
                 reply.ttft_ms = Some(elapsed_ms_between(sent_at, at));
             }
             reply.text.push_str(content);
+            reply.reasoning.push_str(thought);
         }
         if let Some(finish) = choice
             .and_then(|c| c.get("finish_reason"))
@@ -518,6 +531,7 @@ fn read_anthropic(
 ) -> Result<Reply, Stop> {
     let mut reply = Reply {
         text: String::new(),
+        reasoning: String::new(),
         finish: None,
         prompt_tokens: None,
         completion_tokens: None,
@@ -682,6 +696,49 @@ mod tests {
             assert!(got.ttft_ms.is_some());
             assert_eq!(got.sends, 1);
         }
+    }
+
+    /// A thinking model's reasoning is kept beside the answer, never in it,
+    /// so the grader still reads only `text`.
+    #[test]
+    fn streamed_reasoning_is_kept_apart_from_the_answer() {
+        for framing in Framing::BOTH {
+            let events = [
+                json!({"choices": [{"delta": {"reasoning_content": "Weigh the "}}]}),
+                json!({"choices": [{"delta": {"reasoning": "invented options."}}]}),
+                json!({"choices": [{"delta": {"content": "Answer: D"}}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+            ];
+            let (address, _) = scripted_server(framing, vec![scripted(&events, Ending::Done)]);
+            let got = ask(&endpoint(address), &bounds(10, 1), "q").unwrap();
+            assert_eq!(got.text, "Answer: D");
+            assert_eq!(
+                got.reasoning.as_deref(),
+                Some("Weigh the invented options.")
+            );
+        }
+        let (address, _) = scripted_server(Framing::Chunked, vec![answer("Answer: C", "stop")]);
+        let got = ask(&endpoint(address), &bounds(10, 1), "q").unwrap();
+        assert_eq!(got.reasoning, None);
+    }
+
+    #[test]
+    fn buffered_reasoning_is_kept_apart_from_the_answer() {
+        let body = r#"{"choices":[{"message":{"content":"Answer: B","reasoning_content":"An invented line of thought."},"finish_reason":"stop"}]}"#;
+        let (address, _) = scripted_server(
+            Framing::Chunked,
+            vec![Reply::Status {
+                code: 200,
+                retry_after: None,
+                body,
+            }],
+        );
+        let got = ask(&endpoint(address), &bounds(10, 1), "q").unwrap();
+        assert_eq!(got.text, "Answer: B");
+        assert_eq!(
+            got.reasoning.as_deref(),
+            Some("An invented line of thought.")
+        );
     }
 
     #[test]
