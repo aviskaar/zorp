@@ -309,6 +309,33 @@ jobs:
               fine-tuning are tracked follow-ups. Speech needs a local Ollama
               runtime at run time; fine-tuning needs Apple Silicon (MLX).
 
+            Also new since v0.7.1, in every build unless noted:
+
+            - **Saved model connections with bring your own key**: several
+              named endpoints (OpenRouter, Ollama local or cloud, oMLX,
+              DeepSeek, any OpenAI-compatible URL) beside the main model, one
+              the default for new conversations and switchable per
+              conversation. Each uses only its own key and never falls back
+              to `ZORP_API_KEY`.
+            - **Model speed dial**: up to nine saved model slots, switched
+              with Control+Alt+digit in the browser or `/dial` in the REPL.
+            - **Skills from the composer**: type `/` to pick an installed
+              skill for one message, or `/skill <name>` in the REPL.
+            - **Emoji**: `:shortcode:` expansion, autocomplete, a picker and
+              custom emoji files.
+            - **Tools that suit small local models**: a long file read in
+              pages that say where to continue, cut command output kept whole
+              in a file the model can read, edits that tolerate a trailing
+              space or a curly quote, a per-call command timeout, and the
+              workspace's `AGENTS.md` and `CLAUDE.md` in the browser and Mac
+              app prompt.
+            - **Longer turns**: a browser or Mac app turn may take 200 steps,
+              up from 30.
+            - **Mac app**: live voice transcript while you speak, answers
+              drawn after their tool calls, and tool lines folded to one row.
+            - **System One** decision models through the `decide` tool, behind
+              the non-default `systemone` feature.
+
             These binaries do not include the research capabilities
             (`validate`, `investigate`, `co-write`, `deliver`), which are
             behind the `research` feature and require building from source.
