@@ -184,7 +184,14 @@ impl Plan {
         let benchmarks: Vec<String> = self.cases.iter().map(|c| c.name.clone()).collect();
         let runtimes: Vec<String> = self.runtimes.iter().map(|(id, _)| id.clone()).collect();
         let rows = report::rows(&conn, &session, &benchmarks, &runtimes)?;
-        let table = report::render(&session, &rows);
+        let withheld: Vec<String> = self
+            .cases
+            .iter()
+            .filter(|c| c.case.format == case::Format::Gpqa)
+            .map(|c| c.name.clone())
+            .collect();
+        let missed = report::all_missed(&conn, &session, &withheld)?;
+        let table = report::render(&session, &rows, &missed);
         Ok(Outcomes {
             session,
             rows,
