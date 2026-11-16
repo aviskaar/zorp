@@ -20,7 +20,7 @@
 # a source build, because zorp-track bundles DuckDB.
 FROM debian:12-slim
 
-ARG VERSION=v0.8.0
+ARG VERSION=v0.8.1
 ARG TARGETARCH
 
 # ca-certificates is required: zorp talks to an OpenAI-compatible endpoint
