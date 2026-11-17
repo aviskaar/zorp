@@ -146,6 +146,7 @@ impl Plan {
                                 expected: &expected,
                                 extracted: graded.extracted.as_deref(),
                                 response: keep_text.then_some(answer.text.as_str()),
+                                reasoning: answer.reasoning.as_deref().filter(|_| keep_text),
                                 prompt_tokens: answer.prompt_tokens,
                                 completion_tokens: answer.completion_tokens,
                                 ttft_ms: answer.ttft_ms,
@@ -167,6 +168,7 @@ impl Plan {
                                 expected: &expected,
                                 extracted: None,
                                 response: None,
+                                reasoning: None,
                                 prompt_tokens: None,
                                 completion_tokens: None,
                                 ttft_ms: None,
@@ -411,6 +413,81 @@ mod tests {
             )
             .unwrap();
         assert_eq!(runs, 3);
+    }
+
+    fn thinking(reasoning: &str, text: &str) -> Reply {
+        Reply::Scripted {
+            events: vec![
+                serde_json::json!({"choices": [{"delta": {"reasoning_content": reasoning}}]})
+                    .to_string(),
+                serde_json::json!({"choices": [{"delta": {"content": text}}]}).to_string(),
+                serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+                    .to_string(),
+            ]
+            .into(),
+            ending: Ending::Done,
+        }
+    }
+
+    fn stored_text(db: &Path) -> Vec<(Option<String>, Option<String>)> {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT response, reasoning FROM bench_results ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// Reasoning is stored where a reply is, and withheld where a reply is:
+    /// under GPQA neither reaches the database.
+    #[test]
+    fn reasoning_is_stored_and_withheld_exactly_as_the_response_is() {
+        let root = tempfile::tempdir().unwrap();
+        let (address, _) = scripted_server(
+            Framing::Chunked,
+            vec![thinking("invented thought", "Answer: B")],
+        );
+        let runtimes = format!(
+            "reference:\n  id: live\n  reasoning_mode: \"\"\n  model: stub\n  base_url: http://{address}/v1\ncandidates: []\n"
+        );
+        let options = setup(root.path(), &runtimes, &mmlu_case());
+        let db = options.db.clone();
+        Plan::prepare(options).unwrap().run().unwrap();
+        let rows = stored_text(&db);
+        assert_eq!(rows.len(), 3);
+        for (response, reasoning) in rows {
+            assert_eq!(response.as_deref(), Some("Answer: B"));
+            assert_eq!(reasoning.as_deref(), Some("invented thought"));
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let csv = outside.path().join("gpqa_fixture.csv");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bench/gpqa_fixture.csv"),
+            &csv,
+        )
+        .unwrap();
+        let (address, _) = scripted_server(
+            Framing::Chunked,
+            vec![thinking("invented thought", "Answer: A")],
+        );
+        let runtimes = format!(
+            "reference:\n  id: live\n  reasoning_mode: \"\"\n  model: stub\n  base_url: http://{address}/v1\ncandidates: []\n"
+        );
+        let case = format!(
+            "format = \"gpqa\"\n[source]\npath = {:?}\n[bounds]\ntimeout_secs = 10\nretry_attempts = 1\n",
+            csv.display().to_string()
+        );
+        let options = setup(root.path(), &runtimes, &case);
+        let db = options.db.clone();
+        let out = Plan::prepare(options).unwrap().run().unwrap();
+        assert!(out.rows[0].scored > 0, "{}", out.table);
+        let rows = stored_text(&db);
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|row| *row == (None, None)), "{rows:?}");
     }
 
     #[test]

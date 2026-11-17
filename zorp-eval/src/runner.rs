@@ -45,7 +45,12 @@ pub fn init_db(db_path: &Path) -> Result<Connection, BoxErr> {
     Ok(conn)
 }
 
-fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> Result<(), BoxErr> {
+pub(crate) fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    ty: &str,
+) -> Result<(), BoxErr> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let exists = stmt
         .query_map([], |row| row.get::<_, String>(1))?
