@@ -15,7 +15,7 @@
 //! `evals/harbor/ensemble_report.py` lives under.
 
 use crate::BoxErr;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use rusqlite::Connection;
@@ -282,6 +282,72 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     })
 }
 
+/// An item scored by at least two runtimes and wrong on every one of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Missed {
+    pub benchmark: String,
+    pub item_id: String,
+    /// The gold answer and each extracted answer with how many runtimes gave
+    /// it, or nothing for a benchmark whose answers are kept off the page.
+    pub answers: Option<(String, BTreeMap<String, u64>)>,
+}
+
+/// Items every runtime that scored them got wrong, from code-derived
+/// columns only: outcome, expected, extracted. A runtime counts once per
+/// item however many repetitions it ran, and it counts as wrong only when
+/// every repetition it scored was wrong. `withheld` names benchmarks whose
+/// answers are not printed (GPQA), which get their item id and nothing else.
+pub fn all_missed(
+    conn: &Connection,
+    session: &str,
+    withheld: &[String],
+) -> Result<Vec<Missed>, BoxErr> {
+    let mut statement = conn.prepare(
+        "SELECT r.runtime_id, b.benchmark, b.item_id, b.outcome, b.expected, b.extracted
+         FROM bench_results b JOIN runs r ON r.run_id = b.run_id
+         WHERE b.session = ?1 AND b.outcome IN ('correct', 'incorrect')",
+    )?;
+    type Runtimes = BTreeMap<String, (bool, BTreeSet<String>)>;
+    let mut items: BTreeMap<(String, String), (String, Runtimes)> = BTreeMap::new();
+    let mut query = statement.query([session])?;
+    while let Some(row) = query.next()? {
+        let runtime: String = row.get(0)?;
+        let benchmark: String = row.get(1)?;
+        let item_id: String = row.get(2)?;
+        let outcome: String = row.get(3)?;
+        let expected: Option<String> = row.get(4)?;
+        let extracted: Option<String> = row.get(5)?;
+        let (gold, runtimes) = items.entry((benchmark, item_id)).or_default();
+        if let Some(expected) = expected {
+            *gold = expected;
+        }
+        let (any_correct, answers) = runtimes.entry(runtime).or_default();
+        *any_correct |= outcome == "correct";
+        answers.insert(extracted.unwrap_or_else(|| "no answer".into()));
+    }
+    let mut out = Vec::new();
+    for ((benchmark, item_id), (gold, runtimes)) in items {
+        if runtimes.len() < 2 || runtimes.values().any(|(correct, _)| *correct) {
+            continue;
+        }
+        let answers = (!withheld.contains(&benchmark)).then(|| {
+            let mut counts = BTreeMap::new();
+            for (_, given) in runtimes.values() {
+                for answer in given {
+                    *counts.entry(answer.clone()).or_default() += 1;
+                }
+            }
+            (gold, counts)
+        });
+        out.push(Missed {
+            benchmark,
+            item_id,
+            answers,
+        });
+    }
+    Ok(out)
+}
+
 /// The contamination caveat every table carries, in text, so no reader has
 /// to rediscover it.
 pub const CAVEAT: &str = "\
@@ -292,7 +358,7 @@ with published scores, where prompt format and grader move the number more than 
 
 /// The table as text: a pipe table a pull request renders, then the
 /// unevaluable reasons, then what the columns mean and the caveat.
-pub fn render(session: &str, rows: &[Row]) -> String {
+pub fn render(session: &str, rows: &[Row], missed: &[Missed]) -> String {
     let header = [
         "benchmark",
         "runtime",
@@ -392,6 +458,34 @@ pub fn render(session: &str, rows: &[Row]) -> String {
             );
         }
     }
+    if !missed.is_empty() {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Missed by every runtime that scored it; check the item before reading it as a model weakness:"
+        );
+        for m in missed {
+            match &m.answers {
+                Some((gold, counts)) => {
+                    let given: Vec<String> = counts
+                        .iter()
+                        .map(|(answer, n)| format!("{answer} from {n}"))
+                        .collect();
+                    let _ = writeln!(
+                        out,
+                        "  {} item {}: expected {}, answered {}",
+                        m.benchmark,
+                        m.item_id,
+                        gold,
+                        given.join(", ")
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "  {} item {}", m.benchmark, m.item_id);
+                }
+            }
+        }
+    }
     let _ = writeln!(out);
     let _ = writeln!(
         out,
@@ -470,7 +564,7 @@ mod tests {
             .unwrap();
         assert_eq!(nulls, 3);
 
-        let text = render("s", &rows);
+        let text = render("s", &rows, &[]);
         let down_line = text.lines().find(|l| l.contains("| down")).unwrap();
         assert!(down_line.contains("n/a"), "{down_line}");
         assert!(!down_line.contains("0.0%"), "{down_line}");
@@ -490,5 +584,61 @@ mod tests {
         let rows = rows(&conn, "s", &["mmlu".into()], &["up".into()]).unwrap();
         assert_eq!(rows[0].scored, 1);
         assert_eq!(rows[0].latency_ms, None);
+    }
+
+    fn wrong<'a>(runtime: &'a str, item: &'a str, said: &'a str) -> Record<'a> {
+        let mut r = record(runtime, item, Outcome::Incorrect);
+        r.extracted = Some(said);
+        r
+    }
+
+    #[test]
+    fn an_item_every_scoring_runtime_missed_is_listed_with_its_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::runner::init_db(&dir.path().join("t.db")).unwrap();
+        init_schema(&conn).unwrap();
+        // Item 1: missed by all three that scored it, two agreeing on B; the
+        // fourth runtime never scored it and does not count either way.
+        insert(&conn, &wrong("a", "1", "B")).unwrap();
+        insert(&conn, &wrong("b", "1", "B")).unwrap();
+        insert(&conn, &wrong("c", "1", "C")).unwrap();
+        insert(&conn, &record("d", "1", Outcome::Unevaluable)).unwrap();
+        // Item 2: one runtime got it right, so it is not listed.
+        insert(&conn, &wrong("a", "2", "B")).unwrap();
+        insert(&conn, &record("b", "2", Outcome::Correct)).unwrap();
+        // Item 3: only one runtime scored it, so it is not listed.
+        insert(&conn, &wrong("a", "3", "D")).unwrap();
+        insert(&conn, &record("b", "3", Outcome::Unevaluable)).unwrap();
+
+        let missed = all_missed(&conn, "s", &[]).unwrap();
+        assert_eq!(missed.len(), 1, "{missed:?}");
+        assert_eq!(missed[0].item_id, "1");
+        let (gold, counts) = missed[0].answers.clone().unwrap();
+        assert_eq!(gold, "A");
+        assert_eq!(counts.get("B"), Some(&2));
+        assert_eq!(counts.get("C"), Some(&1));
+
+        let text = render("s", &[], &missed);
+        assert!(
+            text.contains("Missed by every runtime that scored it"),
+            "{text}"
+        );
+        assert!(
+            text.contains("mmlu item 1: expected A, answered B from 2, C from 1"),
+            "{text}"
+        );
+        assert!(!text.contains('\u{2014}') && !text.contains('\u{2013}'));
+
+        // A withheld benchmark prints its item id and nothing else.
+        let hidden = all_missed(&conn, "s", &["mmlu".into()]).unwrap();
+        assert_eq!(hidden[0].answers, None);
+        let text = render("s", &[], &hidden);
+        let line = text.lines().find(|l| l.contains("mmlu item 1")).unwrap();
+        assert_eq!(line.trim(), "mmlu item 1");
+    }
+
+    #[test]
+    fn no_missed_items_prints_no_heading() {
+        assert!(!render("s", &[], &[]).contains("Missed by every runtime"));
     }
 }
