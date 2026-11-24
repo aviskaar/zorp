@@ -6,11 +6,15 @@
 
 ### Own your intelligence.
 
-*Answers are cheap. Evidence is not.*
+**Everyone rents intelligence by the token. What if you owned the whole stack?**
 
-Investigation is scattered, and the AI version of it is neither grounded
-nor validated. zorp turns a question into a pre-registered investigation,
-an evidence record, and a report where every claim traces back to it.
+Run any open-weight model on your own hardware. Give it memory, evaluate it,
+serve it fast, or train your own. Get to discoveries faster, with an
+evidence-backed research agent underneath.
+
+*Own the model. Own the stack.*
+
+**19 pieces ship today** · **131,825 lines, open source** · **MIT licensed, end to end**
 
 <br/>
 
@@ -22,51 +26,33 @@ an evidence record, and a report where every claim traces back to it.
 [![GitHub downloads](https://img.shields.io/github/downloads/aviskaar/zorp/total?style=flat-square)](docs/RELEASING.md#reading-download-counts)
 [![GitHub downloads (latest release)](https://img.shields.io/github/downloads/aviskaar/zorp/latest/total?style=flat-square)](docs/RELEASING.md#reading-download-counts)
 
-**[zorp.dev](https://zorp.dev)** · [Aviskaar](https://github.com/aviskaar) · [Report an issue](../../issues)
+**[Download for Mac (.dmg)](https://github.com/aviskaar/zorp/releases/download/v0.8.1/Zorp-v0.8.1-universal.dmg)** · [Windows](https://github.com/aviskaar/zorp/releases/download/v0.8.1/zorp-v0.8.1-x86_64-pc-windows-msvc.zip) · [Linux x86_64](https://github.com/aviskaar/zorp/releases/download/v0.8.1/zorp-v0.8.1-x86_64-unknown-linux-gnu.tar.gz) · [Linux arm64](https://github.com/aviskaar/zorp/releases/download/v0.8.1/zorp-v0.8.1-aarch64-unknown-linux-gnu.tar.gz)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Guides](#what-you-can-do-with-it) · [Development](#development) · [Roadmap](#status-and-roadmap) · [Q&A](https://github.com/aviskaar/zorp/discussions/categories/q-a)
+**[zorp.dev](https://zorp.dev)** · [Docs](https://docs.zorp.dev) · [v0.8.1 release notes](https://github.com/aviskaar/zorp/releases/tag/v0.8.1) · [Q&A](https://github.com/aviskaar/zorp/discussions/categories/q-a) · [Contact](../../issues)
 
 </div>
 
 ---
 
-zorp turns an uncertain question into a defensible answer, using
-evidence: question, investigation, sources, evidence, conflicting
-evidence, reasoning, validation, answer or artifact. That covers a lot
-more than academic research: a technical decision (should we migrate off
-Kafka), a competitive teardown, an investment thesis, a due-diligence
-package, a market question, an engineering tradeoff, or an academic
-hypothesis are all the same shape of problem to zorp. It's built by
-[Aviskaar](https://github.com/aviskaar), an applied AI research lab.
+Or install the CLI from a terminal (macOS and Linux, x86_64 and arm64):
 
-> **Status: early / pre-alpha.** The base execution harness and the
-> shared research foundation (tracks, evidence records, checkpoints) are
-> in place and fully tested. All four capabilities built on top,
-> validate, investigate, co-write, and deliver, are built and tested.
-> Training your own models is the next direction: RL Studio pretrains
-> a model and fine-tunes one on your own feedback, and retraining without
-> being asked is planned. See [Status and roadmap](#status-and-roadmap) below.
+```bash
+curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
+```
+
+> **Status: pre-alpha.** Not ready for production. Anything that is not
+> built yet is marked planned below. See [Status and roadmap](#status-and-roadmap).
 
 ## Contents
 
-**Start here, by what you came for:**
-
-| I want to... | Go to |
-|---|---|
-| Try it in five minutes | [Quick start](#quick-start) |
-| Understand what it is and why | [Six pillars](#six-pillars), [Why zorp](#why-zorp) |
-| See how the pieces fit | [Architecture](#architecture), [Repository layout](#repository-layout) |
-| Run an investigation | [Research capabilities](docs/research.md) |
-| Use the browser or Mac app | [Web UI](docs/web-ui.md), [Getting started](docs/getting-started.md) |
-| Check what leaves my machine | [Threat model](docs/THREAT_MODEL.md), [Network egress](docs/NETWORK_EGRESS.md) |
-| Contribute code | [Development](#development), [Contributing](#contributing) |
-
-**All sections:**
-[Six pillars](#six-pillars) ·
-[Why zorp](#why-zorp) ·
+[Everything in the stack](#everything-in-the-stack) ·
+[The stack](#the-stack) ·
+[Why own it](#why-own-it) ·
+[For answers that must hold up](#for-answers-that-must-hold-up) ·
+[Questions](#questions) ·
 [Quick start](#quick-start) ·
 [Architecture](#architecture) ·
-[What you can do with it](#what-you-can-do-with-it) ·
+[Guides](#what-you-can-do-with-it) ·
 [Repository layout](#repository-layout) ·
 [Development](#development) ·
 [Status and roadmap](#status-and-roadmap) ·
@@ -74,57 +60,134 @@ hypothesis are all the same shape of problem to zorp. It's built by
 [Contributing](#contributing) ·
 [License](#license)
 
-## Six pillars
+## Everything in the stack
 
-| Pillar | What it does |
-|---|---|
-| **Run** | Connect any OpenAI-compatible model, self-hosted or cloud, and put it to work. |
-| **Remember** | Search and recall your own past conversations through a local embedding model. Conversation text goes to a loopback address or nowhere. |
-| **Investigate** | Staged, pre-registered evidence gathering with an immutable record every claim traces back to. |
-| **Measure** | Confidence calibration, kill thresholds, and evaluation so the output is accountable to numbers, not just language. |
-| **Improve** | RL Studio: train a small model, or fine-tune one (LoRA, SFT, DPO) on a dataset built from your own feedback. Runs on Apple Silicon through MLX. |
-| **Propose** *(experimental)* | Candidate questions and pre-registrations drawn from the evidence record. Nothing proposed runs until a person commits it, and most of this is still library code with no command of its own. |
+One open-source project, from the chat window down to training your own
+model.
 
-## Why zorp
+| Use it | Investigate | Know | Measure | Train |
+|---|---|---|---|---|
+| Terminal agent | Validate | Local memory | Harness eval suite | Pretraining |
+| Browser chat | Investigate | Web search | Public benchmarks | Serve your checkpoint |
+| Mac app | Co-write | Skills | [BudgetBench](https://github.com/aviskaar/budgetbench) | Fine-tuning *(planned)* |
+| | Deliver | Voice input | | RLStudio post-training *(planned)* |
+| | Critique gate | MCP tools | | |
+| | Panel review | | | |
 
-A confident answer is not a defensible one. An LLM will produce a fluent
-answer to a hard question in seconds. What it will not do is tell you
-whether to believe it, what evidence it weighed, or what it found that
-pointed the other way. zorp treats that gap as the actual problem. A
-question becomes an investigation, the investigation produces an evidence
-record, and the record is what the answer is accountable to.
+## The stack
 
-The core primitive is the Kill Threshold: a number a human supplies that
-says, in advance, what would prove the investigation wrong. Before zorp
-gathers anything, the hypothesis, the metric, and the threshold are
-written to a file, hashed, and committed to git, so a run cannot quietly
-rewrite what it set out to test. The agent never proposes the threshold,
-and only a human can move it. Every attempt is recorded, not just the one
-that worked, and when a run crosses the line the record says why it was
-killed.
+One harness runs any open model. Everything else sits on top of it.
 
-Most "AI scientist" projects wire a large agent framework directly to
-experiment code, which makes the harness and the research logic hard to
-separate, test, or reason about independently, and most assume the
-deliverable is a finished document an AI wrote end to end. zorp starts
-from the opposite end on both counts: a minimal, dependency-light
-execution core extended deliberately with the primitives evidence-based
-investigation needs, and a human always in the loop as the author of
-record for whatever gets produced, a decision memo, a competitive
-landscape, a due-diligence package, or a paper. Long-running task loops,
-verification gates, session persistence, tool/MCP integration, and the
-research foundation (multi-track evidence records with git-backed,
-tamper-evident pre-registration) are already built and tested. All four
-capabilities on top, each a clearly bounded layer, validate, investigate,
-co-write, and deliver, are built and tested; co-write drafts the
-artifact from the track's recorded evidence, with a human as author of
-record, and deliver matches the finished draft against real venues.
-Between those two sits `critique`, a gate rather than a capability: it
-audits the draft against the track's own evidence record, flags figures
-and claims the record cannot account for, revises within a bound you set,
-and writes what it found into the record. The auditing is done in code,
-not by asking a model whether it likes its own draft, and the pass cannot
-move the Kill Threshold.
+| Layer | What it does | Status | Crates | Lines |
+|---|---|---|---|---|
+| **Interface** | The terminal agent, the browser chat with the artifact beside it, and the Mac app. | Built | `zorp-web`, `web`, `zorp-desktop` | 39,141 |
+| **Investigate** | The research agent: tracks, the Kill Threshold, the evidence record, and the aryabhatta discovery layer. | Built | `zorp-track`, `erbga` | 17,266 |
+| **Evaluate** | The harness suite that gates every change, compatibility runs and public benchmarks. BudgetBench lives in its own repository. | Built | `zorp-eval` | 7,201 |
+| **Memory** | Local recall and memory over your own conversations. Text goes to a loopback address or nowhere. | Built | `zorp-recall`, `zorp-loopback` | 2,800 |
+| **Adapt and train** | Pretraining in developer mode on Apple Metal through MLX today. Fine-tuning and RLStudio post-training are planned. | Partial | `zorp-train` | 3,026 |
+| **Tools** | Web search through Tavily or your own SearXNG, Claude Code compatible skills, and local voice. | Built | `zorp-search`, `zorp-skill`, `zorp-voice` | 4,516 |
+| **Harness** | The core and the agent: any OpenAI-compatible model, tools, approvals, sessions and MCP, in one CLI and API. | Built | `zorp`, `zorp-agent`, `zorp-mcp`, `zorp-stub` | 57,875 |
+| **The model** | Any open-weight model, or one you build. Swap it and nothing above it changes. | | | |
+| **Your hardware** | Your laptop, your workstation, your servers. Offline if you want it to be. | | | |
+
+Line counts: Rust, TypeScript and Python per crate at commit `16a773e`, counted with `wc -l`, generated and vendored files excluded.
+
+## Why own it
+
+**The market is built to rent you intelligence, not to help you own it.**
+The default path is a frontier API: easy to start, metered by the token,
+and every call sends your data out of the building. The meter never stops,
+your context leaves, and one vendor owns the price, the limits and the
+model.
+
+**The models got good, and the tooling grew up.** Small open-weight models
+clear the bar for most everyday work (classification, extraction, routing,
+drafting), and serving, memory, tuning and evaluation are now building
+blocks you can own.
+
+**Hybrid by design.** The question is not open versus closed. It is which
+workload runs where. Keep the work local unless it is beyond a local model
+and the data is safe to send out. Sensitive data stays home however hard
+the task.
+
+**You are not buying a model. You are owning an interchangeable stack.**
+Swap in a better open model when one ships. Nothing above it changes.
+
+**Give it a memory that stays home.** A model with no memory starts cold
+every time. zorp indexes your past conversations on your machine and
+quotes the relevant ones back: earlier conversations, a local index
+(SQLite and local embeddings), quoted into the turn, so the model starts
+warm. There is no remote embedding provider and no fallback to one.
+
+**Run it, adapt it, or train your own.** Run open weights as they are, or
+pretrain a tokenizer and a model from scratch on Apple Metal. Fine-tuning
+and RLStudio post-training are planned. The data that adapts or trains the model
+never leaves your machine to do it.
+
+**Prove it holds up.** A leaderboard will not tell you if a small model
+clears your bar. Test it under the token, context and memory budget you
+will actually run with. Budget-tiered evaluation is formalized in
+[BudgetBench](https://github.com/aviskaar/budgetbench) (Rao and Jaggi,
+arXiv 2609.13149).
+
+**Serve it fast.** Any OpenAI-compatible server works, so a quantized model
+on Ollama, LM Studio or vLLM becomes your endpoint. No round trip to
+someone else's data center.
+
+**An agent you run offline cannot leak what it never sends.** It reaches
+only what your machine exposes, tool calls pass approval rules you set and
+are stored with the conversation, and web search is off until you turn it
+on. See the [threat model](docs/THREAT_MODEL.md).
+
+## For answers that must hold up
+
+*Answers are cheap. Evidence is not.*
+
+Stop asking for an answer. Ask for an investigation. A prompt gives you a
+fluent answer in seconds and keeps nothing. An investigation goes from
+question to registered intent, sources, evidence, checkpoint and answer,
+and every claim traces back to a record someone who was not there can
+check.
+
+**Commit before you look.** The hypothesis, the metric and a Kill
+Threshold, the number that would prove the investigation wrong, are
+written to a file, hashed and committed to git before any evidence
+exists. Only a person sets the threshold, and only a person can move it.
+Every attempt is recorded, not just the one that worked.
+
+**Measured, not claimed.** Each forecast is recorded before its attempt
+runs, so it cannot be a postdiction, and zorp checks whether the agent's
+stated confidence means anything.
+
+The research agent runs as four capabilities, validate, investigate,
+co-write and deliver, with `critique` as a gate between co-write and
+deliver that audits the draft against the evidence record in code. A
+human is always the author of record. See
+[Research capabilities](docs/research.md) and
+[zorp.dev/research](https://zorp.dev/research/).
+
+## Questions
+
+**What is zorp?** An open-source stack for running open-weight models on
+your own hardware. A terminal agent, a browser chat and a Mac app sit on
+one harness, with memory, evaluation, serving and a research agent on top.
+
+**Which models does it work with?** Any OpenAI-compatible server. A
+quantized model on Ollama, LM Studio or vLLM becomes your endpoint, and a
+hosted provider works too when you choose to send work out.
+
+**Does anything leave my machine?** Not unless you send it. With a local
+model nothing leaves the machine, and memory text goes to a loopback
+address or nowhere. See [Network egress](docs/NETWORK_EGRESS.md).
+
+**Which systems does it run on?** macOS, as a universal desktop app or the
+CLI; Linux on x86_64 and arm64; and Windows on x86_64, where the agent
+runs commands under Git Bash.
+
+**Is it free?** Yes. zorp is open source under the MIT license. You pay
+for your hardware and its power, not for tokens.
+
+**Is it ready for production?** No. zorp is pre-alpha.
 
 ## Quick start
 
@@ -199,7 +262,7 @@ flowchart TB
     AGENT --> SEARCH["zorp-search<br/>Tavily or SearXNG"]
     AGENT --> RECALL["zorp-recall<br/>conversation search"]
     WEB --> VOICE["zorp-voice<br/>speech in and out"]
-    WEB --> TRAIN["zorp-train<br/>RL Studio: pretrain, fine-tune"]
+    WEB --> TRAIN["zorp-train<br/>developer mode: pretrain, serve"]
 
     RECALL --> LOOP["zorp-loopback<br/>loopback-only guard"]
     VOICE --> LOOP
@@ -292,29 +355,29 @@ design specs live, and repo conventions.
 ### Where this is going: own your intelligence
 
 zorp is free, local first AI you own: your models, your files, your
-machine. The next step is **Zorp RL**, the training side, where models
+machine. The next step is **RLStudio**, the training side, where models
 are retrained and post-trained on how you actually use them. It covers
 the full stack, and closes it into a loop:
 
 ```
-pretrain ─▶ fine-tune ─▶ use in zorp ─▶ observe ─▶ Zorp RL self-trains
-               ▲                                        │
-               └────────────────────────────────────────┘
+pretrain ─▶ fine-tune ─▶ use in zorp ─▶ observe ─▶ RLStudio self-trains
+               ▲                                          │
+               └──────────────────────────────────────────┘
 ```
 
-Pretrain or fine-tune a model, use it in zorp, and feed the logs from
-that use back to Zorp RL, which trains on the new data and returns a
+Pretrain a model, use it in zorp, and feed the logs from
+that use back to RLStudio, which trains on the new data and returns a
 better model. Each pass fits the model more closely to one person's or
 one team's usage patterns, and because the loop is meant to run on your
 own hardware, those logs are meant to stay there too.
 
 Part of this is built and part is direction. What exists today:
 
-- [x] **Pretrain**: RL Studio (`zorp-train`) trains a BPE tokenizer and a Qwen style model from scratch on Apple Metal through MLX
+- [x] **Pretrain**: developer mode (`zorp-train`) trains a BPE tokenizer and a Qwen style model from scratch on Apple Metal through MLX
 - [x] **Use it in zorp**: a finished checkpoint is served on loopback and shows up in the model picker ("Open in Zorp")
-- [x] **Observe**: thumbs, a better answer you typed, and tool status derived in code are recorded in a local work log, and turned into an SFT set and a preference set in code. The model never grades itself
-- [x] **Fine-tune**: post-train an existing open model with LoRA, SFT or DPO through `mlx-lm` on a dataset built from that work log. Runs on Apple Silicon; you start each round
-- [ ] **Zorp RL**: reinforcement learning on that feedback, beyond the SFT and DPO rounds above
+- [ ] **Observe**: record thumbs, a better answer you typed, and tool status derived in code in a local work log, and turn them into training sets in code. The model never grades itself
+- [ ] **Fine-tune**: post-train an existing open model on a dataset built from that work log
+- [ ] **RLStudio post-training**: reinforcement learning on that feedback
 - [ ] **Automated training**: retrain on new data without being asked, and keep a new model only when it measures better than the one it would replace
 
 ## Origins
