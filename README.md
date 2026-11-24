@@ -19,12 +19,15 @@ evidence-backed research agent underneath.
 <br/>
 
 [![CI](https://github.com/aviskaar/zorp/actions/workflows/ci.yml/badge.svg)](https://github.com/aviskaar/zorp/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/aviskaar/zorp?style=flat-square&logo=github)](https://github.com/aviskaar/zorp/stargazers)
+[![Forks](https://img.shields.io/github/forks/aviskaar/zorp?style=flat-square&logo=github)](https://github.com/aviskaar/zorp/network/members)
+[![Issues](https://img.shields.io/github/issues/aviskaar/zorp?style=flat-square)](https://github.com/aviskaar/zorp/issues)
+[![Last commit](https://img.shields.io/github/last-commit/aviskaar/zorp?style=flat-square)](https://github.com/aviskaar/zorp/commits/main)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Status](https://img.shields.io/badge/status-pre--alpha-critical?style=flat-square)](#status-and-roadmap)
+[![Downloads](https://img.shields.io/github/downloads/aviskaar/zorp/total?style=flat-square)](docs/RELEASING.md#reading-download-counts)
 [![Part of Aviskaar](https://img.shields.io/badge/part%20of-Aviskaar-6f42c1?style=flat-square)](https://github.com/aviskaar)
-[![GitHub downloads](https://img.shields.io/github/downloads/aviskaar/zorp/total?style=flat-square)](docs/RELEASING.md#reading-download-counts)
-[![GitHub downloads (latest release)](https://img.shields.io/github/downloads/aviskaar/zorp/latest/total?style=flat-square)](docs/RELEASING.md#reading-download-counts)
 
 **[Download for Mac (.dmg)](https://github.com/aviskaar/zorp/releases/download/v0.8.1/Zorp-v0.8.1-universal.dmg)** · [Windows](https://github.com/aviskaar/zorp/releases/download/v0.8.1/zorp-v0.8.1-x86_64-pc-windows-msvc.zip) · [Linux x86_64](https://github.com/aviskaar/zorp/releases/download/v0.8.1/zorp-v0.8.1-x86_64-unknown-linux-gnu.tar.gz) · [Linux arm64](https://github.com/aviskaar/zorp/releases/download/v0.8.1/zorp-v0.8.1-aarch64-unknown-linux-gnu.tar.gz)
 
@@ -34,11 +37,12 @@ evidence-backed research agent underneath.
 
 ---
 
-Or install the CLI from a terminal (macOS and Linux, x86_64 and arm64):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
-```
+<p align="center">
+  <a href="#quick-start"><b>Quick start</b></a> ·
+  <a href="https://docs.zorp.dev"><b>Docs</b></a> ·
+  <a href="#contributors"><b>Contributors</b></a> ·
+  <a href="#sponsors"><b>Sponsors</b></a>
+</p>
 
 > **Status: pre-alpha.** Not ready for production. Anything that is not
 > built yet is marked planned below. See [Status and roadmap](#status-and-roadmap).
@@ -58,6 +62,9 @@ curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bas
 [Status and roadmap](#status-and-roadmap) ·
 [Origins](#origins) ·
 [Contributing](#contributing) ·
+[Contributors](#contributors) ·
+[Sponsors](#sponsors) ·
+[Star history](#star-history) ·
 [License](#license)
 
 ## Everything in the stack
@@ -191,37 +198,54 @@ for your hardware and its power, not for tokens.
 
 ## Quick start
 
-Install prebuilt `zorp`, `zorp-agent` and `zorp-web` binaries (Linux and
-macOS, x86_64 and arm64):
+Pick one. Each takes under two minutes.
+
+| I want | Do this |
+|---|---|
+| The Mac app | Download the [`.dmg`](https://github.com/aviskaar/zorp/releases/latest), drag `Zorp.app` to `/Applications`. |
+| The CLI (macOS, Linux) | `curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh \| bash` |
+| Windows | Unzip the [release](https://github.com/aviskaar/zorp/releases/latest), put the folder on `PATH`. Needs [Git for Windows](https://git-scm.com/download/win). |
+| Docker | `ZORP_WEB_TOKEN=$(openssl rand -hex 16) docker compose up --build` |
+| From source | `cargo build --workspace --exclude zorp-track` |
+
+### 1. Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aviskaar/zorp/main/install.sh | bash
 ```
 
-Point zorp at a model. Any OpenAI-compatible endpoint works, including a
-local one (Ollama, LM Studio, vLLM):
+This installs `zorp`, `zorp-agent` and `zorp-web` (Linux and macOS, x86_64 and arm64).
+
+### 2. Point it at a model
+
+Any OpenAI-compatible endpoint works, including a local one.
 
 ```bash
+# Local, nothing leaves your machine (Ollama)
+export ZORP_BASE_URL="http://localhost:11434/v1"
+export ZORP_MODEL="qwen2.5:14b"
+
+# Or hosted
 export ZORP_BASE_URL="https://api.openai.com/v1"
 export ZORP_API_KEY="sk-..."
 export ZORP_MODEL="gpt-4o-mini"
 ```
 
-Then use it from the terminal or the browser:
+### 3. Run it
 
 ```bash
-zorp-agent "<task>"                      # the agent, in the terminal
-zorp-web --workspace ~/research          # the chat UI on http://127.0.0.1:7777
+zorp-agent "summarize the TODOs in this repo"   # the agent, in the terminal
+zorp-web --workspace ~/research                 # the chat UI on http://127.0.0.1:7777
 ```
 
-On a Mac you can instead download `Zorp-v<version>-universal.dmg` from the
-latest GitHub release and drag `Zorp.app` to `/Applications`.
+### 4. Check your setup
 
-On Windows, download `zorp-v<version>-x86_64-pc-windows-msvc.zip` from the
-latest release, unzip it, and put the folder on your `PATH`. zorp runs the
-agent's commands under Git Bash, so install
-[Git for Windows](https://git-scm.com/download/win) first, or set `ZORP_SH`
-to the `sh.exe` you want. The desktop app is Mac only.
+```bash
+zorp-agent doctor    # features, endpoint, model, state files. Never prints a secret.
+```
+
+On Windows the agent runs commands under Git Bash. Set `ZORP_SH` to use a
+different `sh.exe`. The desktop app is Mac only.
 
 To build from source, run from Docker, or tune timeouts and retries, see
 [Getting started](docs/getting-started.md). The four research capabilities
@@ -402,6 +426,36 @@ guidelines, and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community
 expectations.
 
 Questions and discussion: [Discussions › Q&A](https://github.com/aviskaar/zorp/discussions/categories/q-a).
+
+## Contributors
+
+Thanks to everyone who has helped build zorp.
+
+<a href="https://github.com/aviskaar/zorp/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=aviskaar/zorp" alt="zorp contributors" />
+</a>
+
+Want to see your face here? Pick an issue labelled
+[`good first issue`](https://github.com/aviskaar/zorp/labels/good%20first%20issue)
+and read [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Sponsors
+
+zorp is free, MIT licensed, and built in the open. Sponsorship pays for
+test hardware, benchmark runs and maintainer time, and keeps it that way.
+
+[![Sponsor zorp](https://img.shields.io/badge/sponsor-zorp-ea4aaa?style=for-the-badge&logo=githubsponsors)](https://github.com/sponsors/adityak74)
+
+Companies and individuals who sponsor are listed here. To get your logo on
+this page, [get in touch](../../issues).
+
+*Your logo here.*
+
+## Star history
+
+[![Star history chart](https://api.star-history.com/svg?repos=aviskaar/zorp&type=Date)](https://star-history.com/#aviskaar/zorp&Date)
+
+If zorp is useful to you, a star helps other people find it.
 
 ## License
 
